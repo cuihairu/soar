@@ -39,3 +39,15 @@
 
 # debug information files
 *.dwo
+
+# CMake
+/build/
+/cmake-build-*/
+CMakeUserPresets.json
+
+# vcpkg
+/vcpkg_installed/
+vcpkg-configuration.json
+
+# Misc
+.DS_Store
