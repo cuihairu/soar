@@ -63,4 +63,8 @@ private:
 
 std::unique_ptr<IBackend> makeNullBackend();
 
+#ifdef SOAR_WITH_FFMPEG
+std::unique_ptr<IBackend> makeFFmpegBackend();
+#endif
+
 } // namespace soar

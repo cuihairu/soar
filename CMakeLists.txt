@@ -8,6 +8,7 @@ project(
 
 option(SOAR_BUILD_APP "Build the sample app executable" ON)
 option(SOAR_ENABLE_SDL2 "Enable SDL2 window/event loop in the app (if available)" ON)
+option(SOAR_ENABLE_FFMPEG "Enable FFmpeg backend (if available)" ON)
 
 add_library(soar_core)
 add_library(soar::core ALIAS soar_core)
@@ -25,6 +26,33 @@ target_compile_features(soar_core PUBLIC cxx_std_17)
 
 find_package(fmt CONFIG REQUIRED)
 target_link_libraries(soar_core PUBLIC fmt::fmt)
+
+# FFmpeg support (optional)
+if(SOAR_ENABLE_FFMPEG)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(FFMPEG IMPORTED_TARGET
+      libavformat
+      libavcodec
+      libavutil
+      libswresample
+      libswscale
+    )
+  endif()
+
+  if(FFMPEG_FOUND)
+    target_compile_definitions(soar_core PUBLIC SOAR_WITH_FFMPEG=1)
+    target_sources(soar_core PRIVATE
+      src/core/ffmpeg_backend.cpp
+    )
+    target_link_libraries(soar_core PUBLIC
+      PkgConfig::FFMPEG
+    )
+    message(STATUS "FFmpeg backend enabled")
+  else()
+    message(STATUS "FFmpeg not found; building without FFmpeg backend")
+  endif()
+endif()
 
 if(SOAR_BUILD_APP)
   add_executable(soar src/app/main.cpp)
