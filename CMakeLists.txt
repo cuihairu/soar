@@ -63,6 +63,11 @@ if(SOAR_BUILD_APP)
     find_package(SDL2 CONFIG QUIET)
     if(SDL2_FOUND)
       target_compile_definitions(soar PRIVATE SOAR_WITH_SDL2=1)
+      target_compile_definitions(soar_core PRIVATE SOAR_WITH_SDL2=1)
+      target_link_libraries(soar_core PUBLIC
+        $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
+        $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
+      )
       target_link_libraries(soar PRIVATE
         $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
         $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>

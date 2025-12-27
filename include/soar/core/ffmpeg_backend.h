@@ -4,10 +4,13 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <queue>
 #include <thread>
+#include <vector>
 
 extern "C" {
 // Forward declarations for FFmpeg types
@@ -36,6 +39,18 @@ namespace soar {
  */
 class FFmpegBackend : public IBackend {
 public:
+  struct DecodedVideoFrame {
+    int width{0};
+    int height{0};
+    int stride_y{0};
+    int stride_u{0};
+    int stride_v{0};
+    std::vector<std::uint8_t> y;
+    std::vector<std::uint8_t> u;
+    std::vector<std::uint8_t> v;
+    std::chrono::milliseconds pts{0};
+  };
+
   FFmpegBackend();
   ~FFmpegBackend() override;
 
@@ -61,6 +76,10 @@ public:
 
   PlaybackState state() const override;
   std::string lastError() const override;
+
+  // Optional: allow the app to pull the latest decoded video frame (YUV420P).
+  // Thread-safe; returns true only when a new frame is available.
+  bool tryGetVideoFrame(DecodedVideoFrame& out);
 
 private:
   // Internal types
@@ -94,10 +113,12 @@ private:
   bool decodeAudioFrame(AVFrame* frame);
   void queueVideoFrame(AVFrame* frame, std::chrono::milliseconds pts);
   void queueAudioFrame(AVFrame* frame, std::chrono::milliseconds pts);
+  void drainFrameQueues();
 
   // Frame processing
-  void processVideoFrame(const DecodedFrame& frame);
-  void processAudioFrame(const DecodedFrame& frame);
+  void processVideoFrame(DecodedFrame frame);
+  void processAudioFrame(DecodedFrame frame);
+  bool waitForPresentationTime(std::chrono::milliseconds pts);
 
   // Rendering (to be implemented)
   void renderVideoFrame(const AVFrame* frame);
@@ -116,12 +137,19 @@ private:
   // Event emission
   void emit(Event e);
   bool fail(std::string message);
+  bool fatal(std::string message);
 
   // Member variables
 
   // Event system
   mutable std::mutex event_mutex_;
   IEventSink* event_sink_{nullptr};
+
+  // Video frame handoff (for UI rendering on main thread)
+  mutable std::mutex video_frame_mutex_;
+  bool video_frame_ready_{false};
+  DecodedVideoFrame latest_video_frame_{};
+  DecodedVideoFrame staging_video_frame_{};
 
   // FFmpeg contexts
   AVFormatContext* format_ctx_{nullptr};
@@ -133,7 +161,14 @@ private:
 
   // Rescalers/converter
   SwrContext* audio_resampler_{nullptr};
+  std::uint64_t audio_resample_key_{0};
   SwsContext* video_scaler_{nullptr};
+
+  struct VideoConvertState;
+  std::unique_ptr<VideoConvertState> video_convert_;
+
+  struct SDLAudio;
+  std::unique_ptr<SDLAudio> sdl_audio_;
 
   // Stream parameters
   AudioParams audio_params_{};
@@ -143,7 +178,8 @@ private:
   mutable std::mutex info_mutex_;
   MediaInfo media_info_;
   std::chrono::milliseconds current_position_{0};
-  std::chrono::milliseconds start_time_{0};
+  std::chrono::steady_clock::time_point clock_origin_{};
+  std::chrono::milliseconds last_emitted_position_{0};
 
   // Playback state
   mutable std::mutex state_mutex_;

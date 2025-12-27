@@ -51,3 +51,6 @@ vcpkg-configuration.json
 
 # Misc
 .DS_Store
+
+# Codex spec workflow artifacts
+.spec-workflow/

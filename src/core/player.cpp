@@ -19,6 +19,7 @@ Player::Player(std::unique_ptr<IBackend> backend)
 Player::~Player() {
   if (backend_) {
     backend_->setEventSink(nullptr);
+    backend_.reset();
   }
 }
 
