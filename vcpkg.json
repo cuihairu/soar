@@ -2,6 +2,7 @@
   "name": "soar",
   "version-string": "0.1.0",
   "dependencies": [
+    "doctest",
     "fmt",
     "sdl2"
   ]

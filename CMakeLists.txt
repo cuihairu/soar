@@ -7,6 +7,7 @@ project(
 )
 
 option(SOAR_BUILD_APP "Build the sample app executable" ON)
+option(SOAR_BUILD_TESTS "Build the unit tests" ON)
 option(SOAR_ENABLE_SDL2 "Enable SDL2 window/event loop in the app (if available)" ON)
 option(SOAR_ENABLE_FFMPEG "Enable FFmpeg backend (if available)" ON)
 
@@ -52,6 +53,11 @@ if(SOAR_ENABLE_FFMPEG)
   else()
     message(STATUS "FFmpeg not found; building without FFmpeg backend")
   endif()
+endif()
+
+if(SOAR_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
 endif()
 
 if(SOAR_BUILD_APP)

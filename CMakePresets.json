@@ -35,5 +35,13 @@
       "configurePreset": "release"
     }
   ],
-  "testPresets": []
+  "testPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
 }
