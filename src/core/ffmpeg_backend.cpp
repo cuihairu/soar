@@ -260,16 +260,23 @@ void FFmpegBackend::emit(Event e) {
   sink->onEvent(e);
 }
 
-bool FFmpegBackend::fail(std::string message) {
+bool FFmpegBackend::hasMedia() {
+  std::lock_guard<std::mutex> lock(decode_mutex_);
+  return format_ctx_ != nullptr;
+}
+
+bool FFmpegBackend::fail(std::string message, bool emit_event) {
   {
     std::lock_guard<std::mutex> lock(error_mutex_);
     last_error_ = std::move(message);
   }
-  emit(Event{EventType::Error, PlaybackState::Stopped, std::chrono::milliseconds(0), last_error_});
+  if (emit_event) {
+    emit(Event{EventType::Error, PlaybackState::Stopped, std::chrono::milliseconds(0), last_error_});
+  }
   return false;
 }
 
-bool FFmpegBackend::fatal(std::string message) {
+bool FFmpegBackend::fatal(std::string message, bool emit_event) {
   {
     std::lock_guard<std::mutex> lock(error_mutex_);
     last_error_ = std::move(message);
@@ -280,8 +287,10 @@ bool FFmpegBackend::fatal(std::string message) {
     playback_state_ = PlaybackState::Error;
   }
 
-  emit(Event{EventType::Error, PlaybackState::Error, std::chrono::milliseconds(0), last_error_});
-  emit(Event{EventType::StateChanged});
+  if (emit_event) {
+    emit(Event{EventType::Error, PlaybackState::Error, std::chrono::milliseconds(0), last_error_});
+    emit(Event{EventType::StateChanged});
+  }
   return false;
 }
 
@@ -290,7 +299,7 @@ bool FFmpegBackend::fatal(std::string message) {
 //=============================================================================
 
 bool FFmpegBackend::open(const MediaSource& source) {
-  // Close any existing media
+  // Close any existing media (does its own locking).
   close();
 
   // Reset state
@@ -302,29 +311,29 @@ bool FFmpegBackend::open(const MediaSource& source) {
     clock_origin_ = std::chrono::steady_clock::time_point{};
   }
 
-  // Open the media file
-  if (!openContext(source.uri)) {
-    return false;
-  }
-
-  // Find and initialize stream info
-  if (!findStreamInfo()) {
-    closeContext();
-    return false;
-  }
-
-  // Setup decoders for video/audio streams
-  if (!setupDecoders()) {
-    cleanupDecoders();
-    closeContext();
-    return false;
-  }
-
-  // Build MediaInfo
+  // Build the whole open path under decode_mutex_: format_ctx_ and the
+  // decoders must not be visible to other control calls (pause/stop/seek/
+  // selectTrack/close) until the media is fully set up. Lock order is
+  // decode_mutex_ -> {state|info|error}_mutex_ everywhere. Events are
+  // emitted after the lock is released so that user callbacks may safely
+  // re-enter the public API.
+  bool ok = false;
   {
-    std::lock_guard<std::mutex> lock(info_mutex_);
+    std::lock_guard<std::mutex> media_lock(decode_mutex_);
 
-    media_info_ = MediaInfo{};
+    // Open the media file
+    AVFormatContext* ctx = nullptr;
+    if (!openContext(source.uri, &ctx)) {
+      format_ctx_ = nullptr;
+    } else {
+      format_ctx_ = ctx;
+
+      // Find and initialize stream info, then set up decoders
+      if (findStreamInfo() && setupDecoders()) {
+        // Build MediaInfo
+        std::lock_guard<std::mutex> lock(info_mutex_);
+
+        media_info_ = MediaInfo{};
 
     media_info_.duration = std::chrono::milliseconds(
       static_cast<int64_t>(format_ctx_->duration * 1000.0 / AV_TIME_BASE)
@@ -394,13 +403,31 @@ bool FFmpegBackend::open(const MediaSource& source) {
         is_default
       });
     }
+
+        ok = true;
+      } else {
+        // findStreamInfo or setupDecoders failed: release everything that
+        // was created so far; the errors were already recorded (without
+        // emitting) by the fatal() calls inside.
+        cleanupDecoders();
+        closeContext();
+        format_ctx_ = nullptr;
+      }
+    }
   }
 
-  // Emit events
-  emit(Event{EventType::MediaInfoChanged});
-  emit(Event{EventType::StateChanged});
+  if (ok) {
+    // Emit events (outside decode_mutex_)
+    emit(Event{EventType::MediaInfoChanged});
+    emit(Event{EventType::StateChanged});
+    return true;
+  }
 
-  return true;
+  // The open path failed; fatal() already recorded the error and switched
+  // the state to Error. Emit the matching events outside the lock.
+  emit(Event{EventType::Error, PlaybackState::Error, std::chrono::milliseconds(0), lastError()});
+  emit(Event{EventType::StateChanged});
+  return false;
 }
 
 void FFmpegBackend::close() {
@@ -512,7 +539,7 @@ bool FFmpegBackend::play() {
 }
 
 bool FFmpegBackend::pause() {
-  if (format_ctx_ == nullptr) {
+  if (!hasMedia()) {
     return fail("pause: no media opened");
   }
 
@@ -538,7 +565,7 @@ bool FFmpegBackend::pause() {
 }
 
 bool FFmpegBackend::stop() {
-  if (format_ctx_ == nullptr) {
+  if (!hasMedia()) {
     return fail("stop: no media opened");
   }
 
@@ -585,10 +612,6 @@ bool FFmpegBackend::stop() {
 }
 
 bool FFmpegBackend::seek(std::chrono::milliseconds position) {
-  if (format_ctx_ == nullptr) {
-    return fail("seek: no media opened");
-  }
-
   PlaybackState state{};
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -613,51 +636,71 @@ bool FFmpegBackend::seek(std::chrono::milliseconds position) {
     duration
   );
 
-  bool has_decode_thread = false;
+  // The whole seek decision and, when no decode thread is running, the
+  // actual seekToTimestamp() must stay under decode_mutex_: it protects
+  // format_ctx_ against concurrent open/close and prevents a play() from
+  // starting a decode thread in the middle of our seek.
+  bool handled_here = false;
+  bool seek_failed = false;
+  bool state_changed = false;
+  bool had_media = true;
   {
     std::lock_guard<std::mutex> lock(decode_mutex_);
-    if ((state == PlaybackState::Ended || state == PlaybackState::Error) && decode_thread_.joinable()) {
-      decode_thread_.join();
-    }
-    has_decode_thread = decode_thread_.joinable() && (state == PlaybackState::Playing || state == PlaybackState::Paused);
-  }
+    if (format_ctx_ == nullptr) {
+      had_media = false;
+    } else {
+      if ((state == PlaybackState::Ended || state == PlaybackState::Error) && decode_thread_.joinable()) {
+        decode_thread_.join();
+      }
+      const bool in_decode_thread =
+        decode_thread_.joinable() && (state == PlaybackState::Playing || state == PlaybackState::Paused);
 
-  if (!has_decode_thread) {
-    if (!seekToTimestamp(clamped)) {
-      return false;
-    }
+      if (in_decode_thread) {
+        // Store seek request for decode thread
+        seek_requested_ = true;
+        seek_target_ = clamped.count();
+        decode_cv_.notify_all();
+      } else if (seekToTimestamp(clamped, /*emit_event=*/false)) {
+        {
+          std::lock_guard<std::mutex> slock(state_mutex_);
+          current_position_ = clamped;
+          last_emitted_position_ = clamped;
+          const auto rate = playback_rate_.load();
+          const auto now = std::chrono::steady_clock::now();
+          const auto scaled = std::chrono::duration<double, std::milli>(clamped.count() / rate);
+          clock_origin_ = now - std::chrono::duration_cast<std::chrono::steady_clock::duration>(scaled);
 
-    bool state_changed = false;
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      current_position_ = clamped;
-      last_emitted_position_ = clamped;
-      const auto rate = playback_rate_.load();
-      const auto now = std::chrono::steady_clock::now();
-      const auto scaled = std::chrono::duration<double, std::milli>(clamped.count() / rate);
-      clock_origin_ = now - std::chrono::duration_cast<std::chrono::steady_clock::duration>(scaled);
-
-      if (clamped == duration && playback_state_ != PlaybackState::Ended) {
-        playback_state_ = PlaybackState::Ended;
-        state_changed = true;
-      } else if (clamped != duration && playback_state_ == PlaybackState::Ended) {
-        playback_state_ = PlaybackState::Paused;
-        state_changed = true;
+          if (clamped == duration && playback_state_ != PlaybackState::Ended) {
+            playback_state_ = PlaybackState::Ended;
+            state_changed = true;
+          } else if (clamped != duration && playback_state_ == PlaybackState::Ended) {
+            playback_state_ = PlaybackState::Paused;
+            state_changed = true;
+          }
+        }
+        handled_here = true;
+      } else {
+        // seekToTimestamp failed; the error is recorded (not emitted).
+        seek_failed = true;
       }
     }
+  }
 
+  if (!had_media) {
+    return fail("seek: no media opened");
+  }
+
+  if (seek_failed) {
+    emit(Event{EventType::Error, PlaybackState::Error, std::chrono::milliseconds(0), lastError()});
+    return false;
+  }
+
+  if (handled_here) {
     emit(Event{EventType::PositionChanged});
     if (state_changed) {
       emit(Event{EventType::StateChanged});
     }
-    return true;
   }
-
-  // Store seek request for decode thread
-  seek_requested_ = true;
-  seek_target_ = clamped.count();
-
-  decode_cv_.notify_all();
   return true;
 }
 
@@ -858,10 +901,10 @@ bool FFmpegBackend::disableSubtitles() {
 // FFmpeg Context Management
 //=============================================================================
 
-bool FFmpegBackend::openContext(const std::string& uri) {
+bool FFmpegBackend::openContext(const std::string& uri, AVFormatContext** out_ctx) {
   AVFormatContext* ctx = avformat_alloc_context();
   if (!ctx) {
-    return fatal("open: failed to allocate format context");
+    return fatal("open: failed to allocate format context", /*emit_event=*/false);
   }
 
   ctx->interrupt_callback.callback = &ffmpegInterruptCallback;
@@ -870,10 +913,10 @@ bool FFmpegBackend::openContext(const std::string& uri) {
   int ret = avformat_open_input(&ctx, uri.c_str(), nullptr, nullptr);
   if (ret < 0) {
     avformat_free_context(ctx);
-    return fatal(fmt::format("open: failed to open '{}': {}", uri, avError(ret)));
+    return fatal(fmt::format("open: failed to open '{}': {}", uri, avError(ret)), /*emit_event=*/false);
   }
 
-  format_ctx_ = ctx;
+  *out_ctx = ctx;
   return true;
 }
 
@@ -890,14 +933,14 @@ void FFmpegBackend::closeContext() {
 bool FFmpegBackend::findStreamInfo() {
   int ret = avformat_find_stream_info(format_ctx_, nullptr);
   if (ret < 0) {
-    return fatal(fmt::format("findStreamInfo: failed: {}", avError(ret)));
+    return fatal(fmt::format("findStreamInfo: failed: {}", avError(ret)), /*emit_event=*/false);
   }
 
   video_stream_index_ = pickBestStreamIndex(format_ctx_, AVMEDIA_TYPE_VIDEO);
   audio_stream_index_ = pickBestStreamIndex(format_ctx_, AVMEDIA_TYPE_AUDIO);
 
   if (video_stream_index_ < 0 && audio_stream_index_ < 0) {
-    return fatal("findStreamInfo: no video or audio stream found");
+    return fatal("findStreamInfo: no video or audio stream found", /*emit_event=*/false);
   }
 
   return true;
@@ -913,22 +956,22 @@ bool FFmpegBackend::setupDecoders() {
 
     codec = avcodec_find_decoder(codecpar->codec_id);
     if (!codec) {
-      return fatal(fmt::format("setupDecoders: video codec not found: {}", static_cast<int>(codecpar->codec_id)));
+      return fatal(fmt::format("setupDecoders: video codec not found: {}", static_cast<int>(codecpar->codec_id)), /*emit_event=*/false);
     }
 
     video_decoder_ = avcodec_alloc_context3(codec);
     if (!video_decoder_) {
-      return fatal("setupDecoders: failed to allocate video decoder context");
+      return fatal("setupDecoders: failed to allocate video decoder context", /*emit_event=*/false);
     }
 
     int ret = avcodec_parameters_to_context(video_decoder_, codecpar);
     if (ret < 0) {
-      return fatal(fmt::format("setupDecoders: failed to copy video params: {}", avError(ret)));
+      return fatal(fmt::format("setupDecoders: failed to copy video params: {}", avError(ret)), /*emit_event=*/false);
     }
 
     ret = avcodec_open2(video_decoder_, codec, nullptr);
     if (ret < 0) {
-      return fatal(fmt::format("setupDecoders: failed to open video decoder: {}", avError(ret)));
+      return fatal(fmt::format("setupDecoders: failed to open video decoder: {}", avError(ret)), /*emit_event=*/false);
     }
 
     // Store video parameters
@@ -944,22 +987,22 @@ bool FFmpegBackend::setupDecoders() {
 
     codec = avcodec_find_decoder(codecpar->codec_id);
     if (!codec) {
-      return fatal(fmt::format("setupDecoders: audio codec not found: {}", static_cast<int>(codecpar->codec_id)));
+      return fatal(fmt::format("setupDecoders: audio codec not found: {}", static_cast<int>(codecpar->codec_id)), /*emit_event=*/false);
     }
 
     audio_decoder_ = avcodec_alloc_context3(codec);
     if (!audio_decoder_) {
-      return fatal("setupDecoders: failed to allocate audio decoder context");
+      return fatal("setupDecoders: failed to allocate audio decoder context", /*emit_event=*/false);
     }
 
     int ret = avcodec_parameters_to_context(audio_decoder_, codecpar);
     if (ret < 0) {
-      return fatal(fmt::format("setupDecoders: failed to copy audio params: {}", avError(ret)));
+      return fatal(fmt::format("setupDecoders: failed to copy audio params: {}", avError(ret)), /*emit_event=*/false);
     }
 
     ret = avcodec_open2(audio_decoder_, codec, nullptr);
     if (ret < 0) {
-      return fatal(fmt::format("setupDecoders: failed to open audio decoder: {}", avError(ret)));
+      return fatal(fmt::format("setupDecoders: failed to open audio decoder: {}", avError(ret)), /*emit_event=*/false);
     }
 
     // Store audio parameters (FFmpeg 8.0+ uses ch_layout)
@@ -1603,7 +1646,7 @@ bool FFmpegBackend::flushDecoders() {
   return true;
 }
 
-bool FFmpegBackend::seekToTimestamp(std::chrono::milliseconds position) {
+bool FFmpegBackend::seekToTimestamp(std::chrono::milliseconds position, bool emit_event) {
   // Convert to stream time base
   int64_t timestamp = AV_NOPTS_VALUE;
   int stream_index = -1;
@@ -1619,7 +1662,7 @@ bool FFmpegBackend::seekToTimestamp(std::chrono::milliseconds position) {
   }
 
   if (timestamp == AV_NOPTS_VALUE) {
-    return fail("seekToTimestamp: no valid stream for seeking");
+    return fail("seekToTimestamp: no valid stream for seeking", emit_event);
   }
 
   // Flush decoders
@@ -1628,7 +1671,7 @@ bool FFmpegBackend::seekToTimestamp(std::chrono::milliseconds position) {
   // Seek
   int ret = av_seek_frame(format_ctx_, stream_index, timestamp, AVSEEK_FLAG_BACKWARD);
   if (ret < 0) {
-    return fail(fmt::format("seekToTimestamp: seek failed: {}", avError(ret)));
+    return fail(fmt::format("seekToTimestamp: seek failed: {}", avError(ret)), emit_event);
   }
 
   // Clear frame queues

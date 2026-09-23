@@ -101,7 +101,9 @@ private:
   };
 
   // FFmpeg context management
-  bool openContext(const std::string& uri);
+  // openContext does not publish format_ctx_ itself; the caller assigns it
+  // under decode_mutex_ once the whole open path succeeded.
+  bool openContext(const std::string& uri, AVFormatContext** out_ctx);
   void closeContext();
   bool findStreamInfo();
   bool setupDecoders();
@@ -126,7 +128,9 @@ private:
 
   // Seeking
   bool flushDecoders();
-  bool seekToTimestamp(std::chrono::milliseconds position);
+  // emit_event=false only records the error (for callers that must emit
+  // outside decode_mutex_ to keep event callbacks re-entrancy safe).
+  bool seekToTimestamp(std::chrono::milliseconds position, bool emit_event = true);
 
   // Utility functions
   static std::string getCodecName(AVCodecContext* ctx);
@@ -134,10 +138,13 @@ private:
   static int64_t toAVTimestamp(std::chrono::milliseconds ms, AVRational time_base);
   std::string avError(int errnum);
 
-  // Event emission
+  // Event emission. emit_event=false records the error/state without
+  // emitting, for code paths that already hold decode_mutex_ (events are
+  // always emitted outside that lock so user callbacks may re-enter).
+  bool hasMedia();
   void emit(Event e);
-  bool fail(std::string message);
-  bool fatal(std::string message);
+  bool fail(std::string message, bool emit_event = true);
+  bool fatal(std::string message, bool emit_event = true);
 
   // Member variables
 
