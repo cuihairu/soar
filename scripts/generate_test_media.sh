@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Generates the synthetic media fixtures the FFmpeg backend tests need.
+# Everything is a fast lavfi synthesis: no network, no real assets, no
+# external samples. The script prints KEY=VALUE lines (one per fixture) so
+# a caller can pipe them into GitHub Actions' $GITHUB_ENV; locally they can
+# be sourced or exported by hand before running ctest.
+set -euo pipefail
+
+out_dir="${1:-build-system/testmedia}"
+mkdir -p "$out_dir"
+case "$out_dir" in
+  /*) media_dir="$out_dir" ;;
+  *)  media_dir="$PWD/$out_dir" ;;
+esac
+
+# Dual audio: the workhorse for track switching and lifecycle tests.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -f lavfi -i sine=frequency=440 \
+  -f lavfi -i sine=frequency=880 \
+  -map 0:v -map 1:a -map 2:a -t 6 \
+  -c:v ffvhuff -c:a pcm_s16le \
+  "$media_dir/sample_dual_audio.mkv"
+
+# Audio only: position must be driven by audio frames, and seeks resolve
+# through the audio stream (there is no video stream index).
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i sine=frequency=440 \
+  -t 6 -c:a pcm_s16le \
+  "$media_dir/audio_only.mkv"
+
+# Sidecar subtitle text. It is used both as a mapped subtitle stream and
+# (as a separate copy) as a container attachment, which must be ignored by
+# track enumeration.
+printf '1\n00:00:00,000 --> 00:00:02,000\nHello\n\n2\n00:00:02,000 --> 00:00:04,000\nWorld\n' \
+  > "$media_dir/subs.srt"
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -f lavfi -i sine=frequency=440 \
+  -i "$media_dir/subs.srt" \
+  -attach "$media_dir/subs.srt" \
+  -map 0:v -map 1:a -map 2:s \
+  -c:v ffvhuff -c:a pcm_s16le -c:s srt \
+  -metadata:s:s:0 language=eng \
+  -metadata:s:t mimetype=text/plain \
+  -t 4 \
+  "$media_dir/subs_media.mkv"
+
+# Subtitle-only container: opens fine but has no audio or video stream,
+# so the backend's open must fail with the "no video or audio stream"
+# fatal instead of handing out a bogus MediaInfo.
+ffmpeg -hide_banner -loglevel error -y \
+  -i "$media_dir/subs.srt" -c:s srt \
+  "$media_dir/subs_only.mkv"
+
+echo "SOAR_TEST_MEDIA=$media_dir/sample_dual_audio.mkv"
+echo "SOAR_TEST_AUDIO_ONLY=$media_dir/audio_only.mkv"
+echo "SOAR_TEST_SUBS_MEDIA=$media_dir/subs_media.mkv"
+echo "SOAR_TEST_SUBS_ONLY=$media_dir/subs_only.mkv"

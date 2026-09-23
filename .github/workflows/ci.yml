@@ -31,20 +31,14 @@ jobs:
             libavformat-dev libavcodec-dev libavutil-dev \
             libswresample-dev libswscale-dev
 
-      # Synthetic dual-audio sample for the FFmpeg backend concurrency and
-      # track-switching tests (fast to generate: lossless codecs, lavfi sources).
-      - name: Generate test media (Linux)
+      # Synthetic media for the FFmpeg backend tests (fast lavfi
+      # synthesis: dual audio, audio-only, subtitle+attachment, subtitle
+      # only). The script also prints KEY=VALUE lines for $GITHUB_ENV.
+      - name: Generate test media
         if: runner.os == 'Linux'
         run: |
-          mkdir -p build-system/testmedia
-          ffmpeg -hide_banner -y \
-            -f lavfi -i testsrc=size=160x120:rate=15 \
-            -f lavfi -i sine=frequency=440 \
-            -f lavfi -i sine=frequency=880 \
-            -map 0:v -map 1:a -map 2:a -t 6 \
-            -c:v ffvhuff -c:a pcm_s16le \
-            build-system/testmedia/sample_dual_audio.mkv
-          echo "SOAR_TEST_MEDIA=$PWD/build-system/testmedia/sample_dual_audio.mkv" >> "$GITHUB_ENV"
+          bash scripts/generate_test_media.sh build-system/testmedia | tee env.txt
+          cat env.txt >> "$GITHUB_ENV"
 
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
@@ -126,15 +120,8 @@ jobs:
 
       - name: Generate test media
         run: |
-          mkdir -p build-system/testmedia
-          ffmpeg -hide_banner -y \
-            -f lavfi -i testsrc=size=160x120:rate=15 \
-            -f lavfi -i sine=frequency=440 \
-            -f lavfi -i sine=frequency=880 \
-            -map 0:v -map 1:a -map 2:a -t 6 \
-            -c:v ffvhuff -c:a pcm_s16le \
-            build-system/testmedia/sample_dual_audio.mkv
-          echo "SOAR_TEST_MEDIA=$PWD/build-system/testmedia/sample_dual_audio.mkv" >> "$GITHUB_ENV"
+          bash scripts/generate_test_media.sh build-system/testmedia | tee env.txt
+          cat env.txt >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
@@ -176,15 +163,8 @@ jobs:
 
       - name: Generate test media
         run: |
-          mkdir -p build-system/testmedia
-          ffmpeg -hide_banner -y \
-            -f lavfi -i testsrc=size=160x120:rate=15 \
-            -f lavfi -i sine=frequency=440 \
-            -f lavfi -i sine=frequency=880 \
-            -map 0:v -map 1:a -map 2:a -t 6 \
-            -c:v ffvhuff -c:a pcm_s16le \
-            build-system/testmedia/sample_dual_audio.mkv
-          echo "SOAR_TEST_MEDIA=$PWD/build-system/testmedia/sample_dual_audio.mkv" >> "$GITHUB_ENV"
+          bash scripts/generate_test_media.sh build-system/testmedia | tee env.txt
+          cat env.txt >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
@@ -222,15 +202,8 @@ jobs:
 
       - name: Generate test media
         run: |
-          mkdir -p build-system/testmedia
-          ffmpeg -hide_banner -y \
-            -f lavfi -i testsrc=size=160x120:rate=15 \
-            -f lavfi -i sine=frequency=440 \
-            -f lavfi -i sine=frequency=880 \
-            -map 0:v -map 1:a -map 2:a -t 6 \
-            -c:v ffvhuff -c:a pcm_s16le \
-            build-system/testmedia/sample_dual_audio.mkv
-          echo "SOAR_TEST_MEDIA=$PWD/build-system/testmedia/sample_dual_audio.mkv" >> "$GITHUB_ENV"
+          bash scripts/generate_test_media.sh build-system/testmedia | tee env.txt
+          cat env.txt >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
