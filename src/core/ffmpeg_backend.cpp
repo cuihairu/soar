@@ -477,12 +477,16 @@ void FFmpegBackend::close() {
   {
     std::lock_guard<std::mutex> lock(info_mutex_);
     media_info_ = MediaInfo{};
-    current_position_ = std::chrono::milliseconds(0);
   }
 
+  // current_position_/clock_origin_/last_emitted_position_ are guarded by
+  // state_mutex_ everywhere else (position(), decode loop, pause/play/
+  // seek/setRate); resetting them here under info_mutex_ raced with
+  // position() reading under state_mutex_ (TSan, open/close storm).
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     playback_state_ = PlaybackState::Stopped;
+    current_position_ = std::chrono::milliseconds(0);
     clock_origin_ = std::chrono::steady_clock::time_point{};
     last_emitted_position_ = std::chrono::milliseconds(0);
   }
