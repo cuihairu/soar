@@ -14,11 +14,16 @@ case "$out_dir" in
 esac
 
 # Dual audio: the workhorse for track switching and lifecycle tests.
+# The audio streams carry titles so the track enumeration exercises the
+# metadata name instead of the codec-based fallback (the video stream
+# has no title and covers that fallback).
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc=size=160x120:rate=15 \
   -f lavfi -i sine=frequency=440 \
   -f lavfi -i sine=frequency=880 \
   -map 0:v -map 1:a -map 2:a -t 6 \
+  -metadata:s:a:0 title="Sine 440" \
+  -metadata:s:a:1 title="Sine 880" \
   -c:v ffvhuff -c:a pcm_s16le \
   "$media_dir/sample_dual_audio.mkv"
 
@@ -54,17 +59,18 @@ ffmpeg -hide_banner -loglevel error -y \
   -i "$media_dir/subs.srt" -c:s srt \
   "$media_dir/subs_only.mkv"
 
-# Mid-stream resolution change: two h264 segments concatenated at the
-# elementary-stream level, so the decoder hands out frames of a new size
-# halfway through and the video converter must rebuild itself. Both
-# segments are yuv422p so every frame goes through the converter (420p
-# frames bypass it entirely) while the chroma format stays constant.
+# Mid-stream resolution and pixel-format change: two h264 segments
+# concatenated at the elementary-stream level. The first segment is
+# yuv422p, so its frames go through the video converter; the second is
+# yuv420p (and larger), which bypasses the converter entirely - so the
+# run covers both the rebuild on a parameter change and the pass-through
+# path after it.
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc=size=160x120:rate=15 -t 2 \
   -c:v libx264 -pix_fmt yuv422p "$media_dir/seg_a.ts"
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc2=size=320x240:rate=15 -t 2 \
-  -c:v libx264 -pix_fmt yuv422p "$media_dir/seg_b.ts"
+  -c:v libx264 -pix_fmt yuv420p "$media_dir/seg_b.ts"
 cat "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" > "$media_dir/multi_res.ts"
 rm -f "$media_dir/seg_a.ts" "$media_dir/seg_b.ts"
 

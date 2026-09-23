@@ -479,6 +479,12 @@ TEST_CASE("media info reports track layout and codecs") {
   CHECK(info.tracks[1].codec == "pcm_s16le");
   CHECK(info.tracks[2].codec == "pcm_s16le");
 
+  // Names come from stream title metadata; the video stream has none and
+  // falls back to the type-based default.
+  CHECK(info.tracks[0].name == "Video");
+  CHECK(info.tracks[1].name == "Sine 440");
+  CHECK(info.tracks[2].name == "Sine 880");
+
   // Generated with -t 6; allow encoder/rounding slack.
   CHECK(info.duration > std::chrono::milliseconds(5000));
   CHECK(info.duration < std::chrono::milliseconds(8000));
