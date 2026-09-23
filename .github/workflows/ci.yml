@@ -27,7 +27,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev \
+          sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev doctest-dev \
             libavformat-dev libavcodec-dev libavutil-dev \
             libswresample-dev libswscale-dev
 
