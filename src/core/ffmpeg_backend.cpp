@@ -530,6 +530,15 @@ bool FFmpegBackend::play() {
 
       if (!decode_thread_.joinable()) {
         should_stop_decoding_ = false;
+        if (state == PlaybackState::Ended || state == PlaybackState::Error) {
+          // Replay after EOF: rewind the demuxer as well as the clock.
+          // Without this the new loop resumes reading at the old offset,
+          // hits EOF immediately and flips the state back to Ended right
+          // after play() set Playing (seek-bounds media test, TSan run
+          // 35857173070).
+          seek_requested_ = true;
+          seek_target_ = 0;
+        }
         decode_thread_ = std::thread(&FFmpegBackend::decodeLoop, this);
       }
     }
