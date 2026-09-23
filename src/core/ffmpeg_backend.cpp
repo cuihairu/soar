@@ -919,6 +919,12 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
 
     if (decode_thread_running) {
       std::lock_guard<std::mutex> plock(pending_audio_mutex_);
+      if (pending_audio_decoder_) {
+        // The decode loop never saw the previous pending switch (rapid
+        // re-switch overwrites the slot); the slot owns the context, so
+        // free it here or it leaks.
+        avcodec_free_context(&pending_audio_decoder_);
+      }
       pending_audio_decoder_ = new_decoder;
       pending_audio_track_ = id;
       handed_to_decode_thread = true;

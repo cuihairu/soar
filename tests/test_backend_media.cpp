@@ -554,6 +554,48 @@ TEST_CASE("seeking while playing jumps to the target") {
   backend->close();
 }
 
+TEST_CASE("rapid audio switching converges on the final selection") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping rapid switching test");
+    return;
+  }
+
+  // sink declared first: it must outlive the backend.
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+  std::this_thread::sleep_for(300ms);
+  const auto before = backend->position();
+
+  // Hammer the pending-slot handover: switches issued faster than the
+  // decode loop consumes them must leave the final selection in charge.
+  CHECK(backend->selectTrack(soar::TrackType::Audio, 2));
+  CHECK(backend->selectTrack(soar::TrackType::Audio, 1));
+  CHECK(backend->selectTrack(soar::TrackType::Audio, 2));
+  CHECK(backend->selectTrack(soar::TrackType::Audio, 1));
+  CHECK(backend->mediaInfo().selected_audio == 1);
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  // The decode loop settles on the final track and playback continues.
+  bool advanced = false;
+  for (int i = 0; i < 500 && !advanced; ++i) {
+    advanced = backend->position() > before;
+    if (!advanced) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(advanced);
+  CHECK(sink.errors.load() == 0);
+
+  backend->stop();
+  backend->close();
+  CHECK(sink.errors.load() == 0);
+}
+
 TEST_CASE("event sink can be swapped and detached") {
   // sink declared first: it must outlive the backend.
   CountingSink sink_a;
