@@ -16,11 +16,13 @@ esac
 # Dual audio: the workhorse for track switching and lifecycle tests.
 # The audio streams carry titles so the track enumeration exercises the
 # metadata name instead of the codec-based fallback (the video stream
-# has no title and covers that fallback).
+# has no title and covers that fallback). The second stream runs at a
+# different sample rate, so switching to it forces the SDL audio device
+# to reopen with new parameters instead of reusing the open one.
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc=size=160x120:rate=15 \
   -f lavfi -i sine=frequency=440 \
-  -f lavfi -i sine=frequency=880 \
+  -f lavfi -i sine=frequency=880:sample_rate=8000 \
   -map 0:v -map 1:a -map 2:a -t 6 \
   -metadata:s:a:0 title="Sine 440" \
   -metadata:s:a:1 title="Sine 880" \

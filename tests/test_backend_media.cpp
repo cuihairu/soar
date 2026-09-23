@@ -479,11 +479,11 @@ TEST_CASE("media info reports track layout and codecs") {
   CHECK(info.tracks[1].codec == "pcm_s16le");
   CHECK(info.tracks[2].codec == "pcm_s16le");
 
-  // Names come from stream title metadata; the video stream has none and
+  // Titles come from stream metadata; the video stream has none and
   // falls back to the type-based default.
-  CHECK(info.tracks[0].name == "Video");
-  CHECK(info.tracks[1].name == "Sine 440");
-  CHECK(info.tracks[2].name == "Sine 880");
+  CHECK(info.tracks[0].title == "Video");
+  CHECK(info.tracks[1].title == "Sine 440");
+  CHECK(info.tracks[2].title == "Sine 880");
 
   // Generated with -t 6; allow encoder/rounding slack.
   CHECK(info.duration > std::chrono::milliseconds(5000));
@@ -961,8 +961,11 @@ TEST_CASE("pause and repeated play are safe outside the playing state") {
   }
   CHECK(advanced);
 
-  backend->stop();
-  backend->close();
+  // Pause while the decode thread is still running, then let the scope
+  // end: the destructor must take the paused-backend shutdown path
+  // (join the alive thread, no playing clock) just as cleanly.
+  CHECK(backend->pause());
+  CHECK(backend->state() == soar::PlaybackState::Paused);
 }
 
 TEST_CASE("subtitle and attachment streams enumerate; subtitles select") {
