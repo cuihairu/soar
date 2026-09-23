@@ -55,11 +55,6 @@ if(SOAR_ENABLE_FFMPEG)
   endif()
 endif()
 
-if(SOAR_BUILD_TESTS)
-  enable_testing()
-  add_subdirectory(tests)
-endif()
-
 if(SOAR_BUILD_APP)
   add_executable(soar src/app/main.cpp)
   target_compile_features(soar PRIVATE cxx_std_17)
@@ -82,4 +77,11 @@ if(SOAR_BUILD_APP)
       message(STATUS "SDL2 not found; building CLI-only app. (Install via vcpkg: sdl2)")
     endif()
   endif()
+endif()
+
+# Tests come last: the CLI integration tests need the soar app target to
+# exist so they can invoke the freshly built executable.
+if(SOAR_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
 endif()

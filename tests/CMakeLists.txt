@@ -32,3 +32,24 @@ target_compile_features(soar_backend_media_tests PRIVATE cxx_std_17)
 target_link_libraries(soar_backend_media_tests PRIVATE soar::core doctest::doctest)
 
 add_test(NAME soar_backend_media_tests COMMAND soar_backend_media_tests)
+
+# CLI integration tests run the real soar executable as a subprocess and
+# check exit codes / stderr reports for the headless and error paths.
+# They need the app target, so they only exist when the app is built;
+# the FFmpeg availability macro must match the app's own build config.
+if(TARGET soar)
+  add_executable(soar_cli_tests
+    test_cli.cpp
+  )
+
+  target_compile_features(soar_cli_tests PRIVATE cxx_std_17)
+  target_link_libraries(soar_cli_tests PRIVATE doctest::doctest)
+  target_compile_definitions(soar_cli_tests PRIVATE
+    SOAR_CLI_EXECUTABLE="$<TARGET_FILE:soar>"
+  )
+  if(FFMPEG_FOUND)
+    target_compile_definitions(soar_cli_tests PRIVATE SOAR_WITH_FFMPEG=1)
+  endif()
+
+  add_test(NAME soar_cli_tests COMMAND soar_cli_tests)
+endif()
