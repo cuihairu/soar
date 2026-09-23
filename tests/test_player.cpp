@@ -238,6 +238,54 @@ TEST_CASE("player without a backend fails safely") {
   CHECK(player.lastError().empty());
 }
 
+TEST_CASE("backend without a sink drops events safely") {
+  // A raw backend that was never given a sink must simply discard its
+  // events instead of dereferencing a null pointer.
+  auto backend = soar::makeNullBackend();
+  CHECK(backend->open(soar::MediaSource{"asset://sample"}));
+  CHECK(backend->play());
+  CHECK(backend->seek(2s));
+  CHECK(backend->stop());
+  backend->close();
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+}
+
+TEST_CASE("seeking a non-seekable source fails") {
+  Fixture fx;
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://noseek"}));
+
+  const auto info = fx.player.mediaInfo();
+  CHECK_FALSE(info.seekable);
+
+  CHECK_FALSE(fx.player.seek(1s));
+  CHECK_FALSE(fx.player.lastError().empty());
+  CHECK(fx.player.position() == 0ms);
+  CHECK(fx.log.countOf(soar::EventType::Error) == 1);
+
+  // Play/pause and stop are unaffected by seekability.
+  CHECK(fx.player.play());
+  CHECK(fx.player.state() == soar::PlaybackState::Playing);
+  CHECK(fx.player.stop());
+}
+
+TEST_CASE("a failed open reports the error and the player stays usable") {
+  Fixture fx;
+  const auto baseline = fx.log.events().size();
+
+  CHECK_FALSE(fx.player.open(soar::MediaSource{"asset://fail-open.mp4"}));
+  CHECK_FALSE(fx.player.lastError().empty());
+  CHECK(fx.player.state() == soar::PlaybackState::Stopped);
+  CHECK(fx.player.mediaInfo().tracks.empty());
+  CHECK(fx.log.countOf(soar::EventType::Error) == 1);
+  CHECK(fx.log.events().size() > baseline);
+
+  // The same player recovers and opens a good source afterwards.
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  CHECK(fx.player.mediaInfo().duration == 10min);
+  CHECK(fx.player.play());
+  CHECK(fx.player.state() == soar::PlaybackState::Playing);
+}
+
 TEST_CASE("events without a callback are safe") {
   soar::Player player{soar::makeNullBackend()};
   player.setEventCallback(nullptr);

@@ -17,13 +17,20 @@ public:
 
   bool open(const MediaSource& source) override {
     last_ = source;
+    // A "fail-open" URI simulates an unopenable source, so the open
+    // failure path is testable without FFmpeg.
+    if (source.uri.find("fail-open") != std::string::npos) {
+      return fail("open: simulated open failure for '" + source.uri + "'");
+    }
     last_error_.clear();
     opened_ = true;
     state_ = PlaybackState::Stopped;
     position_ = std::chrono::milliseconds(0);
     info_ = MediaInfo{
       /*duration*/ std::chrono::minutes(10),
-      /*seekable*/ true,
+      // A "noseek" URI stands in for an unseekable stream (e.g. live
+      // input), so the seek-rejection path is testable without FFmpeg.
+      /*seekable*/ source.uri.find("noseek") == std::string::npos,
       /*tracks*/
       {
         TrackInfo{0, TrackType::Video, "nullvideo", "", "Video", true},
