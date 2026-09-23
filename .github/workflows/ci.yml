@@ -224,7 +224,10 @@ jobs:
           # The decode threads make gcov's branch counters go negative
           # (GCC bug 68080), which gcovr refuses to parse. Ignore those
           # branch lines; the line data itself is intact.
-          gcovr --root . --filter src --filter include \
+          # Branch coverage is reported alongside line coverage: a file at
+          # 100% line coverage can still take only one side of its
+          # conditions, which is exactly the gap line numbers hide.
+          gcovr --root . --filter src --filter include --branches \
             --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
             --txt coverage.txt --print-summary
           cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
