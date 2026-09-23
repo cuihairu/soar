@@ -425,6 +425,135 @@ TEST_CASE("selectTrack rejects invalid targets without disturbing playback") {
   backend->close();
 }
 
+TEST_CASE("media info reports track layout and codecs") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping media info test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+
+  const auto info = backend->mediaInfo();
+  // The sample maps 0:v (ffvhuff), 1:a and 2:a (both pcm_s16le).
+  REQUIRE(info.tracks.size() == 3);
+
+  int videos = 0;
+  int audios = 0;
+  int subtitles = 0;
+  for (const auto& t : info.tracks) {
+    switch (t.type) {
+      case soar::TrackType::Video: ++videos; break;
+      case soar::TrackType::Audio: ++audios; break;
+      case soar::TrackType::Subtitle: ++subtitles; break;
+    }
+  }
+  CHECK(videos == 1);
+  CHECK(audios == 2);
+  CHECK(subtitles == 0);
+
+  CHECK(info.tracks[0].codec == "ffvhuff");
+  CHECK(info.tracks[1].codec == "pcm_s16le");
+  CHECK(info.tracks[2].codec == "pcm_s16le");
+
+  // Generated with -t 6; allow encoder/rounding slack.
+  CHECK(info.duration > std::chrono::milliseconds(5000));
+  CHECK(info.duration < std::chrono::milliseconds(8000));
+
+  backend->close();
+}
+
+TEST_CASE("tryGetVideoFrame delivers frames during playback") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping video frame test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // The decode thread needs a moment to produce the first frame; the
+  // wait also absorbs sanitizer-slowed runs.
+  soar::FFmpegBackend::DecodedVideoFrame frame;
+  bool got = false;
+  for (int i = 0; i < 1000 && !got; ++i) {
+    got = static_cast<soar::FFmpegBackend*>(backend.get())->tryGetVideoFrame(frame);
+    if (!got) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  REQUIRE(got);
+
+  // The sample is testsrc rendered at 160x120, exported as YUV420P.
+  CHECK(frame.width == 160);
+  CHECK(frame.height == 120);
+  CHECK_FALSE(frame.y.empty());
+  CHECK_FALSE(frame.u.empty());
+  CHECK_FALSE(frame.v.empty());
+  CHECK(frame.pts >= 0ms);
+
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("media without subtitle tracks rejects subtitle selection") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping subtitle rejection test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->mediaInfo().selected_subtitle == -1);
+
+  // Every stream id of the sample is video or audio, so subtitle
+  // selection must fail for all of them.
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Subtitle, 0));
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Subtitle, 1));
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Subtitle, 2));
+  CHECK(backend->mediaInfo().selected_subtitle == -1);
+
+  // Disabling subtitles is still a successful no-op.
+  CHECK(backend->disableSubtitles());
+  CHECK(backend->mediaInfo().selected_subtitle == -1);
+
+  backend->close();
+}
+
+TEST_CASE("seeking while playing jumps to the target") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping live seek test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+  std::this_thread::sleep_for(300ms);
+  REQUIRE(backend->position() < 2000ms);
+
+  // 5500ms cannot be reached by natural playback within the poll budget
+  // (5s at rate 1x from a sub-second start), so reaching it proves the
+  // seek took effect.
+  CHECK(backend->seek(std::chrono::milliseconds(5500)));
+  bool seeked = false;
+  for (int i = 0; i < 500 && !seeked; ++i) {
+    seeked = backend->position() >= std::chrono::milliseconds(5500);
+    if (!seeked) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(seeked);
+
+  backend->stop();
+  backend->close();
+}
+
 TEST_CASE("event sink can be swapped and detached") {
   // sink declared first: it must outlive the backend.
   CountingSink sink_a;
