@@ -105,7 +105,23 @@ cmake --preset default && cmake --build --preset default   # Debug
 ctest --preset default
 ```
 
-核心 API 的单元测试以 `NullBackend` 为测试替身，不需要 FFmpeg/SDL2 即可运行；后端实现的冒烟验证通过 `soar --headless` 完成。
+各套件的分工：
+
+| 套件 | 覆盖内容 | 依赖 |
+|---|---|---|
+| `soar_core_tests` | 核心 API 与播放器状态机 | 无，以 `NullBackend` 为测试替身 |
+| `soar_backend_tests` | FFmpeg 后端并发行为（线程交接、竞态） | 无 FFmpeg 时构建为空壳并跳过 |
+| `soar_backend_media_tests` | FFmpeg 后端真实媒体语义（轨道、seek、EOF、事件） | 需先运行 fixture 脚本 |
+| `soar_cli_tests` | `soar --headless` 子进程冒烟（退出码与报错路径） | 仅当应用目标被构建时注册 |
+
+FFmpeg 媒体测试的媒体文件全部由 `scripts/generate_test_media.sh` 现场合成（纯 lavfi，无网络、无外部素材），脚本打印 `KEY=VALUE` 形式的环境变量供测试定位文件：
+
+```bash
+export $(bash scripts/generate_test_media.sh build-system/testmedia)
+ctest --preset linux-system   # FFmpeg 后端需要系统 FFmpeg 开发库
+```
+
+环境变量未设置时相关用例自动跳过，因此没有媒体 fixture 的平台（如 macOS/Windows CI）套件依然全绿。行覆盖率由 CI 的 coverage job（gcovr）统计，报告输出到该 job 的 summary，并可在构建产物 `coverage-report` 中下载。
 
 ## 许可与合规
 
