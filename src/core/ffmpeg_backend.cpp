@@ -445,6 +445,16 @@ void FFmpegBackend::close() {
       should_stop_decoding_ = false;
     }
 
+    // Drop any audio-track switch that never reached the decode loop.
+    {
+      std::lock_guard<std::mutex> plock(pending_audio_mutex_);
+      if (pending_audio_decoder_) {
+        avcodec_free_context(&pending_audio_decoder_);
+        pending_audio_decoder_ = nullptr;
+      }
+      pending_audio_track_ = -1;
+    }
+
     cleanupDecoders();
     closeContext();
   }
@@ -801,63 +811,14 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
     }
   }
 
-  // For now, only allow switching during initialization
-  // Runtime track switching requires more complex state management
-  if (state != PlaybackState::Stopped) {
-    return fail("selectTrack: track switching only supported when stopped");
+  if (type == TrackType::Video) {
+    return fail("selectTrack: video track switching not supported");
   }
 
-  bool changed = false;
-  std::string error;
-  if (type == TrackType::Video) {
-    error = "selectTrack: video track switching not supported";
-  } else if (type == TrackType::Audio) {
-    {
-      std::lock_guard<std::mutex> lock(decode_mutex_);
-      if (id < 0 || id >= static_cast<TrackId>(format_ctx_->nb_streams)) {
-        error = "selectTrack: unknown audio track id";
-      } else if (!format_ctx_->streams[id] || !format_ctx_->streams[id]->codecpar ||
-                 format_ctx_->streams[id]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
-        error = "selectTrack: unknown audio track id";
-      } else {
-        const AVCodecParameters* codecpar = format_ctx_->streams[id]->codecpar;
-        const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
-        if (!codec) {
-          error = "selectTrack: audio codec not found";
-        } else {
-          AVCodecContext* new_decoder = avcodec_alloc_context3(codec);
-          if (!new_decoder) {
-            error = "selectTrack: failed to allocate audio decoder context";
-          } else {
-            int ret = avcodec_parameters_to_context(new_decoder, codecpar);
-            if (ret < 0) {
-              avcodec_free_context(&new_decoder);
-              error = fmt::format("selectTrack: failed to copy audio params: {}", avError(ret));
-            } else {
-              ret = avcodec_open2(new_decoder, codec, nullptr);
-              if (ret < 0) {
-                avcodec_free_context(&new_decoder);
-                error = fmt::format("selectTrack: failed to open audio decoder: {}", avError(ret));
-              } else {
-                avcodec_free_context(&audio_decoder_);
-                audio_decoder_ = new_decoder;
-                audio_stream_index_ = id;
-                audio_params_.sample_rate = audio_decoder_->sample_rate;
-                audio_params_.channels = audio_decoder_->ch_layout.nb_channels;
-                audio_params_.channel_layout = audio_decoder_->ch_layout.u.mask;
-              }
-            }
-          }
-        }
-      }
-    }
-
-    if (error.empty()) {
-      std::lock_guard<std::mutex> lock(info_mutex_);
-      media_info_.selected_audio = id;
-      changed = true;
-    }
-  } else if (type == TrackType::Subtitle) {
+  // Subtitle selection is metadata only (no subtitle decoder yet), so it is
+  // safe in any state.
+  if (type == TrackType::Subtitle) {
+    std::string error;
     {
       std::lock_guard<std::mutex> lock(decode_mutex_);
       if (id < 0 || id >= static_cast<TrackId>(format_ctx_->nb_streams)) {
@@ -868,22 +829,123 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
       }
     }
 
-    if (error.empty()) {
+    if (!error.empty()) {
+      return fail(std::move(error));
+    }
+
+    {
       std::lock_guard<std::mutex> lock(info_mutex_);
       media_info_.selected_subtitle = id;
-      changed = true;
     }
-  } else {
-    error = "selectTrack: invalid track type";
+    emit(Event{EventType::MediaInfoChanged});
+    return true;
+  }
+
+  // ---- Audio ----
+  // Build the new decoder outside the decode thread; it is never shared
+  // until ownership is handed over below.
+  AVCodecContext* new_decoder = nullptr;
+  std::string error;
+  {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (id < 0 || id >= static_cast<TrackId>(format_ctx_->nb_streams)) {
+      error = "selectTrack: unknown audio track id";
+    } else if (!format_ctx_->streams[id] || !format_ctx_->streams[id]->codecpar ||
+               format_ctx_->streams[id]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
+      error = "selectTrack: unknown audio track id";
+    } else {
+      const AVCodecParameters* codecpar = format_ctx_->streams[id]->codecpar;
+      const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
+      if (!codec) {
+        error = "selectTrack: audio codec not found";
+      } else {
+        new_decoder = avcodec_alloc_context3(codec);
+        if (!new_decoder) {
+          error = "selectTrack: failed to allocate audio decoder context";
+        } else {
+          int ret = avcodec_parameters_to_context(new_decoder, codecpar);
+          if (ret < 0) {
+            avcodec_free_context(&new_decoder);
+            error = fmt::format("selectTrack: failed to copy audio params: {}", avError(ret));
+          } else {
+            ret = avcodec_open2(new_decoder, codec, nullptr);
+            if (ret < 0) {
+              avcodec_free_context(&new_decoder);
+              error = fmt::format("selectTrack: failed to open audio decoder: {}", avError(ret));
+            }
+          }
+        }
+      }
+    }
   }
 
   if (!error.empty()) {
     return fail(std::move(error));
   }
 
-  if (changed) {
-    emit(Event{EventType::MediaInfoChanged});
+  // Hand the decoder over. While a decode thread is running it owns
+  // audio_decoder_, so it must install the new one itself at a packet
+  // boundary; otherwise (Stopped / thread already exited) we can swap it
+  // in directly under decode_mutex_.
+  bool handed_to_decode_thread = false;
+  bool thread_stopped = false;
+  {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    const bool decode_thread_running =
+      decode_thread_.joinable() &&
+      (state == PlaybackState::Playing || state == PlaybackState::Paused);
+
+    if (decode_thread_running) {
+      std::lock_guard<std::mutex> plock(pending_audio_mutex_);
+      pending_audio_decoder_ = new_decoder;
+      pending_audio_track_ = id;
+      handed_to_decode_thread = true;
+    } else {
+      // No live decode thread owns audio_decoder_, but a leftover one
+      // (Ended/Error, or a Stopped-state thread still waiting) must be
+      // joined so the swap below is properly ordered against the loop.
+      if (decode_thread_.joinable()) {
+        should_stop_decoding_ = true;
+        decode_cv_.notify_all();
+        decode_thread_.join();
+        should_stop_decoding_ = false;
+        thread_stopped = true;
+      }
+      avcodec_free_context(&audio_decoder_);
+      audio_decoder_ = new_decoder;
+      audio_stream_index_ = id;
+      audio_params_.sample_rate = audio_decoder_->sample_rate;
+      audio_params_.channels = audio_decoder_->ch_layout.nb_channels;
+      audio_params_.channel_layout = audio_decoder_->ch_layout.u.mask;
+    }
   }
+
+  if (thread_stopped) {
+    // Joining the decode thread means playback is not running anymore,
+    // even if the state snapshot raced ahead of the wind-down.
+    bool notify = false;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (playback_state_ != PlaybackState::Stopped) {
+        playback_state_ = PlaybackState::Stopped;
+        notify = true;
+      }
+    }
+    if (notify) {
+      emit(Event{EventType::StateChanged});
+    }
+  }
+
+  if (handed_to_decode_thread) {
+    // Wake the decode loop: it also applies the pending switch while paused.
+    decode_cv_.notify_all();
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(info_mutex_);
+    media_info_.selected_audio = id;
+  }
+  emit(Event{EventType::MediaInfoChanged});
   return true;
 }
 
@@ -1068,12 +1130,23 @@ void FFmpegBackend::decodeLoop() {
       decode_cv_.wait(lock, [this] {
         return should_stop_decoding_ ||
                playback_state_ == PlaybackState::Playing ||
-               seek_requested_.load();
+               seek_requested_.load() ||
+               audioTrackPending();
       });
     }
 
     if (should_stop_decoding_) {
       break;
+    }
+
+    // Handle a pending audio track switch first, so a queued seek keeps
+    // the final say about the resume position.
+    if (audioTrackPending()) {
+      applyPendingAudioTrack();
+      if (should_stop_decoding_) {
+        break;
+      }
+      continue;
     }
 
     // Handle seek request
@@ -1694,6 +1767,69 @@ bool FFmpegBackend::seekToTimestamp(std::chrono::milliseconds position, bool emi
   }
 
   return true;
+}
+
+//=============================================================================
+// Runtime audio track switching
+//=============================================================================
+
+bool FFmpegBackend::audioTrackPending() {
+  std::lock_guard<std::mutex> lock(pending_audio_mutex_);
+  return pending_audio_track_ >= 0;
+}
+
+void FFmpegBackend::applyPendingAudioTrack() {
+  AVCodecContext* new_decoder = nullptr;
+  int new_track = -1;
+  {
+    std::lock_guard<std::mutex> lock(pending_audio_mutex_);
+    if (pending_audio_track_ < 0) {
+      return;
+    }
+    new_decoder = pending_audio_decoder_;
+    new_track = pending_audio_track_;
+    pending_audio_decoder_ = nullptr;
+    pending_audio_track_ = -1;
+  }
+
+  if (!new_decoder) {
+    return;
+  }
+
+  // Resume at the position playback had reached when the switch was
+  // requested. This runs on the decode thread, which never takes
+  // decode_mutex_ (close() joins while holding it), so seekToTimestamp
+  // executes on its lock-free path by design.
+  std::chrono::milliseconds resume_at{0};
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    resume_at = current_position_;
+  }
+
+  if (!seekToTimestamp(resume_at, /*emit_event=*/false)) {
+    // Keep the current track and decoder; drop the new one.
+    avcodec_free_context(&new_decoder);
+    {
+      std::lock_guard<std::mutex> lock(info_mutex_);
+      media_info_.selected_audio = audio_stream_index_;
+    }
+    fail(fmt::format(
+      "selectTrack: failed to seek new audio track {} to the resume position", new_track));
+    return;
+  }
+
+  avcodec_free_context(&audio_decoder_);
+  audio_decoder_ = new_decoder;
+  audio_stream_index_ = new_track;
+  audio_params_.sample_rate = audio_decoder_->sample_rate;
+  audio_params_.channels = audio_decoder_->ch_layout.nb_channels;
+  audio_params_.channel_layout = audio_decoder_->ch_layout.u.mask;
+
+  {
+    std::lock_guard<std::mutex> lock(info_mutex_);
+    media_info_.selected_audio = new_track;
+  }
+  emit(Event{EventType::MediaInfoChanged});
 }
 
 //=============================================================================

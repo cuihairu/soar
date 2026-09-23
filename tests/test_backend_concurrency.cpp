@@ -177,6 +177,121 @@ TEST_CASE("playback-time control storm stays consistent") {
   CHECK(backend->position() == 0ms);
 }
 
+namespace {
+
+// Returns the audio (and one video) track ids of the test media.
+struct TrackIds {
+  std::vector<soar::TrackId> audio;
+  soar::TrackId video{-1};
+};
+
+TrackIds collectTracks(const soar::MediaInfo& info) {
+  TrackIds ids;
+  for (const auto& t : info.tracks) {
+    if (t.type == soar::TrackType::Audio) {
+      ids.audio.push_back(t.id);
+    } else if (t.type == soar::TrackType::Video) {
+      ids.video = t.id;
+    }
+  }
+  return ids;
+}
+
+// Waits until the decode loop has installed the requested audio track
+// (the switch is applied asynchronously at a packet boundary).
+bool waitSelectedAudio(soar::IBackend& backend, soar::TrackId id) {
+  for (int i = 0; i < 200; ++i) {
+    if (backend.mediaInfo().selected_audio == id) {
+      return true;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  return backend.mediaInfo().selected_audio == id;
+}
+
+} // namespace
+
+TEST_CASE("runtime audio track switching while playing and paused") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping track-switching test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  const auto ids = collectTracks(backend->mediaInfo());
+  REQUIRE(ids.audio.size() >= 2);
+
+  // Unknown ids and video tracks stay rejected.
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Audio, 9999));
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Video, ids.video));
+
+  // Switch while playing: applied asynchronously, playback continues.
+  REQUIRE(backend->play());
+  CHECK(backend->selectTrack(soar::TrackType::Audio, ids.audio[1]));
+  CHECK(waitSelectedAudio(*backend, ids.audio[1]));
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  // Switch while paused: the decode loop applies it from its wait state.
+  CHECK(backend->pause());
+  CHECK(backend->selectTrack(soar::TrackType::Audio, ids.audio[0]));
+  CHECK(waitSelectedAudio(*backend, ids.audio[0]));
+  CHECK(backend->state() == soar::PlaybackState::Paused);
+  CHECK(backend->play());
+
+  // Switching to the track that is already selected succeeds as a no-op.
+  CHECK(backend->selectTrack(soar::TrackType::Audio, ids.audio[0]));
+  CHECK(waitSelectedAudio(*backend, ids.audio[0]));
+
+  CHECK(backend->stop());
+  backend->close();
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+}
+
+TEST_CASE("track-switch storm against control calls is race-free") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping track-switch storm");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  const auto ids = collectTracks(backend->mediaInfo());
+  REQUIRE(ids.audio.size() >= 2);
+  REQUIRE(backend->play());
+
+  // One thread flips between the two audio tracks while the others hammer
+  // the control surface; before the pending-decoder handoff this raced on
+  // audio_decoder_ (and the error-string path aborted on macOS).
+  runStorm(4, 300ms, [&backend, &ids](std::mt19937& rng) {
+    switch (rng() % 5) {
+      case 0: (void)backend->selectTrack(soar::TrackType::Audio, ids.audio[rng() % 2]); break;
+      case 1: (void)backend->pause(); break;
+      case 2: (void)backend->play(); break;
+      case 3: (void)backend->seek(std::chrono::milliseconds(rng() % 3000)); break;
+      default: {
+        const auto s = backend->state();
+        const auto i = backend->mediaInfo().selected_audio;
+        (void)s;
+        (void)i;
+        break;
+      }
+    }
+  });
+
+  // The backend must still shut down cleanly after the storm.
+  const auto final_state = backend->state();
+  CHECK((final_state == soar::PlaybackState::Playing ||
+         final_state == soar::PlaybackState::Paused ||
+         final_state == soar::PlaybackState::Stopped));
+  CHECK(backend->stop());
+  backend->close();
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  CHECK(backend->mediaInfo().tracks.empty());
+}
+
 #else // !SOAR_WITH_FFMPEG
 
 // Keep the test binary meaningful when the FFmpeg backend is not compiled.

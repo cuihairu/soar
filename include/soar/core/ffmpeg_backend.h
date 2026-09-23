@@ -132,6 +132,13 @@ private:
   // outside decode_mutex_ to keep event callbacks re-entrancy safe).
   bool seekToTimestamp(std::chrono::milliseconds position, bool emit_event = true);
 
+  // Runtime audio track switching: selectTrack() hands a freshly built
+  // decoder to the decode thread through pending_audio_*; the decode
+  // thread installs it at a safe point (applyPendingAudioTrack) and seeks
+  // back to the current position so playback continues seamlessly.
+  bool audioTrackPending();
+  void applyPendingAudioTrack();
+
   // Utility functions
   static std::string getCodecName(AVCodecContext* ctx);
   static std::chrono::milliseconds fromAVTimestamp(int64_t pts, int time_base_num, int time_base_den);
@@ -215,6 +222,11 @@ private:
   // Seek operation
   std::atomic<bool> seek_requested_{false};
   std::atomic<std::chrono::milliseconds::rep> seek_target_{0};
+
+  // Pending audio track switch (guarded by pending_audio_mutex_)
+  mutable std::mutex pending_audio_mutex_;
+  AVCodecContext* pending_audio_decoder_{nullptr};
+  int pending_audio_track_{-1};
 };
 
 /**
