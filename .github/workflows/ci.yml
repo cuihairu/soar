@@ -148,5 +148,11 @@ jobs:
       - name: Test
         env:
           TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+          # SDL on the runner connects to PulseAudio, and libpulse's
+          # internal locks are not TSan-instrumented, so its own races get
+          # attributed to whatever thread touches SDL audio (run
+          # 35852616817: pa_mutex_lock vs pa_xmalloc). The dummy driver
+          # keeps every SDLAudio code path exercised without libpulse.
+          SDL_AUDIODRIVER: dummy
         run: ctest --preset linux-system
 
