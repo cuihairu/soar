@@ -248,7 +248,11 @@ jobs:
 
       - name: Coverage report
         run: |
+          # The decode threads make gcov's branch counters go negative
+          # (GCC bug 68080), which gcovr refuses to parse. Ignore those
+          # branch lines; the line data itself is intact.
           gcovr --root . --filter src --filter include \
+            --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
             --txt coverage.txt --print-summary
           cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
 
