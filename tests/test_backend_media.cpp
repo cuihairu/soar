@@ -86,8 +86,9 @@ TEST_CASE("unopened backend: control surface semantics") {
   CHECK(backend->position() == 0ms);
   CHECK(backend->mediaInfo().tracks.empty());
   CHECK_FALSE(backend->mediaInfo().seekable);
+  // tryGetVideoFrame is an FFmpegBackend extension beyond IBackend.
   soar::FFmpegBackend::DecodedVideoFrame frame;
-  CHECK_FALSE(backend->tryGetVideoFrame(frame));
+  CHECK_FALSE(static_cast<soar::FFmpegBackend*>(backend.get())->tryGetVideoFrame(frame));
 
   // open() on a missing file fails (fatal path: state becomes Error) and
   // records the path in the error.
