@@ -266,20 +266,25 @@ bool FFmpegBackend::hasMedia() {
 }
 
 bool FFmpegBackend::fail(std::string message, bool emit_event) {
+  // Keep a private copy for the event: reading last_error_ outside the
+  // lock races with a concurrent fail() rewriting it (TSan: string buffer
+  // delete vs memcpy; on macOS the torn size even caused std::bad_alloc).
+  std::string recorded = std::move(message);
   {
     std::lock_guard<std::mutex> lock(error_mutex_);
-    last_error_ = std::move(message);
+    last_error_ = recorded;
   }
   if (emit_event) {
-    emit(Event{EventType::Error, PlaybackState::Stopped, std::chrono::milliseconds(0), last_error_});
+    emit(Event{EventType::Error, PlaybackState::Stopped, std::chrono::milliseconds(0), recorded});
   }
   return false;
 }
 
 bool FFmpegBackend::fatal(std::string message, bool emit_event) {
+  std::string recorded = std::move(message);
   {
     std::lock_guard<std::mutex> lock(error_mutex_);
-    last_error_ = std::move(message);
+    last_error_ = recorded;
   }
 
   {
@@ -288,7 +293,7 @@ bool FFmpegBackend::fatal(std::string message, bool emit_event) {
   }
 
   if (emit_event) {
-    emit(Event{EventType::Error, PlaybackState::Error, std::chrono::milliseconds(0), last_error_});
+    emit(Event{EventType::Error, PlaybackState::Error, std::chrono::milliseconds(0), recorded});
     emit(Event{EventType::StateChanged});
   }
   return false;
