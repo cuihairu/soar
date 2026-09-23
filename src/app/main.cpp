@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
 
   bool headless = false;
   std::string backend_type = "null";  // default to null backend
-  int uri_index = 1;
+  int uri_index = -1;
 
   // Parse arguments
   for (int i = 1; i < argc; ++i) {
@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (argc <= uri_index) {
+  if (uri_index < 0) {
     print_usage(argv[0]);
     return 2;
   }
