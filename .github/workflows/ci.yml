@@ -19,13 +19,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Ninja (Linux)
+      # Linux builds against system packages (apt) instead of vcpkg:
+      # the vcpkg SDL2 dependency chain (libxcrypt etc.) is slow and
+      # brittle on runners, and system FFmpeg dev headers let us compile
+      # the FFmpeg backend for real.
+      - name: Install system packages (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
-
-      - name: Install FFmpeg dev packages (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libswscale-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswresample-dev libswscale-dev
 
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
@@ -39,13 +43,21 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ninja -y
 
+      # Windows: force the MSVC environment so CMake does not pick the
+      # MinGW gcc from PATH while vcpkg's x64-windows triplet builds
+      # dependencies with MSVC (mixed toolchains fail to link).
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Clone vcpkg
+        if: runner.os != 'Linux'
         shell: bash
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
 
       - name: Bootstrap vcpkg (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os == 'macOS'
         shell: bash
         run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
@@ -55,13 +67,28 @@ jobs:
         run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 
       - name: Configure
+        if: runner.os != 'Linux'
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         run: cmake --preset default
 
-      - name: Build
+      - name: Configure (Linux system packages)
+        if: runner.os == 'Linux'
+        run: cmake --preset linux-system
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --build --preset linux-system
+
+      - name: Build (macOS/Windows)
+        if: runner.os != 'Linux'
         run: cmake --build --preset default
 
-      - name: Test
+      - name: Test (Linux)
+        if: runner.os == 'Linux'
+        run: ctest --preset linux-system
+
+      - name: Test (macOS/Windows)
+        if: runner.os != 'Linux'
         run: ctest --preset default
 

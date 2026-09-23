@@ -18,10 +18,11 @@
 
 使用 CMake Presets：
 
-- Debug: `cmake --preset default && cmake --build --preset default`
-- Release: `cmake --preset release && cmake --build --preset release`
+- Debug（vcpkg）：`cmake --preset default && cmake --build --preset default`
+- Release（vcpkg）：`cmake --preset release && cmake --build --preset release`
+- Linux 系统包（不依赖 vcpkg，apt 安装 libsdl2-dev/libfmt-dev/ffmpeg 开发头）：`cmake --preset linux-system && cmake --build --preset linux-system`，测试用 `ctest --preset linux-system`
 
-输出目录：`build/`
+输出目录：`build/`（linux-system 为 `build-system/`）
 
 ## 3) 运行
 

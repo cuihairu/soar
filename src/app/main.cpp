@@ -1,6 +1,8 @@
 #include "soar/core/player.h"
 
-#include <fmt/core.h>
+// fmt/format.h (not core.h): fmt::print lives here across the fmt 9.x
+// (system packages) and 11.x (vcpkg) range we build against.
+#include <fmt/format.h>
 
 #ifdef SOAR_WITH_FFMPEG
 #  include "soar/core/ffmpeg_backend.h"

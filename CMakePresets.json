@@ -17,6 +17,15 @@
       }
     },
     {
+      "name": "linux-system",
+      "displayName": "Linux system packages (apt: libsdl2-dev, libfmt-dev, ffmpeg dev)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-system",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
       "name": "release",
       "displayName": "Release (vcpkg toolchain via VCPKG_ROOT)",
       "inherits": "default",
@@ -31,6 +40,10 @@
       "configurePreset": "default"
     },
     {
+      "name": "linux-system",
+      "configurePreset": "linux-system"
+    },
+    {
       "name": "release",
       "configurePreset": "release"
     }
@@ -39,6 +52,13 @@
     {
       "name": "default",
       "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-system",
+      "configurePreset": "linux-system",
       "output": {
         "outputOnFailure": true
       }

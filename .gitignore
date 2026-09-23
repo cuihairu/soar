@@ -42,6 +42,7 @@
 
 # CMake
 /build/
+/build-*/
 /cmake-build-*/
 CMakeUserPresets.json
 
