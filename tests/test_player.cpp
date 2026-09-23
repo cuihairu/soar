@@ -246,3 +246,90 @@ TEST_CASE("events without a callback are safe") {
   CHECK(player.play());
   CHECK(player.stop());
 }
+
+TEST_CASE("close and reopen rebuild media info and reset selection") {
+  Fixture fx;
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  REQUIRE(fx.player.selectTrack(soar::TrackType::Subtitle, 2));
+  REQUIRE(fx.player.mediaInfo().selected_subtitle == 2);
+
+  fx.player.close();
+  const auto clears = fx.log.countOf(soar::EventType::MediaInfoChanged);
+
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  const auto info = fx.player.mediaInfo();
+  CHECK(info.duration == 10min);
+  CHECK(info.selected_video == 0);
+  CHECK(info.selected_audio == 1);
+  CHECK(info.selected_subtitle == -1); // selection does not survive reopen
+
+  // close() and the fresh open() each announced the (reset) media info.
+  CHECK(fx.log.countOf(soar::EventType::MediaInfoChanged) >= clears + 1);
+
+  // The reopened media plays from the start.
+  CHECK(fx.player.play());
+  CHECK(fx.player.state() == soar::PlaybackState::Playing);
+}
+
+TEST_CASE("seeking from Ended to the lower bound resumes to Paused") {
+  Fixture fx;
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  REQUIRE(fx.player.seek(fx.player.mediaInfo().duration));
+  REQUIRE(fx.player.state() == soar::PlaybackState::Ended);
+
+  CHECK(fx.player.seek(0ms));
+  CHECK(fx.player.position() == 0ms);
+  CHECK(fx.player.state() == soar::PlaybackState::Paused);
+}
+
+TEST_CASE("seeking while paused stays paused") {
+  Fixture fx;
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  REQUIRE(fx.player.pause());
+
+  CHECK(fx.player.seek(5s));
+  CHECK(fx.player.position() == 5s);
+  CHECK(fx.player.state() == soar::PlaybackState::Paused);
+}
+
+TEST_CASE("selectTrack while playing is idempotent and keeps playing") {
+  Fixture fx;
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  REQUIRE(fx.player.play());
+
+  CHECK(fx.player.selectTrack(soar::TrackType::Audio, 1));
+  CHECK(fx.player.state() == soar::PlaybackState::Playing);
+  CHECK(fx.player.mediaInfo().selected_audio == 1);
+
+  // Selecting the same track again succeeds and re-announces the info.
+  const auto before = fx.log.countOf(soar::EventType::MediaInfoChanged);
+  CHECK(fx.player.selectTrack(soar::TrackType::Audio, 1));
+  CHECK(fx.player.state() == soar::PlaybackState::Playing);
+  CHECK(fx.log.countOf(soar::EventType::MediaInfoChanged) == before + 1);
+}
+
+TEST_CASE("rebinding the event callback redirects delivery") {
+  EventLog log_a;
+  EventLog log_b;
+  soar::Player player{soar::makeNullBackend()};
+
+  log_a.attach(player);
+  CHECK_FALSE(player.play()); // unopened -> error event reaches log_a only
+  CHECK(log_a.countOf(soar::EventType::Error) == 1);
+  CHECK(log_b.events().empty());
+
+  // Rebinding redirects delivery to the new callback only.
+  log_b.attach(player);
+
+  const auto frozen_a = log_a.events().size();
+  CHECK_FALSE(player.pause());
+  CHECK(log_b.countOf(soar::EventType::Error) >= 1);
+  CHECK(log_a.events().size() == frozen_a);
+
+  // Detaching the callback stops delivery entirely while calls still fail.
+  player.setEventCallback(nullptr);
+  const auto frozen_b = log_b.events().size();
+  CHECK_FALSE(player.stop());
+  CHECK(log_b.events().size() == frozen_b);
+  CHECK(log_a.events().size() == frozen_a);
+}
