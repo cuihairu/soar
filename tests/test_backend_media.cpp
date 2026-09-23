@@ -932,10 +932,12 @@ TEST_CASE("pause and repeated play are safe outside the playing state") {
   auto backend = soar::makeFFmpegBackend();
   REQUIRE(backend->open(soar::MediaSource{media}));
 
-  // Pausing before anything plays: a success that keeps the state at
-  // Stopped (there is no clock to freeze yet).
+  // Pausing before anything plays: pause() unconditionally enters the
+  // Paused state (only an explicit stop() returns to Stopped), and the
+  // clock starts from position 0 once play() runs.
   CHECK(backend->pause());
-  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  CHECK(backend->state() == soar::PlaybackState::Paused);
+  CHECK(backend->position() == 0ms);
 
   // A repeated play() while already playing stays playing and keeps the
   // position moving instead of restarting the media.
