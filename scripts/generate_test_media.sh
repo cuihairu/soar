@@ -54,7 +54,20 @@ ffmpeg -hide_banner -loglevel error -y \
   -i "$media_dir/subs.srt" -c:s srt \
   "$media_dir/subs_only.mkv"
 
+# Mid-stream resolution change: two h264 segments concatenated at the
+# elementary-stream level, so the decoder hands out frames of a new size
+# halfway through and the video converter must rebuild itself.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 -t 2 \
+  -c:v libx264 -pix_fmt yuv420p "$media_dir/seg_a.ts"
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc2=size=320x240:rate=15 -t 2 \
+  -c:v libx264 -pix_fmt yuv420p "$media_dir/seg_b.ts"
+cat "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" > "$media_dir/multi_res.ts"
+rm -f "$media_dir/seg_a.ts" "$media_dir/seg_b.ts"
+
 echo "SOAR_TEST_MEDIA=$media_dir/sample_dual_audio.mkv"
 echo "SOAR_TEST_AUDIO_ONLY=$media_dir/audio_only.mkv"
 echo "SOAR_TEST_SUBS_MEDIA=$media_dir/subs_media.mkv"
 echo "SOAR_TEST_SUBS_ONLY=$media_dir/subs_only.mkv"
+echo "SOAR_TEST_MULTI_RES=$media_dir/multi_res.ts"

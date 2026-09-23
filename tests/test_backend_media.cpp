@@ -413,7 +413,9 @@ TEST_CASE("selectTrack rejects invalid targets without disturbing playback") {
   CHECK(backend->lastError().find("video") != std::string::npos);
   CHECK_FALSE(backend->selectTrack(soar::TrackType::Audio, 99));
   CHECK_FALSE(backend->selectTrack(soar::TrackType::Subtitle, 99));
-  CHECK(sink.errors.load() >= 3);
+  // Audio id 0 exists but is the video stream: a type/id mismatch.
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Audio, 0));
+  CHECK(sink.errors.load() >= 4);
 
   // The failed attempts leave playback untouched.
   CHECK(backend->state() == soar::PlaybackState::Playing);
@@ -929,6 +931,38 @@ TEST_CASE("destroying the backend while playing stops the decode thread") {
     std::this_thread::sleep_for(300ms);
     CHECK(backend->state() == soar::PlaybackState::Playing);
   } // destructor must join the live decode thread without hanging
+}
+
+TEST_CASE("a mid-stream resolution change rebuilds the video converter") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_MULTI_RES", media)) {
+    MESSAGE("SOAR_TEST_MULTI_RES not set; skipping resolution change test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // The first half is 160x120; the second half is 320x240 (the h264
+  // stream swaps SPS mid-flight). The converter must rebuild for the
+  // new geometry instead of stalling or handing out stale-size frames.
+  auto* ff = static_cast<soar::FFmpegBackend*>(backend.get());
+  soar::FFmpegBackend::DecodedVideoFrame frame;
+  bool saw_first = false;
+  bool saw_second = false;
+  for (int i = 0; i < 800 && !saw_second; ++i) {
+    if (ff->tryGetVideoFrame(frame)) {
+      saw_first = saw_first || frame.width == 160;
+      saw_second = frame.width == 320 && frame.height == 240;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  CHECK(saw_first);
+  CHECK(saw_second);
+
+  backend->stop();
+  backend->close();
 }
 
 #else // !SOAR_WITH_FFMPEG
