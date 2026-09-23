@@ -195,6 +195,125 @@ TEST_CASE("subtitles default to off and disableSubtitles is metadata-only") {
   backend->close();
 }
 
+TEST_CASE("seek clamps to media bounds and Ended recovers via play") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping seek bounds test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  const auto duration = backend->mediaInfo().duration;
+  REQUIRE(duration > 0ms);
+
+  // Out-of-range targets clamp into [0, duration]. From the stopped state
+  // the seek executes synchronously on the calling thread.
+  CHECK(backend->seek(-5000ms));
+  CHECK(backend->position() == 0ms);
+
+  // Seeking to the end lands exactly on the last timestamp state.
+  CHECK(backend->seek(duration + 60000ms));
+  CHECK(backend->position() == duration);
+  CHECK(backend->state() == soar::PlaybackState::Ended);
+
+  // Playing again restarts the media from the beginning.
+  CHECK(backend->play());
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+  CHECK(backend->position() < 500ms);
+
+  // The full EOF loop while playing: seek to the end, let the decode
+  // thread run out of data, observe Ended, then restart.
+  REQUIRE(backend->seek(duration));
+  bool ended = false;
+  for (int i = 0; i < 500 && !ended; ++i) {
+    ended = backend->state() == soar::PlaybackState::Ended;
+    if (!ended) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(ended);
+
+  CHECK(backend->play());
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+  CHECK(backend->position() < 500ms);
+
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("setRate during playback keeps the clock moving forward") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping setRate test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+  std::this_thread::sleep_for(200ms);
+  const auto before = backend->position();
+
+  // Doubling the speed re-bases the clock; position keeps advancing and
+  // never jumps backwards.
+  CHECK(backend->setRate(2.0));
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+  std::this_thread::sleep_for(300ms);
+  const auto faster = backend->position();
+  CHECK(faster > before);
+
+  // Halving again stays monotonic; an invalid rate is rejected without
+  // disturbing playback.
+  CHECK(backend->setRate(0.5));
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+  bool advanced = false;
+  for (int i = 0; i < 300 && !advanced; ++i) {
+    advanced = backend->position() > faster;
+    if (!advanced) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(advanced);
+  CHECK_FALSE(backend->setRate(0.0));
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("event sink can be swapped and detached") {
+  // sink declared first: it must outlive the backend.
+  CountingSink sink_a;
+  CountingSink sink_b;
+  auto backend = soar::makeFFmpegBackend();
+
+  backend->setEventSink(&sink_a);
+  CHECK_FALSE(backend->play()); // error event -> sink_a
+  CHECK(sink_a.errors.load() >= 1);
+  CHECK(sink_b.errors.load() == 0);
+
+  // Rebinding moves delivery to the new sink only.
+  backend->setEventSink(&sink_b);
+  CHECK_FALSE(backend->pause());
+  CHECK(sink_b.errors.load() >= 1);
+  const auto a_frozen = sink_a.errors.load();
+  CHECK_FALSE(backend->stop());
+  CHECK(sink_b.errors.load() > 1);
+  CHECK(sink_a.errors.load() == a_frozen);
+
+  // Detaching stops delivery entirely: a later failure still fails the
+  // call, but no event reaches either sink.
+  const auto b_before = sink_b.errors.load();
+  backend->setEventSink(nullptr);
+  CHECK_FALSE(backend->seek(100ms));
+  CHECK(sink_b.errors.load() == b_before);
+  CHECK(sink_a.errors.load() == a_frozen);
+  CHECK(b_before >= 2);
+
+  backend->close();
+}
+
 #else // !SOAR_WITH_FFMPEG
 
 // Keep the test binary meaningful when the FFmpeg backend is not compiled.
