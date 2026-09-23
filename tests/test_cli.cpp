@@ -35,14 +35,25 @@ struct RunResult {
 };
 
 RunResult runCli(const std::vector<std::string>& args) {
+  // Windows _popen routes through `cmd.exe /C`, which (for lines with more
+  // than two quotes) strips the first and the last quote character:
+  // `"exe" "a" "b"` becomes `exe" "a" "b` and fails to run at all. Quoting
+  // only the executable survives the strip in both cases — a path without
+  // spaces loses both quotes (`exe a b`), a path with spaces keeps them
+  // (two quotes, whitespace between, executable name). The arguments used
+  // by these tests are simple tokens without spaces or quotes.
   std::string cmd(1, '"');
   cmd += SOAR_CLI_EXECUTABLE;
   cmd += '"';
   for (const auto& arg : args) {
     cmd += ' ';
+#ifdef _WIN32
+    cmd += arg;
+#else
     cmd += '"';
     cmd += arg;
     cmd += '"';
+#endif
   }
   cmd += " 2>&1"; // merge stderr into the captured stream
 
