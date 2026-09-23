@@ -215,6 +215,11 @@ FFmpegBackend::FFmpegBackend() {
 }
 
 FFmpegBackend::~FFmpegBackend() {
+  // Detach the event sink before close() emits: the sink is usually owned
+  // by whoever is destroying us and may already be destroyed (destroyed
+  // members are 'pure virtual method called' waiting to happen).
+  setEventSink(nullptr);
+
   close();
 
   // Ensure decode thread is stopped

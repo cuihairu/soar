@@ -57,8 +57,10 @@ struct CountingSink : soar::IEventSink {
 } // namespace
 
 TEST_CASE("unopened backend: control surface semantics") {
-  auto backend = soar::makeFFmpegBackend();
+  // sink declared first: it must outlive the backend, whose destructor
+  // still emits close events.
   CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
   backend->setEventSink(&sink);
 
   // Every control call on an unopened backend fails and reports why.
@@ -110,8 +112,10 @@ TEST_CASE("media lifecycle drives events, position and seek") {
     return;
   }
 
-  auto backend = soar::makeFFmpegBackend();
+  // sink declared first: it must outlive the backend, whose destructor
+  // still emits close events.
   CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
   backend->setEventSink(&sink);
 
   REQUIRE(backend->open(soar::MediaSource{media}));
