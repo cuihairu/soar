@@ -129,6 +129,20 @@ TEST_CASE("seek clamps to the media duration") {
   CHECK(fx.player.state() == soar::PlaybackState::Ended);
 }
 
+TEST_CASE("seeking to the end while already Ended does not re-announce the state") {
+  Fixture fx;
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  REQUIRE(fx.player.seek(fx.player.mediaInfo().duration));
+  REQUIRE(fx.player.state() == soar::PlaybackState::Ended);
+
+  const auto announced = fx.log.countOf(soar::EventType::StateChanged);
+  CHECK(fx.player.seek(fx.player.mediaInfo().duration));
+  CHECK(fx.player.position() == 10min);
+  CHECK(fx.player.state() == soar::PlaybackState::Ended);
+  // The state did not change, so no additional StateChanged may be emitted.
+  CHECK(fx.log.countOf(soar::EventType::StateChanged) == announced);
+}
+
 TEST_CASE("seek away from the end resumes to Paused") {
   Fixture fx;
   REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
@@ -231,7 +245,16 @@ TEST_CASE("player without a backend fails safely") {
 
   CHECK_FALSE(player.open(soar::MediaSource{"asset://sample"}));
   CHECK_FALSE(player.play());
+  CHECK_FALSE(player.pause());
+  CHECK_FALSE(player.stop());
   CHECK_FALSE(player.seek(1s));
+  CHECK_FALSE(player.setRate(1.5));
+  CHECK_FALSE(player.setVolume(0.5));
+  CHECK_FALSE(player.setMuted(true));
+  CHECK_FALSE(player.selectTrack(soar::TrackType::Audio, 1));
+  CHECK_FALSE(player.disableSubtitles());
+  player.close(); // no backend: must be a no-op, not a crash
+
   CHECK(player.state() == soar::PlaybackState::Stopped);
   CHECK(player.mediaInfo().tracks.empty());
   CHECK(player.position() == 0ms);
