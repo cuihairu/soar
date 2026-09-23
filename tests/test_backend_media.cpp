@@ -222,6 +222,18 @@ TEST_CASE("seek clamps to media bounds and Ended recovers via play") {
   CHECK(backend->position() == duration);
   CHECK(backend->state() == soar::PlaybackState::Ended);
 
+  // Seeking to the end again while already Ended keeps the state: the
+  // Ended transition fires on the change, not on every seek.
+  CHECK(backend->seek(duration));
+  CHECK(backend->position() == duration);
+  CHECK(backend->state() == soar::PlaybackState::Ended);
+
+  // Seeking away from the end synchronously resumes to Paused, so the
+  // play() below continues from the seek target instead of restarting.
+  CHECK(backend->seek(0ms));
+  CHECK(backend->position() == 0ms);
+  CHECK(backend->state() == soar::PlaybackState::Paused);
+
   // Playing again restarts the media from the beginning.
   CHECK(backend->play());
   CHECK(backend->state() == soar::PlaybackState::Playing);
@@ -415,7 +427,10 @@ TEST_CASE("selectTrack rejects invalid targets without disturbing playback") {
   CHECK_FALSE(backend->selectTrack(soar::TrackType::Subtitle, 99));
   // Audio id 0 exists but is the video stream: a type/id mismatch.
   CHECK_FALSE(backend->selectTrack(soar::TrackType::Audio, 0));
-  CHECK(sink.errors.load() >= 4);
+  // Negative ids are rejected by the range guard, not wrapped around.
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Audio, -1));
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Subtitle, -1));
+  CHECK(sink.errors.load() >= 6);
 
   // The failed attempts leave playback untouched.
   CHECK(backend->state() == soar::PlaybackState::Playing);
@@ -848,6 +863,97 @@ TEST_CASE("natural EOF keeps the thread joinable for seek and track switch") {
   CHECK(backend->mediaInfo().selected_audio == other_audio);
   CHECK(backend->lastError().empty());
 
+  backend->close();
+}
+
+TEST_CASE("stop after natural EOF joins the finished thread and resets") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping EOF stop test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  bool ended = false;
+  for (int i = 0; i < 120 && !ended; ++i) {
+    ended = backend->state() == soar::PlaybackState::Ended;
+    if (!ended) {
+      std::this_thread::sleep_for(100ms);
+    }
+  }
+  REQUIRE(ended);
+
+  // stop() while the decode thread has already run out of data at EOF:
+  // the thread is not joinable-active but is still joinable, and stop
+  // must reap it and reset to Stopped without hanging or erroring.
+  CHECK(backend->stop());
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  CHECK(backend->position() == 0ms);
+  CHECK(backend->lastError().empty());
+
+  // Reopening proves the reap left no residue behind.
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  CHECK(backend->mediaInfo().duration > 0ms);
+
+  backend->close();
+}
+
+TEST_CASE("closing without ever playing leaves nothing to join") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping unplayed close test");
+    return;
+  }
+
+  {
+    auto backend = soar::makeFFmpegBackend();
+    REQUIRE(backend->open(soar::MediaSource{media}));
+    CHECK(backend->state() == soar::PlaybackState::Stopped);
+
+    // Straight to close() without play(): the decode thread was never
+    // started, so close() must skip the join path entirely.
+    backend->close();
+    CHECK(backend->state() == soar::PlaybackState::Stopped);
+    CHECK(backend->mediaInfo().tracks.empty());
+  }
+}
+
+TEST_CASE("pause and repeated play are safe outside the playing state") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping pause/replay test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+
+  // Pausing before anything plays: a success that keeps the state at
+  // Stopped (there is no clock to freeze yet).
+  CHECK(backend->pause());
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+
+  // A repeated play() while already playing stays playing and keeps the
+  // position moving instead of restarting the media.
+  REQUIRE(backend->play());
+  std::this_thread::sleep_for(200ms);
+  CHECK(backend->play());
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  bool advanced = false;
+  for (int i = 0; i < 200 && !advanced; ++i) {
+    advanced = backend->position() > 0ms;
+    if (!advanced) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(advanced);
+
+  backend->stop();
   backend->close();
 }
 
