@@ -618,6 +618,12 @@ bool FFmpegBackend::stop() {
       decode_thread_.join();
       should_stop_decoding_ = false;
     }
+    // Flush the decoders under this lock: close() and the open() failure
+    // path free them under decode_mutex_, so flushing outside the lock
+    // dereferenced freed contexts when a concurrent close() won the race
+    // (ASan run 35858058702, open/close storm: avcodec_flush_buffers on
+    // freed memory).
+    flushDecoders();
   }
 
   if (sdl_audio_) {
@@ -636,8 +642,6 @@ bool FFmpegBackend::stop() {
     last_emitted_position_ = std::chrono::milliseconds(0);
     clock_origin_ = std::chrono::steady_clock::time_point{};
   }
-
-  flushDecoders();
 
   emit(Event{EventType::StateChanged});
   emit(Event{EventType::PositionChanged});
