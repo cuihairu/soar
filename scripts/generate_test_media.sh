@@ -56,13 +56,15 @@ ffmpeg -hide_banner -loglevel error -y \
 
 # Mid-stream resolution change: two h264 segments concatenated at the
 # elementary-stream level, so the decoder hands out frames of a new size
-# halfway through and the video converter must rebuild itself.
+# halfway through and the video converter must rebuild itself. Both
+# segments are yuv422p so every frame goes through the converter (420p
+# frames bypass it entirely) while the chroma format stays constant.
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc=size=160x120:rate=15 -t 2 \
-  -c:v libx264 -pix_fmt yuv420p "$media_dir/seg_a.ts"
+  -c:v libx264 -pix_fmt yuv422p "$media_dir/seg_a.ts"
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc2=size=320x240:rate=15 -t 2 \
-  -c:v libx264 -pix_fmt yuv420p "$media_dir/seg_b.ts"
+  -c:v libx264 -pix_fmt yuv422p "$media_dir/seg_b.ts"
 cat "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" > "$media_dir/multi_res.ts"
 rm -f "$media_dir/seg_a.ts" "$media_dir/seg_b.ts"
 
