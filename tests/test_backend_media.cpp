@@ -282,6 +282,149 @@ TEST_CASE("setRate during playback keeps the clock moving forward") {
   backend->close();
 }
 
+TEST_CASE("runtime audio switching continues playback seamlessly") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping audio switching test");
+    return;
+  }
+
+  // sink declared first: it must outlive the backend.
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  // The dual-audio sample maps stream 0 to video and 1/2 to audio.
+  REQUIRE(backend->mediaInfo().selected_audio == 1);
+
+  REQUIRE(backend->play());
+  std::this_thread::sleep_for(300ms);
+  const auto before_switch = backend->position();
+  REQUIRE(before_switch > 0ms);
+
+  // Switching the audio track while playing must not disturb the clock:
+  // the decode thread hands over at a safe point and seeks back to the
+  // current position.
+  CHECK(backend->selectTrack(soar::TrackType::Audio, 2));
+  bool switched = false;
+  for (int i = 0; i < 500 && !switched; ++i) {
+    switched = backend->mediaInfo().selected_audio == 2;
+    if (!switched) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(switched);
+  CHECK(sink.errors.load() == 0);
+
+  // Playback continues past the switch point (no reset, no freeze).
+  bool advanced = false;
+  for (int i = 0; i < 500 && !advanced; ++i) {
+    advanced = backend->position() > before_switch;
+    if (!advanced) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(advanced);
+
+  // The same handover works while paused, and keeps the paused state.
+  CHECK(backend->pause());
+  const auto frozen = backend->position();
+  CHECK(backend->selectTrack(soar::TrackType::Audio, 1));
+  bool switched_back = false;
+  for (int i = 0; i < 500 && !switched_back; ++i) {
+    switched_back = backend->mediaInfo().selected_audio == 1;
+    if (!switched_back) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(switched_back);
+  CHECK(backend->state() == soar::PlaybackState::Paused);
+  std::this_thread::sleep_for(100ms);
+  CHECK(backend->position() == frozen);
+
+  // And playback resumes from where it was.
+  CHECK(backend->play());
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  backend->stop();
+  backend->close();
+  // Neither the playing switch, the paused switch, nor the resume
+  // produced an error event.
+  CHECK(sink.errors.load() == 0);
+}
+
+TEST_CASE("reopening without an explicit close restarts cleanly") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping reopen test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+  std::this_thread::sleep_for(200ms);
+  REQUIRE(backend->position() > 0ms);
+
+  // open() closes any existing media first; the result is a fresh,
+  // stopped session on the same backend instance.
+  CHECK(backend->open(soar::MediaSource{media}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  CHECK(backend->position() == 0ms);
+
+  // The fresh session plays.
+  CHECK(backend->play());
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+  bool advanced = false;
+  for (int i = 0; i < 200 && !advanced; ++i) {
+    advanced = backend->position() > 0ms;
+    if (!advanced) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(advanced);
+
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("selectTrack rejects invalid targets without disturbing playback") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping selectTrack rejection test");
+    return;
+  }
+
+  // sink declared first: it must outlive the backend.
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Video, 0));
+  CHECK(backend->lastError().find("video") != std::string::npos);
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Audio, 99));
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Subtitle, 99));
+  CHECK(sink.errors.load() >= 3);
+
+  // The failed attempts leave playback untouched.
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+  bool advanced = false;
+  for (int i = 0; i < 200 && !advanced; ++i) {
+    advanced = backend->position() > 0ms;
+    if (!advanced) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(advanced);
+
+  backend->stop();
+  backend->close();
+}
+
 TEST_CASE("event sink can be swapped and detached") {
   // sink declared first: it must outlive the backend.
   CountingSink sink_a;
