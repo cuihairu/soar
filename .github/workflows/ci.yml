@@ -228,6 +228,7 @@ jobs:
           # 100% line coverage can still take only one side of its
           # conditions, which is exactly the gap line numbers hide.
           gcovr --root . --filter src --filter include --branches \
+            --exclude-throw-branches \
             --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
             --txt coverage.txt --print-summary
           cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
