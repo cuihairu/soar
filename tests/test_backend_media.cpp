@@ -596,6 +596,109 @@ TEST_CASE("rapid audio switching converges on the final selection") {
   CHECK(sink.errors.load() == 0);
 }
 
+TEST_CASE("backend recovers from a failed open") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping failed-open recovery test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+
+  CHECK_FALSE(backend->open(soar::MediaSource{"/definitely/missing/file.mp4"}));
+  CHECK(backend->state() == soar::PlaybackState::Error);
+
+  // The same instance must open and play real media afterwards.
+  CHECK(backend->open(soar::MediaSource{media}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  CHECK_FALSE(backend->mediaInfo().tracks.empty());
+  CHECK(backend->play());
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  bool advanced = false;
+  for (int i = 0; i < 200 && !advanced; ++i) {
+    advanced = backend->position() > 0ms;
+    if (!advanced) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(advanced);
+
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("serial open/close cycles stay clean") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping open/close cycle test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    INFO("cycle ", cycle);
+    CHECK(backend->open(soar::MediaSource{media}));
+    CHECK(backend->state() == soar::PlaybackState::Stopped);
+    CHECK(backend->position() == 0ms);
+    const auto duration = backend->mediaInfo().duration;
+    CHECK(duration > 0ms);
+
+    CHECK(backend->play());
+    bool advanced = false;
+    for (int i = 0; i < 200 && !advanced; ++i) {
+      advanced = backend->position() > 0ms;
+      if (!advanced) {
+        std::this_thread::sleep_for(10ms);
+      }
+    }
+    CHECK(advanced);
+
+    CHECK(backend->stop());
+    backend->close();
+    CHECK(backend->mediaInfo().tracks.empty());
+    CHECK(backend->position() == 0ms);
+    CHECK(backend->state() == soar::PlaybackState::Stopped);
+  }
+}
+
+TEST_CASE("stop is idempotent and play after stop restarts") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping stop idempotence test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+  std::this_thread::sleep_for(250ms);
+  REQUIRE(backend->position() > 0ms);
+
+  CHECK(backend->stop());
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  CHECK(backend->position() == 0ms);
+
+  // Stopping an already-stopped backend is a success, not an error.
+  CHECK(backend->stop());
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+
+  // And playback restarts cleanly from the beginning.
+  CHECK(backend->play());
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+  bool advanced = false;
+  for (int i = 0; i < 200 && !advanced; ++i) {
+    advanced = backend->position() > 0ms;
+    if (!advanced) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(advanced);
+
+  backend->stop();
+  backend->close();
+}
+
 TEST_CASE("event sink can be swapped and detached") {
   // sink declared first: it must outlive the backend.
   CountingSink sink_a;

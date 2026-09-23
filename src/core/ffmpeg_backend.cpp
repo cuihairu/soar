@@ -624,6 +624,12 @@ bool FFmpegBackend::stop() {
     // (ASan run 35858058702, open/close storm: avcodec_flush_buffers on
     // freed memory).
     flushDecoders();
+
+    // Rewind the demuxer to the start as well: stop() means "back to the
+    // beginning" (matching NullBackend). Without this, the next play()
+    // would resume reading at the old offset and jump the position back
+    // into the middle of the media.
+    (void)seekToTimestamp(std::chrono::milliseconds(0), /*emit_event=*/false);
   }
 
   if (sdl_audio_) {
