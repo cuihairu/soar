@@ -20,3 +20,15 @@ target_compile_features(soar_backend_tests PRIVATE cxx_std_17)
 target_link_libraries(soar_backend_tests PRIVATE soar::core doctest::doctest)
 
 add_test(NAME soar_backend_tests COMMAND soar_backend_tests)
+
+# Functional (semantic) tests for the FFmpeg backend public surface:
+# event delivery, unopened-state control calls, media lifecycle. Builds
+# as an empty shell without SOAR_WITH_FFMPEG so the test always exists.
+add_executable(soar_backend_media_tests
+  test_backend_media.cpp
+)
+
+target_compile_features(soar_backend_media_tests PRIVATE cxx_std_17)
+target_link_libraries(soar_backend_media_tests PRIVATE soar::core doctest::doctest)
+
+add_test(NAME soar_backend_media_tests COMMAND soar_backend_media_tests)
