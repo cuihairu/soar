@@ -202,3 +202,59 @@ jobs:
           SDL_AUDIODRIVER: dummy
         run: ctest --preset linux-system
 
+  coverage:
+    # Line-coverage job: builds with GCC --coverage and reports src/ +
+    # include/ coverage via gcovr. Informational only (no fail-under gate).
+    # The FFmpeg backend only compiles where the libav* dev headers exist,
+    # so this Linux job is the one place its coverage numbers are visible.
+    name: coverage (ubuntu)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build gcovr libsdl2-dev libfmt-dev doctest-dev ffmpeg \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswresample-dev libswscale-dev
+
+      - name: Generate test media
+        run: |
+          mkdir -p build-system/testmedia
+          ffmpeg -hide_banner -y \
+            -f lavfi -i testsrc=size=160x120:rate=15 \
+            -f lavfi -i sine=frequency=440 \
+            -f lavfi -i sine=frequency=880 \
+            -map 0:v -map 1:a -map 2:a -t 6 \
+            -c:v ffvhuff -c:a pcm_s16le \
+            build-system/testmedia/sample_dual_audio.mkv
+          echo "SOAR_TEST_MEDIA=$PWD/build-system/testmedia/sample_dual_audio.mkv" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: |
+          cmake --preset linux-system \
+            -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+
+      - name: Build
+        run: cmake --build --preset linux-system
+
+      - name: Test
+        env:
+          SDL_AUDIODRIVER: dummy
+        run: ctest --preset linux-system
+
+      - name: Coverage report
+        run: |
+          gcovr --root . --filter src --filter include \
+            --txt coverage.txt --print-summary
+          cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.txt
+
