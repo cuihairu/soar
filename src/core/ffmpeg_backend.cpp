@@ -220,14 +220,9 @@ FFmpegBackend::~FFmpegBackend() {
   // members are 'pure virtual method called' waiting to happen).
   setEventSink(nullptr);
 
+  // close() joins the decode thread while holding decode_mutex_ and
+  // releases the decoders and context, so nothing is left to stop here.
   close();
-
-  // Ensure decode thread is stopped
-  if (decode_thread_.joinable()) {
-    should_stop_decoding_ = true;
-    decode_cv_.notify_all();
-    decode_thread_.join();
-  }
 
   cleanupDecoders();
   closeContext();
@@ -1307,16 +1302,6 @@ void FFmpegBackend::decodeLoop() {
 
   av_frame_free(&frame);
   av_packet_free(&packet);
-}
-
-bool FFmpegBackend::decodeVideoFrame(AVFrame* frame) {
-  // Video decoding is handled in decodeLoop()
-  return true;
-}
-
-bool FFmpegBackend::decodeAudioFrame(AVFrame* frame) {
-  // Audio decoding is handled in decodeLoop()
-  return true;
 }
 
 void FFmpegBackend::queueVideoFrame(AVFrame* frame, std::chrono::milliseconds pts) {

@@ -111,8 +111,6 @@ private:
 
   // Decoding
   void decodeLoop();
-  bool decodeVideoFrame(AVFrame* frame);
-  bool decodeAudioFrame(AVFrame* frame);
   void queueVideoFrame(AVFrame* frame, std::chrono::milliseconds pts);
   void queueAudioFrame(AVFrame* frame, std::chrono::milliseconds pts);
   void drainFrameQueues();
