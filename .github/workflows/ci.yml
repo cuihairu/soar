@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -19,9 +23,17 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
+      - name: Install FFmpeg dev packages (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libswscale-dev
+
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
         run: brew update && brew install ninja
+
+      - name: Install FFmpeg dev packages (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg pkg-config
 
       - name: Install Ninja (Windows)
         if: runner.os == 'Windows'
@@ -49,4 +61,7 @@ jobs:
 
       - name: Build
         run: cmake --build --preset default
+
+      - name: Test
+        run: ctest --preset default
 
