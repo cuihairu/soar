@@ -13,6 +13,7 @@
 
 #include "soar/core/ffmpeg_backend.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -25,17 +26,21 @@ using namespace std::chrono_literals;
 
 namespace {
 
-bool mediaAvailable(std::string& out_path) {
-  const char* media = std::getenv("SOAR_TEST_MEDIA");
-  if (!media || !*media) {
+bool envMedia(const char* name, std::string& out_path) {
+  const char* path = std::getenv(name);
+  if (!path || !*path) {
     return false;
   }
-  std::ifstream f(media);
+  std::ifstream f(path);
   if (!f.good()) {
     return false;
   }
-  out_path = media;
+  out_path = path;
   return true;
+}
+
+bool mediaAvailable(std::string& out_path) {
+  return envMedia("SOAR_TEST_MEDIA", out_path);
 }
 
 struct CountingSink : soar::IEventSink {
@@ -729,6 +734,201 @@ TEST_CASE("event sink can be swapped and detached") {
   CHECK(b_before >= 2);
 
   backend->close();
+}
+
+TEST_CASE("audio-only media drives position and seeks via the audio stream") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping audio-only test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  const auto info = backend->mediaInfo();
+  REQUIRE(info.tracks.size() == 1);
+  CHECK(info.tracks[0].type == soar::TrackType::Audio);
+  CHECK(info.selected_video == -1);
+  CHECK(info.selected_audio >= 0);
+  CHECK(info.seekable);
+  // Generated with -t 6; allow encoder/rounding slack.
+  CHECK(info.duration > 5s);
+  CHECK(info.duration < 8s);
+
+  // With no video stream the position clock is driven by audio frames.
+  REQUIRE(backend->play());
+  std::this_thread::sleep_for(700ms);
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+  CHECK(backend->position() > 200ms);
+  CHECK(sink.position_changed.load() >= 1);
+
+  // Seek resolves through the audio stream index (the decode thread is
+  // still running, so the request is consumed at a packet boundary).
+  REQUIRE(backend->seek(1s));
+  bool landed = false;
+  for (int i = 0; i < 300 && !landed; ++i) {
+    landed = backend->position() >= 1s;
+    if (!landed) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(landed);
+  CHECK(backend->position() < 2s);
+
+  // A rate change rebuilds the resampler and the SDL device; position
+  // keeps advancing afterwards (faster now).
+  REQUIRE(backend->setRate(2.0));
+  std::this_thread::sleep_for(400ms);
+  CHECK(sink.position_changed.load() >= 2);
+
+  // Volume attenuation and muting run the scale path without stalling.
+  CHECK(backend->setVolume(0.5));
+  std::this_thread::sleep_for(300ms);
+  CHECK(backend->setMuted(true));
+  std::this_thread::sleep_for(200ms);
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  CHECK(backend->stop());
+  backend->close();
+}
+
+TEST_CASE("natural EOF keeps the thread joinable for seek and track switch") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping natural EOF test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // 6s media; wait up to 12s for the natural end (sanitizer-slow runs).
+  auto waitEnded = [&] {
+    for (int i = 0; i < 120; ++i) {
+      if (backend->state() == soar::PlaybackState::Ended) {
+        return true;
+      }
+      std::this_thread::sleep_for(100ms);
+    }
+    return backend->state() == soar::PlaybackState::Ended;
+  };
+  REQUIRE(waitEnded());
+
+  // After EOF the decode thread has exited but is still joinable; seek()
+  // joins it and applies the seek synchronously, resuming paused.
+  REQUIRE(backend->seek(1s));
+  CHECK(backend->state() == soar::PlaybackState::Paused);
+  CHECK(backend->position() == 1s);
+
+  // Play to the end once more, then switch tracks: the exited thread is
+  // joined and the new decoder is swapped in directly, leaving the state
+  // at Stopped (nothing is playing anymore).
+  REQUIRE(backend->play());
+  REQUIRE(waitEnded());
+
+  const auto info = backend->mediaInfo();
+  int other_audio = -1;
+  for (const auto& t : info.tracks) {
+    if (t.type == soar::TrackType::Audio && t.id != info.selected_audio) {
+      other_audio = t.id;
+    }
+  }
+  REQUIRE(other_audio >= 0);
+  REQUIRE(backend->selectTrack(soar::TrackType::Audio, other_audio));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  CHECK(backend->mediaInfo().selected_audio == other_audio);
+  CHECK(backend->lastError().empty());
+
+  backend->close();
+}
+
+TEST_CASE("subtitle and attachment streams enumerate; subtitles select") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping subtitle stream test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  const auto info = backend->mediaInfo();
+  // video + audio + subtitle are enumerated; the container attachment is
+  // not a track.
+  REQUIRE(info.tracks.size() == 3);
+
+  const soar::TrackInfo* sub = nullptr;
+  for (const auto& t : info.tracks) {
+    if (t.type == soar::TrackType::Subtitle) {
+      sub = &t;
+    }
+  }
+  REQUIRE(sub != nullptr);
+  CHECK(sub->language == "eng");
+  CHECK(info.selected_subtitle == -1); // subtitles default to off
+
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, sub->id));
+  CHECK(backend->mediaInfo().selected_subtitle == sub->id);
+  CHECK(sink.media_info_changed.load() >= 1);
+
+  CHECK(backend->disableSubtitles());
+  CHECK(backend->mediaInfo().selected_subtitle == -1);
+
+  backend->close();
+}
+
+TEST_CASE("a container with no audio or video streams fails to open") {
+  std::string subs_only;
+  if (!envMedia("SOAR_TEST_SUBS_ONLY", subs_only)) {
+    MESSAGE("SOAR_TEST_SUBS_ONLY not set; skipping no-stream test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  CHECK_FALSE(backend->open(soar::MediaSource{subs_only}));
+  CHECK(backend->lastError().find("no video or audio stream") != std::string::npos);
+  CHECK(backend->state() == soar::PlaybackState::Error);
+  CHECK(backend->mediaInfo().tracks.empty());
+  CHECK(sink.errors.load() >= 1);
+
+  // The backend stays usable and opens real media afterwards.
+  std::string media;
+  REQUIRE(mediaAvailable(media));
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  backend->close();
+}
+
+TEST_CASE("destroying the backend while playing stops the decode thread") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping destroy-while-playing test");
+    return;
+  }
+
+  {
+    // sink declared first: it must outlive the backend destructor.
+    CountingSink sink;
+    auto backend = soar::makeFFmpegBackend();
+    backend->setEventSink(&sink);
+
+    REQUIRE(backend->open(soar::MediaSource{media}));
+    REQUIRE(backend->play());
+    std::this_thread::sleep_for(300ms);
+    CHECK(backend->state() == soar::PlaybackState::Playing);
+  } // destructor must join the live decode thread without hanging
 }
 
 #else // !SOAR_WITH_FFMPEG
