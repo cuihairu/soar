@@ -83,6 +83,6 @@
 建议至少维护：
 
 - `THIRD_PARTY_NOTICES.md`：第三方依赖声明（见仓库模板）
-- `docs/dependency-licensing.md`（本文）：选型原则与边界
+- `docs/licensing.md`（本文）：选型原则与边界
 - `LICENSES/`：按依赖收集许可证文本（可选但强烈推荐）
 

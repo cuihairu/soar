@@ -25,5 +25,20 @@
 
 ## 3) 运行
 
-- `./build/soar <path-or-url>`
+- 窗口播放：`./build/soar --backend=ffmpeg <path-or-url>`
+- CLI 冒烟（无窗口）：`./build/soar --headless --backend=ffmpeg <path-or-url>`
+- 核心演示（无多媒体依赖）：`./build/soar --backend=null <path-or-url>`
+
+选项说明：
+
+- `--headless`：不开窗口，执行打开 → 播放 → Seek → 暂停 → 停止后退出，用于冒烟测试
+- `--backend=`：选择后端（`ffmpeg`、`null`），默认 `null`；请求的后端不可用时回退并提示
+
+## 4) 测试
+
+```bash
+ctest --preset default
+```
+
+单元测试以 `NullBackend` 为测试替身，不依赖 FFmpeg/SDL2；可用 `SOAR_BUILD_TESTS=OFF` 关闭测试构建。
 
