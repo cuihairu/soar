@@ -51,12 +51,13 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 ### 3.4 场景不可构造（成本/稳定性不成比例）
 
 - **`av_read_frame` 失败（1226 行）**：本地文件的 demuxer 把一切结构损坏宽容化为 EOF；网络流断开需要起本地服务并中途 kill，端口与 CI 稳定性风险不成比例。
+- **`AVERROR_EXIT` 出口（1214 行）**：`av_read_frame` 只在 AVIO 中断回调（`AVIOInterruptCB`）返回中止时产生此错误，产品代码从不设置该回调——无触发源，与 1226 同属 demux 读路径的不可构造出口。
 - **seek 内部失败的 Error 事件（722/732-733/1187/1771/1830-1837 行）**：需要 `avformat_seek_file` 在可 seek 的本地文件上失败——它对合法位置总是成功；不可 seek 的流在 `seek()` 更早的分支就被直接处理，走不到这里。`applyPendingAudioTrack` 的 seek 失败回滚（1830-1837）与 `seekToTimestamp` 自身的失败出口（1771）同源。注入自定义 AVIO 才能命中，超出测试基建范围。
 - **stop 中断 read 的时序分支（39/42 行）与 decodeLoop 的 stop break（1167-1168 行）**：都要求在解码线程恰好处于特定等待点时打断它。1167-1168 已做专门证伪：Paused 态线程恒驻 `waitForPresentationTime` 内部的 wait（1393/1409），所有 stop 路径经其返回 false → drain 循环条件 → decodeLoop 循环条件退出，1167-1168 被结构性跳过；唯一命中窗口是 pause/stop 恰落在"线程回 1159 且谓词已为 false"的微秒级竞争里，现有数百次 stop 序列（headless CLI、pause 用例、open/close storm）零命中。时序敏感，flake 风险大于覆盖收益。
 - **帧队列溢出丢帧（1319-1321/1337-1339 行，结构性）**：解码产出与 drain 消费在**同一个线程**串行（1296 每包调用 drain，drain 阻塞消费期间解码线程自己也被阻塞），而每个 packet 在 send/receive 循环里至多产出 1-2 帧（B 帧延迟跨包累计 ≤3）——队列深度物理上到不了 6/32 的上限。只有把产出挪到独立线程才会可达。
 - **drain 的双队列比较块（1353-1356 行，结构性）**：同一串行模型的推论——drain 退出即双空，每次进入 drain 前只入队一个 packet 的帧，因此进入时**至多单侧非空**，"双队列都非空才走"的比较块不可达。
-- **`main.cpp` 的 SDL 窗口块残余（96% 行 / 85% 分支）**：窗口块主体已被三条确定性路径覆盖——dummy 视频驱动必然无加速渲染器（renderer 失败分支）；Xvfb + XTEST Escape 驱动渲染循环到干净退出；WM_DELETE_WINDOW ClientMessage 驱动 `SDL_QUIT` 分支（SDL 自己监听 WM_PROTOCOLS，无需窗口管理器）与 null 后端下的 `ffmpeg_backend` 短路弧、空纹理清理弧。行残余缺口：`SDL_CreateWindow` 失败（175-177，dummy/Xvfb 下建窗必成功）、`SDL_CreateTexture` 失败打印（225，合法尺寸不失败）、212/215（已证伪的 gcov 假缺失，见 §1）。分支残余：纹理重建链的短路弧与 `SDL_QueryTexture` 失败侧（重建时旧纹理已损坏，不构造）、窗口/纹理创建失败的防御弧。
-- **`main.cpp:130` 的 seekable "no" 弧**：CLI 的两种媒体来源——本地文件（FFmpeg 后端）与 null 后端的模拟媒体——`mediaInfo().seekable` 都为 true；seekable=false 只存在于未接入 CLI 的源类型上。
+- **`main.cpp` 的 SDL 窗口块残余（96% 行 / 85% 分支）**：窗口块主体已被三条确定性路径覆盖——dummy 视频驱动必然无加速渲染器（renderer 失败分支）；Xvfb + XTEST Escape 驱动渲染循环到干净退出；WM_DELETE_WINDOW ClientMessage 驱动 `SDL_QUIT` 分支（SDL 自己监听 WM_PROTOCOLS，无需窗口管理器）与 null 后端下的 `ffmpeg_backend` 短路弧、空纹理清理弧。行残余缺口：`SDL_CreateWindow` 失败（175-177，dummy/Xvfb 下建窗必成功）、`SDL_CreateTexture` 失败打印（225，合法尺寸不失败）、212/215（已证伪的 gcov 假缺失，见 §1）。分支残余：纹理重建链的短路弧与 `SDL_QueryTexture` 失败侧（重建时旧纹理已损坏，不构造）、窗口/纹理创建失败的防御弧、事件回调链的 114 弧（open 失败的 Error 事件本体已被 asset:// 用例覆盖，残余弧属多线程回调的计数损坏/归属噪声家族，见 §1）。
+- **`main.cpp:130` 的 seekable "no" 弧**：CLI 的常规媒体来源——本地文件（FFmpeg 后端）与 null 后端的模拟媒体——`mediaInfo().seekable` 都为 true。证伪检验：`/dev/stdin` 管道流理论上可构造 seekable=false，但需要给 runCli 增加平台分叉的 stdin 喂送基建（现只抓 stdout）才能让子进程读到媒体，单弧成本不成比例，归入本类。
 - **状态快照的时序弧（522/528/958/963 行）**：play() 的 Ended/Error 重播报组合与 selectTrack 收尾的 state!=Stopped 判断，都是线程 wind-down 与状态快照竞争的窄弧，逐轮翻转（门禁余量按此取值），不构造。
 
 ### 3.5 测试基建教训：媒体 fixture 必须逐字节确定性
