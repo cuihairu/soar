@@ -232,7 +232,7 @@ jobs:
           # (GCC bug 68080), which gcovr refuses to parse. Ignore those
           # branch lines; the line data itself is intact.
           # The fail-under gates lock in the reached levels (line 90.5%,
-          # branch 77.4% at ac2e347, the ceiling for this codebase) with
+          # branch 77.9% at c8b3704, the ceiling for this codebase) with
           # slack for the ±1-2 line gcov counter jitter, so a regression
           # fails here instead of slipping in silently.
           # Two text reports because gcovr's txt output shows one metric
@@ -244,7 +244,7 @@ jobs:
             --txt coverage.txt --txt-metric branch \
             --exclude-throw-branches \
             --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
-            --fail-under-line 90.1 --fail-under-branch 76.8 \
+            --fail-under-line 90.1 --fail-under-branch 77.4 \
             --print-summary > gcovr-summary.txt
           cat gcovr-summary.txt
           gcovr --root . --filter src --filter include \
