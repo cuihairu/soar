@@ -1368,11 +1368,12 @@ TEST_CASE("a mid-stream resolution change rebuilds the video converter") {
 
 // Serves a file in two bursts: the first 40% immediately, the rest after a
 // long pause. The client's playback consumes the first burst in a couple of
-// wall-clock seconds, then its reads hang: the backend's rw_timeout (10s)
-// turns each hung read into AVERROR(ETIMEDOUT), which the decode loop
-// reports as BufferingStarted and keeps retrying, and the resumption of
-// data becomes BufferingEnded. The pause must comfortably exceed
-// rw_timeout under any instrumentation slowdown, so it is 40s.
+// wall-clock seconds, then its reads go quiet: the backend's network stall
+// watchdog (the AVIO interrupt callback) emits BufferingStarted once the
+// quiet window passes 10s while deliberately keeping the connection alive,
+// and the server's data resumption becomes BufferingEnded. The pause must
+// comfortably exceed the 10s report threshold under any instrumentation
+// slowdown, so it is 40s.
 constexpr const char* kThrottledServerScript = R"PY(
 import sys, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -1396,6 +1397,65 @@ class ThrottledHandler(BaseHTTPRequestHandler):
         pass
 
 HTTPServer(("127.0.0.1", int(sys.argv[2])), ThrottledHandler).serve_forever()
+)PY";
+
+// Serves a directory tree with HTTP Range support: requests carrying
+// "Range: bytes=a-b" get 206 + Content-Range replies, everything else a
+// plain 200. python http.server answers no Range requests, and without
+// Range FFmpeg reports every HTTP source as non-seekable — with it, the
+// HLS VOD case below can pin real seekability and a mid-file seek.
+constexpr const char* kRangeServerScript = R"PY(
+import os, re, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ROOT = os.path.abspath(sys.argv[1])
+
+class RangeHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *args):
+        pass
+    def do_GET(self):
+        path = self.path.split("?", 1)[0].split("#", 1)[0]
+        target = os.path.normpath(os.path.join(ROOT, path.lstrip("/")))
+        if not target.startswith(ROOT + os.sep) or not os.path.isfile(target):
+            self.send_error(404)
+            return
+        size = os.path.getsize(target)
+        start, end = 0, size - 1
+        partial = False
+        rng = self.headers.get("Range")
+        if rng:
+            m = re.match(r"bytes=(\d*)-(\d*)$", rng.strip())
+            if m and (m.group(1) or m.group(2)):
+                if m.group(1):
+                    start = int(m.group(1))
+                    if m.group(2):
+                        end = min(int(m.group(2)), size - 1)
+                else:
+                    start = max(0, size - int(m.group(2)))
+                partial = start <= end < size
+        if start > end or start >= size:
+            self.send_error(416)
+            return
+        length = end - start + 1
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        if partial:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+        self.end_headers()
+        with open(target, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(65536, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), RangeHandler).serve_forever()
 )PY";
 
 bool httpServerReady(int port) {
@@ -1478,6 +1538,91 @@ TEST_CASE("a stalled network source emits buffering events and recovers") {
 
   CHECK(sink.buffering_started.load() >= 1);
   CHECK(sink.buffering_ended.load() >= 1);
+  CHECK(sink.errors.load() == 0);
+#endif
+}
+
+TEST_CASE("an HLS VOD source over a Range-capable server reports seekable and seeks") {
+  // P2's user-facing promise: video-on-demand over HTTP can be dragged.
+  // python http.server answers no Range requests, so every network source
+  // tested so far reported non-seekable; this server speaks 206 /
+  // Content-Range, the hls demuxer marks the source seekable, and a
+  // seek issued while stopped resolves synchronously to the requested
+  // position (the state machine contract pins that path as synchronous),
+  // after which playback continues from there.
+  std::string media;
+  if (!envMedia("SOAR_TEST_HLS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_HLS_MEDIA not set; skipping HLS seek test");
+    return;
+  }
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping HLS seek test");
+    return;
+  }
+  const auto slash = media.find_last_of('/');
+  const std::string dir = (slash == std::string::npos) ? std::string(".") : media.substr(0, slash);
+  const std::string name = (slash == std::string::npos) ? media : media.substr(slash + 1);
+  const std::string port = std::to_string(15200 + (::getpid() % 2000));
+
+  const pid_t server = ::fork();
+  REQUIRE(server >= 0);
+  if (server == 0) {
+    ::execlp("python3", "python3", "-c", kRangeServerScript,
+             dir.c_str(), port.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  bool ready = false;
+  for (int attempt = 0; attempt < 50 && !ready; ++attempt) {
+    ready = httpServerReady(std::stoi(port));
+    if (!ready) {
+      std::this_thread::sleep_for(100ms);
+    }
+  }
+
+  CountingSink sink;
+  if (!ready) {
+    MESSAGE("Range-capable HTTP server failed to start; skipping");
+    ::kill(server, SIGTERM);
+    ::waitpid(server, nullptr, 0);
+    return;
+  }
+
+  {
+    auto backend = soar::makeFFmpegBackend();
+    backend->setEventSink(&sink);
+    REQUIRE(backend->open(soar::MediaSource{"http://127.0.0.1:" + port + "/" + name}));
+    // The 206 replies are the only reason this source is seekable; the
+    // plain-http.server cases pin the opposite side of the contract.
+    CHECK(backend->mediaInfo().seekable);
+    CHECK(sink.errors.load() == 0);
+
+    // Stopped-state seeks resolve synchronously: position must land on
+    // the target before any playback starts.
+    CHECK(backend->seek(std::chrono::milliseconds{4000}));
+    CHECK(backend->position() == std::chrono::milliseconds{4000});
+
+    // Rate up so the post-seek window resolves quickly even under heavy
+    // instrumentation: playback continues from the seek target.
+    REQUIRE(backend->setRate(8.0));
+    REQUIRE(backend->play());
+    const auto deadline = std::chrono::steady_clock::now() + 60s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           backend->position() < std::chrono::milliseconds{5000}) {
+      std::this_thread::sleep_for(50ms);
+    }
+    CHECK(backend->position() >= std::chrono::milliseconds{5000});
+
+    backend->stop();
+    backend->close();
+  }
+
+  ::kill(server, SIGTERM);
+  ::waitpid(server, nullptr, 0);
   CHECK(sink.errors.load() == 0);
 #endif
 }
