@@ -119,18 +119,28 @@ TEST_CASE("headless run over an unopenable source fails with 1") {
   CHECK(run.output.find("Failed to open source: asset://fail-open.mp4") != std::string::npos);
 }
 
-TEST_CASE("windowed run without a display fails at SDL_Init") {
-  // Only meaningful where the window block is compiled in and no display
-  // exists (the CI runners): SDL video init must fail cleanly - report
-  // and exit 1 - instead of hanging. A developer with a display skips
-  // this; a build without SDL2 never reaches the window block, so the
-  // marker check skips it too.
-  if (std::getenv("DISPLAY") != nullptr) {
-    MESSAGE("DISPLAY is set; skipping the no-display window case");
-    return;
-  }
-  // The null backend opens any URI, so the run reaches the window block.
+TEST_CASE("windowed run fails cleanly at SDL_Init") {
+  // Rather than gambling on which environments refuse SDL video init
+  // (a no-DISPLAY runner can still succeed through kmsdrm and hang in
+  // the window loop forever), point SDL_VIDEODRIVER at a driver that
+  // does not exist: SDL_Init must then fail on every platform, and the
+  // run must report and exit 1 instead of crashing. The child inherits
+  // this process's environment; doctest runs cases serially, so the
+  // temporary variable cannot leak into a concurrent subprocess.
+  const char* const bogus_driver = "soar-no-such-video-driver";
+#ifdef _WIN32
+  // _putenv("") removes the variable on Windows.
+  _putenv("SDL_VIDEODRIVER=");
+  _putenv_s("SDL_VIDEODRIVER", bogus_driver);
   const auto run = runCli({"--backend=null", "asset://sample"});
+  _putenv("SDL_VIDEODRIVER=");
+#else
+  setenv("SDL_VIDEODRIVER", bogus_driver, /*overwrite=*/1);
+  const auto run = runCli({"--backend=null", "asset://sample"});
+  unsetenv("SDL_VIDEODRIVER");
+#endif
+  // A build without SDL2 never reaches the window block; the marker
+  // check skips that case rather than asserting on unrelated output.
   if (run.output.find("SDL_Init failed") == std::string::npos) {
     MESSAGE("SDL2 not compiled in; window block absent; skipping");
     return;

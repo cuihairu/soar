@@ -52,4 +52,11 @@ if(TARGET soar)
   endif()
 
   add_test(NAME soar_cli_tests COMMAND soar_cli_tests)
+
+# A subprocess that hangs (e.g. an SDL window loop on a runner where
+# video init unexpectedly succeeds) would otherwise pin the whole CI
+# job until its two-digit-minute timeout. CTest kills the test at the
+# 5-minute mark instead, so one wedged case costs minutes, not the job.
+set_tests_properties(soar_core_tests soar_backend_tests soar_backend_media_tests soar_cli_tests
+  PROPERTIES TIMEOUT 300)
 endif()
