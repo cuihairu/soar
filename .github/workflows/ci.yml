@@ -232,7 +232,10 @@ jobs:
           # deliberately leave this off — libGL/libpulse are not
           # instrumented and only add noise there.
           SOAR_TEST_X11: "1"
-        run: ctest --preset linux-system
+        # -V so passing tests still print: the X11 window test logs the
+        # CLI's event stream, which is the coverage analysis data for the
+        # render loop.
+        run: ctest --preset linux-system -V
 
       - name: Coverage report
         run: |
