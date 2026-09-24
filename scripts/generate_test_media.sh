@@ -100,10 +100,18 @@ media_dir = sys.argv[1]
 with open(f"{media_dir}/corrupt_base.mkv", "rb") as f:
     data = f.read()
 assert data.count(b"V_MPEG4/ISO/AVC") == 1, "h264 CodecID not found exactly once"
+assert data.count(b"A_AAC") == 1, "AAC CodecID not found exactly once"
 with open(f"{media_dir}/corrupt_decode.mkv", "wb") as f:
     f.write(data.replace(b"V_MPEG4/ISO/AVC", b"V_MPEG4/ISO/ASP"))
 with open(f"{media_dir}/unknown_codec.mkv", "wb") as f:
     f.write(data.replace(b"V_MPEG4/ISO/AVC", b"V_MPEG4/ISO/XXX"))
+# The audio twins: no decoder at all exists for A_XXX, and the DTS
+# decoder (A_DTS, equal length) rejects AAC packets on its hard sync
+# word at send time - same contracts, audio stream side.
+with open(f"{media_dir}/unknown_audio.mkv", "wb") as f:
+    f.write(data.replace(b"A_AAC", b"A_XXX"))
+with open(f"{media_dir}/audio_reject.mkv", "wb") as f:
+    f.write(data.replace(b"A_AAC", b"A_DTS"))
 PYEOF
 rm -f "$media_dir/corrupt_base.mkv"
 
@@ -125,3 +133,5 @@ echo "SOAR_TEST_CORRUPT_DECODE=$media_dir/corrupt_decode.mkv"
 echo "SOAR_TEST_UNKNOWN_CODEC=$media_dir/unknown_codec.mkv"
 echo "SOAR_TEST_TRUNCATED_TINY=$media_dir/trunc_tiny.mkv"
 echo "SOAR_TEST_TRUNCATED_MID=$media_dir/trunc_mid.mkv"
+echo "SOAR_TEST_UNKNOWN_AUDIO=$media_dir/unknown_audio.mkv"
+echo "SOAR_TEST_AUDIO_REJECT=$media_dir/audio_reject.mkv"

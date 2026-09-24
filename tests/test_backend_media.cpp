@@ -1146,6 +1146,71 @@ TEST_CASE("truncated containers fail the open path at the right stage") {
   backend->close();
 }
 
+TEST_CASE("an audio codec with no FFmpeg decoder fails to open") {
+  std::string unknown;
+  if (!envMedia("SOAR_TEST_UNKNOWN_AUDIO", unknown)) {
+    MESSAGE("SOAR_TEST_UNKNOWN_AUDIO not set; skipping unknown-audio test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  // The video stream is healthy; only the audio track's codec id has no
+  // decoder. Setup must fail on the audio side, not silently drop it.
+  CHECK_FALSE(backend->open(soar::MediaSource{unknown}));
+  CHECK(backend->lastError().find("audio codec not found") != std::string::npos);
+  CHECK(backend->state() == soar::PlaybackState::Error);
+  CHECK(sink.errors.load() >= 1);
+
+  std::string media;
+  REQUIRE(mediaAvailable(media));
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  backend->close();
+}
+
+TEST_CASE("undecodable audio payload ends deterministically without hanging") {
+  std::string reject;
+  if (!envMedia("SOAR_TEST_AUDIO_REJECT", reject)) {
+    MESSAGE("SOAR_TEST_AUDIO_REJECT not set; skipping audio-reject test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  // The container opens and the DTS decoder exists, but it rejects every
+  // AAC packet on its sync word. Whether FFmpeg rejects at send or at
+  // receive is version behavior (see the video twin), so the contract is
+  // the same: playback reaches a terminal state, never hangs, and the
+  // backend stays reusable.
+  REQUIRE(backend->open(soar::MediaSource{reject}));
+  REQUIRE(backend->play());
+
+  // 3s media; wait up to 12s for a terminal state (sanitizer-slow runs).
+  bool finished = false;
+  for (int i = 0; i < 120 && !finished; ++i) {
+    const auto state = backend->state();
+    finished = state == soar::PlaybackState::Ended ||
+               state == soar::PlaybackState::Error;
+    if (!finished) {
+      std::this_thread::sleep_for(100ms);
+    }
+  }
+  CHECK(finished);
+
+  CHECK(backend->stop());
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  std::string media;
+  REQUIRE(mediaAvailable(media));
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  backend->close();
+}
+
 TEST_CASE("destroying the backend while playing stops the decode thread") {
   std::string media;
   if (!mediaAvailable(media)) {
