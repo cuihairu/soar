@@ -358,6 +358,11 @@ TEST_CASE("windowed run plays on a real X server and exits cleanly on Escape") {
   const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
   const auto run = runCli({"--backend=ffmpeg", media});
 
+  // The position/state events show how far real-time decode advanced
+  // before the Escape exit — that progress is what decides whether the
+  // texture re-creation branch runs, so keep it in the CI log.
+  std::printf("x11 window test: cli exit=%d, output:\n%s\n", run.exit_code, run.output.c_str());
+
   ::waitpid(injector, nullptr, 0);
   ::kill(xvfb, SIGTERM);
   ::waitpid(xvfb, nullptr, 0);
