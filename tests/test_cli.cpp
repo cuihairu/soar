@@ -217,12 +217,15 @@ RunResult runCli(const std::vector<std::string>& args) {
 #endif
   }
   cmd += " 2>&1"; // merge stderr into the captured stream
-#ifndef _WIN32
+#ifdef __linux__
   // A sanitizer-instrumented child can hang indefinitely: observed once in
   // CI, where the tsan CLI stalled right after fetching an HLS master's
   // segments and burned the entire 300s CTest budget. Cap every run so a
   // hung child degrades into a normal failing assertion (exit 124) with
   // whatever output it produced, instead of a context-free suite timeout.
+  // Linux-only: coreutils' timeout is guaranteed there; macOS ships no
+  // such command (its homebrew build installs gtimeout instead) and
+  // prefixing it made every child exit 127.
   cmd.insert(0, "timeout 90 ");
 #endif
 
