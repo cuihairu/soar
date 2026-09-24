@@ -135,6 +135,35 @@ with open(f"{media_dir}/audio_reject.mkv", "wb") as f:
 PYEOF
 rm -f "$media_dir/corrupt_base.mkv"
 
+# A dual-AAC variant with only the NON-default track patched to A_XXX.
+# Open succeeds because the backend builds a decoder for the selected
+# (first) audio track only; selecting the broken track afterwards must
+# fail with "audio codec not found" instead of crashing or silently
+# switching. Only the second A_AAC occurrence is replaced.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -f lavfi -i sine=frequency=440 \
+  -f lavfi -i sine=frequency=880 \
+  -map 0:v -map 1:a -map 2:a -t 3 \
+  -c:v libx264 -pix_fmt yuv420p -c:a aac \
+  -disposition:a:0 default \
+  "$media_dir/dual_aac_base.mkv"
+python3 - "$media_dir" <<'PYEOF'
+import sys
+
+media_dir = sys.argv[1]
+with open(f"{media_dir}/dual_aac_base.mkv", "rb") as f:
+    data = f.read()
+first = data.find(b"A_AAC")
+second = data.find(b"A_AAC", first + 1)
+assert first != -1 and second != -1, "expected two A_AAC CodecIDs in the dual-track base"
+patched = bytearray(data)
+patched[second:second + 5] = b"A_XXX"
+with open(f"{media_dir}/unknown_audio_dual.mkv", "wb") as f:
+    f.write(bytes(patched))
+PYEOF
+rm -f "$media_dir/dual_aac_base.mkv"
+
 # Truncated containers for the open-path failure contract: 64 bytes does
 # not even contain the Matroska segment header, and 512 bytes still cuts
 # inside the header region. Both are rejected at the demuxer's own open
@@ -155,3 +184,4 @@ echo "SOAR_TEST_TRUNCATED_TINY=$media_dir/trunc_tiny.mkv"
 echo "SOAR_TEST_TRUNCATED_MID=$media_dir/trunc_mid.mkv"
 echo "SOAR_TEST_UNKNOWN_AUDIO=$media_dir/unknown_audio.mkv"
 echo "SOAR_TEST_AUDIO_REJECT=$media_dir/audio_reject.mkv"
+echo "SOAR_TEST_UNKNOWN_AUDIO_DUAL=$media_dir/unknown_audio_dual.mkv"

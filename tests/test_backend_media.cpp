@@ -21,6 +21,7 @@
 #include <map>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
 
@@ -1168,6 +1169,49 @@ TEST_CASE("an audio codec with no FFmpeg decoder fails to open") {
   REQUIRE(mediaAvailable(media));
   REQUIRE(backend->open(soar::MediaSource{media}));
   CHECK(backend->state() == soar::PlaybackState::Stopped);
+  backend->close();
+}
+
+TEST_CASE("switching to an audio track with no decoder fails without breaking the backend") {
+  std::string dual;
+  if (!envMedia("SOAR_TEST_UNKNOWN_AUDIO_DUAL", dual)) {
+    MESSAGE("SOAR_TEST_UNKNOWN_AUDIO_DUAL not set; skipping dual unknown-audio test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  // Open succeeds here even though one track is undecodable: the
+  // backend builds a decoder for the selected audio track only, and
+  // that track is healthy AAC. The broken A_XXX track only bites when
+  // someone selects it explicitly.
+  REQUIRE(backend->open(soar::MediaSource{dual}));
+
+  const auto info = backend->mediaInfo();
+  std::vector<soar::TrackId> audio_ids;
+  for (const auto& track : info.tracks) {
+    if (track.type == soar::TrackType::Audio) {
+      audio_ids.push_back(track.id);
+    }
+  }
+  REQUIRE(audio_ids.size() >= 2);
+  const auto good_id = audio_ids[0];
+  const auto bad_id = audio_ids[1];
+
+  // The failed switch reports through lastError and keeps the old
+  // decoder installed - the contract differs from the open-time
+  // failure above (Error state + event), which is why this is not
+  // folded into that case.
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Audio, bad_id));
+  CHECK(backend->lastError().find("audio codec not found") != std::string::npos);
+
+  // The failed switch must not poison the backend: the healthy track
+  // is still selectable and playback with it still works.
+  CHECK(backend->selectTrack(soar::TrackType::Audio, good_id));
+  REQUIRE(backend->play());
+  std::this_thread::sleep_for(200ms);
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  backend->stop();
   backend->close();
 }
 
