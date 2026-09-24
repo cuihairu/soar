@@ -107,6 +107,13 @@ with open(f"{media_dir}/unknown_codec.mkv", "wb") as f:
 PYEOF
 rm -f "$media_dir/corrupt_base.mkv"
 
+# Truncated containers for the two open-path failure stages: 64 bytes
+# does not even contain the Matroska segment header, so the demuxer's
+# own open fails, while 512 bytes parses header and tracks but leaves no
+# frame to identify the codecs, so find_stream_info gives up instead.
+head -c 64 "$media_dir/sample_dual_audio.mkv" > "$media_dir/trunc_tiny.mkv"
+head -c 512 "$media_dir/sample_dual_audio.mkv" > "$media_dir/trunc_mid.mkv"
+
 echo "SOAR_TEST_MEDIA=$media_dir/sample_dual_audio.mkv"
 echo "SOAR_TEST_AUDIO_ONLY=$media_dir/audio_only.mkv"
 echo "SOAR_TEST_SUBS_MEDIA=$media_dir/subs_media.mkv"
@@ -114,3 +121,5 @@ echo "SOAR_TEST_SUBS_ONLY=$media_dir/subs_only.mkv"
 echo "SOAR_TEST_MULTI_RES=$media_dir/multi_res.ts"
 echo "SOAR_TEST_CORRUPT_DECODE=$media_dir/corrupt_decode.mkv"
 echo "SOAR_TEST_UNKNOWN_CODEC=$media_dir/unknown_codec.mkv"
+echo "SOAR_TEST_TRUNCATED_TINY=$media_dir/trunc_tiny.mkv"
+echo "SOAR_TEST_TRUNCATED_MID=$media_dir/trunc_mid.mkv"

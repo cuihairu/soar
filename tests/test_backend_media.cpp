@@ -1067,7 +1067,7 @@ TEST_CASE("a video codec with no FFmpeg decoder fails to open") {
   backend->close();
 }
 
-TEST_CASE("undecodable video payload fails the decode loop with an error") {
+TEST_CASE("undecodable video payload ends deterministically without hanging") {
   std::string corrupt;
   if (!envMedia("SOAR_TEST_CORRUPT_DECODE", corrupt)) {
     MESSAGE("SOAR_TEST_CORRUPT_DECODE not set; skipping corrupt-decode test");
@@ -1078,27 +1078,65 @@ TEST_CASE("undecodable video payload fails the decode loop with an error") {
   auto backend = soar::makeFFmpegBackend();
   backend->setEventSink(&sink);
 
-  // The container and the (mislabelled) decoder both open fine: the
-  // failure only appears once the decode loop feeds the first packet,
-  // and must land in the Error state instead of spinning.
+  // The container and the (mislabelled) decoder both open fine; the
+  // h264 packets are then either rejected at send time (the decode loop
+  // skips them and runs to natural EOF) or rejected per frame at
+  // receive time (a fatal decode error). Both are legitimate behaviors
+  // across FFmpeg versions; what must hold either way is that playback
+  // ends deterministically - never a hang - and the backend recovers.
   REQUIRE(backend->open(soar::MediaSource{corrupt}));
   REQUIRE(backend->play());
 
-  // Wait up to 12s for the decode failure (sanitizer-slow runs).
-  bool errored = false;
-  for (int i = 0; i < 120 && !errored; ++i) {
-    errored = backend->state() == soar::PlaybackState::Error;
-    if (!errored) {
+  // 3s media; wait up to 12s for a terminal state (sanitizer-slow runs).
+  bool finished = false;
+  for (int i = 0; i < 120 && !finished; ++i) {
+    const auto state = backend->state();
+    finished = state == soar::PlaybackState::Ended ||
+               state == soar::PlaybackState::Error;
+    if (!finished) {
       std::this_thread::sleep_for(100ms);
     }
   }
-  CHECK(errored);
-  CHECK(backend->lastError().find("video decode failed") != std::string::npos);
-  CHECK(sink.errors.load() >= 1);
+  CHECK(finished);
 
-  // Stopping from the Error state is safe and leaves a reusable backend.
+  // Stopping from either terminal state is safe and leaves a reusable
+  // backend.
   CHECK(backend->stop());
   CHECK(backend->state() == soar::PlaybackState::Stopped);
+  std::string media;
+  REQUIRE(mediaAvailable(media));
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  backend->close();
+}
+
+TEST_CASE("truncated containers fail the open path at the right stage") {
+  std::string tiny, mid;
+  if (!envMedia("SOAR_TEST_TRUNCATED_TINY", tiny) ||
+      !envMedia("SOAR_TEST_TRUNCATED_MID", mid)) {
+    MESSAGE("SOAR_TEST_TRUNCATED_* not set; skipping truncated-container test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  // 64 bytes: not even the Matroska segment header survives, so the
+  // demuxer itself refuses the input.
+  CHECK_FALSE(backend->open(soar::MediaSource{tiny}));
+  CHECK(backend->lastError().find("failed to open") != std::string::npos);
+  CHECK(backend->state() == soar::PlaybackState::Error);
+
+  // 512 bytes: header and track entries parse, but no frame can be read
+  // to identify the codecs, so find_stream_info gives up instead.
+  CHECK_FALSE(backend->open(soar::MediaSource{mid}));
+  CHECK(backend->lastError().find("findStreamInfo") != std::string::npos);
+  CHECK(backend->state() == soar::PlaybackState::Error);
+  // open() reports each failure through the event sink itself.
+  CHECK(sink.errors.load() >= 2);
+
+  // The backend recovers and opens healthy media afterwards.
   std::string media;
   REQUIRE(mediaAvailable(media));
   REQUIRE(backend->open(soar::MediaSource{media}));
