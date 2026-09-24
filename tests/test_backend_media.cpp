@@ -1217,7 +1217,10 @@ TEST_CASE("switching to an audio track with no decoder fails without breaking th
 
 TEST_CASE("seeking to the exact duration ends a stopped stream; seeking back revives it") {
   std::string media;
-  REQUIRE(mediaAvailable(media));
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping the seek-endedness test");
+    return;
+  }
 
   CountingSink sink;
   auto backend = soar::makeFFmpegBackend();
