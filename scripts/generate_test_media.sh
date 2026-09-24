@@ -107,10 +107,12 @@ with open(f"{media_dir}/unknown_codec.mkv", "wb") as f:
 PYEOF
 rm -f "$media_dir/corrupt_base.mkv"
 
-# Truncated containers for the two open-path failure stages: 64 bytes
-# does not even contain the Matroska segment header, so the demuxer's
-# own open fails, while 512 bytes parses header and tracks but leaves no
-# frame to identify the codecs, so find_stream_info gives up instead.
+# Truncated containers for the open-path failure contract: 64 bytes does
+# not even contain the Matroska segment header, and 512 bytes still cuts
+# inside the header region. Both are rejected at the demuxer's own open
+# on FFmpeg 6.1 (CI); FFmpeg 8 accepts the 512-byte open and only fails
+# at find_stream_info, so the tests assert the shared contract (no open,
+# Error state) rather than which stage refused the file.
 head -c 64 "$media_dir/sample_dual_audio.mkv" > "$media_dir/trunc_tiny.mkv"
 head -c 512 "$media_dir/sample_dual_audio.mkv" > "$media_dir/trunc_mid.mkv"
 
