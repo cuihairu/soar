@@ -1,10 +1,12 @@
 // Integration tests for the soar CLI (src/app/main.cpp). Each case runs
 // the real executable as a subprocess and asserts the exit code and the
-// combined stdout/stderr report. The SDL window block is reached two
+// combined stdout/stderr report. The SDL window block is reached three
 // deterministic ways: the dummy video driver drives the renderer-failure
 // path on every platform, and — where SOAR_TEST_X11 opts in (the CI
-// coverage job) — a real Xvfb server plus an XTEST Escape injection plays
-// the render loop to a clean exit, so the loop's coverage lands in the
+// coverage job) — a real Xvfb server plays the render loop to a clean
+// exit, either through an XTEST Escape injection or through a
+// WM_DELETE_WINDOW client message, which SDL turns into SDL_QUIT even
+// with no window manager present, so the loop's coverage lands in the
 // same run instead of being written off as untestable.
 //
 // SOAR_CLI_EXECUTABLE is passed in by tests/CMakeLists.txt as the path to
@@ -99,23 +101,35 @@ bool envMediaPath(const char* name, std::string& out_path) {
   return true;
 }
 
-// One-shot injector for the X11 window test. It waits for the soar window
-// to map, focuses it explicitly — no window manager runs under Xvfb, so
-// nothing owns input focus by default — and delivers a genuine Escape
-// through the XTEST extension until the window disappears (the CLI exits
-// cleanly on Escape). Decoding throttles to real time, so the script
-// waits out the resolution changes of the multi-res fixture before
-// pressing anything, letting the render loop exercise its texture
-// re-creation branch. Coverage builds decode slower than the wall clock
-// (-O0 instrumentation), so the wait must be measured in decode time,
-// not decode speed assumptions: 4.5s crosses both boundaries even when
-// the decoder runs at half the presentation pace.
-const char* const kX11EscapeScript = R"PY(import sys, time
+// One-shot injector for the X11 window tests. Shared preamble: wait for
+// the soar window to map on the private X server. Then one of two exit
+// deliveries, picked by argv[3]:
+//
+// "escape" — focus the window explicitly (no window manager runs under
+//   Xvfb, so nothing owns input focus by default) and deliver a genuine
+//   Escape through the XTEST extension until the window disappears (the
+//   CLI exits cleanly on Escape). Decoding throttles to real time, so
+//   this mode waits out the resolution changes of the multi-res fixture
+//   before pressing anything, letting the render loop exercise its
+//   texture re-creation branch. Coverage builds decode slower than the
+//   wall clock (-O0 instrumentation), so the wait must be measured in
+//   decode time, not decode speed assumptions: 4.5s crosses both
+//   boundaries even when the decoder runs at half the presentation pace.
+//
+// "delete" — send a WM_DELETE_WINDOW client message. The protocol reply
+//   needs no window manager: SDL itself listens for WM_PROTOCOLS and
+//   converts the message into SDL_QUIT, so this drives the QUIT branch
+//   of the event loop from outside the process.
+//
+// In both modes the injector exits 0 once the window disappears (the CLI
+// exited); a non-zero code means it could not do its job.
+const char* const kX11InjectorScript = R"PY(import sys, time
 
 from Xlib import X, display
 from Xlib.ext import xtest
+from Xlib.protocol import event
 
-disp_name, title = sys.argv[1], sys.argv[2]
+disp_name, title, mode = sys.argv[1], sys.argv[2], sys.argv[3]
 d = display.Display(disp_name)
 
 
@@ -140,6 +154,24 @@ while win is None and time.monotonic() < deadline:
         time.sleep(0.1)
 if win is None:
     sys.exit(3)
+
+if mode == "delete":
+    wm_protocols = d.intern_atom("WM_PROTOCOLS")
+    wm_delete = d.intern_atom("WM_DELETE_WINDOW")
+    msg = event.ClientMessage(
+        window=win.id,
+        client_type=wm_protocols,
+        data=(32, [wm_delete, X.CurrentTime, 0, 0, 0]),
+        format=32,
+    )
+    win.send_event(msg, event_mask=X.NoEventMask)
+    d.sync()
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if find_window() is None:
+            sys.exit(0)  # the window died: the CLI exited
+        time.sleep(0.2)
+    sys.exit(5)
 
 time.sleep(4.5)
 esc = d.keysym_to_keycode(0xFF1B)  # XK_Escape
@@ -348,8 +380,8 @@ TEST_CASE("windowed run plays on a real X server and exits cleanly on Escape") {
   pid_t injector = ::fork();
   REQUIRE(injector >= 0);
   if (injector == 0) {
-    ::execlp("python3", "python3", "-c", kX11EscapeScript, display.c_str(),
-             "soar (skeleton)", static_cast<char*>(nullptr));
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar (skeleton)", "escape", static_cast<char*>(nullptr));
     _exit(127);
   }
 
@@ -383,6 +415,102 @@ TEST_CASE("windowed run plays on a real X server and exits cleanly on Escape") {
   CHECK(run.output.find("Falling back to null backend") != std::string::npos);
 #endif
 #endif
+}
+
+TEST_CASE("windowed null-backend run exits cleanly on WM_DELETE_WINDOW") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+  // Opt-in (the CI coverage job), same gating as the Escape test above.
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the X11 window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the X11 window test");
+    return;
+  }
+
+  // The Escape test uses the same scheme; cases run serially and each
+  // server is reaped below, so the display number can be reused.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "640x480x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the X11 window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar (skeleton)", "delete", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // The null backend keeps this case media-free: the QUIT event branch,
+  // the ffmpeg-backend short-circuit guarding the frame block, and the
+  // never-created-texture cleanup arc are all reachable without decoding.
+  const auto run = runCli({"--backend=null", "asset://sample"});
+
+  std::printf("x11 delete-window test: cli exit=%d, output:\n%s\n", run.exit_code, run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    // Same environment gap as the Escape test: a skip, not a failure.
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    return;
+  }
+  CHECK(run.exit_code == 0);
+#endif
+}
+
+TEST_CASE("headless FFmpeg run over subtitle-free media skips track selection") {
+  // The headless flow only calls selectTrack/disableSubtitles when the
+  // media actually carries a subtitle track (main.cpp guards on the
+  // find_if result). The null-backend headless cases exercise the guarded
+  // side through the sample's subtitle track; this case drives the
+  // unguarded side over a real, subtitle-free file through the FFmpeg
+  // backend — and with it the headless seek/pause/stop sequence on that
+  // backend, which no other CLI case reaches.
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping");
+    return;
+  }
+  const auto run = runCli({"--headless", "--backend=ffmpeg", media});
+  if (run.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    return;
+  }
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("=== Media Info ===") != std::string::npos);
 }
 
 TEST_CASE("ffmpeg request degrades gracefully when unavailable") {
