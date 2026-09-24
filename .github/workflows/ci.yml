@@ -184,7 +184,8 @@ jobs:
 
   coverage:
     # Line-coverage job: builds with GCC --coverage and reports src/ +
-    # include/ coverage via gcovr. Informational only (no fail-under gate).
+    # include/ coverage via gcovr, gated by fail-under thresholds so a
+    # coverage regression fails the run instead of slipping in silently.
     # The FFmpeg backend only compiles where the libav* dev headers exist,
     # so this Linux job is the one place its coverage numbers are visible.
     name: coverage (ubuntu)
@@ -227,9 +228,14 @@ jobs:
           # Branch coverage is reported alongside line coverage: a file at
           # 100% line coverage can still take only one side of its
           # conditions, which is exactly the gap line numbers hide.
+          # The fail-under gates lock in the reached levels (line ~89.8%,
+          # branch ~75.0%, the ceiling for this codebase) with slack for
+          # the ±1-2 line gcov counter jitter, so a regression fails here
+          # instead of slipping in silently.
           gcovr --root . --filter src --filter include --branches \
             --exclude-throw-branches \
             --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
+            --fail-under-line 89.0 --fail-under-branch 74.0 \
             --txt coverage.txt --print-summary
           cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
 
