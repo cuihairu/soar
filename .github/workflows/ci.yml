@@ -205,7 +205,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build gcovr libsdl2-dev libfmt-dev doctest-dev ffmpeg \
             libavformat-dev libavcodec-dev libavutil-dev \
-            libswresample-dev libswscale-dev
+            libswresample-dev libswscale-dev \
+            xvfb python3-xlib
 
       - name: Generate test media
         run: |
@@ -224,6 +225,13 @@ jobs:
       - name: Test
         env:
           SDL_AUDIODRIVER: dummy
+          # Opts the CLI test suite into window automation: with Xvfb and
+          # python3-xlib installed above, the windowed run on a real X
+          # server (render loop, texture updates, clean Escape exit) is
+          # exercised and lands in this job's coverage. Sanitizer jobs
+          # deliberately leave this off — libGL/libpulse are not
+          # instrumented and only add noise there.
+          SOAR_TEST_X11: "1"
         run: ctest --preset linux-system
 
       - name: Coverage report
