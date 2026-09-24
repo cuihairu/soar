@@ -404,3 +404,22 @@ TEST_CASE("rebinding the event callback redirects delivery") {
   CHECK(log_b.events().size() == frozen_b);
   CHECK(log_a.events().size() == frozen_a);
 }
+
+TEST_CASE("local playback never emits buffering events") {
+  // BufferingStarted/Ended are network-stall signals from the FFmpeg
+  // backend's decode loop. The null backend (and any local-file flow it
+  // stands in for) must never produce them — this pins the contract that
+  // buffering reporting costs local playback nothing.
+  Fixture fx;
+  fx.player.open(soar::MediaSource{"asset://sample"});
+  fx.player.play();
+  fx.player.seek(std::chrono::milliseconds{1000});
+  fx.player.pause();
+  fx.player.seek(std::chrono::milliseconds{2000});
+  fx.player.play();
+  fx.player.stop();
+
+  CHECK(fx.log.countOf(soar::EventType::BufferingStarted) == 0);
+  CHECK(fx.log.countOf(soar::EventType::BufferingEnded) == 0);
+  CHECK(fx.log.countOf(soar::EventType::StateChanged) > 0);
+}

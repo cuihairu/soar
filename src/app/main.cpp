@@ -111,6 +111,10 @@ int main(int argc, char** argv) {
       );
     } else if (e.type == soar::EventType::PositionChanged) {
       fmt::print(stderr, "event: position={}ms\n", e.position.count());
+    } else if (e.type == soar::EventType::BufferingStarted) {
+      fmt::print(stderr, "event: buffering started\n");
+    } else if (e.type == soar::EventType::BufferingEnded) {
+      fmt::print(stderr, "event: buffering ended\n");
     } else if (e.type == soar::EventType::Error) {
       fmt::print(stderr, "event: error={}\n", e.message);
     }

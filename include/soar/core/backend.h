@@ -49,7 +49,12 @@ enum class EventType {
   StateChanged,
   MediaInfoChanged,
   PositionChanged,
-  Error
+  Error,
+  // Network-source progress: the backend stopped receiving data fast
+  // enough to keep playing (BufferingStarted) and resumed doing so
+  // (BufferingEnded). Local media never emits these.
+  BufferingStarted,
+  BufferingEnded
 };
 
 struct Event {

@@ -33,6 +33,11 @@ namespace {
 constexpr std::size_t kMaxVideoQueueFrames = 6;
 constexpr std::size_t kMaxAudioQueueFrames = 32;
 constexpr auto kPositionEmitGranularity = std::chrono::milliseconds(200);
+// Network reads slice into rw_timeout-sized chunks; a timed-out read that
+// eventually succeeds emits one BufferingStarted/BufferingEnded pair, and
+// only a streak longer than kMaxNetworkRetries gives up into Error.
+constexpr std::int64_t kNetworkReadTimeoutUs = 10'000'000; // 10s per IO op
+constexpr int kMaxNetworkRetries = 6;
 
 int ffmpegInterruptCallback(void* opaque) {
   auto* stop_flag = static_cast<std::atomic<bool>*>(opaque);
@@ -1006,7 +1011,15 @@ bool FFmpegBackend::openContext(const std::string& uri, AVFormatContext** out_ct
   ctx->interrupt_callback.callback = &ffmpegInterruptCallback;
   ctx->interrupt_callback.opaque = &should_stop_decoding_;
 
-  int ret = avformat_open_input(&ctx, uri.c_str(), nullptr, nullptr);
+  // Cap each network IO operation so a stalled source turns into
+  // AVERROR(ETIMEDOUT) (handled as buffering in decodeLoop) instead of an
+  // unbounded TCP wait. The URLContext-level option is ignored by local
+  // protocols, which never go through the EAGAIN retry loop.
+  AVDictionary* options = nullptr;
+  av_dict_set(&options, "rw_timeout", std::to_string(kNetworkReadTimeoutUs).c_str(), 0);
+
+  int ret = avformat_open_input(&ctx, uri.c_str(), nullptr, &options);
+  av_dict_free(&options);
   if (ret < 0) {
     avformat_free_context(ctx);
     return fatal(fmt::format("open: failed to open '{}': {}", uri, avError(ret)), /*emit_event=*/false);
@@ -1152,6 +1165,7 @@ void FFmpegBackend::decodeLoop() {
   }
 
   bool fatal_decode_error = false;
+  int network_timeout_streak = 0;
   while (!should_stop_decoding_) {
     // Check for pause/stop
     {
@@ -1209,6 +1223,20 @@ void FFmpegBackend::decodeLoop() {
 
     // Read packet
     int ret = av_read_frame(format_ctx_, packet);
+    if (ret == AVERROR(ETIMEDOUT)) {
+      // The source stalled past rw_timeout. Report buffering once per
+      // stall, keep retrying, and only give up after a long streak.
+      ++network_timeout_streak;
+      if (network_timeout_streak == 1) {
+        emit(Event{EventType::BufferingStarted});
+      }
+      if (network_timeout_streak > kMaxNetworkRetries) {
+        fatal(fmt::format("decodeLoop: network read timed out after {} consecutive timeouts",
+                          kMaxNetworkRetries));
+        break;
+      }
+      continue;
+    }
     if (ret < 0) {
       if (ret == AVERROR_EXIT) {
         break;
@@ -1225,6 +1253,11 @@ void FFmpegBackend::decodeLoop() {
       // Error
       fatal(fmt::format("decodeLoop: av_read_frame failed: {}", avError(ret)));
       break;
+    }
+
+    if (network_timeout_streak > 0) {
+      network_timeout_streak = 0;
+      emit(Event{EventType::BufferingEnded});
     }
 
     // Decode based on stream type

@@ -23,6 +23,13 @@
 #include <thread>
 #include <vector>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 using namespace std::chrono_literals;
 
 namespace {
@@ -49,6 +56,8 @@ struct CountingSink : soar::IEventSink {
   std::atomic<int> media_info_changed{0};
   std::atomic<int> position_changed{0};
   std::atomic<int> errors{0};
+  std::atomic<int> buffering_started{0};
+  std::atomic<int> buffering_ended{0};
 
   void onEvent(const soar::Event& e) override {
     switch (e.type) {
@@ -56,6 +65,8 @@ struct CountingSink : soar::IEventSink {
       case soar::EventType::MediaInfoChanged: ++media_info_changed; break;
       case soar::EventType::PositionChanged: ++position_changed; break;
       case soar::EventType::Error: ++errors; break;
+      case soar::EventType::BufferingStarted: ++buffering_started; break;
+      case soar::EventType::BufferingEnded: ++buffering_ended; break;
     }
   }
 };
@@ -1353,6 +1364,122 @@ TEST_CASE("a mid-stream resolution change rebuilds the video converter") {
 
   backend->stop();
   backend->close();
+}
+
+// Serves a file in two bursts: the first 40% immediately, the rest after a
+// long pause. The client's playback consumes the first burst in a couple of
+// wall-clock seconds, then its reads hang: the backend's rw_timeout (10s)
+// turns each hung read into AVERROR(ETIMEDOUT), which the decode loop
+// reports as BufferingStarted and keeps retrying, and the resumption of
+// data becomes BufferingEnded. The pause must comfortably exceed
+// rw_timeout under any instrumentation slowdown, so it is 40s.
+constexpr const char* kThrottledServerScript = R"PY(
+import sys, time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+with open(sys.argv[1], "rb") as f:
+    data = f.read()
+split = len(data) * 2 // 5
+
+class ThrottledHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data[:split])
+        self.wfile.flush()
+        time.sleep(40)
+        self.wfile.write(data[split:])
+        self.wfile.flush()
+    def log_message(self, *args):
+        pass
+
+HTTPServer(("127.0.0.1", int(sys.argv[2])), ThrottledHandler).serve_forever()
+)PY";
+
+bool httpServerReady(int port) {
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return false;
+  }
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<uint16_t>(port));
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  const bool ready = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+  ::close(fd);
+  return ready;
+}
+
+TEST_CASE("a stalled network source emits buffering events and recovers") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping buffering test");
+    return;
+  }
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping buffering test");
+    return;
+  }
+  const std::string port = std::to_string(15000 + (::getpid() % 2000));
+
+  const pid_t server = ::fork();
+  REQUIRE(server >= 0);
+  if (server == 0) {
+    ::execlp("python3", "python3", "-c", kThrottledServerScript,
+             media.c_str(), port.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  bool ready = false;
+  for (int attempt = 0; attempt < 50 && !ready; ++attempt) {
+    ready = httpServerReady(std::stoi(port));
+    if (!ready) {
+      std::this_thread::sleep_for(100ms);
+    }
+  }
+
+  CountingSink sink;
+  if (!ready) {
+    MESSAGE("throttled HTTP server failed to start; skipping buffering test");
+    ::kill(server, SIGTERM);
+    ::waitpid(server, nullptr, 0);
+    return;
+  }
+
+  {
+    auto backend = soar::makeFFmpegBackend();
+    backend->setEventSink(&sink);
+    REQUIRE(backend->open(soar::MediaSource{"http://127.0.0.1:" + port + "/" +
+                                            media.substr(media.find_last_of('/') + 1)}));
+    REQUIRE(backend->play());
+
+    // Playback drains the first burst within seconds, then reads hang for
+    // the rest of the server's pause. Under heavy instrumentation the drain
+    // itself can take tens of seconds, hence the generous windows; data
+    // resumption ends the wait early elsewhere.
+    const auto deadline = std::chrono::steady_clock::now() + 240s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           sink.buffering_ended.load() == 0) {
+      std::this_thread::sleep_for(100ms);
+    }
+
+    backend->stop();
+    backend->close();
+  }
+
+  ::kill(server, SIGTERM);
+  ::waitpid(server, nullptr, 0);
+
+  CHECK(sink.buffering_started.load() >= 1);
+  CHECK(sink.buffering_ended.load() >= 1);
+  CHECK(sink.errors.load() == 0);
+#endif
 }
 
 #else // !SOAR_WITH_FFMPEG
