@@ -225,23 +225,32 @@ jobs:
           # The decode threads make gcov's branch counters go negative
           # (GCC bug 68080), which gcovr refuses to parse. Ignore those
           # branch lines; the line data itself is intact.
-          # Branch coverage is reported alongside line coverage: a file at
-          # 100% line coverage can still take only one side of its
-          # conditions, which is exactly the gap line numbers hide.
           # The fail-under gates lock in the reached levels (line 89.8%,
-          # branch 75.9% at 7d9f85a, the ceiling for this codebase) with
+          # branch 76.0% at 7eee9dc, the ceiling for this codebase) with
           # slack for the ±1-2 line gcov counter jitter, so a regression
           # fails here instead of slipping in silently.
-          gcovr --root . --filter src --filter include --branches \
+          # Two text reports because gcovr's txt output shows one metric
+          # at a time: the branch table carries the gate, the line table
+          # lands in the artifact for gap analysis. A 100%-line file can
+          # still take only one side of its conditions, which is exactly
+          # what the line numbers alone would hide.
+          gcovr --root . --filter src --filter include \
+            --txt coverage.txt --txt-metric branch \
             --exclude-throw-branches \
             --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
             --fail-under-line 89.4 --fail-under-branch 75.0 \
-            --txt coverage.txt --print-summary
-          cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
+            --print-summary > gcovr-summary.txt
+          cat gcovr-summary.txt
+          gcovr --root . --filter src --filter include \
+            --txt coverage-lines.txt --txt-metric line \
+            --gcov-ignore-parse-errors negative_hits.warn_once_per_file
+          cat gcovr-summary.txt coverage.txt >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: coverage.txt
+          path: |
+            coverage.txt
+            coverage-lines.txt
 
