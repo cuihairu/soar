@@ -143,6 +143,13 @@ private:
   static int64_t toAVTimestamp(std::chrono::milliseconds ms, AVRational time_base);
   std::string avError(int errnum);
 
+  // Interrupt callback installed on every AVFormatContext (openContext).
+  // Runs on the decode thread inside FFmpeg's IO poll loop: honors stop(),
+  // and while a media read is in flight doubles as the network stall
+  // watchdog — reports buffering, aborts the read past the tolerance
+  // window (decodeLoop tells that abort apart from stop()).
+  static int ffmpegInterruptCallback(void* opaque);
+
   // Event emission. emit_event=false records the error/state without
   // emitting, for code paths that already hold decode_mutex_ (events are
   // always emitted outside that lock so user callbacks may re-enter).
@@ -203,6 +210,16 @@ private:
   // Decoding thread
   std::thread decode_thread_;
   std::atomic<bool> should_stop_decoding_{false};
+
+  // Network stall watchdog, driven by ffmpegInterruptCallback() from inside
+  // FFmpeg's IO poll loop: the decode thread timestamps each media read,
+  // the callback reports a quiet source (BufferingStarted) and aborts the
+  // read only once the quiet window passes the stall tolerance — aborting
+  // earlier would kill the connection instead of letting it recover.
+  std::atomic<std::chrono::milliseconds::rep> network_read_started_ms_{0};
+  std::atomic<bool> network_stall_reported_{false};
+  std::atomic<bool> network_stall_exceeded_{false};
+
   std::condition_variable decode_cv_;
   std::mutex decode_mutex_;
 

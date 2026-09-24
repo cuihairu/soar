@@ -64,7 +64,7 @@
 | 阶段 | 内容 | 量级 |
 |---|---|---|
 | **P0 基线冒烟** | 验证现状：本地 HTTP 服务 + `--backend=ffmpeg http://...` 顺序播放、Range seek、断流行为；修发现的坑 | 小 |
-| **P1 缓冲感知** ✅ | 核心事件模型加 `BufferingStarted`/`BufferingEnded` 事件（不动状态机）；AVIO 层 `rw_timeout`（10s）切片长阻塞，超时重试上报缓冲、连续超限进 Error；慢速 HTTP fixture 用例实证 | ✅ 完成 |
+| **P1 缓冲感知** ✅ | 核心事件模型加 `BufferingStarted`/`BufferingEnded` 事件（不动状态机）；AVIO 中断回调作网络卡顿看门狗：读停顿超 10s 上报缓冲、超 60s 容忍才中止进 Error（不主动断连，慢源在同一连接上自愈）；慢速 HTTP fixture 用例实证 | ✅ 完成 |
 | **P2 自适应协议** | HLS/DASH/RTSP——FFmpeg demuxer 原生支持，主要是 fixture 与多码率 variant 选择 | 中 |
 | **P3 边下边存** | 自定义 AVIO 层：下载落盘本地缓存、播放从缓存读、seek 到未下载段发 Range 请求、断点续播、UI 下载进度 | 中高 |
 | **P4 P2P** | libtorrent（BSD，合规无冲突）做 piece 顺序优先下载；或本地 HTTP 代理桥接（BT 流伪装成 `http://localhost:port/`，FFmpeg 后端零改动） | 高 |

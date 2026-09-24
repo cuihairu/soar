@@ -33,19 +33,13 @@ namespace {
 constexpr std::size_t kMaxVideoQueueFrames = 6;
 constexpr std::size_t kMaxAudioQueueFrames = 32;
 constexpr auto kPositionEmitGranularity = std::chrono::milliseconds(200);
-// Network reads slice into rw_timeout-sized chunks; a timed-out read that
-// eventually succeeds emits one BufferingStarted/BufferingEnded pair, and
-// only a streak longer than kMaxNetworkRetries gives up into Error.
-constexpr std::int64_t kNetworkReadTimeoutUs = 10'000'000; // 10s per IO op
-constexpr int kMaxNetworkRetries = 6;
-
-int ffmpegInterruptCallback(void* opaque) {
-  auto* stop_flag = static_cast<std::atomic<bool>*>(opaque);
-  if (!stop_flag) {
-    return 0;
-  }
-  return stop_flag->load() ? 1 : 0;
-}
+// Network stall watchdog: a read that stays quiet longer than
+// kNetworkStallReportMs reports BufferingStarted, and only a stall past
+// kNetworkStallLimitMs aborts the read into Error. The abort deliberately
+// waits out the tolerance window because killing a read kills the
+// connection; a merely slow source recovers on the same socket.
+constexpr auto kNetworkStallReportMs = std::chrono::milliseconds(10'000);
+constexpr auto kNetworkStallLimitMs = std::chrono::milliseconds(60'000);
 
 std::string dictValue(AVDictionary* dict, const char* key) {
   if (!dict || !key) {
@@ -1002,24 +996,52 @@ bool FFmpegBackend::disableSubtitles() {
 // FFmpeg Context Management
 //=============================================================================
 
+int FFmpegBackend::ffmpegInterruptCallback(void* opaque) {
+  auto* self = static_cast<FFmpegBackend*>(opaque);
+  if (!self) {
+    return 0;
+  }
+  if (self->should_stop_decoding_.load()) {
+    return 1;
+  }
+  const auto started_ms = self->network_read_started_ms_.load();
+  if (started_ms == 0) {
+    // Not inside a watched media read (open/probe phase, paused, or between
+    // reads): keep the pre-existing stop-only behavior.
+    return 0;
+  }
+  const auto quiet = std::chrono::steady_clock::now().time_since_epoch() -
+                     std::chrono::milliseconds(started_ms);
+  if (quiet >= kNetworkStallLimitMs) {
+    // Out of tolerance: abort this read. decodeLoop tells this apart from
+    // a plain stop() via network_stall_exceeded_.
+    self->network_stall_exceeded_.store(true);
+    return 1;
+  }
+  if (quiet >= kNetworkStallReportMs) {
+    // Quiet but still within tolerance: report buffering once per read and
+    // keep waiting — FFmpeg keeps polling the same, still-open connection.
+    if (!self->network_stall_reported_.exchange(true)) {
+      self->emit(Event{EventType::BufferingStarted});
+    }
+  }
+  return 0;
+}
+
 bool FFmpegBackend::openContext(const std::string& uri, AVFormatContext** out_ctx) {
   AVFormatContext* ctx = avformat_alloc_context();
   if (!ctx) {
     return fatal("open: failed to allocate format context", /*emit_event=*/false);
   }
 
+  // The interrupt callback doubles as the network stall watchdog (see
+  // ffmpegInterruptCallback): during media reads it reports a quiet source
+  // and aborts only past the tolerance window, so a stalled network source
+  // surfaces as buffering events instead of a silent hang.
   ctx->interrupt_callback.callback = &ffmpegInterruptCallback;
-  ctx->interrupt_callback.opaque = &should_stop_decoding_;
+  ctx->interrupt_callback.opaque = this;
 
-  // Cap each network IO operation so a stalled source turns into
-  // AVERROR(ETIMEDOUT) (handled as buffering in decodeLoop) instead of an
-  // unbounded TCP wait. The URLContext-level option is ignored by local
-  // protocols, which never go through the EAGAIN retry loop.
-  AVDictionary* options = nullptr;
-  av_dict_set(&options, "rw_timeout", std::to_string(kNetworkReadTimeoutUs).c_str(), 0);
-
-  int ret = avformat_open_input(&ctx, uri.c_str(), nullptr, &options);
-  av_dict_free(&options);
+  int ret = avformat_open_input(&ctx, uri.c_str(), nullptr, nullptr);
   if (ret < 0) {
     avformat_free_context(ctx);
     return fatal(fmt::format("open: failed to open '{}': {}", uri, avError(ret)), /*emit_event=*/false);
@@ -1165,7 +1187,11 @@ void FFmpegBackend::decodeLoop() {
   }
 
   bool fatal_decode_error = false;
-  int network_timeout_streak = 0;
+  // Start each session with clean network-watchdog state (a previous
+  // session may have aborted mid-read).
+  network_read_started_ms_.store(0);
+  network_stall_reported_.store(false);
+  network_stall_exceeded_.store(false);
   while (!should_stop_decoding_) {
     // Check for pause/stop
     {
@@ -1221,24 +1247,26 @@ void FFmpegBackend::decodeLoop() {
       }
     }
 
-    // Read packet
+    // Read packet. Timestamp the read so the interrupt callback — called
+    // from FFmpeg's network poll loop while this blocks — can watch for a
+    // stalled source (report buffering, abort past the tolerance window).
+    network_read_started_ms_.store(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
     int ret = av_read_frame(format_ctx_, packet);
-    if (ret == AVERROR(ETIMEDOUT)) {
-      // The source stalled past rw_timeout. Report buffering once per
-      // stall, keep retrying, and only give up after a long streak.
-      ++network_timeout_streak;
-      if (network_timeout_streak == 1) {
-        emit(Event{EventType::BufferingStarted});
-      }
-      if (network_timeout_streak > kMaxNetworkRetries) {
-        fatal(fmt::format("decodeLoop: network read timed out after {} consecutive timeouts",
-                          kMaxNetworkRetries));
-        break;
-      }
-      continue;
+    network_read_started_ms_.store(0);
+    if (ret == 0 && network_stall_reported_.exchange(false)) {
+      // Data resumed after at least one reported quiet window.
+      emit(Event{EventType::BufferingEnded});
     }
     if (ret < 0) {
       if (ret == AVERROR_EXIT) {
+        // stop() or the stall watchdog aborted the read; the exceeded flag
+        // tells them apart.
+        if (network_stall_exceeded_.exchange(false)) {
+          fatal("decodeLoop: network source stalled beyond tolerance");
+        }
         break;
       }
       if (ret == AVERROR_EOF) {
@@ -1253,11 +1281,6 @@ void FFmpegBackend::decodeLoop() {
       // Error
       fatal(fmt::format("decodeLoop: av_read_frame failed: {}", avError(ret)));
       break;
-    }
-
-    if (network_timeout_streak > 0) {
-      network_timeout_streak = 0;
-      emit(Event{EventType::BufferingEnded});
     }
 
     // Decode based on stream type
