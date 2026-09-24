@@ -173,6 +173,33 @@ rm -f "$media_dir/dual_aac_base.mkv"
 head -c 64 "$media_dir/sample_dual_audio.mkv" > "$media_dir/trunc_tiny.mkv"
 head -c 512 "$media_dir/sample_dual_audio.mkv" > "$media_dir/trunc_mid.mkv"
 
+# Adaptive-protocol fixtures (docs/mvp.md §5 P2): HLS and DASH synthesized
+# straight from lavfi with AAC audio. The audio must be encoded, not
+# copied: PCM cannot live in MPEG-TS, so a -c copy of the PCM fixture
+# yields segments that carry only a bin_data track and the backend's open
+# fails with "no video or audio stream found". Segment references inside
+# the playlists are relative, matching the http.server --directory tests.
+mkdir -p "$media_dir/hls_hi" "$media_dir/hls_lo" "$media_dir/dash_audio"
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i sine=frequency=440 \
+  -t 6 -c:a aac -b:a 128k \
+  -f hls -hls_time 2 -hls_list_size 0 \
+  -hls_segment_filename "$media_dir/hls_hi/seg%d.ts" \
+  "$media_dir/hls_hi/index.m3u8"
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i sine=frequency=440 \
+  -t 6 -c:a aac -b:a 48k -ac 1 \
+  -f hls -hls_time 2 -hls_list_size 0 \
+  -hls_segment_filename "$media_dir/hls_lo/seg%d.ts" \
+  "$media_dir/hls_lo/index.m3u8"
+printf '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=200000,CODECS="mp4a.40.2"\nhls_hi/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=60000,CODECS="mp4a.40.2"\nhls_lo/index.m3u8\n' \
+  > "$media_dir/master.m3u8"
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i sine=frequency=440 \
+  -t 6 -c:a aac -b:a 96k \
+  -f dash -seg_duration 2 \
+  "$media_dir/dash_audio/manifest.mpd"
+
 echo "SOAR_TEST_MEDIA=$media_dir/sample_dual_audio.mkv"
 echo "SOAR_TEST_AUDIO_ONLY=$media_dir/audio_only.mkv"
 echo "SOAR_TEST_SUBS_MEDIA=$media_dir/subs_media.mkv"
@@ -185,3 +212,6 @@ echo "SOAR_TEST_TRUNCATED_MID=$media_dir/trunc_mid.mkv"
 echo "SOAR_TEST_UNKNOWN_AUDIO=$media_dir/unknown_audio.mkv"
 echo "SOAR_TEST_AUDIO_REJECT=$media_dir/audio_reject.mkv"
 echo "SOAR_TEST_UNKNOWN_AUDIO_DUAL=$media_dir/unknown_audio_dual.mkv"
+echo "SOAR_TEST_HLS_MEDIA=$media_dir/hls_hi/index.m3u8"
+echo "SOAR_TEST_HLS_MASTER=$media_dir/master.m3u8"
+echo "SOAR_TEST_DASH_AUDIO=$media_dir/dash_audio/manifest.mpd"

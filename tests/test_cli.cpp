@@ -236,6 +236,65 @@ RunResult runCli(const std::vector<std::string>& args) {
   return result;
 }
 
+// Shared by the adaptive-protocol (HLS/DASH) cases: fork a python3
+// http.server rooted at dir, wait until it accepts connections, run the
+// headless CLI against http://127.0.0.1:<port><url_path>, and reap the
+// server. skipped marks the environment gaps (no python3 / server never
+// came up) that callers turn into skip MESSAGEs; the fixture checks stay
+// in the test cases so mac/win runners without fixtures skip first.
+struct HttpCliRun {
+  RunResult cli;
+  bool skipped = false;
+};
+
+HttpCliRun runHeadlessOverHttpDir(const std::string& dir, const std::string& url_path,
+                                  int port_base) {
+  HttpCliRun result;
+  result.skipped = true; // until the server is up and the CLI has run
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    return result;
+  }
+  const std::string port = std::to_string(port_base + (::getpid() % 2000));
+
+  const pid_t server = ::fork();
+  REQUIRE(server >= 0);
+  if (server == 0) {
+    ::execlp("python3", "python3", "-m", "http.server", port.c_str(),
+             "--bind", "127.0.0.1", "--directory", dir.c_str(),
+             static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  // Wait until the server accepts connections before pointing the CLI at it.
+  bool ready = false;
+  for (int attempt = 0; attempt < 40 && !ready; ++attempt) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+      sockaddr_in addr{};
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(static_cast<uint16_t>(std::stoi(port)));
+      addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      ready = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+      ::close(fd);
+    }
+    if (!ready) {
+      ::usleep(100 * 1000);
+    }
+  }
+  if (!ready) {
+    ::kill(server, SIGTERM);
+    ::waitpid(server, nullptr, 0);
+    return result;
+  }
+
+  result.cli = runCli({"--headless", "--backend=ffmpeg",
+                       "http://127.0.0.1:" + port + url_path});
+  result.skipped = false;
+  ::kill(server, SIGTERM);
+  ::waitpid(server, nullptr, 0);
+  return result;
+}
+
 } // namespace
 
 TEST_CASE("no arguments prints usage and exits with 2") {
@@ -587,6 +646,107 @@ TEST_CASE("headless FFmpeg run over local HTTP server plays network source") {
   }
   CHECK(run.exit_code == 0);
   CHECK(run.output.find("=== Media Info ===") != std::string::npos);
+#endif
+}
+
+TEST_CASE("headless FFmpeg run over local HTTP server plays an HLS media playlist") {
+  // Adaptive-protocol roadmap (docs/mvp.md §5 P2): an HLS media playlist
+  // streams through the same URL pass-through as a plain file — the hls
+  // demuxer fetches the relative segments from the same server with no
+  // dedicated plumbing in the backend. The fixture is AAC: PCM cannot be
+  // muxed into MPEG-TS, so segments would carry no playable stream.
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_HLS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_HLS_MEDIA not set; skipping");
+    return;
+  }
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  (void)media;
+  return;
+#else
+  const auto slash = media.find_last_of('/');
+  const std::string dir = (slash == std::string::npos) ? std::string(".") : media.substr(0, slash);
+  const std::string name = (slash == std::string::npos) ? media : media.substr(slash + 1);
+  auto run = runHeadlessOverHttpDir(dir, "/" + name, 18200);
+  if (run.skipped) {
+    MESSAGE("local HTTP server unavailable; skipping");
+    return;
+  }
+  if (run.cli.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    return;
+  }
+  CHECK(run.cli.exit_code == 0);
+  CHECK(run.cli.output.find("=== Media Info ===") != std::string::npos);
+  CHECK(run.cli.output.find("Duration: 6") != std::string::npos);
+#endif
+}
+
+TEST_CASE("headless FFmpeg run over local HTTP server plays a multi-variant HLS master playlist") {
+  // The master playlist references two variants (128k stereo, 48k mono).
+  // Which variants FFmpeg exposes as streams and which one it plays is
+  // demuxer-internal and version-dependent (FFmpeg surfaces both today),
+  // so the assertion pins playability and a track listing, not the
+  // variant count (docs/coverage-notes.md §3.3).
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_HLS_MASTER", media)) {
+    MESSAGE("SOAR_TEST_HLS_MASTER not set; skipping");
+    return;
+  }
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  (void)media;
+  return;
+#else
+  const auto slash = media.find_last_of('/');
+  const std::string dir = (slash == std::string::npos) ? std::string(".") : media.substr(0, slash);
+  const std::string name = (slash == std::string::npos) ? media : media.substr(slash + 1);
+  auto run = runHeadlessOverHttpDir(dir, "/" + name, 18300);
+  if (run.skipped) {
+    MESSAGE("local HTTP server unavailable; skipping");
+    return;
+  }
+  if (run.cli.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    return;
+  }
+  CHECK(run.cli.exit_code == 0);
+  CHECK(run.cli.output.find("=== Media Info ===") != std::string::npos);
+  CHECK(run.cli.output.find("Tracks: ") != std::string::npos);
+#endif
+}
+
+TEST_CASE("headless FFmpeg run over local HTTP server plays a DASH manifest") {
+  // DASH joins HLS on the same pass-through: the dash demuxer parses the
+  // MPD and fetches init/segment m4s from the same server. Needs
+  // FFmpeg's dash demuxer (libxml2) — the apt builds on CI and the local
+  // vcpkg-adjacent build both carry it.
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_DASH_AUDIO", media)) {
+    MESSAGE("SOAR_TEST_DASH_AUDIO not set; skipping");
+    return;
+  }
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  (void)media;
+  return;
+#else
+  const auto slash = media.find_last_of('/');
+  const std::string dir = (slash == std::string::npos) ? std::string(".") : media.substr(0, slash);
+  const std::string name = (slash == std::string::npos) ? media : media.substr(slash + 1);
+  auto run = runHeadlessOverHttpDir(dir, "/" + name, 18400);
+  if (run.skipped) {
+    MESSAGE("local HTTP server unavailable; skipping");
+    return;
+  }
+  if (run.cli.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    return;
+  }
+  CHECK(run.cli.exit_code == 0);
+  CHECK(run.cli.output.find("=== Media Info ===") != std::string::npos);
+  CHECK(run.cli.output.find("Duration: 6") != std::string::npos);
 #endif
 }
 
