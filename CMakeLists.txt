@@ -23,7 +23,7 @@ target_include_directories(soar_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
-target_compile_features(soar_core PUBLIC cxx_std_17)
+target_compile_features(soar_core PUBLIC cxx_std_23)
 
 find_package(fmt CONFIG REQUIRED)
 target_link_libraries(soar_core PUBLIC fmt::fmt)
@@ -57,7 +57,7 @@ endif()
 
 if(SOAR_BUILD_APP)
   add_executable(soar src/app/main.cpp)
-  target_compile_features(soar PRIVATE cxx_std_17)
+  target_compile_features(soar PRIVATE cxx_std_23)
   target_link_libraries(soar PRIVATE soar::core)
 
   if(SOAR_ENABLE_SDL2)

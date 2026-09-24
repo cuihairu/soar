@@ -1,9 +1,24 @@
+<div align="center">
+
+<img src="assets/logo.svg" width="140" alt="Soar logo" />
+
 # Soar — Universal Media Player
 
-> **万般格式，任其翱翔。**
-> Soar 是一个用 C++17 从零打造的万能格式开源播放器：一套干净的核心播放抽象（Playback Abstraction），配上 FFmpeg 后端，把"能想到的格式都放得出来"作为长期目标。
+**万般格式，任其翱翔。**
+
+Soar 是一个用 C++23 从零打造的万能格式开源播放器：一套干净的核心播放抽象（Playback Abstraction），配上 FFmpeg 后端，把"能想到的格式都放得出来"作为长期目标。
 
 [![ci](https://github.com/cuihairu/soar/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/soar/actions/workflows/ci.yml)
+[![C++](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/23)
+[![license](https://img.shields.io/github/license/cuihairu/soar)](LICENSE)
+[![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/cuihairu/soar/actions/workflows/ci.yml)
+[![cmake](https://img.shields.io/badge/CMake-3.20%2B-064F8C?logo=cmake&logoColor=white)](https://cmake.org)
+[![ffmpeg](https://img.shields.io/badge/FFmpeg-decode%20%2B%20demux-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
+[![sdl2](https://img.shields.io/badge/SDL2-render%20%2B%20audio-173353)](https://wiki.libsdl.org)
+
+[文档](https://github.com/cuihairu/soar/tree/main/docs) · [构建指南](docs/build.md) · [路线图](docs/mvp.md)
+
+</div>
 
 ## 为什么做 Soar
 

@@ -57,3 +57,8 @@ vcpkg-configuration.json
 
 # Codex spec workflow artifacts
 .spec-workflow/
+
+# Node / VitePress (docs site)
+node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
