@@ -242,6 +242,9 @@ RunResult runCli(const std::vector<std::string>& args) {
 // server. skipped marks the environment gaps (no python3 / server never
 // came up) that callers turn into skip MESSAGEs; the fixture checks stay
 // in the test cases so mac/win runners without fixtures skip first.
+// POSIX-only (fork/execlp): the Windows branches of those cases skip and
+// never reference it.
+#ifndef _WIN32
 struct HttpCliRun {
   RunResult cli;
   bool skipped = false;
@@ -294,6 +297,7 @@ HttpCliRun runHeadlessOverHttpDir(const std::string& dir, const std::string& url
   ::waitpid(server, nullptr, 0);
   return result;
 }
+#endif // !_WIN32
 
 } // namespace
 
