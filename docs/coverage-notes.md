@@ -50,8 +50,8 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ### 3.4 场景不可构造（成本/稳定性不成比例）
 
-- **`av_read_frame` 失败（1226 行）**：本地文件的 demuxer 把一切结构损坏宽容化为 EOF；网络流断开需要起本地服务并中途 kill，端口与 CI 稳定性风险不成比例。
-- **`AVERROR_EXIT` 出口（1214 行）**：`av_read_frame` 只在 AVIO 中断回调（`AVIOInterruptCB`）返回中止时产生此错误，产品代码从不设置该回调——无触发源，与 1226 同属 demux 读路径的不可构造出口。
+- **`av_read_frame` 失败（1226 行）**：本地文件的 demuxer 把一切结构损坏宽容化为 EOF；网络流断开原记录为"需要起本地服务并中途 kill，成本不成比例"。随网络播放路线（docs/mvp.md §5 P0）启动，本地 HTTP 服务 fixture 已进入测试基建（P0 冒烟用例覆盖 http URL happy path），断流中途注入在后续网络功能深入时补测。
+- **`AVERROR_EXIT` 出口（1214 行，竞争窄弧——2026-09-24 修正定性）**：此前记录为"无触发源"是**错误证伪**：产品代码在 open 时设置了 `interrupt_callback`（`ffmpeg_backend.cpp:1006`，opaque 为 `should_stop_decoding_`），stop() 置位后 FFmpeg 会中止阻塞中的 `av_read_frame` 并返回 `AVERROR_EXIT` → 1214 行静默 break（不报错，与 EOF/错误分支并列的第三种退出，stop 打断慢 IO 的正确语义）。之所以至今 missing：本地文件的 `av_read_frame` 微秒级返回，stop 恰落在阻塞中的窗口极窄，现有数百次 stop 序列零命中。网络/慢介质流下该窗口显著变宽——网络播放（mvp.md §5）落地后应能自然覆盖。
 - **seek 内部失败的 Error 事件（722/732-733/1187/1771/1830-1837 行）**：需要 `avformat_seek_file` 在可 seek 的本地文件上失败——它对合法位置总是成功；不可 seek 的流在 `seek()` 更早的分支就被直接处理，走不到这里。`applyPendingAudioTrack` 的 seek 失败回滚（1830-1837）与 `seekToTimestamp` 自身的失败出口（1771）同源。注入自定义 AVIO 才能命中，超出测试基建范围。
 - **stop 中断 read 的时序分支（39/42 行）与 decodeLoop 的 stop break（1167-1168 行）**：都要求在解码线程恰好处于特定等待点时打断它。1167-1168 已做专门证伪：Paused 态线程恒驻 `waitForPresentationTime` 内部的 wait（1393/1409），所有 stop 路径经其返回 false → drain 循环条件 → decodeLoop 循环条件退出，1167-1168 被结构性跳过；唯一命中窗口是 pause/stop 恰落在"线程回 1159 且谓词已为 false"的微秒级竞争里，现有数百次 stop 序列（headless CLI、pause 用例、open/close storm）零命中。时序敏感，flake 风险大于覆盖收益。
 - **帧队列溢出丢帧（1319-1321/1337-1339 行，结构性）**：解码产出与 drain 消费在**同一个线程**串行（1296 每包调用 drain，drain 阻塞消费期间解码线程自己也被阻塞），而每个 packet 在 send/receive 循环里至多产出 1-2 帧（B 帧延迟跨包累计 ≤3）——队列深度物理上到不了 6/32 的上限。只有把产出挪到独立线程才会可达。

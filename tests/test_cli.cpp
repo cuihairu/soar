@@ -27,7 +27,10 @@
 #  define SOAR_POPEN _popen
 #  define SOAR_PCLOSE _pclose
 #else
+#  include <arpa/inet.h>
+#  include <netinet/in.h>
 #  include <signal.h>
+#  include <sys/socket.h>
 #  include <sys/stat.h>
 #  include <sys/wait.h>
 #  include <unistd.h>
@@ -511,6 +514,80 @@ TEST_CASE("headless FFmpeg run over subtitle-free media skips track selection") 
   }
   CHECK(run.exit_code == 0);
   CHECK(run.output.find("=== Media Info ===") != std::string::npos);
+}
+
+TEST_CASE("headless FFmpeg run over local HTTP server plays network source") {
+  // First step of the network-playback roadmap (docs/mvp.md §5 P0): prove
+  // that a plain http:// URL streams end to end through the FFmpeg backend
+  // with no dedicated plumbing — avformat_open_input takes URLs as-is.
+  // python http.server sends no Range replies, so the source reports
+  // seekable=false, which also drives the headless flow's non-seekable
+  // branch (main.cpp's mediaInfo().seekable guard) that no local file
+  // reaches. POSIX-only: the server is a forked python3 sibling.
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping");
+    return;
+  }
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  (void)media;
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping");
+    return;
+  }
+  const auto slash = media.find_last_of('/');
+  const std::string dir = (slash == std::string::npos) ? std::string(".") : media.substr(0, slash);
+  const std::string name = (slash == std::string::npos) ? media : media.substr(slash + 1);
+  const std::string port = std::to_string(18000 + (::getpid() % 2000));
+
+  const pid_t server = ::fork();
+  REQUIRE(server >= 0);
+  if (server == 0) {
+    ::execlp("python3", "python3", "-m", "http.server", port.c_str(),
+             "--bind", "127.0.0.1", "--directory", dir.c_str(),
+             static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  // Wait until the server accepts connections before pointing the CLI at it.
+  bool ready = false;
+  for (int attempt = 0; attempt < 40 && !ready; ++attempt) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+      sockaddr_in addr{};
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(static_cast<uint16_t>(std::stoi(port)));
+      addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      ready = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+      ::close(fd);
+    }
+    if (!ready) {
+      ::usleep(100 * 1000);
+    }
+  }
+
+  if (!ready) {
+    MESSAGE("local HTTP server failed to start; skipping");
+    ::kill(server, SIGTERM);
+    ::waitpid(server, nullptr, 0);
+    return;
+  }
+
+  const auto run = runCli({"--headless", "--backend=ffmpeg",
+                           "http://127.0.0.1:" + port + "/" + name});
+  ::kill(server, SIGTERM);
+  ::waitpid(server, nullptr, 0);
+
+  if (run.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    return;
+  }
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("=== Media Info ===") != std::string::npos);
+#endif
 }
 
 TEST_CASE("ffmpeg request degrades gracefully when unavailable") {
