@@ -15,16 +15,16 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ## 2. 当前水位与门禁
 
-| 维度 | 实测（e24000c） | 门禁（`--fail-under-*`） |
+| 维度 | 实测（627f3b9） | 门禁（`--fail-under-*`） |
 |---|---|---|
-| 行 | 93.5%（1315/1407） | 92.9%（容 ~5 行抖动） |
-| 分支 | 82.1%（1001/1219） | 80.6%（容 ~7 分支抖动） |
+| 行 | 93.4%（1314/1407） | 92.9%（容 ~5 行抖动） |
+| 分支 | 81.5%（993/1219） | 80.6%（容 ~7 分支抖动） |
 
-分文件行覆盖：`main.cpp` 96%（135/140，SDL 窗口块经 Xvfb 用例覆盖后）、`ffmpeg_backend.cpp` 92%（1001/1088）、`null_backend.cpp` 100%、`player.cpp` 100%。
+分文件行覆盖：`main.cpp` 96%（134/140）、`ffmpeg_backend.cpp` 92%（1001/1088）、`null_backend.cpp` 100%、`player.cpp` 100%。
 
-分文件分支覆盖：`main.cpp` 88%、`player.cpp` 90%、`ffmpeg_backend.cpp` 80%、`null_backend.cpp` 79%。
+分文件分支覆盖：`main.cpp` 85%、`player.cpp` 90%、`ffmpeg_backend.cpp` 81%、`null_backend.cpp` 79%。
 
-余量按观测到的最差轮取：窗口测试的并发解码负载会让 backend 时序弧逐轮翻转，而 gcov 多线程计数损坏（见 §1）曾把已执行的行连续两轮报成 missing（实测低点行 1312 / 分支 988），门禁卡在低点之下、正常轮之上。
+余量按观测到的最差轮取：窗口测试的并发解码负载会让 backend 时序弧逐轮翻转（实测分支低点 988、行低点 1312；627f3b9 一轮在新增 4 个 main.cpp 弧的同时翻转掉了 6 个 backend 时序弧，净 -2），而 gcov 多线程计数损坏（见 §1）曾把已执行的行连续两轮报成 missing。门禁卡在低点之下、正常轮之上。
 
 门禁随实测水位同步上抬：测试合入、数字上涨后，把阈值抬到“实测值下方留出抖动余量”的位置，让回退被 CI 自动拦截。
 
@@ -39,6 +39,7 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 - **OOM 分支（约 41 行）**：`av_mallocz` / `av_frame_alloc` / `SDL_AllocAudioStream` 等失败路径，只能用 interpose/mock 注入失败，会污染真实库行为，与“测真实链路”矛盾。
 - **SDL 音频设备打开失败（8 行）**：`ensureOpen` 把声道数钳制到 1-8（`ffmpeg_backend.cpp:147`）、频率有 `SDL_AUDIO_ALLOW_FREQUENCY_CHANGE`，合法参数下 `SDL_OpenAudioDevice` 只有在无音频设备时才失败；dummy 驱动永不失败。构造真实拒绝（如 16 声道文件）会被 clamp 化解。
+- **不变量短路弧（分支残余）**：`streams[id]` 存在则 `codecpar` 必存在（849 的复合条件中段）、选中的流必有已建 decoder（380-382 的 `&& decoder_` 侧）、解码帧的 pts 恒有效（1252/1283/1569 的 `AV_NOPTS_VALUE` 三元）——都是容器/解码器契约保证下不可达的防御弧。
 
 ### 3.3 版本依赖行为（随 FFmpeg 版本翻转，断言不钉阶段）
 
@@ -50,9 +51,13 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 ### 3.4 场景不可构造（成本/稳定性不成比例）
 
 - **`av_read_frame` 失败（1226 行）**：本地文件的 demuxer 把一切结构损坏宽容化为 EOF；网络流断开需要起本地服务并中途 kill，端口与 CI 稳定性风险不成比例。
-- **seek 内部失败的 Error 事件（732-733 行）**：需要 `avformat_seek_file` 在可 seek 的本地文件上失败——它对合法位置总是成功；不可 seek 的流在 `seek()` 更早的分支就被直接处理，走不到这里。注入自定义 AVIO 才能命中，超出测试基建范围。
-- **stop 中断 read 的时序分支（39/42 行）**：需要在解码线程阻塞在读调用时精确打断，时序敏感，flake 风险大于覆盖收益。
-- **`main.cpp` 的 SDL 窗口块残余（96% 行 / 88% 分支）**：窗口块主体已被两条确定性路径覆盖——dummy 视频驱动必然无加速渲染器，覆盖 renderer 失败分支；SOAR_TEST_X11 门控的 Xvfb + XTEST Escape 用例把渲染循环跑到干净退出（CLI 事件流证实播放到 Ended，纹理随分辨率变化重建）。行残余缺口：`SDL_CreateWindow` 失败（175-177，dummy/Xvfb 下建窗必成功）、`SDL_QUIT` 分支（198，无窗口管理器就没有关闭事件，QUIT 也无法像按键那样从进程外注入）、`SDL_CreateTexture` 失败打印（225，合法尺寸不失败）。分支残余是短路弧：`SDL_QueryTexture` 失败侧、纹理重建里 `!texture` 的 false 侧（重建时旧纹理已损坏，不构造）。
+- **seek 内部失败的 Error 事件（722/732-733/1187/1771/1830-1837 行）**：需要 `avformat_seek_file` 在可 seek 的本地文件上失败——它对合法位置总是成功；不可 seek 的流在 `seek()` 更早的分支就被直接处理，走不到这里。`applyPendingAudioTrack` 的 seek 失败回滚（1830-1837）与 `seekToTimestamp` 自身的失败出口（1771）同源。注入自定义 AVIO 才能命中，超出测试基建范围。
+- **stop 中断 read 的时序分支（39/42 行）与 decodeLoop 的 stop break（1167-1168 行）**：都要求在解码线程恰好处于特定等待点时打断它。1167-1168 已做专门证伪：Paused 态线程恒驻 `waitForPresentationTime` 内部的 wait（1393/1409），所有 stop 路径经其返回 false → drain 循环条件 → decodeLoop 循环条件退出，1167-1168 被结构性跳过；唯一命中窗口是 pause/stop 恰落在"线程回 1159 且谓词已为 false"的微秒级竞争里，现有数百次 stop 序列（headless CLI、pause 用例、open/close storm）零命中。时序敏感，flake 风险大于覆盖收益。
+- **帧队列溢出丢帧（1319-1321/1337-1339 行，结构性）**：解码产出与 drain 消费在**同一个线程**串行（1296 每包调用 drain，drain 阻塞消费期间解码线程自己也被阻塞），而每个 packet 在 send/receive 循环里至多产出 1-2 帧（B 帧延迟跨包累计 ≤3）——队列深度物理上到不了 6/32 的上限。只有把产出挪到独立线程才会可达。
+- **drain 的双队列比较块（1353-1356 行，结构性）**：同一串行模型的推论——drain 退出即双空，每次进入 drain 前只入队一个 packet 的帧，因此进入时**至多单侧非空**，"双队列都非空才走"的比较块不可达。
+- **`main.cpp` 的 SDL 窗口块残余（96% 行 / 85% 分支）**：窗口块主体已被三条确定性路径覆盖——dummy 视频驱动必然无加速渲染器（renderer 失败分支）；Xvfb + XTEST Escape 驱动渲染循环到干净退出；WM_DELETE_WINDOW ClientMessage 驱动 `SDL_QUIT` 分支（SDL 自己监听 WM_PROTOCOLS，无需窗口管理器）与 null 后端下的 `ffmpeg_backend` 短路弧、空纹理清理弧。行残余缺口：`SDL_CreateWindow` 失败（175-177，dummy/Xvfb 下建窗必成功）、`SDL_CreateTexture` 失败打印（225，合法尺寸不失败）、212/215（已证伪的 gcov 假缺失，见 §1）。分支残余：纹理重建链的短路弧与 `SDL_QueryTexture` 失败侧（重建时旧纹理已损坏，不构造）、窗口/纹理创建失败的防御弧。
+- **`main.cpp:130` 的 seekable "no" 弧**：CLI 的两种媒体来源——本地文件（FFmpeg 后端）与 null 后端的模拟媒体——`mediaInfo().seekable` 都为 true；seekable=false 只存在于未接入 CLI 的源类型上。
+- **状态快照的时序弧（522/528/958/963 行）**：play() 的 Ended/Error 重播报组合与 selectTrack 收尾的 state!=Stopped 判断，都是线程 wind-down 与状态快照竞争的窄弧，逐轮翻转（门禁余量按此取值），不构造。
 
 ### 3.5 测试基建教训：媒体 fixture 必须逐字节确定性
 
@@ -62,10 +67,10 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ## 4. 结论
 
-行 93.5% 与分支 82.1% 是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
+行 93.4% 与分支 81.5% 是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性，其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，见 §3.4）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
 
 可测路径的三个实用模式：
 
 - **open 只为选中的流建 decoder**：因此“默认轨健康、非默认轨损坏”的容器能正常打开，把损坏的影响推到 selectTrack 时刻——双 AAC 轨只 patch 第二轨 CodecID（A_AAC→A_XXX）即可分别覆盖 open 失败与 selectTrack 失败两种契约（Error 态+事件 vs fail+旧 decoder 保留）。
 - **seek 有两条路径，状态翻转只在同步路径**：Playing/Paused 态的 seek 委托给解码线程、由它播报状态；只有 Stopped 态（无解码线程）走调用线程上的同步 seekToTimestamp，才有“seek 精确 duration 翻转 Ended、从 Ended seek 回翻转 Paused”的重播报。测 seek 的状态语义必须选对路径。
-- **SDL 窗口块的两条无头路径**：`SDL_VIDEODRIVER=dummy` 永远不提供加速渲染器，而产品代码显式请求 `SDL_RENDERER_ACCELERATED`——渲染器失败分支因此全平台确定性可达（干净退出，gcov 落盘）；真正的渲染循环用 Xvfb + python-xlib（XTEST 注入 Escape、显式 XSetInputFocus 补上缺失的窗口管理器）驱动到干净退出。“无头环境覆盖不了 GUI 代码”不成立，成立的只是“覆盖不了需要真实交互语义的分支”。
+- **SDL 窗口块的三条无头路径**：`SDL_VIDEODRIVER=dummy` 永远不提供加速渲染器，而产品代码显式请求 `SDL_RENDERER_ACCELERATED`——渲染器失败分支因此全平台确定性可达（干净退出，gcov 落盘）；真正的渲染循环用 Xvfb + python-xlib 驱动到干净退出，出口有两种，都不需要窗口管理器：XTEST 注入 Escape（需显式 `XSetInputFocus` 补上缺失的输入焦点），或直接向窗口发 `WM_DELETE_WINDOW` ClientMessage——SDL 自己监听 WM_PROTOCOLS 并把它转成 `SDL_QUIT`，这曾是文档里"QUIT 无法从进程外注入"的错误结论，后被本地 Xvfb 实证推翻并用例覆盖。“无头环境覆盖不了 GUI 代码”不成立，成立的只是“覆盖不了需要真实交互语义的分支”。
