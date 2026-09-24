@@ -1215,6 +1215,35 @@ TEST_CASE("switching to an audio track with no decoder fails without breaking th
   backend->close();
 }
 
+TEST_CASE("seeking to the exact duration ends a stopped stream; seeking back revives it") {
+  std::string media;
+  REQUIRE(mediaAvailable(media));
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  // Deliberately not playing: with no decode thread running the seek
+  // runs synchronously on the caller's thread, which is the path that
+  // re-announces state on an ended-ness flip. A playing stream hands
+  // the seek to the decode thread instead and announces from there.
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+
+  // Seeking exactly to the duration flips the stream to Ended...
+  const auto duration = backend->mediaInfo().duration;
+  CHECK(backend->seek(duration));
+  CHECK(backend->state() == soar::PlaybackState::Ended);
+
+  // ...and seeking away from Ended rewinds it back to Paused (press
+  // play to resume). Both edges share the seek-path re-announcement.
+  CHECK(backend->seek(std::chrono::milliseconds(0)));
+  CHECK(backend->state() == soar::PlaybackState::Paused);
+
+  backend->stop();
+  backend->close();
+}
+
 TEST_CASE("undecodable audio payload ends deterministically without hanging") {
   std::string reject;
   if (!envMedia("SOAR_TEST_AUDIO_REJECT", reject)) {
