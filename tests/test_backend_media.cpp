@@ -1240,6 +1240,13 @@ TEST_CASE("a mid-stream resolution change rebuilds the video converter") {
 
   auto backend = soar::makeFFmpegBackend();
   REQUIRE(backend->open(soar::MediaSource{media}));
+  // Eight times real time: the decode thread is no longer throttled to
+  // the wall clock, so the whole 3-second stream is decoded as fast as
+  // the machine can manage. Without this, builds with heavy sanitizer
+  // or coverage instrumentation lose the race against real time and
+  // never reach the later segments - the assertion then depends on the
+  // runner's speed instead of the converter's behavior.
+  REQUIRE(backend->setRate(8.0));
   REQUIRE(backend->play());
 
   // The stream is three 1-second h264 segments whose SPS changes

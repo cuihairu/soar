@@ -62,15 +62,23 @@ ffmpeg -hide_banner -loglevel error -y \
   "$media_dir/subs_only.mkv"
 
 # Mid-stream resolution and pixel-format changes: three h264 segments
-# concatenated at the elementary-stream level. Segment one is yuv422p,
-# so its frames go through the video converter; segment two is yuv420p,
-# which bypasses the converter entirely; segment three is yuv422p again
-# at a third size, so the converter rebuilds a second time while its
-# previous destination frame is still allocated - the free-before-realloc
-# path. The run therefore covers both rebuild variants and the
-# pass-through path in one stream. Segments are 1s each so that even
-# the several-times-slower sanitized builds decode all three well
-# within the test's polling window.
+# remuxed into one stream. Segment one is yuv422p, so its frames go
+# through the video converter; segment two is yuv420p, which bypasses
+# the converter entirely; segment three is yuv422p again at a third
+# size, so the converter rebuilds a second time while its previous
+# destination frame is still allocated - the free-before-realloc path.
+# The run therefore covers both rebuild variants and the pass-through
+# path in one stream. Segments are 1s each so that even the
+# several-times-slower sanitized builds decode all three well within
+# the test's polling window.
+#
+# The segments are joined with the concat demuxer + -c copy, not by
+# concatenating the raw TS bytes: byte concatenation restarts each
+# segment's continuity counters, so the demuxer intermittently reports
+# "Packet corrupt" and drops packets at the seams - nondeterministically
+# enough that the same bytes passed on one runner and failed on another.
+# Remuxing rewrites contiguous timestamps and counters while -c copy
+# keeps the three SPS configurations (and the parameter changes) intact.
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc=size=160x120:rate=15 -t 1 \
   -c:v libx264 -pix_fmt yuv422p "$media_dir/seg_a.ts"
@@ -80,8 +88,13 @@ ffmpeg -hide_banner -loglevel error -y \
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc=size=480x360:rate=15 -t 1 \
   -c:v libx264 -pix_fmt yuv422p "$media_dir/seg_c.ts"
-cat "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" "$media_dir/seg_c.ts" > "$media_dir/multi_res.ts"
-rm -f "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" "$media_dir/seg_c.ts"
+printf 'ffconcat version 1.0\nfile %s\nfile %s\nfile %s\n' \
+  "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" "$media_dir/seg_c.ts" \
+  > "$media_dir/seg_list.txt"
+ffmpeg -hide_banner -loglevel error -y \
+  -f concat -safe 0 -i "$media_dir/seg_list.txt" -c copy \
+  "$media_dir/multi_res.ts"
+rm -f "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" "$media_dir/seg_c.ts" "$media_dir/seg_list.txt"
 
 # Corrupt-payload fixtures, built by patching the Matroska CodecID of a
 # healthy h264+audio file in place. The replacement is equal-length, so
