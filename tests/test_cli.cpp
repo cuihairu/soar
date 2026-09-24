@@ -104,9 +104,12 @@ bool envMediaPath(const char* name, std::string& out_path) {
 // nothing owns input focus by default — and delivers a genuine Escape
 // through the XTEST extension until the window disappears (the CLI exits
 // cleanly on Escape). Decoding throttles to real time, so the script
-// waits out the first resolution change of the multi-res fixture before
+// waits out the resolution changes of the multi-res fixture before
 // pressing anything, letting the render loop exercise its texture
-// re-creation branch.
+// re-creation branch. Coverage builds decode slower than the wall clock
+// (-O0 instrumentation), so the wait must be measured in decode time,
+// not decode speed assumptions: 4.5s crosses both boundaries even when
+// the decoder runs at half the presentation pace.
 const char* const kX11EscapeScript = R"PY(import sys, time
 
 from Xlib import X, display
@@ -138,7 +141,7 @@ while win is None and time.monotonic() < deadline:
 if win is None:
     sys.exit(3)
 
-time.sleep(2.5)
+time.sleep(4.5)
 esc = d.keysym_to_keycode(0xFF1B)  # XK_Escape
 deadline = time.monotonic() + 60.0
 while time.monotonic() < deadline:
