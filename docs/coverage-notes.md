@@ -15,14 +15,16 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ## 2. 当前水位与门禁
 
-| 维度 | 实测（fdd797e） | 门禁（`--fail-under-*`） |
+| 维度 | 实测（7560c8f，run 36062747957） | 门禁（`--fail-under-*`） |
 |---|---|---|
-| 行 | 93.5%（1316/1407） | 93.0%（容 ~3 行抖动） |
-| 分支 | 82.0%（1000/1219） | 81.2%（容 ~3 分支抖动） |
+| 行 | 93.2%（1337/1435） | 93.0%（容 ~3 行抖动） |
+| 分支 | 81.9%（1023/1249） | 81.2%（容 ~3 分支抖动） |
 
-分文件行覆盖：`main.cpp` 96%（134/140）、`ffmpeg_backend.cpp` 92%（1003/1088）、`null_backend.cpp` 100%、`player.cpp` 100%。
+分文件行覆盖：`main.cpp` 95%（138/144）、`ffmpeg_backend.cpp` 91%（1020/1112）、`null_backend.cpp` 100%、`player.cpp` 100%。
 
 分文件分支覆盖：`main.cpp` 85%、`player.cpp` 90%、`ffmpeg_backend.cpp` 81%、`null_backend.cpp` 79%。
+
+7560c8f 的 P1 看门狗给 `ffmpeg_backend.cpp` 增加了 28 行可计行数，其中 20 行被慢速 server 用例命中（Started/Ended/EXIT 分辨/时间戳路径），新增 Missing 仅 2 行（1267-1268，定性见 §3.4），分母扩张导致百分比微降——绝对命中数与定性结论未回退，门禁维持不动（行余量 ~45、分支余量 ~9，按最差轮仍稳）。
 
 余量按观测到的最差轮取：窗口测试的并发解码负载会让 backend 时序弧逐轮翻转（实测分支低点 988、行低点 1312），而 gcov 多线程计数损坏（见 §1）曾把已执行的行连续两轮报成 missing。门禁卡在低点之下、正常轮之上。
 
@@ -39,19 +41,20 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 - **OOM 分支（约 41 行）**：`av_mallocz` / `av_frame_alloc` / `SDL_AllocAudioStream` 等失败路径，只能用 interpose/mock 注入失败，会污染真实库行为，与“测真实链路”矛盾。
 - **SDL 音频设备打开失败（8 行）**：`ensureOpen` 把声道数钳制到 1-8（`ffmpeg_backend.cpp:147`）、频率有 `SDL_AUDIO_ALLOW_FREQUENCY_CHANGE`，合法参数下 `SDL_OpenAudioDevice` 只有在无音频设备时才失败；dummy 驱动永不失败。构造真实拒绝（如 16 声道文件）会被 clamp 化解。
-- **不变量短路弧（分支残余）**：`streams[id]` 存在则 `codecpar` 必存在（849 的复合条件中段）、选中的流必有已建 decoder（380-382 的 `&& decoder_` 侧）、解码帧的 pts 恒有效（1252/1283/1569 的 `AV_NOPTS_VALUE` 三元）——都是容器/解码器契约保证下不可达的防御弧。
+- **不变量短路弧（分支残余）**：`streams[id]` 存在则 `codecpar` 必存在（849 的复合条件中段）、选中的流必有已建 decoder（380-382 的 `&& decoder_` 侧）、解码帧的 pts 恒有效（1308/1339/1625 的 `AV_NOPTS_VALUE` 三元）——都是容器/解码器契约保证下不可达的防御弧。
 
 ### 3.3 版本依赖行为（随 FFmpeg 版本翻转，断言不钉阶段）
 
 经验来源：runs 35941543676、35942391836 两次翻车。**凡“损坏文件在 demux/decoder 内部走哪条失败路径”的断言都是版本依赖的**，只有“open 失败 + Error 态 + 可恢复”的契约跨版本稳定。本地（FFmpeg 8）与 CI（FFmpeg 6.1）行为差异实例：
 
-- **解码器拒收阶段**：容器声称 mpeg4、payload 是 h264 时，8 在 `receive_frame` 报错（触发 1246 行 fatal），6.1 在 `send_packet` 就拒收（走 1235/1236 行 continue，自然播到 EOF）。测试断言只要求“终结性”（Ended 或 Error，不挂死、可恢复）。
-- **截断容错阶段**：512 字节截断的 mkv，8 接受 demuxer open、失败于 find_stream_info（1032 行），6.1 在 demuxer open 就拒绝。断言只钉“open 路径失败”。
+- **解码器拒收阶段**：容器声称 mpeg4、payload 是 h264 时，8 在 `receive_frame` 报错（触发 1302 行 fatal），6.1 在 `send_packet` 就拒收（走 1291-1292 / 1322-1323 行 continue，自然播到 EOF）。测试断言只要求“终结性”（Ended 或 Error，不挂死、可恢复）。
+- **截断容错阶段**：512 字节截断的 mkv，8 接受 demuxer open、失败于 find_stream_info（1065 行），6.1 在 demuxer open 就拒绝。断言只钉“open 路径失败”。
 
 ### 3.4 场景不可构造（成本/稳定性不成比例）
 
-- **`av_read_frame` 失败（1226 行）**：本地文件的 demuxer 把一切结构损坏宽容化为 EOF；网络流断开原记录为"需要起本地服务并中途 kill，成本不成比例"。随网络播放路线（docs/mvp.md §5 P0）启动，本地 HTTP 服务 fixture 已进入测试基建（P0 冒烟用例覆盖 http URL happy path），断流中途注入在后续网络功能深入时补测。
-- **`AVERROR_EXIT` 出口（1214 行，竞争窄弧——2026-09-24 修正定性）**：此前记录为"无触发源"是**错误证伪**：产品代码在 open 时设置了 `interrupt_callback`（`ffmpeg_backend.cpp:1006`，opaque 为 `should_stop_decoding_`），stop() 置位后 FFmpeg 会中止阻塞中的 `av_read_frame` 并返回 `AVERROR_EXIT` → 1214 行静默 break（不报错，与 EOF/错误分支并列的第三种退出，stop 打断慢 IO 的正确语义）。之所以至今 missing：本地文件的 `av_read_frame` 微秒级返回，stop 恰落在阻塞中的窗口极窄，现有数百次 stop 序列零命中。网络/慢介质流下该窗口显著变宽——网络播放（mvp.md §5）落地后应能自然覆盖。
+- **`av_read_frame` 失败（1282 行）**：本地文件的 demuxer 把一切结构损坏宽容化为 EOF；网络流断开原记录为"需要起本地服务并中途 kill，成本不成比例"。随网络播放路线（docs/mvp.md §5 P0）启动，本地 HTTP 服务 fixture 已进入测试基建（P0 冒烟用例覆盖 http URL happy path），断流中途注入在后续网络功能深入时补测。
+- **`AVERROR_EXIT` 出口（现 1270 行，竞争窄弧——2026-09-24 修正定性）**：此前记录为"无触发源"是**错误证伪**：产品代码在 open 时设置了 `interrupt_callback`（`ffmpeg_backend.cpp` openContext），stop() 置位后 FFmpeg 会中止阻塞中的 `av_read_frame` 并返回 `AVERROR_EXIT` → 1270 行静默 break（不报错，与 EOF/错误分支并列的第三种退出，stop 打断慢 IO 的正确语义）。之所以至今 missing：本地文件的 `av_read_frame` 微秒级返回，stop 恰落在阻塞中的窗口极窄，现有数百次 stop 序列零命中。P1 看门狗（7560c8f）后 EXIT 分支还承载超限中止（1267-1268，用 `network_stall_exceeded_` 标志与 stop 区分），慢速 server 用例 stop 时数据早已恢复、read 不阻塞，EXIT 弧仍零命中；网络/慢介质流下窗口变宽，随网络路线深入自然覆盖。
+- **网络卡顿超限放弃出口（1267-1268 行，7560c8f 新增）**：看门狗 60s 容忍窗（`kNetworkStallLimitMs`）的放弃出口——stall 超过容忍窗才中止读并 fatal 进 Error。慢速 server fixture 的停顿（40s）**故意低于**容忍窗以钉"缓冲上报且自愈"契约；触发 1267-1268 需要 stall > 60s 的用例（时间成本 +60s 起），而"终结于 Error 态、可恢复"的契约已有独立用例钉死，再加长停顿用例属于重复覆盖，成本不成比例。
 - **seek 内部失败的 Error 事件（722/732-733/1187/1771/1830-1837 行）**：需要 `avformat_seek_file` 在可 seek 的本地文件上失败——它对合法位置总是成功；不可 seek 的流在 `seek()` 更早的分支就被直接处理，走不到这里。`applyPendingAudioTrack` 的 seek 失败回滚（1830-1837）与 `seekToTimestamp` 自身的失败出口（1771）同源。注入自定义 AVIO 才能命中，超出测试基建范围。
 - **stop 中断 read 的时序分支（39/42 行）与 decodeLoop 的 stop break（1167-1168 行）**：都要求在解码线程恰好处于特定等待点时打断它。1167-1168 已做专门证伪：Paused 态线程恒驻 `waitForPresentationTime` 内部的 wait（1393/1409），所有 stop 路径经其返回 false → drain 循环条件 → decodeLoop 循环条件退出，1167-1168 被结构性跳过；唯一命中窗口是 pause/stop 恰落在"线程回 1159 且谓词已为 false"的微秒级竞争里，现有数百次 stop 序列（headless CLI、pause 用例、open/close storm）零命中。时序敏感，flake 风险大于覆盖收益。
 - **帧队列溢出丢帧（1319-1321/1337-1339 行，结构性）**：解码产出与 drain 消费在**同一个线程**串行（1296 每包调用 drain，drain 阻塞消费期间解码线程自己也被阻塞），而每个 packet 在 send/receive 循环里至多产出 1-2 帧（B 帧延迟跨包累计 ≤3）——队列深度物理上到不了 6/32 的上限。只有把产出挪到独立线程才会可达。
@@ -68,7 +71,7 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ## 4. 结论
 
-行 93.5% 与分支 82.0% 是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性，其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，见 §3.4）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
+行 93.2% 与分支 81.9% 是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性，其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，见 §3.4；P1 看门狗新增 Missing 已随 7560c8f 归类闭环）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
 
 可测路径的三个实用模式：
 
