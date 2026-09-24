@@ -45,6 +45,8 @@
 /build-*/
 /cmake-build-*/
 CMakeUserPresets.json
+# CTest's local run logs (Dashboard-style Temporary/ tree)
+/Testing/
 
 # vcpkg
 /vcpkg_installed/
