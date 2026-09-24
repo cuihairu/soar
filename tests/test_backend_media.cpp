@@ -1242,19 +1242,21 @@ TEST_CASE("a mid-stream resolution change rebuilds the video converter") {
   REQUIRE(backend->open(soar::MediaSource{media}));
   REQUIRE(backend->play());
 
-  // The stream is three concatenated h264 segments whose SPS changes
+  // The stream is three 1-second h264 segments whose SPS changes
   // mid-flight: 160x120 yuv422p, then 320x240 yuv420p, then 480x360
   // yuv422p. The converter must rebuild for every parameter change -
   // including the second rebuild, which frees the destination frame
   // allocated for segment one - instead of stalling or handing out
   // stale-size frames. The 420p middle segment also covers the
-  // pass-through path between the two rebuilds.
+  // pass-through path between the two rebuilds. The polling window is
+  // generous because the sanitized builds decode several times slower
+  // than real time; the third segment ends the wait early elsewhere.
   auto* ff = static_cast<soar::FFmpegBackend*>(backend.get());
   soar::FFmpegBackend::DecodedVideoFrame frame;
   bool saw_first = false;
   bool saw_second = false;
   bool saw_third = false;
-  for (int i = 0; i < 800 && !saw_third; ++i) {
+  for (int i = 0; i < 1500 && !saw_third; ++i) {
     if (ff->tryGetVideoFrame(frame)) {
       saw_first = saw_first || frame.width == 160;
       saw_second = saw_second || (frame.width == 320 && frame.height == 240);
