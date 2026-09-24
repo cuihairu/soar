@@ -217,6 +217,14 @@ RunResult runCli(const std::vector<std::string>& args) {
 #endif
   }
   cmd += " 2>&1"; // merge stderr into the captured stream
+#ifndef _WIN32
+  // A sanitizer-instrumented child can hang indefinitely: observed once in
+  // CI, where the tsan CLI stalled right after fetching an HLS master's
+  // segments and burned the entire 300s CTest budget. Cap every run so a
+  // hung child degrades into a normal failing assertion (exit 124) with
+  // whatever output it produced, instead of a context-free suite timeout.
+  cmd.insert(0, "timeout 90 ");
+#endif
 
   RunResult result;
   FILE* pipe = SOAR_POPEN(cmd.c_str(), "r");
