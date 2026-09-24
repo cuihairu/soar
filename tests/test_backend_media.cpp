@@ -1040,6 +1040,72 @@ TEST_CASE("a container with no audio or video streams fails to open") {
   backend->close();
 }
 
+TEST_CASE("a video codec with no FFmpeg decoder fails to open") {
+  std::string unknown;
+  if (!envMedia("SOAR_TEST_UNKNOWN_CODEC", unknown)) {
+    MESSAGE("SOAR_TEST_UNKNOWN_CODEC not set; skipping unknown-codec test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  // The container opens and enumerates the video stream, but no decoder
+  // exists for its codec id: the open path must fail loudly instead of
+  // handing out a playable-looking MediaInfo.
+  CHECK_FALSE(backend->open(soar::MediaSource{unknown}));
+  CHECK(backend->lastError().find("video codec not found") != std::string::npos);
+  CHECK(backend->state() == soar::PlaybackState::Error);
+  CHECK(sink.errors.load() >= 1);
+
+  // The backend recovers and opens healthy media afterwards.
+  std::string media;
+  REQUIRE(mediaAvailable(media));
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  backend->close();
+}
+
+TEST_CASE("undecodable video payload fails the decode loop with an error") {
+  std::string corrupt;
+  if (!envMedia("SOAR_TEST_CORRUPT_DECODE", corrupt)) {
+    MESSAGE("SOAR_TEST_CORRUPT_DECODE not set; skipping corrupt-decode test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  // The container and the (mislabelled) decoder both open fine: the
+  // failure only appears once the decode loop feeds the first packet,
+  // and must land in the Error state instead of spinning.
+  REQUIRE(backend->open(soar::MediaSource{corrupt}));
+  REQUIRE(backend->play());
+
+  // Wait up to 12s for the decode failure (sanitizer-slow runs).
+  bool errored = false;
+  for (int i = 0; i < 120 && !errored; ++i) {
+    errored = backend->state() == soar::PlaybackState::Error;
+    if (!errored) {
+      std::this_thread::sleep_for(100ms);
+    }
+  }
+  CHECK(errored);
+  CHECK(backend->lastError().find("video decode failed") != std::string::npos);
+  CHECK(sink.errors.load() >= 1);
+
+  // Stopping from the Error state is safe and leaves a reusable backend.
+  CHECK(backend->stop());
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  std::string media;
+  REQUIRE(mediaAvailable(media));
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  backend->close();
+}
+
 TEST_CASE("destroying the backend while playing stops the decode thread") {
   std::string media;
   if (!mediaAvailable(media)) {

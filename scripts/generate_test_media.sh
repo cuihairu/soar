@@ -76,8 +76,41 @@ ffmpeg -hide_banner -loglevel error -y \
 cat "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" > "$media_dir/multi_res.ts"
 rm -f "$media_dir/seg_a.ts" "$media_dir/seg_b.ts"
 
+# Corrupt-payload fixtures, built by patching the Matroska CodecID of a
+# healthy h264+audio file in place. The replacement is equal-length, so
+# the EBML structure is untouched and the file still opens normally:
+# - "V_MPEG4/ISO/ASP" claims MPEG-4 part 2 while the packets stay h264,
+#   so the decoder opens fine and then rejects every frame - the decode
+#   loop must surface that as a fatal error instead of spinning.
+# - "V_MPEG4/ISO/XXX" is a codec id FFmpeg has no decoder for, so the
+#   open path must fail with the "codec not found" fatal before any
+#   decoding starts.
+# python3 does the byte patch (ffmpeg cannot write an unknown codec id
+# itself); it is preinstalled on every machine that runs this script.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -f lavfi -i sine=frequency=440 \
+  -map 0:v -map 1:a -t 3 \
+  -c:v libx264 -pix_fmt yuv420p -c:a aac \
+  "$media_dir/corrupt_base.mkv"
+python3 - "$media_dir" <<'PYEOF'
+import sys
+
+media_dir = sys.argv[1]
+with open(f"{media_dir}/corrupt_base.mkv", "rb") as f:
+    data = f.read()
+assert data.count(b"V_MPEG4/ISO/AVC") == 1, "h264 CodecID not found exactly once"
+with open(f"{media_dir}/corrupt_decode.mkv", "wb") as f:
+    f.write(data.replace(b"V_MPEG4/ISO/AVC", b"V_MPEG4/ISO/ASP"))
+with open(f"{media_dir}/unknown_codec.mkv", "wb") as f:
+    f.write(data.replace(b"V_MPEG4/ISO/AVC", b"V_MPEG4/ISO/XXX"))
+PYEOF
+rm -f "$media_dir/corrupt_base.mkv"
+
 echo "SOAR_TEST_MEDIA=$media_dir/sample_dual_audio.mkv"
 echo "SOAR_TEST_AUDIO_ONLY=$media_dir/audio_only.mkv"
 echo "SOAR_TEST_SUBS_MEDIA=$media_dir/subs_media.mkv"
 echo "SOAR_TEST_SUBS_ONLY=$media_dir/subs_only.mkv"
 echo "SOAR_TEST_MULTI_RES=$media_dir/multi_res.ts"
+echo "SOAR_TEST_CORRUPT_DECODE=$media_dir/corrupt_decode.mkv"
+echo "SOAR_TEST_UNKNOWN_CODEC=$media_dir/unknown_codec.mkv"
