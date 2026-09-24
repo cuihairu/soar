@@ -6,10 +6,10 @@
 
 **万般格式，任其翱翔。**
 
-Soar 是一个用 C++23 从零打造的万能格式开源播放器：一套干净的核心播放抽象（Playback Abstraction），配上 FFmpeg 后端，把"能想到的格式都放得出来"作为长期目标。
+Soar 是一个用 C++17 从零打造的万能格式开源播放器：一套干净的核心播放抽象（Playback Abstraction），配上 FFmpeg 后端，把"能想到的格式都放得出来"作为长期目标。
 
 [![ci](https://github.com/cuihairu/soar/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/soar/actions/workflows/ci.yml)
-[![C++](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/23)
+[![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/17)
 [![license](https://img.shields.io/github/license/cuihairu/soar)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/cuihairu/soar/actions/workflows/ci.yml)
 [![cmake](https://img.shields.io/badge/CMake-3.20%2B-064F8C?logo=cmake&logoColor=white)](https://cmake.org)
@@ -81,7 +81,7 @@ flowchart TB
 
 ## 构建
 
-前置：CMake 3.20+、C++17 编译器、Ninja（推荐）、[vcpkg](https://github.com/microsoft/vcpkg)。
+前置：CMake 3.20+、C++17 编译器（GCC / Clang / MSVC，任何支持 C++17 的版本）、Ninja（推荐）、[vcpkg](https://github.com/microsoft/vcpkg)。
 
 ```bash
 export VCPKG_ROOT=/path/to/vcpkg   # Windows PowerShell: $env:VCPKG_ROOT="C:\path\to\vcpkg"

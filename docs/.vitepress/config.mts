@@ -6,7 +6,7 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   lang: 'zh-CN',
   title: 'Soar',
-  description: '万般格式，任其翱翔 —— 用 C++23 从零打造的万能格式开源播放器',
+  description: '万般格式，任其翱翔 —— 用 C++17 从零打造的万能格式开源播放器',
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }]],
   themeConfig: {
     logo: '/logo.svg',

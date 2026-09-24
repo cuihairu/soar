@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Soar
   text: 万般格式，任其翱翔
-  tagline: 用 C++23 从零打造的万能格式开源播放器 —— 一套干净的核心播放抽象，配上 FFmpeg 后端
+  tagline: 用 C++17 从零打造的万能格式开源播放器 —— 一套干净的核心播放抽象，配上 FFmpeg 后端
   image:
     src: /logo.svg
     alt: Soar

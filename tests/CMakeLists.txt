@@ -4,7 +4,7 @@ add_executable(soar_core_tests
   test_player.cpp
 )
 
-target_compile_features(soar_core_tests PRIVATE cxx_std_23)
+target_compile_features(soar_core_tests PRIVATE cxx_std_17)
 target_link_libraries(soar_core_tests PRIVATE soar::core doctest::doctest)
 
 add_test(NAME soar_core_tests COMMAND soar_core_tests)
@@ -16,7 +16,7 @@ add_executable(soar_backend_tests
   test_backend_concurrency.cpp
 )
 
-target_compile_features(soar_backend_tests PRIVATE cxx_std_23)
+target_compile_features(soar_backend_tests PRIVATE cxx_std_17)
 target_link_libraries(soar_backend_tests PRIVATE soar::core doctest::doctest)
 
 add_test(NAME soar_backend_tests COMMAND soar_backend_tests)
@@ -28,7 +28,7 @@ add_executable(soar_backend_media_tests
   test_backend_media.cpp
 )
 
-target_compile_features(soar_backend_media_tests PRIVATE cxx_std_23)
+target_compile_features(soar_backend_media_tests PRIVATE cxx_std_17)
 target_link_libraries(soar_backend_media_tests PRIVATE soar::core doctest::doctest)
 
 add_test(NAME soar_backend_media_tests COMMAND soar_backend_media_tests)
@@ -42,7 +42,7 @@ if(TARGET soar)
     test_cli.cpp
   )
 
-  target_compile_features(soar_cli_tests PRIVATE cxx_std_23)
+  target_compile_features(soar_cli_tests PRIVATE cxx_std_17)
   target_link_libraries(soar_cli_tests PRIVATE doctest::doctest)
   target_compile_definitions(soar_cli_tests PRIVATE
     SOAR_CLI_EXECUTABLE="$<TARGET_FILE:soar>"
