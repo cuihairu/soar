@@ -1002,7 +1002,17 @@ TEST_CASE("subtitle and attachment streams enumerate; subtitles select") {
   CHECK(backend->disableSubtitles());
   CHECK(backend->mediaInfo().selected_subtitle == -1);
 
+  // Disabling again with nothing selected stays a metadata-only success
+  // that re-announces the (unchanged) info.
+  const auto announcements = sink.media_info_changed.load();
+  CHECK(backend->disableSubtitles());
+  CHECK(backend->mediaInfo().selected_subtitle == -1);
+  CHECK(sink.media_info_changed.load() >= announcements + 1);
+
   backend->close();
+  // A second close() with nothing open or running must be a no-op.
+  backend->close();
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
 }
 
 TEST_CASE("a container with no audio or video streams fails to open") {
