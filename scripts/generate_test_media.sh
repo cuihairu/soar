@@ -61,20 +61,25 @@ ffmpeg -hide_banner -loglevel error -y \
   -i "$media_dir/subs.srt" -c:s srt \
   "$media_dir/subs_only.mkv"
 
-# Mid-stream resolution and pixel-format change: two h264 segments
-# concatenated at the elementary-stream level. The first segment is
-# yuv422p, so its frames go through the video converter; the second is
-# yuv420p (and larger), which bypasses the converter entirely - so the
-# run covers both the rebuild on a parameter change and the pass-through
-# path after it.
+# Mid-stream resolution and pixel-format changes: three h264 segments
+# concatenated at the elementary-stream level. Segment one is yuv422p,
+# so its frames go through the video converter; segment two is yuv420p,
+# which bypasses the converter entirely; segment three is yuv422p again
+# at a third size, so the converter rebuilds a second time while its
+# previous destination frame is still allocated - the free-before-realloc
+# path. The run therefore covers both rebuild variants and the
+# pass-through path in one stream.
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc=size=160x120:rate=15 -t 2 \
   -c:v libx264 -pix_fmt yuv422p "$media_dir/seg_a.ts"
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i testsrc2=size=320x240:rate=15 -t 2 \
   -c:v libx264 -pix_fmt yuv420p "$media_dir/seg_b.ts"
-cat "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" > "$media_dir/multi_res.ts"
-rm -f "$media_dir/seg_a.ts" "$media_dir/seg_b.ts"
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=480x360:rate=15 -t 2 \
+  -c:v libx264 -pix_fmt yuv422p "$media_dir/seg_c.ts"
+cat "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" "$media_dir/seg_c.ts" > "$media_dir/multi_res.ts"
+rm -f "$media_dir/seg_a.ts" "$media_dir/seg_b.ts" "$media_dir/seg_c.ts"
 
 # Corrupt-payload fixtures, built by patching the Matroska CodecID of a
 # healthy h264+audio file in place. The replacement is equal-length, so
