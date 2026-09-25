@@ -57,6 +57,14 @@ if(TARGET soar)
 # video init unexpectedly succeeds) would otherwise pin the whole CI
 # job until its two-digit-minute timeout. CTest kills the test at the
 # 5-minute mark instead, so one wedged case costs minutes, not the job.
-set_tests_properties(soar_core_tests soar_backend_tests soar_backend_media_tests soar_cli_tests
+set_tests_properties(soar_core_tests soar_backend_tests soar_cli_tests
   PROPERTIES TIMEOUT 300)
+# media_tests is structurally slower than the rest: the network-stall case
+# serves a file with a deliberate 40 s pause and polls with a 240 s deadline,
+# and sanitizers (TSAN ~15x) inflate every wait. A full deadline plus the
+# rest of the suite reaches 300 s+ — CI run 36078113614 died as a Timeout at
+# exactly 300.06 s. Give it its own budget instead of betting on the happy
+# path (73 s) repeating every run.
+set_tests_properties(soar_backend_media_tests
+  PROPERTIES TIMEOUT 1200)
 endif()
