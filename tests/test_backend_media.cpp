@@ -147,10 +147,19 @@ TEST_CASE("media lifecycle drives events, position and seek") {
   CHECK(backend->state() == soar::PlaybackState::Playing);
   CHECK(sink.state_changed.load() >= 1);
 
-  // The playback clock runs while playing.
-  std::this_thread::sleep_for(300ms);
+  // The playback clock runs while playing. Under sanitizers the first
+  // decoded frame can take well over 300 ms, so poll for the clock (and the
+  // first PositionChanged, emitted at a 200 ms granularity) instead of
+  // betting on a fixed sleep — a hung clock now fails on the same checks,
+  // just later (docs/coverage-notes.md §3.5: never bet on wall clocks).
+  bool clock_started = false;
+  for (int i = 0; i < 1000 && !clock_started; ++i) {
+    clock_started = backend->position() > 0ms && sink.position_changed.load() >= 1;
+    if (!clock_started) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
   CHECK(backend->position() > 0ms);
-
   // PositionChanged events stream at the emit granularity (200ms).
   CHECK(sink.position_changed.load() >= 1);
 
