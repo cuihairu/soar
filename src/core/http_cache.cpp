@@ -304,7 +304,11 @@ static std::string toLower(std::string s) {
 }
 
 // Parses "bytes 100-299/5000" (the only Content-Range form we accept).
-static bool parseContentRange(const std::string& value, HttpResponse* r) {
+static bool parseContentRange(std::string value, HttpResponse* r) {
+  // Header values arrive with their leading whitespace intact.
+  const size_t nonspace = value.find_first_not_of(" \t");
+  if (nonspace == std::string::npos) return false;
+  value = value.substr(nonspace);
   const std::string prefix = "bytes ";
   if (value.rfind(prefix, 0) != 0) return false;
   std::istringstream is(value.substr(prefix.size()));
@@ -488,10 +492,17 @@ HttpCache::HttpCache(std::string cache_dir, std::string url)
   // opens offline from the meta (replay of a fully cached source).
   HttpResponse probe;
   std::string probe_err;
-  if (httpFetch(url_, "bytes=0-0", &probe, &probe_err) && probe.status == 206 &&
-      probe.has_range) {
+  const bool probe_ok = httpFetch(url_, "bytes=0-0", &probe, &probe_err) &&
+                        probe.status == 206 && probe.has_range;
+  if (probe_ok) {
     size_probed_ = true;
     size_ = probe.range_total;
+  } else if (probe_err.empty()) {
+    // httpFetch succeeded but the answer is not a usable range response:
+    // either a non-206 status (typically 200 with the whole file) or a 206
+    // without a Content-Range. Without ranges there is no cache to build.
+    probe_err = "server does not support byte ranges (status " +
+                std::to_string(probe.status) + ")";
   }
 
   if (size_probed_) {
@@ -544,17 +555,17 @@ bool HttpCache::loadMeta() {
   std::string m;
   if (!readWholeFile(meta_path_, &m, kMaxMetaBytes)) return false;
   // magic(8) + version(4) + url_len(4) + url + size(8) + block_count(4) + bitmap
-  if (m.size() < 20) return false;
+  // — the url starts at offset 16, exactly where saveMeta writes it.
+  if (m.size() < 16) return false;
   const auto* p = reinterpret_cast<const uint8_t*>(m.data());
   if (std::memcmp(p, kMagic, sizeof(kMagic)) != 0) return false;
   if (getU32(p + 8) != kMetaVersion) return false;
   const uint32_t url_len = getU32(p + 12);
-  if (m.size() < 20 + url_len + 12) return false;
-  if (std::memcmp(p + 20, url_.data(), url_len) != 0 ||
-      url_.size() != url_len) {
+  if (url_len != url_.size() || m.size() < 16 + url_len + 12) return false;
+  if (std::memcmp(p + 16, url_.data(), url_len) != 0) {
     return false;  // a different source was cached under this name
   }
-  const auto* q = p + 20 + url_len;
+  const auto* q = p + 16 + url_len;
   const uint64_t meta_size = getU64(q);
   const uint32_t meta_blocks = getU32(q + 8);
   if (size_probed_) {
@@ -565,7 +576,7 @@ bool HttpCache::loadMeta() {
   }
   block_count_ = static_cast<uint32_t>((size_ + kBlockSize - 1) / kBlockSize);
   if (meta_blocks != block_count_) return false;
-  std::vector<uint8_t> bitmap(m.begin() + static_cast<long>(20 + url_len + 12), m.end());
+  std::vector<uint8_t> bitmap(m.begin() + static_cast<long>(16 + url_len + 12), m.end());
   if (bitmap.size() != (block_count_ + 7) / 8) return false;
   bitmap_ = std::move(bitmap);
   return true;

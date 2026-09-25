@@ -27,6 +27,7 @@
 #  define SOAR_POPEN _popen
 #  define SOAR_PCLOSE _pclose
 #else
+#  include <dirent.h>
 #  include <arpa/inet.h>
 #  include <netinet/in.h>
 #  include <signal.h>
@@ -37,6 +38,8 @@
 #  define SOAR_POPEN popen
 #  define SOAR_PCLOSE pclose
 #endif
+
+#include "test_http_servers.h"
 
 #ifndef SOAR_CLI_EXECUTABLE
 #  define SOAR_CLI_EXECUTABLE "soar"
@@ -936,5 +939,82 @@ TEST_CASE("ffmpeg request degrades gracefully when unavailable") {
   // Without FFmpeg support the CLI falls back to the null backend.
   CHECK(run.exit_code == 0);
   CHECK(run.output.find("Falling back to null backend") != std::string::npos);
+#endif
+}
+
+TEST_CASE("headless FFmpeg run with --cache-dir leaves a meta/data cache pair") {
+  // P3a's CLI contract: --cache-dir=<dir> with an http:// source routes the
+  // download through the disk cache, and exactly one .meta/.data pair
+  // exists afterwards. The server must speak Range — python http.server
+  // does not, and the cache rejects range-less servers outright — so this
+  // reuses the Range-capable fixture from test_http_servers.h.
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping");
+    return;
+  }
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  (void)media;
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping");
+    return;
+  }
+  const auto slash = media.find_last_of('/');
+  const std::string name = (slash == std::string::npos) ? media : media.substr(slash + 1);
+
+  // Serve a copy so the fixture path is never a live server root, and keep
+  // the cache in its own subdirectory of the scratch dir.
+  std::string tmpl = "/tmp/soar_cli_cache_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const std::string dir(tmp);
+  const std::string cache_dir = dir + "/cache";
+  REQUIRE(std::system(("cp '" + media + "' '" + dir + "/" + name + "'").c_str()) == 0);
+
+  const std::string port = std::to_string(19000 + (::getpid() % 200));
+  // RAII server (same fixture as the disk-cache suite): its destructor
+  // reaps the child even when a REQUIRE below jumps out of the case.
+  test_servers::RangeServer srv =
+      test_servers::startRangeServer(dir, 19000);
+  if (srv.pid < 0) {
+    MESSAGE("local Range HTTP server unavailable; skipping");
+    REQUIRE(std::system(("rm -rf '" + dir + "'").c_str()) == 0);
+    return;
+  }
+
+  const auto run = runCli({"--headless", "--backend=ffmpeg",
+                           "--cache-dir=" + cache_dir,
+                           "http://127.0.0.1:" + port + "/" + name});
+
+  srv.stop();
+
+  if (run.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    REQUIRE(std::system(("rm -rf '" + dir + "'").c_str()) == 0);
+    return;
+  }
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("=== Media Info ===") != std::string::npos);
+
+  // Exactly one cache entry: the meta names the source, the data holds it.
+  int metas = 0;
+  int datas = 0;
+  if (DIR* d = ::opendir(cache_dir.c_str())) {
+    while (const dirent* e = ::readdir(d)) {
+      const std::string n = e->d_name;
+      if (n.size() > 5 && n.compare(n.size() - 5, 5, ".meta") == 0) ++metas;
+      if (n.size() > 5 && n.compare(n.size() - 5, 5, ".data") == 0) ++datas;
+    }
+    ::closedir(d);
+  }
+  CHECK(metas == 1);
+  CHECK(datas == 1);
+
+  REQUIRE(std::system(("rm -rf '" + dir + "'").c_str()) == 0);
 #endif
 }

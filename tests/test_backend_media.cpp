@@ -1416,6 +1416,7 @@ HTTPServer(("127.0.0.1", int(sys.argv[2])), ThrottledHandler).serve_forever()
 // HLS VOD case below can pin real seekability and a mid-file seek.
 // kRangeServerScript and httpServerReady live in test_http_servers.h,
 // shared with the disk-cache tests.
+using test_servers::kRangeServerScript;
 
 bool httpServerReady(int port) {
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);

@@ -33,6 +33,18 @@ target_link_libraries(soar_backend_media_tests PRIVATE soar::core doctest::docte
 
 add_test(NAME soar_backend_media_tests COMMAND soar_backend_media_tests)
 
+# Disk-cache component tests (P3a). The component itself is backend-
+# agnostic (soar_core); the FFmpeg integration case is gated inside the
+# file on SOAR_WITH_FFMPEG + a fixture env var, like the media tests.
+add_executable(soar_http_cache_tests
+  test_http_cache.cpp
+)
+
+target_compile_features(soar_http_cache_tests PRIVATE cxx_std_17)
+target_link_libraries(soar_http_cache_tests PRIVATE soar::core doctest::doctest)
+
+add_test(NAME soar_http_cache_tests COMMAND soar_http_cache_tests)
+
 # CLI integration tests run the real soar executable as a subprocess and
 # check exit codes / stderr reports for the headless and error paths.
 # They need the app target, so they only exist when the app is built;
@@ -59,6 +71,13 @@ if(TARGET soar)
 # 5-minute mark instead, so one wedged case costs minutes, not the job.
 set_tests_properties(soar_core_tests soar_backend_tests soar_cli_tests
   PROPERTIES TIMEOUT 300)
+# http_cache_tests contains the offline-replay integration case: two
+# playback passes with their own 240 s deadlines, so a runner where the
+# clock crawls can legitimately exceed the shared 300 s budget (local run
+# hit the mark when the first pass stalled). Its own budget, media-suite
+# style.
+set_tests_properties(soar_http_cache_tests
+  PROPERTIES TIMEOUT 900)
 # media_tests is structurally slower than the rest: the network-stall case
 # serves a file with a deliberate 40 s pause and polls with a 240 s deadline,
 # and sanitizers (TSAN ~15x) inflate every wait. A full deadline plus the
