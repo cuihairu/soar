@@ -37,9 +37,12 @@ namespace soar {
 class HttpCache {
  public:
   // Prepares (or reopens) the cache files for `url` under `cache_dir`.
-  // The constructor probes the source size with a "Range: bytes=0-0"
-  // request; a meta file whose url does not match is rebuilt from
-  // scratch. Check valid() (and error()) after construction.
+  // Online (source reachable): the size is probed with a "Range: bytes=0-0"
+  // request and a meta file whose url or size does not match is rebuilt.
+  // Offline (source unreachable): a matching meta file is the only source
+  // of truth and the cache opens from it — this is what makes replaying a
+  // fully cached url work with the server gone. Check valid() (and
+  // error()) after construction.
   HttpCache(std::string cache_dir, std::string url);
   ~HttpCache();
 
@@ -82,6 +85,7 @@ class HttpCache {
   uint32_t block_count_ = 0;
   std::vector<uint8_t> bitmap_;  // 1 bit per block, bit i = block i
   int data_fd_ = -1;  // POSIX fd / Windows CRT handle, open for the lifetime
+  bool size_probed_ = false;  // size_ came from the server, not from meta
   bool valid_ = false;
   std::string last_error_;
 };

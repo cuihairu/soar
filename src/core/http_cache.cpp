@@ -480,21 +480,28 @@ HttpCache::HttpCache(std::string cache_dir, std::string url)
     return;
   }
   ensureDir(cache_dir_);
+  openFiles();
 
-  // Probe the source size; this also fails fast on unreachable hosts and
-  // on servers that ignore Range (they answer 200 with the whole file).
+  // Probe the source size; this also tells reachable hosts apart from
+  // servers that ignore Range (they answer 200 with the whole file). A
+  // failed probe is not fatal when a matching meta exists: the cache then
+  // opens offline from the meta (replay of a fully cached source).
   HttpResponse probe;
-  if (!httpFetch(url_, "bytes=0-0", &probe, &last_error_)) return;
-  if (probe.status != 206 || !probe.has_range) {
-    last_error_ = "http cache: server does not support byte ranges (status " +
-                  std::to_string(probe.status) + ")";
+  std::string probe_err;
+  if (httpFetch(url_, "bytes=0-0", &probe, &probe_err) && probe.status == 206 &&
+      probe.has_range) {
+    size_probed_ = true;
+    size_ = probe.range_total;
+  }
+
+  if (size_probed_) {
+    block_count_ = static_cast<uint32_t>((size_ + kBlockSize - 1) / kBlockSize);
+    if (!loadMeta()) rebuildMeta();
+  } else if (!loadMeta()) {
+    last_error_ = "http cache: source unreachable and no usable cache for " + url_ +
+                  ": " + probe_err;
     return;
   }
-  size_ = probe.range_total;
-  block_count_ = static_cast<uint32_t>((size_ + kBlockSize - 1) / kBlockSize);
-
-  openFiles();
-  if (!loadMeta()) rebuildMeta();
 
 #ifdef _WIN32
   data_fd_ = _open(data_path_.c_str(), _O_RDWR | _O_CREAT | _O_BINARY,
@@ -548,11 +555,18 @@ bool HttpCache::loadMeta() {
     return false;  // a different source was cached under this name
   }
   const auto* q = p + 20 + url_len;
-  const uint64_t size = getU64(q);
-  const uint32_t block_count = getU32(q + 8);
-  if (size != size_ || block_count != block_count_) return false;
+  const uint64_t meta_size = getU64(q);
+  const uint32_t meta_blocks = getU32(q + 8);
+  if (size_probed_) {
+    // The server wins: a meta describing a different size is stale.
+    if (meta_size != size_) return false;
+  } else {
+    size_ = meta_size;  // offline: the meta is the only source of truth
+  }
+  block_count_ = static_cast<uint32_t>((size_ + kBlockSize - 1) / kBlockSize);
+  if (meta_blocks != block_count_) return false;
   std::vector<uint8_t> bitmap(m.begin() + static_cast<long>(20 + url_len + 12), m.end());
-  if (bitmap.size() != (block_count + 7) / 8) return false;
+  if (bitmap.size() != (block_count_ + 7) / 8) return false;
   bitmap_ = std::move(bitmap);
   return true;
 }
