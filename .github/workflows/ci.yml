@@ -152,6 +152,45 @@ jobs:
           SDL_AUDIODRIVER: dummy
         run: ctest --preset linux-system --output-on-failure
 
+  no-imgui:
+    # The player UI overlay is an optional capability: the CMake probe
+    # (CMakeLists.txt) degrades to the bare SDL video window when ImGui is
+    # disabled or cannot be fetched. This job builds exactly that
+    # configuration and drives its window on Xvfb, so the #else branch of
+    # runPlayerWindow (and the "no ImGui" build of the whole app) stays
+    # exercised instead of rotting behind an untested configuration.
+    name: no-imgui fallback (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev doctest-dev ffmpeg \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswresample-dev libswscale-dev \
+            xvfb python3-xlib
+
+      - name: Generate test media
+        run: |
+          bash scripts/generate_test_media.sh build-system/testmedia | tee env.txt
+          cat env.txt >> "$GITHUB_ENV"
+
+      - name: Configure without the ImGui overlay
+        run: cmake --preset linux-system -DSOAR_ENABLE_IMGUI=OFF
+
+      - name: Build
+        run: cmake --build --preset linux-system
+
+      - name: Test
+        env:
+          SDL_AUDIODRIVER: dummy
+          SOAR_TEST_X11: "1"
+        run: ctest --preset linux-system --output-on-failure
+
   asan:
     # AddressSanitizer + UBSan job: pins down memory errors (e.g. the
     # intermittent SIGSEGV in the open/close storm, runs 35851111131 and

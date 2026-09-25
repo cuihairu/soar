@@ -109,6 +109,41 @@ srv.serve_forever()
 )PY";
 
 #ifndef _WIN32
+// Serves one file but stalls mid-body for 40s: the client's playback
+// consumes the first burst in a couple of wall-clock seconds, then its
+// reads go quiet, which is what the backend's network stall watchdog
+// (the AVIO interrupt callback) reports as BufferingStarted/Ended. The
+// pause must comfortably exceed the 10s report threshold under any
+// instrumentation slowdown, so it is 40s. Used by the media suite (the
+// event contract) and the CLI suite (the window's buffering indicator).
+// Announces "ready" on stdout once bound, like the range server.
+constexpr const char* kThrottledServerScript = R"PY(
+import sys, time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+with open(sys.argv[1], "rb") as f:
+    data = f.read()
+split = len(data) * 2 // 5
+
+class ThrottledHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data[:split])
+        self.wfile.flush()
+        time.sleep(40)
+        self.wfile.write(data[split:])
+        self.wfile.flush()
+    def log_message(self, *args):
+        pass
+
+srv = HTTPServer(("127.0.0.1", int(sys.argv[2])), ThrottledHandler)
+print("ready", flush=True)
+srv.serve_forever()
+)PY";
+
 // Runs `argv` via fork/execvp with the child's stdout plumbed into a pipe
 // and waits for its "ready" line (EOF = the server never came up, e.g. the
 // port was taken). Returns the child pid, or -1 on any failure; the caller
@@ -176,6 +211,27 @@ inline RangeServer startRangeServer(const std::string& root_dir,
     const_cast<char*>("-c"),
     const_cast<char*>(kRangeServerScript),
     const_cast<char*>(root_dir.c_str()),
+    const_cast<char*>(port_str.c_str()),
+    nullptr,
+  };
+  srv.pid = startPipedServer(argv);
+  srv.base_url = "http://127.0.0.1:" + std::to_string(srv.port);
+  return srv;
+}
+
+// Forks the shared throttled server on `port_base + getpid() % 200`.
+// Same RAII contract as RangeServer: the child is always reaped, so a
+// REQUIRE failure cannot leave it holding the harness's stdout pipe.
+inline RangeServer startThrottledServer(const std::string& media_path,
+                                        int port_base) {
+  RangeServer srv;
+  srv.port = port_base + (::getpid() % 200);
+  std::string port_str = std::to_string(srv.port);
+  char* const argv[] = {
+    const_cast<char*>("python3"),
+    const_cast<char*>("-c"),
+    const_cast<char*>(kThrottledServerScript),
+    const_cast<char*>(media_path.c_str()),
     const_cast<char*>(port_str.c_str()),
     nullptr,
   };

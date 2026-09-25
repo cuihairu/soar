@@ -6,8 +6,10 @@
 // coverage job) — a real Xvfb server plays the render loop to a clean
 // exit, either through an XTEST Escape injection or through a
 // WM_DELETE_WINDOW client message, which SDL turns into SDL_QUIT even
-// with no window manager present, so the loop's coverage lands in the
-// same run instead of being written off as untestable.
+// with no window manager present. A third X11 case drives the ImGui HUD
+// with a scripted XTEST session (click, wheel, key tour) so the
+// player_window input branches land in the same run instead of being
+// written off as untestable.
 //
 // SOAR_CLI_EXECUTABLE is passed in by tests/CMakeLists.txt as the path to
 // the freshly built soar binary.
@@ -127,7 +129,16 @@ bool envMediaPath(const char* name, std::string& out_path) {
 //   converts the message into SDL_QUIT, so this drives the QUIT branch
 //   of the event loop from outside the process.
 //
-// In both modes the injector exits 0 once the window disappears (the CLI
+// "drive" — a scripted UI session: a key tour through every shortcut
+//   family (overlays, fullscreen, volume, mute, track cycling, seeks,
+//   percent jump, pause/resume), a click tour (hide OSC, show it again,
+//   double-click fullscreen, Escape back), the wheel family (vertical
+//   volume both ways, Shift+wheel seek, horizontal seek), and a
+//   press-drag-release over the seek bar (scrub preview + commit), then
+//   q until the window disappears. This is what exercises the ImGui
+//   HUD's input branches (docs/ui-design.md §3) end to end.
+//
+// In every mode the injector exits 0 once the window disappears (the CLI
 // exited); a non-zero code means it could not do its job.
 const char* const kX11InjectorScript = R"PY(import sys, time
 
@@ -178,6 +189,216 @@ if mode == "delete":
             sys.exit(0)  # the window died: the CLI exited
         time.sleep(0.2)
     sys.exit(5)
+
+if mode == "drive":
+    # Let the UI come up and the null backend start before touching it.
+    time.sleep(1.5)
+
+    def focus():
+        win.set_input_focus(X.RevertToParent, X.CurrentTime)
+        d.sync()
+
+    def key(kc):
+        xtest.fake_input(d, X.KeyPress, kc)
+        d.sync()
+        xtest.fake_input(d, X.KeyRelease, kc)
+        d.sync()
+
+    def button(btn):
+        xtest.fake_input(d, X.ButtonPress, btn)
+        d.sync()
+        xtest.fake_input(d, X.ButtonRelease, btn)
+        d.sync()
+
+    def moved(x, y):
+        # python-xlib: warp_pointer(x, y, ...) — dest is relative to the
+        # window; no source-rectangle filtering needed.
+        win.warp_pointer(x, y)
+        d.sync()
+
+    try:
+        geo = win.get_geometry()
+        cx, cy = geo.width // 2, geo.height // 2
+        # Key tour: overlays open+close, fullscreen round-trip, volume and
+        # mute, track cycling (subtitles on then off), the seek family
+        # (Home/Left/Right/PageUp/PageDown/50%), pause/resume, an
+        # end-of-media round trip (90% + PageDown lands exactly on the
+        # 10-minute mark -> Ended; space replays), rate down/up.
+        tour = (0x69, 0x69, 0x72, 0x72, 0x68, 0x68,
+                0x66, 0xFF1B,
+                0xFF52, 0xFF54, 0x6D, 0x6D,
+                0x61, 0x63, 0x63,
+                0xFF50, 0xFF51, 0xFF53, 0xFF55, 0xFF56, 0x35,
+                0x20, 0x20,
+                0x39, 0xFF56,
+                0x20,
+                0x2C, 0x2C, 0x2E, 0x2E)
+        for keysym in tour:
+            focus()
+            key(d.keysym_to_keycode(keysym))
+            time.sleep(0.25)
+        # Click tour at the video area (no widget there): hide the OSC,
+        # bring it back, then a fast pair for the double-click fullscreen
+        # (and Escape back out of it).
+        moved(cx, cy)
+        time.sleep(0.3)
+        button(1); time.sleep(0.7)  # visible -> force-hide
+        button(1); time.sleep(0.3)  # hidden -> show + fresh idle window
+        button(1); time.sleep(0.25)  # pair member one
+        button(1); time.sleep(0.4)   # within 500ms: double click -> fullscreen
+        focus(); key(d.keysym_to_keycode(0xFF1B)); time.sleep(0.4)
+        # Wheel: vertical volume both ways, Shift+wheel seek, button 6 as
+        # horizontal seek where the server maps it.
+        button(4); time.sleep(0.25)
+        button(5); time.sleep(0.25)
+        sh = d.keysym_to_keycode(0xFFE1)  # Shift_L
+        xtest.fake_input(d, X.KeyPress, sh); d.sync()
+        button(4)
+        xtest.fake_input(d, X.KeyRelease, sh); d.sync()
+        time.sleep(0.25)
+        button(6); time.sleep(0.25)
+        # Widget phase over the OSC row (window coordinates; the bitmap
+        # font makes these stable across machines). Buttons first, then a
+        # volume-slider drag, then the combos — each opened, one item
+        # picked. A key press while a popup is open exercises the app
+        # shortcut suppression.
+        def wclick(x, y):
+            moved(x, y); time.sleep(0.15)
+            button(1); time.sleep(0.3)
+
+        wclick(59, 495)    # Pause
+        wclick(59, 495)    # resume
+        wclick(117, 495)   # Stop
+        wclick(59, 495)    # play again from Stopped
+        wclick(269, 495)   # Mute (label widens to "Unmute" and the volume
+                           # slider shifts right — the drag below stays in
+                           # the intersection of both label variants)
+        moved(320, 495); time.sleep(0.15)
+        xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.1)
+        moved(350, 495); time.sleep(0.1)
+        xtest.fake_input(d, X.ButtonRelease, 1); d.sync(); time.sleep(0.3)
+        wclick(399, 495)   # rate combo open (popup flips up: no room below)
+        focus(); key(d.keysym_to_keycode(0x69)); time.sleep(0.2)  # suppressed
+        wclick(399, 468)   # pick 2x (bottom row, clear of the 1.0x default)
+        wclick(477, 495)   # audio combo open (single item fits below)
+        wclick(506, 522)   # pick the audio track
+        wclick(569, 495)   # subtitle combo open (flips up)
+        wclick(591, 468)   # pick the subtitle track ...
+        wclick(569, 495)   # ... reopen; "Off" only acts as a change when a
+        wclick(591, 443)   # track is currently selected, so the order matters
+        wclick(641, 495)   # Info overlay
+        wclick(641, 495)   # (close again)
+        wclick(693, 495)   # fullscreen toggle button
+        focus(); key(d.keysym_to_keycode(0xFF1B)); time.sleep(0.3)
+        # Seek bar: the row-1 slider sits at y 452..477 under the OSC top
+        # edge. A press-drag-back-release first (the value returns to where
+        # it started, so the gesture is a cancelled drag that must not
+        # seek), then a press-drag-release so the scrub preview and the
+        # release-commit arcs both run.
+        moved(cx - 80, geo.height - 76)
+        time.sleep(0.2)
+        xtest.fake_input(d, X.ButtonPress, 1); d.sync()
+        time.sleep(0.1)
+        moved(cx + 80, geo.height - 76); time.sleep(0.1)
+        moved(cx - 80, geo.height - 76); time.sleep(0.1)
+        xtest.fake_input(d, X.ButtonRelease, 1); d.sync()
+        time.sleep(0.3)
+        moved(cx - 80, geo.height - 76)
+        time.sleep(0.3)
+        xtest.fake_input(d, X.ButtonPress, 1); d.sync()
+        time.sleep(0.1)
+        moved(cx + 80, geo.height - 76)
+        time.sleep(0.1)
+        xtest.fake_input(d, X.ButtonRelease, 1); d.sync()
+        time.sleep(0.3)
+        # Recent overlay: the seeded list is [sample, noseek-live,
+        # fail-open-x] with one 19px row per entry. Reopening the
+        # unseekable source is the seek-shortcut degradation, the third
+        # entry refuses to open at all (the deleted-file path), and the
+        # list is reordered by every successful pick — so each click
+        # below accounts for the move-to-front the previous one caused.
+        focus(); key(d.keysym_to_keycode(0x72))
+        time.sleep(0.5)
+        moved(480, 158); time.sleep(0.15)   # row 2: asset://noseek-live
+        button(1); time.sleep(0.6)
+        focus(); key(d.keysym_to_keycode(0x20)); time.sleep(0.25)  # pause
+        focus(); key(d.keysym_to_keycode(0xFF51)); time.sleep(0.25)  # Right
+        focus(); key(d.keysym_to_keycode(0xFF50)); time.sleep(0.25)  # Home
+        focus(); key(d.keysym_to_keycode(0x35)); time.sleep(0.25)   # '5' = 50%
+        focus(); key(d.keysym_to_keycode(0x72))
+        time.sleep(0.5)
+        moved(480, 177); time.sleep(0.15)   # row 3: asset://fail-open-x
+        button(1); time.sleep(0.6)
+        focus(); key(d.keysym_to_keycode(0x69))  # Info shows the error row
+        time.sleep(0.5)
+        focus(); key(d.keysym_to_keycode(0x69)); time.sleep(0.3)
+        focus(); key(d.keysym_to_keycode(0x72))
+        time.sleep(0.5)
+        moved(480, 158); time.sleep(0.15)   # row 2 again: back to the sample
+        button(1); time.sleep(0.6)
+        # Squeeze the window to nothing and back. Without a window manager
+        # XResizeWindow applies directly, so SDL sees a 1x1 drawable: the
+        # HUD must skip its draws instead of computing a negative OSC
+        # width, and the next frame must draw normally again.
+        win.configure(width=1, height=1)
+        d.sync()
+        time.sleep(0.6)
+        win.configure(width=960, height=540)
+        d.sync()
+        time.sleep(0.6)
+    except Exception:
+        pass  # best effort: whatever ran before an error still counts
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
+if mode == "stall":
+    # The window's buffering indicator is the one HUD element driven by a
+    # backend event rather than by input: the UI polls the atomic that
+    # main.cpp sets from BufferingStarted/Ended. Sit still long enough for
+    # the throttled server's mid-body pause to cross the backend's 10s
+    # stall threshold, then quit. No clicking: the HUD is allowed to
+    # auto-hide, which is the point (the chip is not part of the OSC).
+    time.sleep(4)
+    # The fixture is audio-only, so the subtitle shortcuts have nothing to
+    # cycle and the HUD has to say so instead of silently doing nothing —
+    # the same toast a user gets pressing C on a movie without subtitles.
+    try:
+        win.set_input_focus(X.RevertToParent, X.CurrentTime)
+        d.sync()
+        c = d.keysym_to_keycode(0x63)
+        xtest.fake_input(d, X.KeyPress, c)
+        d.sync()
+        xtest.fake_input(d, X.KeyRelease, c)
+        d.sync()
+    except Exception:
+        pass
+    time.sleep(16)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        try:
+            win.set_input_focus(X.RevertToParent, X.CurrentTime)
+            d.sync()
+            xtest.fake_input(d, X.KeyPress, qk)
+            d.sync()
+            xtest.fake_input(d, X.KeyRelease, qk)
+            d.sync()
+        except Exception:
+            sys.exit(0)
+        if find_window() is None:
+            sys.exit(0)
+        time.sleep(0.5)
+    sys.exit(4)
 
 time.sleep(4.5)
 esc = d.keysym_to_keycode(0xFF1B)  # XK_Escape
@@ -596,7 +817,7 @@ TEST_CASE("windowed run plays on a real X server and exits cleanly on Escape") {
   REQUIRE(injector >= 0);
   if (injector == 0) {
     ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
-             "soar (skeleton)", "escape", static_cast<char*>(nullptr));
+             "soar", "escape", static_cast<char*>(nullptr));
     _exit(127);
   }
 
@@ -680,7 +901,7 @@ TEST_CASE("windowed null-backend run exits cleanly on WM_DELETE_WINDOW") {
   REQUIRE(injector >= 0);
   if (injector == 0) {
     ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
-             "soar (skeleton)", "delete", static_cast<char*>(nullptr));
+             "soar", "delete", static_cast<char*>(nullptr));
     _exit(127);
   }
 
@@ -703,6 +924,251 @@ TEST_CASE("windowed null-backend run exits cleanly on WM_DELETE_WINDOW") {
     return;
   }
   CHECK(run.exit_code == 0);
+#endif
+}
+
+TEST_CASE("windowed UI run drives the HUD through a scripted XTEST session") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // Built without the ImGui overlay (CI's no-imgui job): the window is a
+  // bare video surface with no OSC, no overlays and no MRU, so there is
+  // nothing to drive. The bare loop's own paths are pinned by the Escape
+  // and WM_DELETE_WINDOW cases above.
+  MESSAGE("app built without the ImGui overlay; skipping the HUD tour");
+  return;
+#else
+  // Opt-in (the CI coverage job), same gating as the other X11 cases.
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the X11 window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the X11 window test");
+    return;
+  }
+
+  // Same private-display scheme as the Escape case; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    // Bigger than the other X11 cases: the drive tour opens combo popups
+    // below the OSC row, which a 480px-tall screen would clip away.
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the X11 window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "drive", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  // Keep the recent list out of the real user state dir: the run must
+  // leave its MRU entries under the redirected XDG_STATE_HOME instead.
+  const std::string state_home = "/tmp/soar_recent_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  // Seed the MRU with the two sources the tour reopens from the Recent
+  // overlay: NullBackend's "noseek" URI stands in for a live stream
+  // (opened, but every seek shortcut must degrade to a toast) and its
+  // "fail-open" URI refuses to open at all (the deleted-file path). The
+  // app records the CLI source at the front on startup, so the seeded
+  // rows land at index 1 and 2 of the overlay.
+  const std::string seed_dir = state_home + "/soar";
+  ::mkdir(seed_dir.c_str(), 0755);
+  {
+    std::ofstream seed(seed_dir + "/recent.txt", std::ios::trunc);
+    seed << "asset://sample\nasset://noseek-live\nasset://fail-open-x\n";
+  }
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // Null backend: the simulated 10-minute media gives the key tour a
+  // stable target (pause → Paused, Right → seek) without decode timing.
+  const auto run = runCli({"--backend=null", "asset://sample"});
+
+  std::printf("x11 drive test: cli exit=%d, output:\n%s\n", run.exit_code, run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  // The null backend opened and played (state=2), space paused it (1).
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  CHECK(run.output.find("event: state=1") != std::string::npos);
+  // Right nudged the position while paused — any position event proves
+  // the seek reached the backend and its event came back to the loop.
+  CHECK(run.output.find("event: position=") != std::string::npos);
+  // The Recent overlay reopened the seeded unseekable source: its media
+  // info reports seekable=false, which is what turns the seek shortcuts
+  // into a "Not seekable" toast instead of a position change.
+  CHECK(run.output.find("seekable=false") != std::string::npos);
+  // The third seeded entry refuses to open; the failure comes back as an
+  // error event, which the UI turns into a toast plus the info overlay's
+  // error row.
+  CHECK(run.output.find(
+            "event: error=open: simulated open failure for 'asset://fail-open-x'") !=
+        std::string::npos);
+  // The MRU list was rewritten under the redirected state home with all
+  // three sources, most recently opened first.
+  std::ifstream recent(seed_dir + "/recent.txt");
+  if (!recent.good()) {
+    FAIL("recent.txt was not written under XDG_STATE_HOME");
+  } else {
+    const std::string recent_txt((std::istreambuf_iterator<char>(recent)),
+                                 std::istreambuf_iterator<char>());
+    CHECK(recent_txt.find("asset://sample") != std::string::npos);
+    CHECK(recent_txt.find("asset://noseek-live") != std::string::npos);
+    CHECK(recent_txt.find("asset://fail-open-x") != std::string::npos);
+    // The tour ends by reopening the sample, so it is back on top.
+    CHECK(recent_txt.rfind("asset://sample", 0) == 0);
+  }
+#endif
+#endif
+}
+
+TEST_CASE("windowed run over a stalled network source shows the buffering state") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // The case quits through the HUD's own key handler and asserts on the
+  // chip drawn from the event, both of which need the ImGui overlay.
+  MESSAGE("app built without the ImGui overlay; skipping the buffering window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the X11 window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the buffering window test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the buffering window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the buffering window test");
+    return;
+  }
+
+  // Serves the fixture in two bursts 40s apart: playback drains the first
+  // one, the backend's stall watchdog then reports BufferingStarted, and
+  // the window's chip reads the atomic main.cpp mirrors it into.
+  auto server = test_servers::startThrottledServer(media, 15200);
+  if (server.pid < 0) {
+    MESSAGE("throttled HTTP server failed to start; skipping");
+    return;
+  }
+
+  const std::string suffix = std::to_string(95 + (::getpid() % 5));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the buffering window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    server.stop();
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "stall", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const std::string state_home = "/tmp/soar_stall_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+
+  const std::string url = server.base_url + "/" + media.substr(media.find_last_of('/') + 1);
+  const auto run = runCli({"--backend=ffmpeg", url});
+
+  std::printf("x11 stall test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+  server.stop();
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  // The window came up and started playing the network source ...
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  // ... and the stall crossed the backend's report threshold while the
+  // window was up, which is the event the buffering chip is drawn from.
+  CHECK(run.output.find("event: buffering started") != std::string::npos);
+  // The subtitle shortcut on this audio-only source changed nothing: the
+  // backend reported no track, so the HUD must have toasted instead of
+  // selecting (a select would have shown up as a media-info event with a
+  // non-negative subtitle id).
+  const std::size_t last_info = run.output.rfind("event: media-info");
+  REQUIRE(last_info != std::string::npos);
+  CHECK(run.output.find("sub=-1", last_info) != std::string::npos);
+#endif
+#endif
 #endif
 }
 

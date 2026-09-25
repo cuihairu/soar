@@ -45,6 +45,17 @@ target_link_libraries(soar_http_cache_tests PRIVATE soar::core doctest::doctest)
 
 add_test(NAME soar_http_cache_tests COMMAND soar_http_cache_tests)
 
+# Pure UI logic unit tests (docs/ui-design.md §5.3): auto-hide state
+# machine, recent store, toast, time formatting. No display needed.
+add_executable(soar_ui_tests
+  test_ui_state.cpp
+)
+
+target_compile_features(soar_ui_tests PRIVATE cxx_std_17)
+target_link_libraries(soar_ui_tests PRIVATE soar_app_ui doctest::doctest)
+
+add_test(NAME soar_ui_tests COMMAND soar_ui_tests)
+
 # CLI integration tests run the real soar executable as a subprocess and
 # check exit codes / stderr reports for the headless and error paths.
 # They need the app target, so they only exist when the app is built;
@@ -63,14 +74,25 @@ if(TARGET soar)
     target_compile_definitions(soar_cli_tests PRIVATE SOAR_WITH_FFMPEG=1)
   endif()
 
+  # The scripted UI sessions (the OSC widget tour, the Recent overlay, the
+  # buffering chip) need the ImGui overlay the app was built with. Report
+  # that to the test binary so those cases skip — with a message — in the
+  # -DSOAR_ENABLE_IMGUI=OFF configuration instead of failing on a HUD that
+  # is not there. The bare-window cases (Escape, WM_DELETE_WINDOW) have no
+  # such dependency and keep running there.
+  get_target_property(soar_app_defs soar COMPILE_DEFINITIONS)
+  if("SOAR_WITH_IMGUI=1" IN_LIST soar_app_defs)
+    target_compile_definitions(soar_cli_tests PRIVATE SOAR_CLI_HAS_IMGUI=1)
+  endif()
+
   add_test(NAME soar_cli_tests COMMAND soar_cli_tests)
 
 # A subprocess that hangs (e.g. an SDL window loop on a runner where
 # video init unexpectedly succeeds) would otherwise pin the whole CI
 # job until its two-digit-minute timeout. CTest kills the test at the
 # 5-minute mark instead, so one wedged case costs minutes, not the job.
-set_tests_properties(soar_core_tests soar_backend_tests soar_cli_tests
-  PROPERTIES TIMEOUT 300)
+set_tests_properties(soar_core_tests soar_backend_tests soar_ui_tests
+  soar_cli_tests PROPERTIES TIMEOUT 300)
 # http_cache_tests contains the offline-replay integration case: two
 # playback passes with their own 240 s deadlines, so a runner where the
 # clock crawls can legitimately exceed the shared 300 s budget (local run

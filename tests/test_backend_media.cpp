@@ -1376,38 +1376,7 @@ TEST_CASE("a mid-stream resolution change rebuilds the video converter") {
   backend->close();
 }
 
-// Serves a file in two bursts: the first 40% immediately, the rest after a
-// long pause. The client's playback consumes the first burst in a couple of
-// wall-clock seconds, then its reads go quiet: the backend's network stall
-// watchdog (the AVIO interrupt callback) emits BufferingStarted once the
-// quiet window passes 10s while deliberately keeping the connection alive,
-// and the server's data resumption becomes BufferingEnded. The pause must
-// comfortably exceed the 10s report threshold under any instrumentation
-// slowdown, so it is 40s.
-constexpr const char* kThrottledServerScript = R"PY(
-import sys, time
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
-with open(sys.argv[1], "rb") as f:
-    data = f.read()
-split = len(data) * 2 // 5
-
-class ThrottledHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.0"
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data[:split])
-        self.wfile.flush()
-        time.sleep(40)
-        self.wfile.write(data[split:])
-        self.wfile.flush()
-    def log_message(self, *args):
-        pass
-
-HTTPServer(("127.0.0.1", int(sys.argv[2])), ThrottledHandler).serve_forever()
-)PY";
 
 // Serves a directory tree with HTTP Range support: requests carrying
 // "Range: bytes=a-b" get 206 + Content-Range replies, everything else a
@@ -1417,6 +1386,7 @@ HTTPServer(("127.0.0.1", int(sys.argv[2])), ThrottledHandler).serve_forever()
 // kRangeServerScript and httpServerReady live in test_http_servers.h,
 // shared with the disk-cache tests.
 using test_servers::kRangeServerScript;
+using test_servers::kThrottledServerScript;
 
 bool httpServerReady(int port) {
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -1446,36 +1416,22 @@ TEST_CASE("a stalled network source emits buffering events and recovers") {
     MESSAGE("python3 not available; skipping buffering test");
     return;
   }
-  const std::string port = std::to_string(15000 + (::getpid() % 2000));
 
-  const pid_t server = ::fork();
-  REQUIRE(server >= 0);
-  if (server == 0) {
-    ::execlp("python3", "python3", "-c", kThrottledServerScript,
-             media.c_str(), port.c_str(), static_cast<char*>(nullptr));
-    _exit(127);
-  }
-
-  bool ready = false;
-  for (int attempt = 0; attempt < 50 && !ready; ++attempt) {
-    ready = httpServerReady(std::stoi(port));
-    if (!ready) {
-      std::this_thread::sleep_for(100ms);
-    }
-  }
+  // Pipe handshake, not a TCP probe: the shared helper in
+  // test_http_servers.h owns the child's lifetime (the destructor reaps
+  // it even when a REQUIRE unwinds out of this case).
+  auto server = test_servers::startThrottledServer(media, 15000);
 
   CountingSink sink;
-  if (!ready) {
+  if (server.pid < 0) {
     MESSAGE("throttled HTTP server failed to start; skipping buffering test");
-    ::kill(server, SIGTERM);
-    ::waitpid(server, nullptr, 0);
     return;
   }
 
   {
     auto backend = soar::makeFFmpegBackend();
     backend->setEventSink(&sink);
-    REQUIRE(backend->open(soar::MediaSource{"http://127.0.0.1:" + port + "/" +
+    REQUIRE(backend->open(soar::MediaSource{server.base_url + "/" +
                                             media.substr(media.find_last_of('/') + 1)}));
     REQUIRE(backend->play());
 
@@ -1493,8 +1449,7 @@ TEST_CASE("a stalled network source emits buffering events and recovers") {
     backend->close();
   }
 
-  ::kill(server, SIGTERM);
-  ::waitpid(server, nullptr, 0);
+  server.stop();
 
   CHECK(sink.buffering_started.load() >= 1);
   CHECK(sink.buffering_ended.load() >= 1);
