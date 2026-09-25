@@ -9,12 +9,14 @@
 #endif
 
 #ifdef SOAR_WITH_SDL2
-#  include <SDL.h>
+#  include "ui/player_window.h"
+#  include "ui/ui_state.h"
 #endif
 
 #include <chrono>
 #include <cstdio>
 #include <algorithm>
+#include <atomic>
 #include <string>
 
 static void print_usage(const char* argv0) {
@@ -98,9 +100,16 @@ int main(int argc, char** argv) {
   }
 
   soar::Player player(std::move(backend));
-  player.setEventCallback([&player](const soar::Event& e) {
+  // Mirrors the BufferingStarted/Ended event pair for the window UI's
+  // buffering chip (backend threads set it; the window loop polls it).
+  std::atomic<bool> buffering{false};
+  player.setEventCallback([&player, &buffering](const soar::Event& e) {
     if (e.type == soar::EventType::StateChanged) {
       fmt::print(stderr, "event: state={}\n", static_cast<int>(e.state));
+      if (e.state == soar::PlaybackState::Error ||
+          e.state == soar::PlaybackState::Ended) {
+        buffering.store(false, std::memory_order_relaxed);
+      }
     } else if (e.type == soar::EventType::MediaInfoChanged) {
       const auto info = player.mediaInfo();
       fmt::print(
@@ -117,8 +126,10 @@ int main(int argc, char** argv) {
       fmt::print(stderr, "event: position={}ms\n", e.position.count());
     } else if (e.type == soar::EventType::BufferingStarted) {
       fmt::print(stderr, "event: buffering started\n");
+      buffering.store(true, std::memory_order_relaxed);
     } else if (e.type == soar::EventType::BufferingEnded) {
       fmt::print(stderr, "event: buffering ended\n");
+      buffering.store(false, std::memory_order_relaxed);
     } else if (e.type == soar::EventType::Error) {
       fmt::print(stderr, "event: error={}\n", e.message);
     }
@@ -166,102 +177,20 @@ int main(int argc, char** argv) {
   }
 
 #ifdef SOAR_WITH_SDL2
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
-    fmt::print(stderr, "SDL_Init failed: {}\n", SDL_GetError());
-    return 1;
-  }
-
-  SDL_Window* window = SDL_CreateWindow(
-    "soar (skeleton)",
-    SDL_WINDOWPOS_CENTERED,
-    SDL_WINDOWPOS_CENTERED,
-    960,
-    540,
-    SDL_WINDOW_SHOWN
-  );
-  if (!window) {
-    fmt::print(stderr, "SDL_CreateWindow failed: {}\n", SDL_GetError());
-    SDL_Quit();
-    return 1;
-  }
-
-  SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-  if (!renderer) {
-    fmt::print(stderr, "SDL_CreateRenderer failed: {}\n", SDL_GetError());
-    SDL_DestroyWindow(window);
-    SDL_Quit();
-    return 1;
-  }
-
-  SDL_Texture* texture = nullptr;
-#ifdef SOAR_WITH_FFMPEG
-  soar::FFmpegBackend::DecodedVideoFrame video_frame{};
-#endif
-
-  bool running = true;
-  while (running) {
-    SDL_Event e;
-    while (SDL_PollEvent(&e)) {
-      if (e.type == SDL_QUIT) {
-        running = false;
-      }
-      if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
-        running = false;
-      }
-    }
-
-#ifdef SOAR_WITH_FFMPEG
-    if (ffmpeg_backend && ffmpeg_backend->tryGetVideoFrame(video_frame)) {
-      if (video_frame.width <= 0 || video_frame.height <= 0) {
-        // ignore
-      } else {
-        int tw = 0;
-        int th = 0;
-        if (!texture || SDL_QueryTexture(texture, nullptr, nullptr, &tw, &th) != 0 ||
-            tw != video_frame.width || th != video_frame.height) {
-          if (texture) {
-            SDL_DestroyTexture(texture);
-          }
-          texture = SDL_CreateTexture(
-            renderer,
-            SDL_PIXELFORMAT_IYUV,
-            SDL_TEXTUREACCESS_STREAMING,
-            video_frame.width,
-            video_frame.height
-          );
-          if (!texture) {
-            fmt::print(stderr, "SDL_CreateTexture failed: {}\n", SDL_GetError());
-          }
-        }
-      }
-
-      if (texture) {
-        SDL_UpdateYUVTexture(
-          texture,
-          nullptr,
-          video_frame.y.data(),
-          video_frame.stride_y,
-          video_frame.u.data(),
-          video_frame.stride_u,
-          video_frame.v.data(),
-          video_frame.stride_v
-        );
-        SDL_RenderClear(renderer);
-        SDL_RenderCopy(renderer, texture, nullptr, nullptr);
-        SDL_RenderPresent(renderer);
-      }
-    }
-#endif
-    SDL_Delay(16);
-  }
-
-  if (texture) {
-    SDL_DestroyTexture(texture);
-  }
-  SDL_DestroyRenderer(renderer);
-  SDL_DestroyWindow(window);
-  SDL_Quit();
-#endif
-
+  // The interactive window UI (docs/ui-design.md): SDL2 + ImGui overlay.
+  soar::app::WindowUiConfig ui_cfg;
+  ui_cfg.title = "soar";
+  ui_cfg.initial_uri = uri;
+  ui_cfg.backend_label = backend_type;
+  ui_cfg.cache_dir = cache_dir;
+  ui_cfg.recent_path = soar::app::defaultRecentPath();
+#  ifdef SOAR_WITH_FFMPEG
+  ui_cfg.ffmpeg = ffmpeg_backend;
+#  endif
+  ui_cfg.buffering = &buffering;
+  return soar::app::runPlayerWindow(player, ui_cfg);
+#else
+  fmt::print(stderr, "Window support not compiled in; use --headless.\n");
   return 0;
+#endif
 }
