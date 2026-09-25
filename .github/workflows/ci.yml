@@ -98,11 +98,16 @@ jobs:
 
       - name: Test (Linux)
         if: runner.os == 'Linux'
-        run: ctest --preset linux-system
+        # --output-on-failure prints whatever the killed test produced even
+        # on a CTest timeout: a hung suite used to leave zero trace (the
+        # tsan timeouts in runs 36068584525 and 36078113614), because the
+        # captured doctest output — including the last test case started —
+        # is otherwise discarded.
+        run: ctest --preset linux-system --output-on-failure
 
       - name: Test (macOS/Windows)
         if: runner.os != 'Linux'
-        run: ctest --preset default
+        run: ctest --preset default --output-on-failure
 
   tsan:
     # ThreadSanitizer job: exercises the FFmpeg backend concurrency tests
@@ -145,7 +150,7 @@ jobs:
           # 35852616817: pa_mutex_lock vs pa_xmalloc). The dummy driver
           # keeps every SDLAudio code path exercised without libpulse.
           SDL_AUDIODRIVER: dummy
-        run: ctest --preset linux-system
+        run: ctest --preset linux-system --output-on-failure
 
   asan:
     # AddressSanitizer + UBSan job: pins down memory errors (e.g. the
@@ -185,7 +190,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1
           SDL_AUDIODRIVER: dummy
-        run: ctest --preset linux-system
+        run: ctest --preset linux-system --output-on-failure
 
   coverage:
     # Line-coverage job: builds with GCC --coverage and reports src/ +
