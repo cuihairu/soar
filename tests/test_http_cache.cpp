@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <string>
@@ -23,15 +24,20 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
 
 using test_servers::kPlainServerScript;
 using test_servers::kRangeServerScript;
+#ifndef _WIN32
+// POSIX-only fixtures: these symbols live inside the shared header's
+// #ifndef _WIN32 block, so the using-declarations must be gated too.
 using test_servers::RangeServer;
 using test_servers::startRangeServer;
 using test_servers::startPipedServer;
+#endif
 namespace {
 
 constexpr size_t kBlockSize = 256 * 1024;
