@@ -24,6 +24,7 @@ static void print_usage(const char* argv0) {
   fmt::print("Options:\n");
   fmt::print("  --headless    Run without GUI\n");
   fmt::print("  --backend=    Select backend (ffmpeg, null)\n");
+  fmt::print("  --cache-dir=  Cache http:// downloads here for offline replay\n");
 #ifdef SOAR_WITH_FFMPEG
   fmt::print("\nFFmpeg backend is available.\n");
 #else
@@ -39,6 +40,7 @@ int main(int argc, char** argv) {
 
   bool headless = false;
   std::string backend_type = "null";  // default to null backend
+  std::string cache_dir;
   int uri_index = -1;
 
   // Parse arguments
@@ -48,6 +50,8 @@ int main(int argc, char** argv) {
       headless = true;
     } else if (arg.rfind("--backend=", 0) == 0) {
       backend_type = arg.substr(10);  // after "--backend="
+    } else if (arg.rfind("--cache-dir=", 0) == 0) {
+      cache_dir = arg.substr(12);  // after "--cache-dir="
     } else if (arg.rfind('-', 0) == 0) {
       fmt::print(stderr, "Unknown option: {}\n", arg);
       print_usage(argv[0]);
@@ -121,7 +125,7 @@ int main(int argc, char** argv) {
   });
 
   const std::string uri(argv[uri_index]);
-  if (!player.open(soar::MediaSource{uri})) {
+  if (!player.open(soar::MediaSource{uri, cache_dir})) {
     fmt::print(stderr, "Failed to open source: {}\n", uri);
     fmt::print(stderr, "Error: {}\n", player.lastError());
     return 1;

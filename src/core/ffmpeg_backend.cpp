@@ -2,6 +2,8 @@
 
 #include <fmt/format.h>
 
+#include "soar/core/http_cache.h"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -327,7 +329,7 @@ bool FFmpegBackend::open(const MediaSource& source) {
 
     // Open the media file
     AVFormatContext* ctx = nullptr;
-    if (!openContext(source.uri, &ctx)) {
+    if (!openContext(source, &ctx)) {
       format_ctx_ = nullptr;
     } else {
       format_ctx_ = ctx;
@@ -1006,6 +1008,61 @@ bool FFmpegBackend::disableSubtitles() {
 // FFmpeg Context Management
 //=============================================================================
 
+// Defined here (not in the header) so HttpCache and the FFmpeg buffer
+// pointers stay implementation details. `pos` is the logical read offset
+// the sequential read callback serves from; avio keeps it in sync via the
+// seek callback.
+struct FFmpegBackend::AvioCacheContext {
+  std::unique_ptr<HttpCache> cache;
+  AVIOContext* pb = nullptr;
+  uint8_t* buffer = nullptr;  // owned by pb after avio_alloc_context
+  uint64_t pos = 0;
+};
+
+int FFmpegBackend::avioReadCallback(void* opaque, uint8_t* buf, int buf_size) {
+  auto* state = static_cast<AvioCacheContext*>(opaque);
+  if (!state || buf_size <= 0) {
+    return AVERROR(EIO);
+  }
+  const size_t n = state->cache->read(state->pos, buf, static_cast<size_t>(buf_size));
+  if (n == HttpCache::npos) {
+    return AVERROR(EIO);  // state->cache->error() carries the reason
+  }
+  state->pos += n;
+  return static_cast<int>(n);
+}
+
+int64_t FFmpegBackend::avioSeekCallback(void* opaque, int64_t offset, int whence) {
+  auto* state = static_cast<AvioCacheContext*>(opaque);
+  if (!state) {
+    return AVERROR(EIO);
+  }
+  // Size probe: return the total length without moving (avio uses this to
+  // size seeks-to-end and demuxer size queries).
+  if ((whence & AVSEEK_SIZE) != 0) {
+    return static_cast<int64_t>(state->cache->size());
+  }
+  int64_t target = 0;
+  switch (whence) {
+    case SEEK_SET:
+      target = offset;
+      break;
+    case SEEK_CUR:
+      target = static_cast<int64_t>(state->pos) + offset;
+      break;
+    case SEEK_END:
+      target = static_cast<int64_t>(state->cache->size()) + offset;
+      break;
+    default:
+      return AVERROR(EINVAL);
+  }
+  if (target < 0) {
+    return AVERROR(EINVAL);
+  }
+  state->pos = static_cast<uint64_t>(target);
+  return target;
+}
+
 int FFmpegBackend::ffmpegInterruptCallback(void* opaque) {
   auto* self = static_cast<FFmpegBackend*>(opaque);
   if (!self) {
@@ -1038,7 +1095,14 @@ int FFmpegBackend::ffmpegInterruptCallback(void* opaque) {
   return 0;
 }
 
-bool FFmpegBackend::openContext(const std::string& uri, AVFormatContext** out_ctx) {
+bool FFmpegBackend::openContext(const MediaSource& source, AVFormatContext** out_ctx) {
+  // A leftover cache session (e.g. a previous open() that failed before
+  // closeContext ever ran) must not outlive its format context.
+  if (avio_cache_ && avio_cache_->pb) {
+    avio_context_free(&avio_cache_->pb);
+  }
+  avio_cache_.reset();
+
   AVFormatContext* ctx = avformat_alloc_context();
   if (!ctx) {
     return fatal("open: failed to allocate format context", /*emit_event=*/false);
@@ -1051,10 +1115,60 @@ bool FFmpegBackend::openContext(const std::string& uri, AVFormatContext** out_ct
   ctx->interrupt_callback.callback = &ffmpegInterruptCallback;
   ctx->interrupt_callback.opaque = this;
 
-  int ret = avformat_open_input(&ctx, uri.c_str(), nullptr, nullptr);
+  // Disk cache for http:// sources (MediaSource::cache_dir). The HttpCache
+  // constructor probes the source size with a Range request; only https://
+  // stays on the direct path (no TLS dependency in this component).
+  const bool use_cache =
+    !source.cache_dir.empty() && source.uri.rfind("http://", 0) == 0;
+  if (use_cache) {
+    auto state = std::make_unique<AvioCacheContext>();
+    state->cache = std::make_unique<HttpCache>(source.cache_dir, source.uri);
+    if (!state->cache->valid()) {
+      const std::string err = state->cache->error();
+      avformat_free_context(ctx);
+      return fatal(
+        fmt::format("open: cache setup failed for '{}': {}", source.uri, err),
+        /*emit_event=*/false);
+    }
+
+    // A non-null seek callback makes avio_alloc_context set AVIO_SEEKABLE_NORMAL,
+    // so MediaInfo::seekable and av_seek_frame work unchanged (verified against
+    // FFmpeg 6.1; the custom-pb path only ever issues SEEK_SET/CUR and
+    // AVSEEK_SIZE — SEEK_END is implemented defensively anyway).
+    constexpr int kAvioBufferSize = 32 * 1024;
+    state->buffer = static_cast<uint8_t*>(av_malloc(kAvioBufferSize));
+    if (!state->buffer) {
+      avformat_free_context(ctx);
+      return fatal("open: failed to allocate AVIO cache buffer", /*emit_event=*/false);
+    }
+    state->pb = avio_alloc_context(
+      state->buffer, kAvioBufferSize,
+      /*write_flag=*/0, state.get(),
+      &avioReadCallback, /*write_packet=*/nullptr, &avioSeekCallback);
+    if (!state->pb) {
+      av_free(state->buffer);
+      avformat_free_context(ctx);
+      return fatal("open: failed to allocate AVIO cache context", /*emit_event=*/false);
+    }
+
+    ctx->pb = state->pb;
+    // Custom IO: pb is ours; avformat_close_input must not free it
+    // (closeContext does, and avio_context_free also releases buffer).
+    ctx->flags |= AVFMT_FLAG_CUSTOM_IO;
+    avio_cache_ = std::move(state);
+  }
+
+  int ret = avformat_open_input(&ctx, source.uri.c_str(), nullptr, nullptr);
   if (ret < 0) {
-    avformat_free_context(ctx);
-    return fatal(fmt::format("open: failed to open '{}': {}", uri, avError(ret)), /*emit_event=*/false);
+    // avformat_open_input frees ctx itself on failure (and leaves a custom
+    // pb alone), so only our AVIO state needs tearing down here.
+    if (avio_cache_) {
+      if (avio_cache_->pb) {
+        avio_context_free(&avio_cache_->pb);
+      }
+      avio_cache_.reset();
+    }
+    return fatal(fmt::format("open: failed to open '{}': {}", source.uri, avError(ret)), /*emit_event=*/false);
   }
 
   *out_ctx = ctx;
@@ -1066,6 +1180,15 @@ void FFmpegBackend::closeContext() {
     avformat_close_input(&format_ctx_);
     format_ctx_ = nullptr;
   }
+
+  // With AVFMT_FLAG_CUSTOM_IO the AVIOContext is ours: avformat_close_input
+  // leaves it alone. avio_context_free also frees the buffer passed at
+  // allocation — verified against FFmpeg 6.1 that av_free()ing it again is
+  // a double free, so only the context is freed here.
+  if (avio_cache_ && avio_cache_->pb) {
+    avio_context_free(&avio_cache_->pb);
+  }
+  avio_cache_.reset();
 
   video_stream_index_ = -1;
   audio_stream_index_ = -1;

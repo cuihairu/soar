@@ -15,6 +15,7 @@ add_library(soar_core)
 add_library(soar::core ALIAS soar_core)
 
 target_sources(soar_core PRIVATE
+  src/core/http_cache.cpp
   src/core/null_backend.cpp
   src/core/player.cpp
 )

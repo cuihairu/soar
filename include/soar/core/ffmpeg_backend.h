@@ -103,7 +103,7 @@ private:
   // FFmpeg context management
   // openContext does not publish format_ctx_ itself; the caller assigns it
   // under decode_mutex_ once the whole open path succeeded.
-  bool openContext(const std::string& uri, AVFormatContext** out_ctx);
+  bool openContext(const MediaSource& source, AVFormatContext** out_ctx);
   void closeContext();
   bool findStreamInfo();
   bool setupDecoders();
@@ -150,6 +150,14 @@ private:
   // window (decodeLoop tells that abort apart from stop()).
   static int ffmpegInterruptCallback(void* opaque);
 
+  // Disk-cache AVIO shim (--cache-dir + http:// only, see MediaSource).
+  // AvioCacheContext owns the HttpCache plus the logical read position;
+  // its AVIOContext/buffer are freed by closeContext (avio_context_free
+  // releases the buffer itself — do not av_free() it a second time).
+  struct AvioCacheContext;
+  static int avioReadCallback(void* opaque, uint8_t* buf, int buf_size);
+  static int64_t avioSeekCallback(void* opaque, int64_t offset, int whence);
+
   // Event emission. emit_event=false records the error/state without
   // emitting, for code paths that already hold decode_mutex_ (events are
   // always emitted outside that lock so user callbacks may re-enter).
@@ -174,6 +182,10 @@ private:
   AVFormatContext* format_ctx_{nullptr};
   AVCodecContext* video_decoder_{nullptr};
   AVCodecContext* audio_decoder_{nullptr};
+
+  // Disk-cache AVIO state; non-null only while a cached http:// source is
+  // open (openContext builds it, closeContext tears it down).
+  std::unique_ptr<AvioCacheContext> avio_cache_;
 
   int video_stream_index_{-1};
   int audio_stream_index_{-1};

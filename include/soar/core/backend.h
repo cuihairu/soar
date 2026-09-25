@@ -9,6 +9,11 @@ namespace soar {
 
 struct MediaSource {
   std::string uri;
+  // When non-empty and the source is an http:// url, the FFmpeg backend
+  // caches downloaded data under this directory so the same url can be
+  // replayed offline (and P3b can resume partial downloads). Ignored for
+  // local paths and https:// sources.
+  std::string cache_dir;
 };
 
 using TrackId = std::int32_t;
