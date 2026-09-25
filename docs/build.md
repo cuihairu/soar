@@ -43,3 +43,16 @@ ctest --preset default
 
 单元测试以 `NullBackend` 为测试替身，不依赖 FFmpeg/SDL2；可用 `SOAR_BUILD_TESTS=OFF` 关闭测试构建。
 
+## 5) 可选能力开关
+
+CMake 选项（全部默认 `ON`，缺失时降级而不是构建失败）：
+
+| 选项 | 作用 | 缺失时 |
+|---|---|---|
+| `SOAR_ENABLE_FFMPEG` | FFmpeg 后端（pkg-config 探测 libav*/sw*） | 只有 `NullBackend`，CLI 仍可用 |
+| `SOAR_ENABLE_SDL2` | SDL2 窗口与音频（需 **SDL ≥ 2.0.18**） | 只构建 CLI（`--headless`） |
+| `SOAR_ENABLE_IMGUI` | 窗口上的播放器 UI 叠加层（Dear ImGui v1.91.9b，`imgui_impl_sdlrenderer2`） | 退化为裸视频窗口（无控制栏） |
+| `SOAR_BUILD_APP` / `SOAR_BUILD_TESTS` | 应用 / 测试目标 | — |
+
+`SOAR_ENABLE_IMGUI` 需要在**配置阶段**能访问 GitHub：CMake 把 ImGui 以 `--depth 1` 克隆到 `<build>/_deps/imgui-src`（不进仓库、不进分发物）。无网络或无 git 时会打印提示并降级为裸窗口；`-DSOAR_ENABLE_IMGUI=OFF` 可完全跳过这次拉取。已克隆的目录会被后续配置复用。
+

@@ -30,7 +30,7 @@ Soar 是一个用 C++17 从零打造的万能格式开源播放器：一套干�
 
 ## 当前状态
 
-项目处于 MVP（v0.1）早期阶段：核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已经在 FFmpeg + SDL2 后端上跑通，CLI 冒烟入口和 SDL2 窗口可用；播放中/暂停中的音频轨运行时切换也已落地（解码线程在安全点无感换轨并回跳到当前进度续播）。字幕渲染、播放列表等仍在路线图上（见下文 roadmap），欢迎按 [docs/mvp.md](docs/mvp.md) 的边界一起推进。
+项目处于 MVP（v0.1）早期阶段：核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已经在 FFmpeg + SDL2 后端上跑通，CLI 冒烟入口可用；播放中/暂停中的音频轨运行时切换也已落地（解码线程在安全点无感换轨并回跳到当前进度续播）。桌面端已有第一版可用 UI：SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC）、快捷键、媒体信息/最近打开/快捷键浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）。字幕渲染、播放列表等仍在路线图上（见下文 roadmap），欢迎按 [docs/mvp.md](docs/mvp.md) 的边界一起推进。
 
 ## 功能特性（当前已实现）
 
@@ -40,13 +40,18 @@ Soar 是一个用 C++17 从零打造的万能格式开源播放器：一套干�
 - **轨道选择**：音频轨运行时切换（播放中/暂停中无感续播，字幕轨为元数据记录，字幕渲染尚未实现）；
 - **事件驱动**：状态变化、进度更新、媒体信息变化、错误四类事件，UI 只需订阅回调；
 - **视频渲染**：后端解码为 YUV420P 帧并导出，应用层用 SDL2 Texture 直接上屏；
-- **音频输出**：SDL2 音频设备，重采样（Resample）到设备参数，支持音量/静音/倍速。
+- **音频输出**：SDL2 音频设备，重采样（Resample）到设备参数，支持音量/静音/倍速；
+- **桌面 UI**：底部悬浮 OSC（2.5s 无输入自动隐藏，悬停/拖动/浮层/暂停时钉住），整宽 seek 条（悬停时间提示、拖动预览、松手提交）+ 按钮行（传输控制、时钟、音量、倍速、音轨、字幕、全屏）；
+- **键鼠交互**：单击切换 OSC、双击全屏、垂直滚轮调音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开（MRU×15，持久化）；
+- **快捷键**：`Space/K` 播放暂停、`←/→ ±5s`、`Shift+←/→ ±1s`、`PgUp/PgDn ±60s`、`Home`、`0–9` 百分比、`↑/↓` 音量、`M` 静音、`,/.` 倍速、`F` 全屏、`A/C` 循环音轨/字幕、`I/R/H` 信息/最近/帮助、`Esc` 退全屏或退出；
+- **状态提示**：暂停/缓冲指示、OSD Toast 反馈操作结果、媒体信息浮层（含错误行与轨道清单）。
 
 ## 架构
 
 ```mermaid
 flowchart TB
     subgraph APP["应用层 soar（可执行）"]
+        UI["ImGui 叠加层：浮动 OSC + 信息/最近/帮助浮层"]
         WIN["SDL2 窗口：YUV 帧 → Texture 上屏"]
         HEADLESS["CLI 冒烟模式 --headless"]
     end
@@ -63,7 +68,8 @@ flowchart TB
 
     subgraph LIBS["第三方依赖"]
         FFMPEG["FFmpeg：libavformat / libavcodec / swresample / swscale"]
-        SDL2AUDIO["SDL2：音频输出"]
+        SDL2AUDIO["SDL2：音频输出 + 窗口/渲染器"]
+        IMGUI["Dear ImGui：即时模式控件（MIT）"]
     end
 
     APP --> PLAYER --> IBACKEND
@@ -71,6 +77,8 @@ flowchart TB
     IBACKEND --> NULLB
     FFB --> FFMPEG
     FFB --> SDL2AUDIO
+    UI --> IMGUI
+    UI --> SDL2AUDIO
 ```
 
 设计要点（也是我们踩坑后的取舍）：
@@ -89,7 +97,7 @@ cmake --preset default && cmake --build --preset default   # Debug
 # 或：cmake --preset release && cmake --build --preset release
 ```
 
-可选能力自动探测：找到 FFmpeg（pkg-config）则启用 FFmpeg 后端，找到 SDL2 则启用窗口渲染与音频输出；都找不到时仍可构建纯核心 + CLI（Null 后端）。细节见 [docs/build.md](docs/build.md)。
+可选能力自动探测：找到 FFmpeg（pkg-config）则启用 FFmpeg 后端，找到 SDL2（≥ 2.0.18）则启用窗口渲染与音频输出；都找不到时仍可构建纯核心 + CLI（Null 后端）。窗口上的控制层是 Dear ImGui（`SOAR_ENABLE_IMGUI`，默认 ON，配置阶段浅克隆到构建目录），拉不到就退化成裸视频窗口；`-DSOAR_ENABLE_IMGUI=OFF` 可完全跳过。细节见 [docs/build.md](docs/build.md)。
 
 ## 使用
 
@@ -106,7 +114,7 @@ cmake --preset default && cmake --build --preset default   # Debug
 
 ## 路线图
 
-- **v0.1（MVP，进行中）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调；
+- **v0.1（MVP，进行中）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）；
 - **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP、字幕体验（字体/大小/同步偏移）；
 - **v1.0**：硬解（Hardware Decoding）与 HDR、投屏（AirPlay/Chromecast/DLNA）、媒体库与刮削、插件体系。
 
@@ -127,7 +135,9 @@ ctest --preset default
 | `soar_core_tests` | 核心 API 与播放器状态机 | 无，以 `NullBackend` 为测试替身 |
 | `soar_backend_tests` | FFmpeg 后端并发行为（线程交接、竞态） | 无 FFmpeg 时构建为空壳并跳过 |
 | `soar_backend_media_tests` | FFmpeg 后端真实媒体语义（轨道、seek、EOF、事件） | 需先运行 fixture 脚本 |
-| `soar_cli_tests` | `soar --headless` 子进程冒烟（退出码与报错路径） | 仅当应用目标被构建时注册 |
+| `soar_http_cache_tests` | 磁盘缓存组件与"边下边看"离线重播 | 集成用例需 FFmpeg 与 fixture |
+| `soar_ui_tests` | 窗口 UI 的纯逻辑（OSC 自动隐藏状态机、最近打开存储、Toast、时间格式化） | 无需显示器 |
+| `soar_cli_tests` | `soar` 子进程冒烟（`--headless` 退出码与报错路径） | 仅当应用目标被构建时注册；Xvfb 用例额外需 `SOAR_TEST_X11=1` |
 
 FFmpeg 媒体测试的媒体文件全部由 `scripts/generate_test_media.sh` 现场合成（纯 lavfi，无网络、无外部素材），脚本打印 `KEY=VALUE` 形式的环境变量供测试定位文件：
 
