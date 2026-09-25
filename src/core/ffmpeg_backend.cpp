@@ -339,8 +339,12 @@ bool FFmpegBackend::open(const MediaSource& source) {
 
         media_info_ = MediaInfo{};
 
+    // Live sources (RTSP in particular) report AV_NOPTS_VALUE-ish negative
+    // durations; expose that as "no duration" instead of a garbage negative.
     media_info_.duration = std::chrono::milliseconds(
-      static_cast<int64_t>(format_ctx_->duration * 1000.0 / AV_TIME_BASE)
+      format_ctx_->duration < 0
+        ? 0
+        : static_cast<int64_t>(format_ctx_->duration * 1000.0 / AV_TIME_BASE)
     );
     media_info_.seekable = false;
     if (format_ctx_->pb) {
@@ -664,6 +668,12 @@ bool FFmpegBackend::seek(std::chrono::milliseconds position) {
   }
   if (!seekable) {
     return fail("seek: media is not seekable");
+  }
+  // A live source can be flagged seekable by its AVIO layer yet carry no
+  // duration at all; clamping against a zero duration would be UB, and
+  // seeking inside a stream with no duration has no meaningful target.
+  if (duration <= std::chrono::milliseconds(0)) {
+    return fail("seek: media has no duration (live stream)");
   }
 
   // Clamp position to valid range

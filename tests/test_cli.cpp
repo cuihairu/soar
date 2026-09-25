@@ -308,6 +308,141 @@ HttpCliRun runHeadlessOverHttpDir(const std::string& dir, const std::string& url
   ::waitpid(server, nullptr, 0);
   return result;
 }
+
+// Minimal RTSP/RTP server for the live-stream smoke case. FFmpeg used to be
+// able to serve as the pushing side itself (`-rtsp_flags listen` on the
+// muxer), but FFmpeg 8 dropped that option, and even where it still exists
+// it would be version-dependent — so the fixture is a ~100-line python
+// script instead: RFC 2326 basics (OPTIONS/DESCRIBE/SETUP/PLAY, CSeq
+// echoed), a static SDP advertising PCMA (RTP payload type 8, no dynamic
+// negotiation), and 8 s of 20 ms RTP frames of A-law silence pumped over
+// UDP once PLAY is answered. Verified by hand against the FFmpeg 8 rtsp
+// demuxer: it probes with OPTIONS, takes the SDP, negotiates client_port
+// in SETUP and starts reading as soon as PLAY returns.
+constexpr char kRtspServerScript[] = R"PY(
+import re, socket, sys, time
+
+port = int(sys.argv[1])
+payload = bytes([0xD5]) * 160  # 20 ms of PCMA silence at 8 kHz
+
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", port))
+srv.listen(1)
+print("ready", flush=True)  # harness reads this line over a pipe, no TCP probe
+conn, _ = srv.accept()
+conn.settimeout(30)
+udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+seq = 0
+ts = 0
+client_port = 0
+streaming = False
+buf = b""
+try:
+    while True:
+        try:
+            data = conn.recv(4096)
+        except socket.timeout:
+            break
+        if not data:
+            break
+        buf += data
+        while b"\r\n\r\n" in buf:
+            raw, buf = buf.split(b"\r\n\r\n", 1)
+            req = raw.decode("ascii", "replace")
+            head = req.splitlines()[0] if req else ""
+            cseq = "0"
+            for line in req.splitlines()[1:]:
+                if line.lower().startswith("cseq:"):
+                    cseq = line.split(":", 1)[1].strip()
+            ok = "RTSP/1.0 200 OK\r\nCSeq: " + cseq + "\r\n"
+            if head.startswith("OPTIONS"):
+                resp = ok + "Public: OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE\r\n\r\n"
+            elif head.startswith("DESCRIBE"):
+                sdp = ("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=soar-test\r\n"
+                       "c=IN IP4 127.0.0.1\r\nt=0 0\r\n"
+                       "m=audio 0 RTP/AVP 8\r\na=control:trackID=0\r\n")
+                resp = (ok + "Content-Type: application/sdp\r\nContent-Length: "
+                        + str(len(sdp)) + "\r\n\r\n" + sdp)
+            elif head.startswith("SETUP"):
+                m = re.search(r"client_port=(\d+)", req)
+                client_port = int(m.group(1)) if m else 0
+                tp = "RTP/AVP;unicast;client_port=%d-%d;server_port=30000-30001" % (
+                    client_port, client_port + 1)
+                resp = ok + "Session: 1\r\nTransport: " + tp + "\r\n\r\n"
+            elif head.startswith("PLAY"):
+                streaming = True
+                resp = ok + "Session: 1\r\n\r\n"
+            elif head.startswith("TEARDOWN"):
+                resp = ok + "Session: 1\r\n\r\n"
+            else:
+                resp = ok + "\r\n"
+            conn.sendall(resp.encode())
+            if streaming:
+                streaming = False
+                for _ in range(400):  # ~8 s of audio, sent faster than realtime
+                    hdr = (bytes([0x80, 8]) + seq.to_bytes(2, "big")
+                           + (ts & 0xFFFFFFFF).to_bytes(4, "big") + b"SOTR")
+                    udp.sendto(hdr + payload, ("127.0.0.1", client_port))
+                    seq += 1
+                    ts += 160
+                    time.sleep(0.002)
+except Exception:
+    pass
+)PY";
+
+// Runs the headless CLI against a forked kRtspServerScript instance. Same
+// shape as runHeadlessOverHttpDir (fork, wait for readiness, run, reap) but
+// with no fixture directory: the server synthesizes its stream in memory.
+// Readiness comes over a pipe instead of a TCP probe: the server accepts
+// exactly one connection, so a probe connect would consume that accept and
+// leave the CLI talking to a dead server (observed: probe OK, open failed).
+HttpCliRun runHeadlessOverRtsp(int port_base) {
+  HttpCliRun result;
+  result.skipped = true; // until the server is up and the CLI has run
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    return result;
+  }
+  const std::string port = std::to_string(port_base + (::getpid() % 2000));
+
+  int ready_pipe[2];
+  REQUIRE(::pipe(ready_pipe) == 0);
+  const pid_t server = ::fork();
+  REQUIRE(server >= 0);
+  if (server == 0) {
+    ::close(ready_pipe[0]);
+    ::dup2(ready_pipe[1], 1); // script prints "ready" on stdout
+    ::close(ready_pipe[1]);
+    ::execlp("python3", "python3", "-c", kRtspServerScript, port.c_str(),
+             static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  ::close(ready_pipe[1]);
+
+  // Read until the newline; EOF means the script died before listening
+  // (e.g. bind failure) and the case must skip rather than hang.
+  std::string ready_line;
+  char ch = 0;
+  while (::read(ready_pipe[0], &ch, 1) == 1) {
+    ready_line += ch;
+    if (ch == '\n') {
+      break;
+    }
+  }
+  ::close(ready_pipe[0]);
+  if (ready_line.find("ready") == std::string::npos) {
+    ::kill(server, SIGTERM);
+    ::waitpid(server, nullptr, 0);
+    return result;
+  }
+
+  result.cli = runCli({"--headless", "--backend=ffmpeg",
+                       "rtsp://127.0.0.1:" + port + "/live"});
+  result.skipped = false;
+  ::kill(server, SIGTERM);
+  ::waitpid(server, nullptr, 0);
+  return result;
+}
 #endif // !_WIN32
 
 } // namespace
@@ -762,6 +897,32 @@ TEST_CASE("headless FFmpeg run over local HTTP server plays a DASH manifest") {
   CHECK(run.cli.exit_code == 0);
   CHECK(run.cli.output.find("=== Media Info ===") != std::string::npos);
   CHECK(run.cli.output.find("Duration: 6") != std::string::npos);
+#endif
+}
+
+TEST_CASE("headless FFmpeg run over a local RTSP server plays a live audio stream") {
+  // RTSP is the third pass-through protocol: avformat_open_input handles the
+  // whole rtsp:// handshake (OPTIONS/DESCRIBE/SETUP/PLAY) and then reads the
+  // RTP stream. Duration is N/A for a live source and the headless seek is
+  // expected to be a no-op, so the assertions pin the contract (open, one
+  // audio track, PCMA codec) and not transport-level metadata.
+#ifndef _WIN32
+  auto run = runHeadlessOverRtsp(18500);
+  if (run.skipped) {
+    MESSAGE("local RTSP server unavailable; skipping");
+    return;
+  }
+  if (run.cli.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    return;
+  }
+  CHECK(run.cli.exit_code == 0);
+  CHECK(run.cli.output.find("Using FFmpeg backend") != std::string::npos);
+  CHECK(run.cli.output.find("=== Media Info ===") != std::string::npos);
+  CHECK(run.cli.output.find("Tracks: 1") != std::string::npos);
+  CHECK(run.cli.output.find("pcm_alaw") != std::string::npos);
+#else
+  MESSAGE("POSIX-only test; skipping");
 #endif
 }
 
