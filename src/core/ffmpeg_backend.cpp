@@ -34,6 +34,7 @@ namespace {
 
 constexpr std::size_t kMaxVideoQueueFrames = 6;
 constexpr std::size_t kMaxAudioQueueFrames = 32;
+constexpr std::size_t kMaxSubtitleQueueFrames = 4;
 constexpr auto kPositionEmitGranularity = std::chrono::milliseconds(200);
 // Network stall watchdog: a read that stays quiet longer than
 // kNetworkStallReportMs reports BufferingStarted, and only a stall past
@@ -508,6 +509,12 @@ void FFmpegBackend::close() {
     staging_video_frame_ = DecodedVideoFrame{};
   }
 
+  {
+    std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
+    subtitle_frame_ready_ = false;
+    latest_subtitle_frame_ = DecodedSubtitleFrame{};
+  }
+
   emit(Event{EventType::MediaInfoChanged});
   emit(Event{EventType::StateChanged});
 }
@@ -829,6 +836,16 @@ bool FFmpegBackend::tryGetVideoFrame(DecodedVideoFrame& out) {
   }
   std::swap(out, latest_video_frame_);
   video_frame_ready_ = false;
+  return true;
+}
+
+bool FFmpegBackend::tryGetSubtitleFrame(DecodedSubtitleFrame& out) {
+  std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
+  if (!subtitle_frame_ready_) {
+    return false;
+  }
+  out = latest_subtitle_frame_;
+  subtitle_frame_ready_ = false;
   return true;
 }
 
@@ -1243,6 +1260,7 @@ void FFmpegBackend::closeContext() {
 
   video_stream_index_ = -1;
   audio_stream_index_ = -1;
+  subtitle_stream_index_ = -1;
 }
 
 bool FFmpegBackend::findStreamInfo() {
@@ -1253,6 +1271,7 @@ bool FFmpegBackend::findStreamInfo() {
 
   video_stream_index_ = pickBestStreamIndex(format_ctx_, AVMEDIA_TYPE_VIDEO);
   audio_stream_index_ = pickBestStreamIndex(format_ctx_, AVMEDIA_TYPE_AUDIO);
+  subtitle_stream_index_ = pickBestStreamIndex(format_ctx_, AVMEDIA_TYPE_SUBTITLE);
 
   if (video_stream_index_ < 0 && audio_stream_index_ < 0) {
     return fatal("findStreamInfo: no video or audio stream found", /*emit_event=*/false);
@@ -1327,6 +1346,32 @@ bool FFmpegBackend::setupDecoders() {
     audio_params_.channel_layout = audio_decoder_->ch_layout.u.mask;
   }
 
+  // Setup subtitle decoder
+  if (subtitle_stream_index_ >= 0) {
+    AVStream* stream = format_ctx_->streams[subtitle_stream_index_];
+    AVCodecParameters* codecpar = stream->codecpar;
+
+    codec = avcodec_find_decoder(codecpar->codec_id);
+    if (!codec) {
+      return fatal(fmt::format("setupDecoders: subtitle codec not found: {}", static_cast<int>(codecpar->codec_id)), /*emit_event=*/false);
+    }
+
+    subtitle_decoder_ = avcodec_alloc_context3(codec);
+    if (!subtitle_decoder_) {
+      return fatal("setupDecoders: failed to allocate subtitle decoder context", /*emit_event=*/false);
+    }
+
+    int ret = avcodec_parameters_to_context(subtitle_decoder_, codecpar);
+    if (ret < 0) {
+      return fatal(fmt::format("setupDecoders: failed to copy subtitle params: {}", avError(ret)), /*emit_event=*/false);
+    }
+
+    ret = avcodec_open2(subtitle_decoder_, codec, nullptr);
+    if (ret < 0) {
+      return fatal(fmt::format("setupDecoders: failed to open subtitle decoder: {}", avError(ret)), /*emit_event=*/false);
+    }
+  }
+
   return true;
 }
 
@@ -1341,6 +1386,12 @@ void FFmpegBackend::cleanupDecoders() {
   if (audio_decoder_) {
     avcodec_free_context(&audio_decoder_);
     audio_decoder_ = nullptr;
+  }
+
+  // Cleanup subtitle decoder
+  if (subtitle_decoder_) {
+    avcodec_free_context(&subtitle_decoder_);
+    subtitle_decoder_ = nullptr;
   }
 
   // Cleanup resamplers
@@ -1431,6 +1482,11 @@ void FFmpegBackend::decodeLoop() {
         std::scoped_lock lock(video_queue_mutex_, audio_queue_mutex_);
         clearDecodedQueue(video_queue_);
         clearDecodedQueue(audio_queue_);
+      }
+      {
+        std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
+        subtitle_frame_ready_ = false;
+        latest_subtitle_frame_ = DecodedSubtitleFrame{};
       }
     }
 
@@ -1533,6 +1589,45 @@ void FFmpegBackend::decodeLoop() {
         queueAudioFrame(frame, pts);
         av_frame_unref(frame);
       }
+    } else if (packet->stream_index == subtitle_stream_index_) {
+      // Send packet to subtitle decoder
+      ret = avcodec_send_packet(subtitle_decoder_, packet);
+      if (ret < 0) {
+        av_packet_unref(packet);
+        continue;
+      }
+
+      // Receive frames from subtitle decoder
+      while (ret >= 0) {
+        ret = avcodec_receive_frame(subtitle_decoder_, frame);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+          break;
+        }
+        if (ret < 0) {
+          fatal(fmt::format("decodeLoop: subtitle decode failed: {}", avError(ret)));
+          fatal_decode_error = true;
+          break;
+        }
+
+        // Process subtitle frame
+        const int64_t ts = frame->best_effort_timestamp != AV_NOPTS_VALUE ? frame->best_effort_timestamp : frame->pts;
+        auto pts = fromAVTimestamp(
+          ts,
+          format_ctx_->streams[subtitle_stream_index_]->time_base.num,
+          format_ctx_->streams[subtitle_stream_index_]->time_base.den
+        );
+        auto duration = std::chrono::milliseconds(0);
+        if (frame->duration > 0) {
+          duration = fromAVTimestamp(
+            frame->duration,
+            format_ctx_->streams[subtitle_stream_index_]->time_base.num,
+            format_ctx_->streams[subtitle_stream_index_]->time_base.den
+          );
+        }
+
+        processSubtitleFrame(frame, pts, duration);
+        av_frame_unref(frame);
+      }
     }
 
     av_packet_unref(packet);
@@ -1582,6 +1677,20 @@ void FFmpegBackend::queueAudioFrame(AVFrame* frame, std::chrono::milliseconds pt
     audio_queue_.pop();
     freeFrame(dropped.frame);
   }
+}
+
+void FFmpegBackend::queueSubtitleFrame(const std::string& text, std::chrono::milliseconds pts, std::chrono::milliseconds duration) {
+  if (text.empty()) {
+    return;
+  }
+  DecodedSubtitleFrame sub;
+  sub.text = text;
+  sub.pts = pts;
+  sub.duration = duration;
+
+  std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
+  latest_subtitle_frame_ = sub;
+  subtitle_frame_ready_ = true;
 }
 
 void FFmpegBackend::drainFrameQueues() {
@@ -1709,6 +1818,33 @@ void FFmpegBackend::processAudioFrame(DecodedFrame frame) {
 
   playAudioFrame(frame.frame);
   freeFrame(frame.frame);
+}
+
+void FFmpegBackend::processSubtitleFrame(AVFrame* frame, std::chrono::milliseconds pts, std::chrono::milliseconds duration) {
+  // Subtitle frames don't wait for presentation time; they're queued
+  // immediately and the UI renders them based on current position.
+  // We still respect should_stop_decoding_ to avoid queuing after shutdown.
+  if (should_stop_decoding_.load()) {
+    return;
+  }
+
+  // In FFmpeg 6.x, subtitle frames use AVFrame with data[0] containing
+  // the text payload (UTF-8 for text/SRT, ASS-formatted for ASS/SSA).
+  // Bitmap subtitles (DVD/Blu-ray) have different data layout - skip those.
+  std::string text;
+  if (frame->data[0] && frame->linesize[0] > 0) {
+    // Heuristic: if data looks like text (valid UTF-8), use it.
+    // This covers SRT, WebVTT, ASS text portions.
+    const char* data = reinterpret_cast<const char*>(frame->data[0]);
+    const int len = frame->linesize[0];
+    if (len > 0) {
+      text.assign(data, len);
+    }
+  }
+
+  if (!text.empty()) {
+    queueSubtitleFrame(text, pts, duration);
+  }
 }
 
 void FFmpegBackend::renderVideoFrame(const AVFrame* frame) {
@@ -1983,6 +2119,9 @@ bool FFmpegBackend::flushDecoders() {
   }
   if (audio_decoder_) {
     avcodec_flush_buffers(audio_decoder_);
+  }
+  if (subtitle_decoder_) {
+    avcodec_flush_buffers(subtitle_decoder_);
   }
   return true;
 }

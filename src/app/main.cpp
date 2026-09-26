@@ -108,6 +108,10 @@ int main(int argc, char** argv) {
   // total == 0 means no active download; the chip hides at bytes == total.
   std::atomic<std::uint64_t> download_bytes{0};
   std::atomic<std::uint64_t> download_total{0};
+  // Subtitle rendering configuration (v0.2 basics)
+  std::atomic<float> subtitle_font_size{24.0f};
+  std::atomic<int> subtitle_offset_ms{0};
+  std::atomic<bool> subtitle_visible{true};
   player.setEventCallback([&player, &buffering, &download_bytes,
                            &download_total](const soar::Event& e) {
     if (e.type == soar::EventType::StateChanged) {
@@ -207,6 +211,9 @@ int main(int argc, char** argv) {
   ui_cfg.buffering = &buffering;
   ui_cfg.download_bytes = &download_bytes;
   ui_cfg.download_total = &download_total;
+  ui_cfg.subtitle_font_size = &subtitle_font_size;
+  ui_cfg.subtitle_offset_ms = &subtitle_offset_ms;
+  ui_cfg.subtitle_visible = &subtitle_visible;
   return soar::app::runPlayerWindow(player, ui_cfg);
 #else
   fmt::print(stderr, "Window support not compiled in; use --headless.\n");

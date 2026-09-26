@@ -51,6 +51,12 @@ public:
     std::chrono::milliseconds pts{0};
   };
 
+  struct DecodedSubtitleFrame {
+    std::string text;
+    std::chrono::milliseconds pts{0};
+    std::chrono::milliseconds duration{0};
+  };
+
   FFmpegBackend();
   ~FFmpegBackend() override;
 
@@ -80,6 +86,10 @@ public:
   // Optional: allow the app to pull the latest decoded video frame (YUV420P).
   // Thread-safe; returns true only when a new frame is available.
   bool tryGetVideoFrame(DecodedVideoFrame& out);
+
+  // Optional: allow the app to pull the latest decoded subtitle frame.
+  // Thread-safe; returns true only when a new frame is available.
+  bool tryGetSubtitleFrame(DecodedSubtitleFrame& out);
 
 private:
   // Internal types
@@ -113,11 +123,13 @@ private:
   void decodeLoop();
   void queueVideoFrame(AVFrame* frame, std::chrono::milliseconds pts);
   void queueAudioFrame(AVFrame* frame, std::chrono::milliseconds pts);
+  void queueSubtitleFrame(const std::string& text, std::chrono::milliseconds pts, std::chrono::milliseconds duration);
   void drainFrameQueues();
 
   // Frame processing
   void processVideoFrame(DecodedFrame frame);
   void processAudioFrame(DecodedFrame frame);
+  void processSubtitleFrame(AVFrame* frame, std::chrono::milliseconds pts, std::chrono::milliseconds duration);
   bool waitForPresentationTime(std::chrono::milliseconds pts);
 
   // Rendering (to be implemented)
@@ -185,10 +197,16 @@ private:
   DecodedVideoFrame latest_video_frame_{};
   DecodedVideoFrame staging_video_frame_{};
 
+  // Subtitle frame handoff (for UI rendering on main thread)
+  mutable std::mutex subtitle_frame_mutex_;
+  bool subtitle_frame_ready_{false};
+  DecodedSubtitleFrame latest_subtitle_frame_{};
+
   // FFmpeg contexts
   AVFormatContext* format_ctx_{nullptr};
   AVCodecContext* video_decoder_{nullptr};
   AVCodecContext* audio_decoder_{nullptr};
+  AVCodecContext* subtitle_decoder_{nullptr};
 
   // Disk-cache AVIO state; non-null only while a cached http:// source is
   // open (openContext builds it, closeContext tears it down).
@@ -196,6 +214,7 @@ private:
 
   int video_stream_index_{-1};
   int audio_stream_index_{-1};
+  int subtitle_stream_index_{-1};
 
   // Rescalers/converter
   SwrContext* audio_resampler_{nullptr};

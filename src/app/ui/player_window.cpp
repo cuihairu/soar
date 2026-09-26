@@ -71,7 +71,7 @@ const char* trackTypeName(TrackType t) {
 }
 
 // Which overlay page is open; at most one at a time (docs/ui-design.md §2).
-enum class Overlay { None, Info, Recent, Help };
+enum class Overlay { None, Info, Recent, Help, Subtitle };
 
 std::string baseName(const std::string& uri) {
   const std::size_t slash = uri.find_last_of("/\\");
@@ -305,6 +305,15 @@ class PlayerHud {
           case SDLK_h:
             toggleOverlay(Overlay::Help);
             return;
+          case SDLK_LEFTBRACKET:  // '[' - decrease subtitle offset
+            nudgeSubtitleOffset(-500, now);
+            return;
+          case SDLK_RIGHTBRACKET:  // ']' - increase subtitle offset
+            nudgeSubtitleOffset(+500, now);
+            return;
+          case SDLK_s:  // 's' - toggle subtitle visibility
+            toggleSubtitleVisibility(now);
+            return;
           default:
             if (key >= SDLK_0 && key <= SDLK_9) {
               percentSeek(static_cast<int>(key - SDLK_0) * 10, now);
@@ -390,6 +399,7 @@ class PlayerHud {
     if (!video_active) drawPoster();
     if (st_.hud_alpha > 0.01f) drawHud(now);
     drawChips();
+    drawSubtitles(now);
     drawToast(now);
     drawOverlays();
   }
@@ -537,6 +547,24 @@ class PlayerHud {
     st_.overlay = st_.overlay == which ? Overlay::None : which;
   }
 
+  void nudgeSubtitleOffset(int delta_ms, milliseconds now) {
+    st_.subtitle_offset_ms += delta_ms;
+    if (cfg_.subtitle_offset_ms) {
+      cfg_.subtitle_offset_ms->store(st_.subtitle_offset_ms, std::memory_order_relaxed);
+    }
+    char text[32];
+    std::snprintf(text, sizeof(text), "Sub offset %+d ms", st_.subtitle_offset_ms);
+    st_.toast.show(text, now);
+  }
+
+  void toggleSubtitleVisibility(milliseconds now) {
+    st_.subtitle_visible = !st_.subtitle_visible;
+    if (cfg_.subtitle_visible) {
+      cfg_.subtitle_visible->store(st_.subtitle_visible, std::memory_order_relaxed);
+    }
+    st_.toast.show(st_.subtitle_visible ? "Subtitles on" : "Subtitles off", now);
+  }
+
   bool shiftHeld() const { return (SDL_GetModState() & KMOD_SHIFT) != 0; }
 
   // ---- Drawing ----
@@ -638,6 +666,8 @@ class PlayerHud {
       ImGui::PushItemWidth(84.0f);
       drawTrackCombo(TrackType::Subtitle, now);
       ImGui::PopItemWidth();
+      ImGui::SameLine();
+      if (ImGui::Button("Sub")) toggleOverlay(Overlay::Subtitle);
       ImGui::SameLine();
       if (ImGui::Button("Info")) toggleOverlay(Overlay::Info);
       ImGui::SameLine();
@@ -757,6 +787,78 @@ class PlayerHud {
     }
   }
 
+  // Draw subtitle overlay: polls the backend for decoded subtitle frames
+  // and renders them at the bottom of the video area.
+  void drawSubtitles(milliseconds now) {
+    if (!cfg_.ffmpeg) return;
+    if (!st_.subtitle_visible) return;
+
+    // Sync config to local state (config is owned by caller, may be updated externally)
+    if (cfg_.subtitle_font_size) {
+      st_.subtitle_font_size = cfg_.subtitle_font_size->load(std::memory_order_relaxed);
+    }
+    if (cfg_.subtitle_offset_ms) {
+      st_.subtitle_offset_ms = cfg_.subtitle_offset_ms->load(std::memory_order_relaxed);
+    }
+    if (cfg_.subtitle_visible) {
+      st_.subtitle_visible = cfg_.subtitle_visible->load(std::memory_order_relaxed);
+    }
+
+    // Poll for new subtitle frame
+    soar::FFmpegBackend::DecodedSubtitleFrame sub_frame;
+    if (cfg_.ffmpeg->tryGetSubtitleFrame(sub_frame)) {
+      // Store the latest subtitle frame with its timing
+      st_.current_subtitle = sub_frame.text;
+      st_.subtitle_pts = sub_frame.pts;
+      st_.subtitle_duration = sub_frame.duration;
+    }
+
+    // Check if current subtitle should be displayed based on position + offset
+    const auto pos = player_.position();
+    const auto adjusted_pos = pos + std::chrono::milliseconds(st_.subtitle_offset_ms);
+
+    if (st_.current_subtitle.empty()) return;
+
+    // Display subtitle if current position is within subtitle's time range
+    const auto sub_start = st_.subtitle_pts;
+    const auto sub_end = st_.subtitle_duration > milliseconds(0)
+                             ? st_.subtitle_pts + st_.subtitle_duration
+                             : st_.subtitle_pts + std::chrono::milliseconds(5000); // default 5s if no duration
+
+    if (adjusted_pos < sub_start || adjusted_pos >= sub_end) {
+      return; // Not time to show this subtitle yet, or already past it
+    }
+
+    // Render subtitle at bottom of video area
+    const ImGuiIO& io = ImGui::GetIO();
+    const float video_bottom = io.DisplaySize.y * 0.9f; // 90% down
+
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, video_bottom),
+                            ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.7f);
+
+    ImGui::PushFont(nullptr); // Use default font (TODO: allow custom font)
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(io.DisplaySize.x * 0.9f, 0));
+
+    if (ImGui::Begin("##subtitle", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoInputs)) {
+      ImGui::PushTextWrapPos(io.DisplaySize.x * 0.85f);
+      ImGui::TextWrapped("%s", st_.current_subtitle.c_str());
+      ImGui::PopTextWrapPos();
+    }
+    ImGui::End();
+    ImGui::PopFont();
+  }
+
+  // Subtitle state
+  std::string current_subtitle;
+  std::chrono::milliseconds subtitle_pts{0};
+  std::chrono::milliseconds subtitle_duration{0};
+
   void chip(const char* name, const char* text, float y) {
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, y), ImGuiCond_Always,
@@ -799,6 +901,7 @@ class PlayerHud {
       case Overlay::Info: drawInfoOverlay(); return;
       case Overlay::Recent: drawRecentOverlay(); return;
       case Overlay::Help: drawHelpOverlay(); return;
+      case Overlay::Subtitle: drawSubtitleOverlay(); return;
     }
   }
 
@@ -896,6 +999,8 @@ class PlayerHud {
           {", / .", "Speed down / up"},
           {"A", "Cycle audio track"},
           {"C", "Cycle subtitles (incl. off)"},
+          {"S", "Toggle subtitles on/off"},
+          {"[ / ]", "Subtitle offset -500ms / +500ms"},
           {"F", "Fullscreen"},
           {"I", "Media info"},
           {"R", "Recent files"},
@@ -918,6 +1023,97 @@ class PlayerHud {
     if (!open) st_.overlay = Overlay::None;
   }
 
+  void drawSubtitleOverlay() {
+    bool open = true;
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(360, 240), ImVec2(480, 400));
+    if (ImGui::Begin("Subtitle Settings", &open,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+      const MediaInfo info = player_.mediaInfo();
+
+      // Subtitle track selection (mirror of the track combo)
+      std::vector<const TrackInfo*> sub_tracks;
+      for (const auto& t : info.tracks) {
+        if (t.type == TrackType::Subtitle) sub_tracks.push_back(&t);
+      }
+
+      if (sub_tracks.empty()) {
+        ImGui::TextDisabled("No subtitle tracks available");
+      } else {
+        ImGui::Text("Track:");
+        ImGui::SameLine();
+        const TrackId selected = info.selected_subtitle;
+        char label[40];
+        std::snprintf(label, sizeof(label), "Sub %d/%d",
+                      selected < 0 ? 0 : static_cast<int>(selected),
+                      static_cast<int>(sub_tracks.size()));
+        if (ImGui::BeginCombo("##sub_select", label)) {
+          if (ImGui::Selectable("Off", selected < 0) && selected >= 0) {
+            player_.disableSubtitles();
+            st_.toast.show("Subtitles off", nowMs());
+          }
+          ImGui::Separator();
+          for (const auto* t : sub_tracks) {
+            std::string item = "#" + std::to_string(t->id) + " " + t->codec;
+            if (!t->language.empty()) item += " (" + t->language + ")";
+            if (!t->title.empty()) item += " - " + t->title;
+            const bool is_sel = t->id == selected;
+            if (ImGui::Selectable(item.c_str(), is_sel) && !is_sel) {
+              if (player_.selectTrack(TrackType::Subtitle, t->id)) {
+                st_.toast.show("Subtitle track " + std::to_string(t->id), nowMs());
+              } else {
+                st_.toast.show("Subtitle switch failed", nowMs());
+              }
+            }
+          }
+          ImGui::EndCombo();
+        }
+      }
+
+      ImGui::Separator();
+
+      // Font size
+      ImGui::Text("Font Size:");
+      ImGui::SameLine();
+      float font_size = st_.subtitle_font_size;
+      if (ImGui::SliderFloat("##sub_font", &font_size, 12.0f, 48.0f, "%.0f px")) {
+        st_.subtitle_font_size = font_size;
+        if (cfg_.subtitle_font_size) {
+          cfg_.subtitle_font_size->store(font_size, std::memory_order_relaxed);
+        }
+      }
+
+      // Sync offset
+      ImGui::Text("Sync Offset:");
+      ImGui::SameLine();
+      int offset_ms = st_.subtitle_offset_ms;
+      if (ImGui::SliderInt("##sub_offset", &offset_ms, -5000, 5000, "%d ms")) {
+        st_.subtitle_offset_ms = offset_ms;
+        if (cfg_.subtitle_offset_ms) {
+          cfg_.subtitle_offset_ms->store(offset_ms, std::memory_order_relaxed);
+        }
+      }
+
+      // Visibility toggle
+      ImGui::Text("Visible:");
+      ImGui::SameLine();
+      bool visible = st_.subtitle_visible;
+      if (ImGui::Checkbox("##sub_visible", &visible)) {
+        st_.subtitle_visible = visible;
+        if (cfg_.subtitle_visible) {
+          cfg_.subtitle_visible->store(visible, std::memory_order_relaxed);
+        }
+      }
+
+      ImGui::Separator();
+      ImGui::TextDisabled("S: cycle subtitle  |  [: decrease offset  |  ]: increase offset");
+    }
+    ImGui::End();
+    if (!open) st_.overlay = Overlay::None;
+  }
+
   // UI-local mirrors of volume/rate/mute: the Player facade exposes setters
   // only (no getters in v0.1), so the HUD tracks what it last set. Honest
   // enough for a single-actor UI; core getters would be a v0.2 cleanup.
@@ -933,6 +1129,15 @@ class PlayerHud {
     double last_volume = 1.0;
     double last_rate = 1.0;
     bool last_muted = false;
+
+    // Subtitle rendering state (v0.2 basics)
+    float subtitle_font_size = 24.0f;
+    int subtitle_offset_ms = 0;
+    bool subtitle_visible = true;
+    // Runtime subtitle frame from backend
+    std::string current_subtitle;
+    std::chrono::milliseconds subtitle_pts{0};
+    std::chrono::milliseconds subtitle_duration{0};
   };
 
   soar::Player& player_;

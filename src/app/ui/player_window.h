@@ -33,6 +33,12 @@ struct WindowUiConfig {
   // means no active download; the chip hides once bytes == total.
   std::atomic<std::uint64_t>* download_bytes = nullptr;
   std::atomic<std::uint64_t>* download_total = nullptr;
+
+  // Subtitle rendering configuration (v0.2 basics: font/size/offset).
+  // These are owned by the caller and live for the window lifetime.
+  std::atomic<float>* subtitle_font_size = nullptr;      // default 24.0
+  std::atomic<int>* subtitle_offset_ms = nullptr;        // sync offset in ms
+  std::atomic<bool>* subtitle_visible = nullptr;         // show/hide toggle
 };
 
 // Runs the window loop until the user quits (Esc outside fullscreen /
