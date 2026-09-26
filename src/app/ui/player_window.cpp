@@ -182,6 +182,61 @@ void applyTheme() {
 // ASCII-everywhere labels keep that fallback path harmless. SOAR_UI_BITMAP_FONT
 // (set by the X11 drive test) pins the embedded font: identical glyph metrics
 // on every machine, so the OSC widget geometry the injector clicks is stable.
+// Also loads the same font at multiple sizes for subtitle rendering (v0.2).
+struct SubtitleFonts {
+  ImFont* size_16 = nullptr;
+  ImFont* size_20 = nullptr;
+  ImFont* size_24 = nullptr;
+  ImFont* size_28 = nullptr;
+  ImFont* size_32 = nullptr;
+  ImFont* size_36 = nullptr;
+  ImFont* size_48 = nullptr;
+};
+
+static SubtitleFonts loadSubtitleFonts() {
+  SubtitleFonts fonts;
+  ImGuiIO& io = ImGui::GetIO();
+  if (std::getenv("SOAR_UI_BITMAP_FONT") != nullptr) {
+    // Bitmap font mode: all sizes point to default
+    io.Fonts->AddFontDefault();
+    fonts.size_16 = fonts.size_20 = fonts.size_24 = fonts.size_28 =
+        fonts.size_32 = fonts.size_36 = fonts.size_48 = io.Fonts->Fonts[0];
+    return fonts;
+  }
+  const char* candidates[] = {
+      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+      "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/System/Library/Fonts/PingFang.ttc",
+      "/System/Library/Fonts/Helvetica.ttc",
+      "C:\\Windows\\Fonts\\msyh.ttc",
+      "C:\\Windows\\Fonts\\segoeui.ttf",
+  };
+  for (const char* path : candidates) {
+    if (FILE* f = std::fopen(path, "rb")) {
+      std::fclose(f);
+      fonts.size_16 = io.Fonts->AddFontFromFileTTF(path, 16.0f);
+      fonts.size_20 = io.Fonts->AddFontFromFileTTF(path, 20.0f);
+      fonts.size_24 = io.Fonts->AddFontFromFileTTF(path, 24.0f);
+      fonts.size_28 = io.Fonts->AddFontFromFileTTF(path, 28.0f);
+      fonts.size_32 = io.Fonts->AddFontFromFileTTF(path, 32.0f);
+      fonts.size_36 = io.Fonts->AddFontFromFileTTF(path, 36.0f);
+      fonts.size_48 = io.Fonts->AddFontFromFileTTF(path, 48.0f);
+      if (fonts.size_24) return fonts;  // At least the default size loaded
+    }
+  }
+  // Fallback: all point to default
+  io.Fonts->AddFontDefault();
+  fonts.size_16 = fonts.size_20 = fonts.size_24 = fonts.size_28 =
+      fonts.size_32 = fonts.size_36 = fonts.size_48 = io.Fonts->Fonts[0];
+  return fonts;
+}
+
+// Best-effort system UI font: the ImGui embedded font is ASCII-only bitmap,
+// which mangles non-ASCII titles. CI runners lack the CJK candidates — the
+// ASCII-everywhere labels keep that fallback path harmless. SOAR_UI_BITMAP_FONT
+// (set by the X11 drive test) pins the embedded font: identical glyph metrics
+// on every machine, so the OSC widget geometry the injector clicks is stable.
 void loadOverlayFont() {
   ImGuiIO& io = ImGui::GetIO();
   if (std::getenv("SOAR_UI_BITMAP_FONT") != nullptr) {
@@ -212,7 +267,7 @@ class PlayerHud {
  public:
   PlayerHud(soar::Player& player, const WindowUiConfig& cfg, SDL_Window* window)
       : player_(player), cfg_(cfg), window_(window), recent_(cfg.recent_path),
-        current_uri_(cfg.initial_uri) {
+        current_uri_(cfg.initial_uri), subtitle_fonts_(loadSubtitleFonts()) {
     recent_.load();
     recordOpen(cfg.initial_uri);
   }
@@ -837,8 +892,19 @@ class PlayerHud {
                             ImGuiCond_Always, ImVec2(0.5f, 1.0f));
     ImGui::SetNextWindowBgAlpha(0.7f);
 
-    ImGui::PushFont(nullptr); // Use default font (TODO: allow custom font)
+    // Select font based on configured size (v0.2)
+    ImFont* sub_font = subtitle_fonts_.size_24;
+    float fs = st_.subtitle_font_size;
+    if (fs <= 18.0f) sub_font = subtitle_fonts_.size_16;
+    else if (fs <= 22.0f) sub_font = subtitle_fonts_.size_20;
+    else if (fs <= 26.0f) sub_font = subtitle_fonts_.size_24;
+    else if (fs <= 30.0f) sub_font = subtitle_fonts_.size_28;
+    else if (fs <= 34.0f) sub_font = subtitle_fonts_.size_32;
+    else if (fs <= 42.0f) sub_font = subtitle_fonts_.size_36;
+    else sub_font = subtitle_fonts_.size_48;
+    if (sub_font) ImGui::PushFont(sub_font);
     ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(io.DisplaySize.x * 0.9f, 0));
+
 
     if (ImGui::Begin("##subtitle", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
@@ -1145,6 +1211,7 @@ class PlayerHud {
   SDL_Window* window_ = nullptr;
   RecentStore recent_;
   std::string current_uri_;
+  SubtitleFonts subtitle_fonts_;
   State st_;
 };
 
