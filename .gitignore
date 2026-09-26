@@ -62,3 +62,8 @@ vcpkg-configuration.json
 node_modules/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
+## Coverage data artifacts
+*.gcov
+*.gcno
+*.gcda
+
