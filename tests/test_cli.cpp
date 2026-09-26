@@ -318,24 +318,24 @@ if mode == "drive":
         # list is reordered by every successful pick — so each click
         # below accounts for the move-to-front the previous one caused.
         focus(); key(d.keysym_to_keycode(0x72))
-        time.sleep(0.5)
+        time.sleep(1.2)
         moved(480, 158); time.sleep(0.15)   # row 2: asset://noseek-live
-        button(1); time.sleep(0.6)
+        button(1); time.sleep(0.9)
         focus(); key(d.keysym_to_keycode(0x20)); time.sleep(0.25)  # pause
-        focus(); key(d.keysym_to_keycode(0xFF51)); time.sleep(0.25)  # Right
+        focus(); key(d.keysym_to_keycode(0xFF51)); time.sleep(0.25)  # Left
         focus(); key(d.keysym_to_keycode(0xFF50)); time.sleep(0.25)  # Home
         focus(); key(d.keysym_to_keycode(0x35)); time.sleep(0.25)   # '5' = 50%
         focus(); key(d.keysym_to_keycode(0x72))
-        time.sleep(0.5)
+        time.sleep(1.2)
         moved(480, 177); time.sleep(0.15)   # row 3: asset://fail-open-x
-        button(1); time.sleep(0.6)
+        button(1); time.sleep(0.9)
         focus(); key(d.keysym_to_keycode(0x69))  # Info shows the error row
         time.sleep(0.5)
         focus(); key(d.keysym_to_keycode(0x69)); time.sleep(0.3)
         focus(); key(d.keysym_to_keycode(0x72))
-        time.sleep(0.5)
+        time.sleep(1.2)
         moved(480, 158); time.sleep(0.15)   # row 2 again: back to the sample
-        button(1); time.sleep(0.6)
+        button(1); time.sleep(0.9)
         # Squeeze the window to nothing and back. Without a window manager
         # XResizeWindow applies directly, so SDL sees a 1x1 drawable: the
         # HUD must skip its draws instead of computing a negative OSC

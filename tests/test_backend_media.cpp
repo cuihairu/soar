@@ -403,8 +403,16 @@ TEST_CASE("reopening without an explicit close restarts cleanly") {
   auto backend = soar::makeFFmpegBackend();
   REQUIRE(backend->open(soar::MediaSource{media}));
   REQUIRE(backend->play());
-  std::this_thread::sleep_for(200ms);
-  REQUIRE(backend->position() > 0ms);
+  // Poll for the playback clock (the decode thread starts at its own
+  // pace; a flat sleep bets on an idle machine and loses under load).
+  bool started = false;
+  for (int i = 0; i < 200 && !started; ++i) {
+    started = backend->position() > 0ms;
+    if (!started) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  REQUIRE(started);
 
   // open() closes any existing media first; the result is a fresh,
   // stopped session on the same backend instance.

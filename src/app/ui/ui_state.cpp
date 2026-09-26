@@ -6,7 +6,7 @@
 #include <fstream>
 
 #ifdef _WIN32
-#  include <shlobj.h>
+#  include <direct.h>  // _mkdir
 #else
 #  include <sys/stat.h>
 #  include <unistd.h>
