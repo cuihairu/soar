@@ -404,9 +404,11 @@ if mode == "download":
     # A --cache-dir download is paced by playback: this short fixture's
     # terminal 100% progress event lands near its 6s mark. Sit still past
     # that point, then quit, so the run's event stream holds the whole
-    # download arc.
+    # download arc. Quit with Escape, not Q: the bare-SDL window (the
+    # no-imgui build) only handles Escape, and the Q injector loop once
+    # spun to the deadline there (no-imgui CI job, 92f5c6b).
     time.sleep(8)
-    qk = d.keysym_to_keycode(0x71)
+    qk = d.keysym_to_keycode(0xFF1B)  # XK_Escape
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
         try:
