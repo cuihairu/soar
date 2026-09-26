@@ -15,14 +15,14 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ## 2. 当前水位与门禁
 
-| 维度 | 实测（字幕补测批后，本地 Linux，见 §2.1 P3c 段与 §3.9） | 门禁（`--fail-under-*`） |
+| 维度 | 实测（A-B loop + playlist 批后，本地 Linux，见 §3.9 续） | 门禁（`--fail-under-*`） |
 |---|---|---|
-| 行 | 94.5%（2776/2939） | 94.1% |
-| 分支 | 82.7%（2499/3021） | 82.4% |
+| 行 | 94.5%（2951/3124） | 94.1% |
+| 分支 | 82.5%（2665/3231） | 82.4% |
 
-分文件行覆盖：`main.cpp` 98.5%（130/132）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 95.8%（750/783）、`ffmpeg_backend.cpp` 91.0%（1221/1342）、`http_cache.cpp` 98.5%（404/410）、`null_backend.cpp` 99%、`player.cpp` 100%。
+分文件行覆盖：`main.cpp` 93.4%（127/136）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 84.6%（778/920）、`ffmpeg_backend.cpp` 91.0%（1274/1400）、`http_cache.cpp` 98.5%（404/410）、`null_backend.cpp` 99.3%（142/143）、`player.cpp` 100%（59/59）。
 
-分文件分支覆盖：`main.cpp` 93.4%、`ui_state.cpp` 96%、`ui_state.h` 100%、`player_window.cpp` 83.9%（744/887）、`player.cpp` 89.4%、`ffmpeg_backend.cpp` 78.0%（927/1188）、`null_backend.cpp` 75%、`http_cache.cpp` 83.0%（424/511）。
+分文件分支覆盖：`main.cpp` 93.4%（127/136）、`ui_state.cpp` 90.0%（162/180）、`ui_state.h` 92.9%（13/14）、`player_window.cpp` 84.6%（778/920）、`player.cpp` 90.6%（48/53）、`ffmpeg_backend.cpp` 78.6%（982/1249）、`null_backend.cpp` 78.0%（131/168）、`http_cache.cpp` 83.0%（424/511）。
 
 ### 2.1 门禁重置的说明（必读，别当成"新代码拉低了覆盖率"）
 
