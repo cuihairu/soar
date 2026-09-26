@@ -84,10 +84,15 @@ TEST_CASE("commands before open fail with an error event") {
   CHECK_FALSE(fx.player.seek(1s));
   CHECK_FALSE(fx.player.selectTrack(soar::TrackType::Audio, 1));
   CHECK_FALSE(fx.player.disableSubtitles());
+  std::chrono::milliseconds loop_a{0}, loop_b{0};
+  CHECK_FALSE(fx.player.setLoopAB(0ms, 1s));
+  CHECK(fx.player.lastError().find("setLoopAB") != std::string::npos);
+  CHECK_FALSE(fx.player.clearLoopAB());
+  CHECK_FALSE(fx.player.loopAB(loop_a, loop_b));
 
   CHECK(fx.player.state() == soar::PlaybackState::Stopped);
   CHECK_FALSE(fx.player.lastError().empty());
-  CHECK(fx.log.countOf(soar::EventType::Error) >= 6);
+  CHECK(fx.log.countOf(soar::EventType::Error) >= 8);
 }
 
 TEST_CASE("play and pause drive the state machine") {

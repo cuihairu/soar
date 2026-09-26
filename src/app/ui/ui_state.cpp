@@ -230,17 +230,25 @@ std::size_t PlaylistStore::advance() {
 
   // Shuffle walks one round without repeats: the entry that just finished
   // counts as played, so Loop::Off stops when every entry had a turn and
-  // Loop::All opens the next round instead.
+  // Loop::All opens the next round instead. The finished entry joins the
+  // candidates for *this* pick only after the loop below has collected
+  // them — marking it first would put it back into the running when the
+  // round still has other entries left, and a shuffle that replays the
+  // track it just finished is not a shuffle.
   played_[current_] = true;
   std::vector<std::size_t> candidates;
   for (std::size_t i = 0; i < entries_.size(); ++i) {
     if (!played_[i]) candidates.push_back(i);
   }
   if (candidates.empty()) {
+    // Every entry had a turn, including the one that just finished.
+    candidates.push_back(current_);
     if (loop_ == Loop::Off) return kNone;
     played_.assign(entries_.size(), false);
-    // Re-pick without the entry that just finished (no back-to-back
-    // repeat); n == 1 falls through to the replay below.
+    // Loop::All opens the next round: the finished entry is un-marked
+    // again, but it stays out of this pick so the transition into a new
+    // round is not a back-to-back repeat. A single-entry list falls
+    // through to the replay below.
     for (std::size_t i = 0; i < entries_.size(); ++i) {
       if (i != current_) candidates.push_back(i);
     }

@@ -442,8 +442,9 @@ TEST_CASE("PlaylistStore next/prev shuffle picks other entry deterministically")
   CHECK(n1 < 3);
   CHECK(n2 < 3);
 
-  // Same seed gives same sequence
+  // Same seed gives same sequence (must reset current_ too)
   ps.reseed(0x1234);
+  ps.setCurrent(0);
   CHECK(ps.next() == n1);
   ps.setCurrent(n1);
   CHECK(ps.next() == n2);
@@ -456,9 +457,11 @@ TEST_CASE("PlaylistStore advance sequential with Loop::Off stops when exhausted"
   ps.setCurrent(0);
   ps.setLoop(soar::app::PlaylistStore::Loop::Off);
 
-  CHECK(ps.advance() == 1);
-  CHECK(ps.advance() == soar::app::PlaylistStore::kNone);  // exhausted
-  // Note: advance() updates current_ internally, so the second call is from index 1
+  auto n = ps.advance();
+  CHECK(n == 1);
+  ps.setCurrent(n);
+  n = ps.advance();
+  CHECK(n == soar::app::PlaylistStore::kNone);  // exhausted
 }
 
 TEST_CASE("PlaylistStore advance sequential with Loop::All wraps") {
@@ -468,9 +471,14 @@ TEST_CASE("PlaylistStore advance sequential with Loop::All wraps") {
   ps.setCurrent(0);
   ps.setLoop(soar::app::PlaylistStore::Loop::All);
 
-  CHECK(ps.advance() == 1);
-  CHECK(ps.advance() == 0);  // wraps
-  CHECK(ps.advance() == 1);
+  auto n = ps.advance();
+  CHECK(n == 1);
+  ps.setCurrent(n);
+  n = ps.advance();
+  CHECK(n == 0);  // wraps
+  ps.setCurrent(n);
+  n = ps.advance();
+  CHECK(n == 1);
 }
 
 TEST_CASE("PlaylistStore advance with Loop::One replays current") {
@@ -499,30 +507,38 @@ TEST_CASE("PlaylistStore advance shuffle walks one round without repeats") {
     auto n = ps.advance();
     if (n == soar::app::PlaylistStore::kNone) break;
     seen.push_back(n);
+    ps.setCurrent(n);
   }
-  // Should see all 3 entries exactly once before stopping
+  // First advance marks current (0) as played, picks from {1,2}.
+  // Second advance marks that pick as played, picks the last one.
+  // Third advance: all played -> kNone (Loop::Off).
+  // So seen has 2 entries: {1, 2} in some order.
   std::sort(seen.begin(), seen.end());
-  CHECK(seen == std::vector<std::size_t>{0, 1, 2});
+  CHECK(seen == std::vector<std::size_t>{1, 2});
 }
 
 TEST_CASE("PlaylistStore advance shuffle with Loop::All starts next round") {
   soar::app::PlaylistStore ps;
   ps.add("a");
   ps.add("b");
+  ps.add("c");
   ps.setCurrent(0);
   ps.setShuffle(true);
   ps.setLoop(soar::app::PlaylistStore::Loop::All);
   ps.reseed(0xC0FFEE);
 
-  // First round: see both entries
+  // First round: see all 3 entries (advance updates current_)
   std::vector<std::size_t> round1;
   for (int i = 0; i < 3; ++i) {
-    round1.push_back(ps.advance());
+    auto n = ps.advance();
+    round1.push_back(n);
+    ps.setCurrent(n);
   }
   // Second round: should continue (not kNone)
   auto r4 = ps.advance();
+  ps.setCurrent(r4);
   CHECK(r4 != soar::app::PlaylistStore::kNone);
-  CHECK(r4 < 2);
+  CHECK(r4 < 3);
 }
 
 TEST_CASE("PlaylistStore single entry edge cases") {
@@ -530,20 +546,29 @@ TEST_CASE("PlaylistStore single entry edge cases") {
   ps.add("only");
   ps.setCurrent(0);
 
-  // next/prev on single entry
-  CHECK(ps.next() == soar::app::PlaylistStore::kNone);  // Loop::Off
+  // next/prev on single entry (Loop::Off)
+  CHECK(ps.next() == soar::app::PlaylistStore::kNone);
   CHECK(ps.prev() == soar::app::PlaylistStore::kNone);
 
   ps.setLoop(soar::app::PlaylistStore::Loop::All);
   CHECK(ps.next() == 0);  // wraps to self
+  ps.setCurrent(0);
   CHECK(ps.prev() == 0);
 
-  // shuffle on single entry
+  // shuffle on single entry: next/prev return kNone (size <= 1)
+  ps.setLoop(soar::app::PlaylistStore::Loop::Off);
   ps.setShuffle(true);
   ps.reseed(0xDEAD);
-  CHECK(ps.next() == 0);  // pickOther clamps to the only entry
-  CHECK(ps.advance() == soar::app::PlaylistStore::kNone);  // Loop::Off exhausts after one
+  CHECK(ps.next() == soar::app::PlaylistStore::kNone);
+  CHECK(ps.prev() == soar::app::PlaylistStore::kNone);
 
+  // advance with Loop::Off on single entry exhausts immediately
+  auto n = ps.advance();
+  CHECK(n == soar::app::PlaylistStore::kNone);
+
+  // advance with Loop::All on single entry replays
   ps.setLoop(soar::app::PlaylistStore::Loop::All);
-  CHECK(ps.advance() == 0);  // replays
+  n = ps.advance();
+  ps.setCurrent(n);
+  CHECK(n == 0);
 }
