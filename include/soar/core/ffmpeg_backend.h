@@ -38,26 +38,35 @@ namespace soar {
  *
  * @threadsafe All public methods are thread-safe
  */
+
+/**
+ * Decoded video frame (YUV420P) for UI rendering.
+ * Owned by the backend; the UI pulls frames via tryGetVideoFrame().
+ */
+struct DecodedVideoFrame {
+  int width{0};
+  int height{0};
+  int stride_y{0};
+  int stride_u{0};
+  int stride_v{0};
+  std::vector<std::uint8_t> y;
+  std::vector<std::uint8_t> u;
+  std::vector<std::uint8_t> v;
+  std::chrono::milliseconds pts{0};
+};
+
+/**
+ * Decoded subtitle frame for UI rendering.
+ * Owned by the backend; the UI pulls frames via tryGetSubtitleFrame().
+ */
+struct DecodedSubtitleFrame {
+  std::string text;
+  std::chrono::milliseconds pts{0};
+  std::chrono::milliseconds duration{0};
+};
+
 class FFmpegBackend : public IBackend {
 public:
-  struct DecodedVideoFrame {
-    int width{0};
-    int height{0};
-    int stride_y{0};
-    int stride_u{0};
-    int stride_v{0};
-    std::vector<std::uint8_t> y;
-    std::vector<std::uint8_t> u;
-    std::vector<std::uint8_t> v;
-    std::chrono::milliseconds pts{0};
-  };
-
-  struct DecodedSubtitleFrame {
-    std::string text;
-    std::chrono::milliseconds pts{0};
-    std::chrono::milliseconds duration{0};
-  };
-
   FFmpegBackend();
   ~FFmpegBackend() override;
 

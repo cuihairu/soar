@@ -38,8 +38,11 @@ ffmpeg -hide_banner -loglevel error -y \
 
 # Sidecar subtitle text. It is used both as a mapped subtitle stream and
 # (as a separate copy) as a container attachment, which must be ignored by
-# track enumeration.
-printf '1\n00:00:00,000 --> 00:00:02,000\nHello\n\n2\n00:00:02,000 --> 00:00:04,000\nWorld\n' \
+# track enumeration. The third cue spans two lines on purpose: the plain
+# text decoders fold it into one rect, while mov_text keeps one rect per
+# line, so the same file exercises both the single-rect and the
+# rect-joining arms of the extraction loop.
+printf '1\n00:00:00,000 --> 00:00:02,000\nHello\n\n2\n00:00:02,000 --> 00:00:04,000\nWorld\n\n3\n00:00:04,000 --> 00:00:06,000\nTwo\nLines\n' \
   > "$media_dir/subs.srt"
 
 ffmpeg -hide_banner -loglevel error -y \
@@ -51,8 +54,39 @@ ffmpeg -hide_banner -loglevel error -y \
   -c:v ffvhuff -c:a pcm_s16le -c:s srt \
   -metadata:s:s:0 language=eng \
   -metadata:s:t mimetype=text/plain \
-  -t 4 \
+  -t 6 \
   "$media_dir/subs_media.mkv"
+
+# A cue whose payload is nothing but ASS override blocks: the text
+# extraction strips them away and is left with an empty string, so the
+# frame must never reach the subtitle queue. The second cue is the
+# control that proves the stream is live and the extraction path ran.
+# The plain-text (srt) decoders drop such a cue at parse time - an empty
+# payload never becomes a packet - so this one has to ride an ass
+# stream, whose events are passed through verbatim.
+cat > "$media_dir/subs_empty.ass" <<'EOF'
+[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,16,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\i1}
+Dialogue: 0,0:00:02.00,0:00:04.00,Default,,0,0,0,,Visible
+EOF
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -f lavfi -i sine=frequency=440 \
+  -i "$media_dir/subs_empty.ass" \
+  -map 0:v -map 1:a -map 2:s \
+  -c:v ffvhuff -c:a pcm_s16le -c:s ass \
+  -metadata:s:s:0 language=eng \
+  -t 4 \
+  "$media_dir/subs_empty_media.mkv"
 
 # Subtitle-only container: opens fine but has no audio or video stream,
 # so the backend's open must fail with the "no video or audio stream"
@@ -60,6 +94,60 @@ ffmpeg -hide_banner -loglevel error -y \
 ffmpeg -hide_banner -loglevel error -y \
   -i "$media_dir/subs.srt" -c:s srt \
   "$media_dir/subs_only.mkv"
+
+# ASS subtitle fixture: full-script Dialogue events (the 9-comma form,
+# as opposed to the 8-comma lines the SRT/WebVTT decoders synthesize),
+# override blocks and a hard break — the three shapes the rect->ass
+# text extraction must tell apart.
+cat > "$media_dir/subs.ass" <<'EOF'
+[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,16,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\i1}Styled{\i0}\NLine
+Dialogue: 0,0:00:02.00,0:00:04.00,Default,,0,0,0,,Second cue
+EOF
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -f lavfi -i sine=frequency=440 \
+  -i "$media_dir/subs.ass" \
+  -map 0:v -map 1:a -map 2:s \
+  -c:v ffvhuff -c:a pcm_s16le -c:s ass \
+  -metadata:s:s:0 language=eng \
+  -t 4 \
+  "$media_dir/subs_ass_media.mkv"
+
+# Burst cues: six cues sitting after the audio track ends. Once the last
+# audio packet is consumed the decode loop reads the subtitle packets back
+# to back (no stream left to pace against), so the subtitle FIFO (depth 4)
+# overflows and drops the two oldest.
+printf '1\n00:00:00,600 --> 00:00:00,700\nCue 1\n\n2\n00:00:00,700 --> 00:00:00,800\nCue 2\n\n3\n00:00:00,800 --> 00:00:00,900\nCue 3\n\n4\n00:00:00,900 --> 00:00:01,000\nCue 4\n\n5\n00:00:01,000 --> 00:00:01,100\nCue 5\n\n6\n00:00:01,100 --> 00:00:01,200\nCue 6\n' \
+  > "$media_dir/subs_burst.srt"
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "sine=frequency=440:duration=0.5" \
+  -i "$media_dir/subs_burst.srt" \
+  -map 0:a -map 1:s \
+  -c:a pcm_s16le -c:s srt \
+  "$media_dir/subs_burst_media.mkv"
+
+# mov_text in MP4: the legacy decoder emits plain SUBTITLE_TEXT rects (no
+# ASS wrapper) — the text-rect branch of the subtitle extraction.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -f lavfi -i sine=frequency=440 \
+  -i "$media_dir/subs.srt" \
+  -map 0:v -map 1:a -map 2:s \
+  -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -c:s mov_text \
+  -metadata:s:s:0 language=eng \
+  -t 6 \
+  "$media_dir/subs_movtext_media.mp4"
 
 # Mid-stream resolution and pixel-format changes: three h264 segments
 # remuxed into one stream. Segment one is yuv422p, so its frames go
@@ -203,7 +291,11 @@ ffmpeg -hide_banner -loglevel error -y \
 echo "SOAR_TEST_MEDIA=$media_dir/sample_dual_audio.mkv"
 echo "SOAR_TEST_AUDIO_ONLY=$media_dir/audio_only.mkv"
 echo "SOAR_TEST_SUBS_MEDIA=$media_dir/subs_media.mkv"
+echo "SOAR_TEST_SUBS_EMPTY=$media_dir/subs_empty_media.mkv"
 echo "SOAR_TEST_SUBS_ONLY=$media_dir/subs_only.mkv"
+echo "SOAR_TEST_ASS_MEDIA=$media_dir/subs_ass_media.mkv"
+echo "SOAR_TEST_BURST_MEDIA=$media_dir/subs_burst_media.mkv"
+echo "SOAR_TEST_MOVTEXT_MEDIA=$media_dir/subs_movtext_media.mp4"
 echo "SOAR_TEST_MULTI_RES=$media_dir/multi_res.ts"
 echo "SOAR_TEST_CORRUPT_DECODE=$media_dir/corrupt_decode.mkv"
 echo "SOAR_TEST_UNKNOWN_CODEC=$media_dir/unknown_codec.mkv"

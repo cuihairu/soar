@@ -15,10 +15,10 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ## 2. 当前水位与门禁
 
-| 维度 | 实测（P3c 字幕批，本地 Linux，见 §2.1 P3c 段与 §3.9） | 门禁（`--fail-under-*`） |
+| 维度 | 实测（字幕补测批后，本地 Linux，见 §2.1 P3c 段与 §3.9） | 门禁（`--fail-under-*`） |
 |---|---|---|
-| 行 | 94.4%（2774/2939） | 94.1% |
-| 分支 | 82.0%（2477/3021） | 82.4% |
+| 行 | 94.5%（2776/2939） | 94.1% |
+| 分支 | 82.7%（2499/3021） | 82.4% |
 
 分文件行覆盖：`main.cpp` 98.5%（130/132）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 95.8%（750/783）、`ffmpeg_backend.cpp` 91.0%（1221/1342）、`http_cache.cpp` 98.5%（404/410）、`null_backend.cpp` 99%、`player.cpp` 100%。
 
@@ -126,7 +126,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 **测量教训（§1 家族的新形态）**：本批期间出现过 `player_window.cpp` 行 41%、总体 79.3%/65.7% 的假读数——成因是**环境变量不齐时窗口用例静默跳过**（`SOAR_TEST_X11`/夹具 env 没进到 ctest 进程），叠加并行会话在同一构建树上跑测试污染 gcda。防范：本地测量必须 ① 用 `scripts/generate_test_media.sh` 的输出 export 全部夹具 + `SOAR_TEST_X11=1 DISPLAY=:99 PATH=/usr/bin:$PATH SDL_AUDIODRIVER=dummy`；② 确认没有别的 `soar` 进程存活（`pgrep -x soar`）；③ 怀疑被污染时用独立构建树（如 `build-cov2`）重测对照。假读数会顺着"门禁随水位同步"的惯例把门禁砍到 79.0/65.0——比真水位低 15 个点、形同虚设，这正是"改门禁前先复测"必须成为硬规则的原因。
 
-解码层缺口（`ffmpeg_backend.cpp` 行 91.0%、分支 78.0%，缺失集中在 `avcodec_decode_subtitle2` 失败路径、空 rect 列表、ASS/文本双分支的错误臂）属 §3.3 版本依赖与 §3.4 注入成本家族；分支总水位 82.0%（2477/3021）距门禁 82.4% 差 13 个分支，补测批进行中（字幕空 cue/空文本臂 + 窗口 overlay 补充步骤），门禁维持 94.1/82.4 不动。
+解码层缺口（`ffmpeg_backend.cpp` 行 91.0%、分支 78.0%，缺失集中在 `avcodec_decode_subtitle2` 失败路径、空 rect 列表、ASS/文本双分支的错误臂）属 §3.3 版本依赖与 §3.4 注入成本家族。补测批把分支总水位从 82.0%（2477/3021）抬到 82.7%（2499/3021，门禁 82.4% 上方 +9）：后端侧新增空 cue（仅覆写块的 ASS 事件，提取后为空、不入队）、burst FIFO 溢出序、mov_text 纯文本 rect 与双行 cue 的 rect-join 臂；UI 侧 subsdrive 在真实 cue 显示窗内把字号滑条停在 20/28/32/36 px 四个中段桶（drawSubtitles 字体链的四个真臂）、h 键开 Help 覆层（快捷键表 BeginTable 体）、m 静音后开 Media Info（"(muted)" 渲染臂）。门禁维持 94.1/82.4 不动。
 
 新增测试：`subtitle packets decode to text frames during playback`（`test_backend_media.cpp:1051`）在线播放 `subs_media.mkv`（首行 "Hello"、次行 "World"），断言提取文本包含预期词汇，同时钉死 ASS 括号剥离与逗号定位逻辑。该用例在 coverage job（`SOAR_TEST_SUBS_MEDIA`）与本地全量验证均绿。
 

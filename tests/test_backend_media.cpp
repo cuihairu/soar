@@ -107,7 +107,7 @@ TEST_CASE("unopened backend: control surface semantics") {
   CHECK(backend->mediaInfo().tracks.empty());
   CHECK_FALSE(backend->mediaInfo().seekable);
   // tryGetVideoFrame is an FFmpegBackend extension beyond IBackend.
-  soar::FFmpegBackend::DecodedVideoFrame frame;
+  soar::DecodedVideoFrame frame;
   CHECK_FALSE(static_cast<soar::FFmpegBackend*>(backend.get())->tryGetVideoFrame(frame));
 
   // open() on a missing file fails (fatal path: state becomes Error) and
@@ -535,7 +535,7 @@ TEST_CASE("tryGetVideoFrame delivers frames during playback") {
 
   // The decode thread needs a moment to produce the first frame; the
   // wait also absorbs sanitizer-slowed runs.
-  soar::FFmpegBackend::DecodedVideoFrame frame;
+  soar::DecodedVideoFrame frame;
   bool got = false;
   for (int i = 0; i < 1000 && !got; ++i) {
     got = static_cast<soar::FFmpegBackend*>(backend.get())->tryGetVideoFrame(frame);
@@ -610,6 +610,54 @@ TEST_CASE("seeking while playing jumps to the target") {
 
   backend->stop();
   backend->close();
+}
+
+TEST_CASE("a backward seek while playing re-emits the rewound position") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping backward-seek test");
+    return;
+  }
+
+  // The position event is throttled by a granularity window in both
+  // directions: while playing, a seek that jumps *back* by more than the
+  // window must still emit, otherwise the UI's progress bar would keep
+  // showing the old (later) position until the next forward tick.
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+  std::this_thread::sleep_for(300ms);
+
+  REQUIRE(backend->seek(std::chrono::milliseconds(4000)));
+  bool forward = false;
+  for (int i = 0; i < 500 && !forward; ++i) {
+    forward = backend->position() >= std::chrono::milliseconds(4000);
+    if (!forward) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  REQUIRE(forward);
+  const int after_forward = sink.position_changed.load();
+
+  // Rewind to the start: well past the granularity window, so a new
+  // PositionChanged has to be emitted for the rewind itself.
+  REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+  bool rewound = false;
+  for (int i = 0; i < 500 && !rewound; ++i) {
+    rewound = backend->position() < std::chrono::milliseconds(1000);
+    if (!rewound) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(rewound);
+  CHECK(sink.position_changed.load() > after_forward);
+
+  backend->stop();
+  backend->close();
+  CHECK(sink.errors.load() == 0);
 }
 
 TEST_CASE("rapid audio switching converges on the final selection") {
@@ -1064,7 +1112,7 @@ TEST_CASE("subtitle packets decode to text frames during playback") {
   auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
   while (std::chrono::steady_clock::now() < deadline && second.empty()) {
-    soar::FFmpegBackend::DecodedSubtitleFrame frame;
+    soar::DecodedSubtitleFrame frame;
     if (ffmpeg->tryGetSubtitleFrame(frame)) {
       if (first.empty()) {
         first = frame.text;
@@ -1080,6 +1128,167 @@ TEST_CASE("subtitle packets decode to text frames during playback") {
 
   CHECK(first.find("Hello") != std::string::npos);
   CHECK(second.find("World") != std::string::npos);
+}
+
+TEST_CASE("ASS cues decode through the Dialogue parser") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_ASS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_ASS_MEDIA not set; skipping ASS decode test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // The ASS fixture's first cue reads "{\i1}Styled{\i0}\NLine": the ass
+  // decoder hands over full "Dialogue: ..." event lines (nine commas, unlike
+  // the eight-comma synthesized lines the SRT decoder produces), and the
+  // text extraction must drop the override blocks and turn the hard break
+  // into a space. A markup leak ("{\i1}" or "\N") would fail the checks
+  // below even though the raw rects carried the words.
+  std::string first, second;
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline && second.empty()) {
+    soar::DecodedSubtitleFrame frame;
+    if (ffmpeg->tryGetSubtitleFrame(frame)) {
+      if (first.empty()) {
+        first = frame.text;
+      } else {
+        second = frame.text;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  backend->stop();
+  backend->close();
+
+  CHECK(first.find("Styled") != std::string::npos);
+  CHECK(first.find("Line") != std::string::npos);
+  CHECK(first.find('{') == std::string::npos);
+  CHECK(first.find("\\N") == std::string::npos);
+  CHECK(second.find("Second cue") != std::string::npos);
+}
+
+TEST_CASE("mov_text cues decode as plain text rects") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_MOVTEXT_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MOVTEXT_MEDIA not set; skipping mov_text decode test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // The mp4 fixture carries the same cues as mov_text. Whichever rect
+  // shape the decoder picks for this container (raw SUBTITLE_TEXT, or the
+  // ASS wrapper the text decoders synthesize), the payload that reaches
+  // the UI must be the bare words. The third cue spans two lines, so it
+  // also pins the hard-break handling: "\n" must not survive into the
+  // rendered string as a markup escape.
+  std::string first, second, third;
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline && third.empty()) {
+    soar::DecodedSubtitleFrame frame;
+    if (ffmpeg->tryGetSubtitleFrame(frame)) {
+      if (first.empty()) {
+        first = frame.text;
+      } else if (second.empty()) {
+        second = frame.text;
+      } else {
+        third = frame.text;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  backend->stop();
+  backend->close();
+
+  CHECK(first.find("Hello") != std::string::npos);
+  CHECK(second.find("World") != std::string::npos);
+  CHECK(third.find("Two") != std::string::npos);
+  CHECK(third.find("Lines") != std::string::npos);
+  // A leaked hard break ("\n", "\\N") or Dialogue field would show up here.
+  CHECK(third.find('\n') == std::string::npos);
+  CHECK(third.find("\\N") == std::string::npos);
+  CHECK(third.find("Dialogue") == std::string::npos);
+}
+
+TEST_CASE("a cue with no visible text is never queued") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_EMPTY", media)) {
+    MESSAGE("SOAR_TEST_SUBS_EMPTY not set; skipping empty-cue test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // The first cue of the fixture is "{\i1}" — pure ASS markup. The text
+  // extraction strips the override block and is left with nothing, so the
+  // frame must be dropped instead of queued as an empty payload the UI
+  // would later try to render. The second cue ("Visible") is the control:
+  // reaching it proves the stream decoded and the extraction path ran, so
+  // the absence of an empty frame is a real result and not a dead stream.
+  std::vector<std::string> pulled;
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline && pulled.empty()) {
+    soar::DecodedSubtitleFrame frame;
+    if (ffmpeg->tryGetSubtitleFrame(frame)) {
+      pulled.push_back(frame.text);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  backend->stop();
+  backend->close();
+
+  REQUIRE(pulled.size() == 1);
+  CHECK(pulled[0].find("Visible") != std::string::npos);
+  CHECK(pulled[0].find('{') == std::string::npos);
+}
+
+TEST_CASE("a burst of adjacent cues overflows the subtitle FIFO in order") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_BURST_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_BURST_MEDIA not set; skipping subtitle burst test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // Six cues inside the first half second of an audio-only file: the
+  // decode thread queues them faster than any consumer polls, so the
+  // depth-4 FIFO drops the oldest and the consumer still sees the
+  // survivors in cue order.
+  std::vector<std::string> pulled;
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+  while (std::chrono::steady_clock::now() < deadline) {
+    soar::DecodedSubtitleFrame frame;
+    while (ffmpeg->tryGetSubtitleFrame(frame)) {
+      pulled.push_back(frame.text);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  backend->stop();
+  backend->close();
+
+  CHECK(pulled.size() == 4);
+  CHECK(pulled[0].find("Cue 3") != std::string::npos);
+  CHECK(pulled[1].find("Cue 4") != std::string::npos);
+  CHECK(pulled[2].find("Cue 5") != std::string::npos);
+  CHECK(pulled[3].find("Cue 6") != std::string::npos);
 }
 
 TEST_CASE("a container with no audio or video streams fails to open") {
@@ -1401,7 +1610,7 @@ TEST_CASE("a mid-stream resolution change rebuilds the video converter") {
   // generous because the sanitized builds decode several times slower
   // than real time; the third segment ends the wait early elsewhere.
   auto* ff = static_cast<soar::FFmpegBackend*>(backend.get());
-  soar::FFmpegBackend::DecodedVideoFrame frame;
+  soar::DecodedVideoFrame frame;
   bool saw_first = false;
   bool saw_second = false;
   bool saw_third = false;

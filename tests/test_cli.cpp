@@ -172,6 +172,69 @@ while win is None and time.monotonic() < deadline:
 if win is None:
     sys.exit(3)
 
+# Window-focused injection primitives, shared by the drive modes. Every
+# primitive re-finds the window first: the XID can go stale if SDL
+# recreates the window (fullscreen round-trips), and a tour step aimed at
+# a dead window would silently do nothing (the helpers rebind the global
+# win; a vanished window aborts the tour with the deadline exit code).
+def focus():
+    global win
+    win = find_window()
+    if win is None:
+        return False
+    try:
+        win.set_input_focus(X.RevertToParent, X.CurrentTime)
+        d.sync()
+        return True
+    except Exception:
+        return False
+
+
+def key(kc):
+    global win
+    win = find_window()
+    if win is None:
+        return False
+    try:
+        xtest.fake_input(d, X.KeyPress, kc)
+        d.sync()
+        xtest.fake_input(d, X.KeyRelease, kc)
+        d.sync()
+        return True
+    except Exception:
+        return False
+
+
+def button(btn):
+    global win
+    win = find_window()
+    if win is None:
+        return False
+    try:
+        xtest.fake_input(d, X.ButtonPress, btn)
+        d.sync()
+        xtest.fake_input(d, X.ButtonRelease, btn)
+        d.sync()
+        return True
+    except Exception:
+        return False
+
+
+def moved(x, y):
+    # python-xlib: warp_pointer(x, y, ...) — dest is relative to the
+    # window; no source-rectangle filtering needed.
+    global win
+    win = find_window()
+    if win is None:
+        return False
+    try:
+        win.warp_pointer(x, y)
+        d.sync()
+        return True
+    except Exception:
+        return False
+
+
 if mode == "delete":
     wm_protocols = d.intern_atom("WM_PROTOCOLS")
     wm_delete = d.intern_atom("WM_DELETE_WINDOW")
@@ -193,65 +256,6 @@ if mode == "delete":
 if mode == "drive":
     # Let the UI come up and the null backend start before touching it.
     time.sleep(3.0)
-
-    # Every primitive re-finds the window first: the XID can go stale if
-    # SDL recreates the window (fullscreen round-trips), and a tour step
-    # aimed at a dead window would silently do nothing (module scope, so
-    # the helpers rebind the global win; a vanished window aborts with the
-    # same exit code as the deadline path).
-    def focus():
-        global win
-        win = find_window()
-        if win is None:
-            return False
-        try:
-            win.set_input_focus(X.RevertToParent, X.CurrentTime)
-            d.sync()
-            return True
-        except Exception:
-            return False
-
-    def key(kc):
-        global win
-        win = find_window()
-        if win is None:
-            return False
-        try:
-            xtest.fake_input(d, X.KeyPress, kc)
-            d.sync()
-            xtest.fake_input(d, X.KeyRelease, kc)
-            d.sync()
-            return True
-        except Exception:
-            return False
-
-    def button(btn):
-        global win
-        win = find_window()
-        if win is None:
-            return False
-        try:
-            xtest.fake_input(d, X.ButtonPress, btn)
-            d.sync()
-            xtest.fake_input(d, X.ButtonRelease, btn)
-            d.sync()
-            return True
-        except Exception:
-            return False
-
-    def moved(x, y):
-        # python-xlib: warp_pointer(x, y, ...) — dest is relative to the
-        # window; no source-rectangle filtering needed.
-        global win
-        win = find_window()
-        if win is None:
-            return False
-        try:
-            win.warp_pointer(x, y)
-            d.sync()
-            return True
-        except Exception:
-            return False
 
     try:
         geo = win.get_geometry()
@@ -352,11 +356,11 @@ if mode == "drive":
         wclick(591, 468)   # pick the subtitle track ...
         wclick(569, 495)   # ... reopen; "Off" only acts as a change when a
         wclick(591, 443)   # track is currently selected, so the order matters
-        wclick(636, 495)   # Sub overlay (the Sub button sits between the
-        wclick(636, 495)   # subtitle combo and Info; close again)
-        wclick(686, 495)   # Info overlay (shifted right by the Sub button)
-        wclick(686, 495)   # (close again)
-        wclick(737, 495)   # fullscreen toggle button (also shifted)
+        wclick(637, 495)   # Sub overlay (the Sub button sits between the
+        wclick(637, 495)   # subtitle combo and Info; open, then close)
+        wclick(685, 495)   # Info overlay (shifted right by the Sub button)
+        wclick(685, 495)   # (close again)
+        wclick(738, 495)   # fullscreen toggle button (also shifted)
         focus(); key(d.keysym_to_keycode(0xFF1B)); time.sleep(0.3)
         # Seek bar: the row-1 slider sits at y 452..477 under the OSC top
         # edge. A press-drag-back-release first (the value returns to where
@@ -429,6 +433,143 @@ if mode == "drive":
             sys.exit(0)
     sys.exit(4)
 
+if mode == "subsdrive":
+    # Real-backend window run over the SRT fixture. The HUD tour rides the
+    # null backend, so drawSubtitles and the Subtitle Settings page never
+    # see a decoded frame or a real track list there; this mode pauses
+    # inside the first cue's display window and then drives the subtitle
+    # path end to end — offset nudges, the visibility toggle, the settings
+    # page (font size, sync offset, visibility checkbox) and the track
+    # combo (Off disables the stream, the track row re-selects it).
+    # Coordinates pinned by SOAR_UI_BITMAP_FONT=1 (probe screenshots).
+    time.sleep(2.2)
+    focus(); key(d.keysym_to_keycode(0x20))  # space: freeze inside a cue
+    time.sleep(0.6)
+    for keysym in (0x5B, 0x5D, 0x73, 0x73):  # [ ] nudge, s s visibility
+        if not focus():
+            sys.exit(4)
+        key(d.keysym_to_keycode(keysym))
+        time.sleep(0.4)
+
+    def sclick(x, y):
+        moved(x, y); time.sleep(0.15)
+        button(1); time.sleep(0.5)
+
+    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    sclick(360, 232)   # font size slider: jump to the small end
+    sclick(630, 232)   # ... and to the large end
+    for fx in (415, 479, 512, 544):  # ... and the 20/28/32/36 px buckets,
+        sclick(fx, 232)              # each one arm of drawSubtitles' font chain
+    sclick(595, 263)   # sync offset slider: a large positive offset puts
+                       # the paused position past the cue (expiry arc) ...
+    sclick(360, 263)   # ... negative puts it before (not-yet arc) ...
+    sclick(495, 263)   # ... and the middle puts it back inside
+    sclick(335, 295)   # visibility checkbox off (renderer early-out) ...
+    sclick(335, 295)   # ... and back on
+    sclick(459, 183)   # track combo open
+    sclick(459, 248)   # pick the track row (subtitle selectTrack)
+    sclick(459, 183)   # reopen; "Off" has a selection to act on now ...
+    sclick(459, 221)   # ... (disableSubtitles on the real backend)
+    sclick(459, 183)   # reopen; nothing is selected, so this "Off" ...
+    sclick(459, 221)   # ... pick is the no-op arm
+    sclick(459, 183)   # reopen ...
+    sclick(459, 248)   # ... and re-select the track row
+    sclick(637, 495)   # close the page
+    time.sleep(0.5)
+    # The OSC copy of the subtitle picker over the same real track list.
+    # The first pick is a no-op by construction (the page above left the
+    # stream selected, and a row that already is the selection
+    # short-circuits); the pair after it is the pair that matters, since
+    # "Off" only acts while something is selected.
+    sclick(569, 495)   # subtitle combo open (Off + the stream, flips up)
+    sclick(591, 468)   # the track row, already selected: no-op arm
+    sclick(569, 495)   # reopen; "Off" has something to act on now ...
+    sclick(591, 443)   # ... (disableSubtitles from the OSC)
+    sclick(569, 495)   # reopen; nothing is selected, so "Off" ...
+    sclick(591, 443)   # ... is the no-op arm again
+    sclick(569, 495)   # reopen ...
+    sclick(591, 468)   # ... and re-select the track row
+    # Key phase over the same tracks: C cycles off -> on -> off around
+    # the single stream, A wraps a one-stream audio list straight back
+    # onto itself, and I opens Media Info -- the one place the whole
+    # track list is spelled out with codec, language and the selected
+    # marker, which the null-backend tour can never show.
+    for keysym in (0x63, 0x63, 0x61):
+        if not focus():
+            sys.exit(4)
+        key(d.keysym_to_keycode(keysym))
+        time.sleep(0.5)
+    focus(); key(d.keysym_to_keycode(0x69))
+    time.sleep(0.8)
+    focus(); key(d.keysym_to_keycode(0x69))
+    time.sleep(0.3)
+    # The Help overlay's shortcut table (BeginTable body) and Media Info's
+    # muted rendering both need a state the phases above never held: Help
+    # open at all, and Info open while audio is muted.
+    focus(); key(d.keysym_to_keycode(0x68))  # h: Help overlay
+    time.sleep(0.9)
+    focus(); key(d.keysym_to_keycode(0x68))  # ... and close it
+    time.sleep(0.3)
+    focus(); key(d.keysym_to_keycode(0x6D))  # m: mute ...
+    time.sleep(0.4)
+    focus(); key(d.keysym_to_keycode(0x69))  # ... so Info shows "(muted)"
+    time.sleep(0.8)
+    focus(); key(d.keysym_to_keycode(0x69))  # ... and close it
+    time.sleep(0.3)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
+if mode == "audiodrive":
+    # Real-backend window run over the dual-audio fixture: two audio
+    # streams and no subtitle stream at all. That combination is where
+    # the "nothing to cycle" paths live -- A steps to the second stream
+    # and the next press wraps back to the first, C has no subtitle to
+    # cycle, the Subtitle Settings page says so instead of offering an
+    # empty combo, and Media Info lists both titled audio rows with one
+    # of them marked selected. The null-backend tour has a single
+    # synthetic track, so none of these arms are reachable there.
+    time.sleep(2.2)
+    focus(); key(d.keysym_to_keycode(0x20))  # space: hold the decode thread
+    time.sleep(0.6)                          # alive for the switch handoff
+
+    def dclick(x, y):
+        moved(x, y); time.sleep(0.15)
+        button(1); time.sleep(0.5)
+
+    for keysym in (0x61, 0x61, 0x63):  # a -> second stream, a -> wrap, c -> none
+        if not focus():
+            sys.exit(4)
+        key(d.keysym_to_keycode(keysym))
+        time.sleep(0.6)
+
+    dclick(637, 495)   # Sub page: "No subtitle tracks available"
+    dclick(637, 495)   # close it again
+    dclick(685, 495)   # Media Info: two titled audio rows, one selected
+    dclick(685, 495)   # close it again
+    time.sleep(0.4)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
 if mode == "stall":
     # The window's buffering indicator is the one HUD element driven by a
     # backend event rather than by input: the UI polls the atomic that
@@ -472,10 +613,21 @@ if mode == "download":
     # A --cache-dir download is paced by playback: this short fixture's
     # terminal 100% progress event lands near its 6s mark. Sit still past
     # that point, then quit, so the run's event stream holds the whole
-    # download arc. Quit with Escape, not Q: the bare-SDL window (the
-    # no-imgui build) only handles Escape, and the Q injector loop once
-    # spun to the deadline there (no-imgui CI job, 92f5c6b).
-    time.sleep(8)
+    # download arc. The Media Info detour is the only place the HUD
+    # prints the cache directory it is filling. Quit with Escape, not Q:
+    # the bare-SDL window (the no-imgui build) only handles Escape, and
+    # the Q injector loop once spun to the deadline there (no-imgui CI
+    # job, 92f5c6b).
+    time.sleep(4)
+    try:
+        focus()
+        key(d.keysym_to_keycode(0x69))  # I: Media Info, the Cache: row
+        time.sleep(0.8)
+        focus()
+        key(d.keysym_to_keycode(0x69))  # ... and close it again
+    except Exception:
+        pass
+    time.sleep(4)
     qk = d.keysym_to_keycode(0xFF1B)  # XK_Escape
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
@@ -804,6 +956,25 @@ TEST_CASE("headless run over an unopenable source fails with 1") {
   const auto run = runCli({"--headless", "--backend=null", "asset://fail-open.mp4"});
   CHECK(run.exit_code == 1);
   CHECK(run.output.find("Failed to open source: asset://fail-open.mp4") != std::string::npos);
+}
+
+TEST_CASE("headless FFmpeg run over a missing file fails with the demuxer error") {
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping missing-file CLI test");
+    return;
+  }
+
+  // The same "open failed" contract as the null-backend case above, but
+  // over the real backend: the demuxer refuses the file, the backend
+  // records the reason, and the CLI has to print it and exit 1 instead of
+  // starting a window or a decode thread for a source that never opened.
+  const std::string missing = media + ".does-not-exist.mkv";
+  const auto run = runCli({"--headless", "--backend=ffmpeg", missing});
+  CHECK(run.exit_code == 1);
+  CHECK(run.output.find("Failed to open source: " + missing) != std::string::npos);
+  CHECK(run.output.find("Error: ") != std::string::npos);
+  CHECK(run.output.find("event: error=") != std::string::npos);
 }
 
 TEST_CASE("windowed run fails cleanly at SDL_Init") {
@@ -1148,6 +1319,226 @@ TEST_CASE("windowed UI run drives the HUD through a scripted XTEST session") {
     // The tour ends by reopening the sample, so it is back on top.
     CHECK(recent_txt.rfind("asset://sample", 0) == 0);
   }
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run renders subtitles and drives the Subtitle Settings page") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // The subtitle renderer and the settings page are ImGui widgets; the
+  // bare-SDL build has neither, so there is nothing to drive.
+  MESSAGE("app built without the ImGui overlay; skipping the subtitle window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the subtitle window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the subtitle window test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping the subtitle window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the subtitle window test");
+    return;
+  }
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the subtitle window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "subsdrive", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  // Keep the run's MRU entries out of the real user state dir.
+  const std::string state_home = "/tmp/soar_recent_xdg_" + std::to_string(::getpid()) + "s";
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // Real FFmpeg backend: the fixture carries an SRT cue track, so the
+  // decode thread delivers subtitle frames while the injector drives.
+  const auto run = runCli({"--backend=ffmpeg", media});
+
+  std::printf("x11 subtitle window test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  // The backend opened and played (state=2); the injector's first gesture
+  // is space, and the paused state (1) proves it landed while playback
+  // was live — i.e. inside the first cue's display window.
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  CHECK(run.output.find("event: state=1") != std::string::npos);
+  // Every pick in the tour re-publishes MediaInfo, so the selection
+  // trail is visible in the event stream: the settings page and the OSC
+  // combo both enable the stream, C disables it again and re-enables it,
+  // and the very last selection has to be the enabled one — the C
+  // presses are the tail of the tour, so a stream left off would mean
+  // the last C never landed.
+  const std::size_t sub_on = run.output.find("selected(video=0,audio=1,sub=2)");
+  CHECK(sub_on != std::string::npos);
+  const std::size_t sub_off = run.output.find("selected(video=0,audio=1,sub=-1)", sub_on);
+  CHECK(sub_off != std::string::npos);
+  CHECK(run.output.rfind("selected(video=0,audio=1,sub=2)") > sub_off);
+#endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run cycles a dual-audio fixture with no subtitles") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // Track cycling and the overlays are ImGui-side HUD behaviour; the
+  // bare-SDL build has no HUD to drive.
+  MESSAGE("app built without the ImGui overlay; skipping the audio-track window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the audio-track window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the audio-track window test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping the audio-track window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the audio-track window test");
+    return;
+  }
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the audio-track window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "audiodrive", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  // Keep the run's MRU entries out of the real user state dir.
+  const std::string state_home = "/tmp/soar_recent_xdg_" + std::to_string(::getpid()) + "a";
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // Two audio streams, no subtitle stream: the fixture behind A's
+  // wrap-around and the "no subtitle tracks" degradation.
+  const auto run = runCli({"--backend=ffmpeg", media});
+
+  std::printf("x11 audio-track window test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  // One video stream plus the two audio ones, and no subtitle stream at
+  // all (which is what the C press and the Subtitle Settings page run
+  // into).
+  CHECK(run.output.find("tracks=3 selected(video=0,audio=1,sub=-1)") != std::string::npos);
+  CHECK(run.output.find("event: state=1") != std::string::npos);
+  // The first A steps onto the second stream and the second wraps back
+  // to the first, so the trail has to be 1 -> 2 -> 1 in that order.
+  const std::size_t to_second = run.output.find("selected(video=0,audio=2,sub=-1)");
+  CHECK(to_second != std::string::npos);
+  const std::size_t wrapped = run.output.find("selected(video=0,audio=1,sub=-1)", to_second);
+  CHECK(wrapped != std::string::npos);
+  // No failed switch anywhere: a refusal would surface as an Error event
+  // and leave the selection where it was.
+  CHECK(run.output.find("event: error=") == std::string::npos);
+#endif
 #endif
 #endif
 }

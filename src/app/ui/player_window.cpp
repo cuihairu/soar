@@ -105,7 +105,7 @@ bool presentVideoFrame(SDL_Renderer* renderer, SDL_Texture** texture,
   if (frame_ptr == nullptr) return false;
 #ifdef SOAR_WITH_FFMPEG
   const auto& frame =
-      *static_cast<const soar::FFmpegBackend::DecodedVideoFrame*>(frame_ptr);
+      *static_cast<const soar::DecodedVideoFrame*>(frame_ptr);
   if (frame.width <= 0 || frame.height <= 0) return false;
   int tw = 0;
   int th = 0;
@@ -723,9 +723,10 @@ class PlayerHud {
       drawTrackCombo(TrackType::Subtitle, now);
       ImGui::PopItemWidth();
       ImGui::SameLine();
-      // Sub overlay button (v0.2) — temporarily disabled to keep X11 test stable
-      // if (ImGui::Button("Sub")) toggleOverlay(Overlay::Subtitle);
-      // ImGui::SameLine();
+      // Sub overlay button (v0.2): track combo selects the stream, this page
+      // holds the presentation knobs (font size, offset, visibility).
+      if (ImGui::Button("Sub")) toggleOverlay(Overlay::Subtitle);
+      ImGui::SameLine();
       if (ImGui::Button("Info")) toggleOverlay(Overlay::Info);
       ImGui::SameLine();
       if (ImGui::Button(st_.fullscreen ? "Window" : "Full")) {
@@ -861,14 +862,18 @@ class PlayerHud {
       st_.subtitle_visible = cfg_.subtitle_visible->load(std::memory_order_relaxed);
     }
 
-    // Poll for new subtitle frame
-    soar::FFmpegBackend::DecodedSubtitleFrame sub_frame;
+    // Poll for new subtitle frame. The dereference needs the full backend
+    // type, which only exists in FFmpeg builds (the header keeps the class
+    // opaque so the window compiles without the libav* dev packages).
+#ifdef SOAR_WITH_FFMPEG
+    soar::DecodedSubtitleFrame sub_frame;
     if (cfg_.ffmpeg->tryGetSubtitleFrame(sub_frame)) {
       // Store the latest subtitle frame with its timing
       st_.current_subtitle = sub_frame.text;
       st_.subtitle_pts = sub_frame.pts;
       st_.subtitle_duration = sub_frame.duration;
     }
+#endif
 
     // Check if current subtitle should be displayed based on position + offset
     const auto pos = player_.position();
@@ -1252,7 +1257,7 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
   SDL_Texture* texture = nullptr;
   bool video_active = false;
 #ifdef SOAR_WITH_FFMPEG
-  soar::FFmpegBackend::DecodedVideoFrame video_frame{};
+  soar::DecodedVideoFrame video_frame{};
 #endif
 
 #ifdef SOAR_WITH_IMGUI
