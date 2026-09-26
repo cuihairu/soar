@@ -516,6 +516,16 @@ if mode == "subsdrive":
     time.sleep(0.8)
     focus(); key(d.keysym_to_keycode(0x69))  # ... and close it
     time.sleep(0.3)
+    # A-B loop UI (L key): cycle arm-A -> arm-B -> clear. This exercises
+    # PlayerHud::cycleLoopAB, the HUD loop display, and the backend's
+    # setLoopAB/clearLoopAB/loopAB path on the real FFmpeg backend.
+    focus(); key(d.keysym_to_keycode(0x6C))  # L: set point A
+    time.sleep(0.5)
+    focus(); key(d.keysym_to_keycode(0x6C))  # L: set point B
+    time.sleep(0.5)
+    focus(); key(d.keysym_to_keycode(0x6C))  # L: clear the loop
+    time.sleep(0.5)
+
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
