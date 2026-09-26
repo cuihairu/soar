@@ -941,7 +941,7 @@ bool FFmpegBackend::tryGetSubtitleFrame(DecodedSubtitleFrame& out) {
   return true;
 }
 
-bool FFmpegBackend::saveScreenshot(const std::string& path) {
+bool FFmpegBackend::saveScreenshot(const std::string& path, bool forceFailEncoder) {
   // Snapshot the retained frame first: the encode below does file IO and
   // must not run under video_frame_mutex_, which the decode thread holds
   // while filling frames.
@@ -972,7 +972,7 @@ bool FFmpegBackend::saveScreenshot(const std::string& path) {
   } else {
     ctx->width = frame.width;
     ctx->height = frame.height;
-    ctx->pix_fmt = AV_PIX_FMT_RGB24;
+    ctx->pix_fmt = forceFailEncoder ? AV_PIX_FMT_NONE : AV_PIX_FMT_RGB24;
     ctx->time_base = AVRational{1, 1};
     if (avcodec_open2(ctx, encoder, nullptr) < 0) {
       error = "screenshot: PNG encoder could not be opened";

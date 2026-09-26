@@ -572,3 +572,30 @@ TEST_CASE("PlaylistStore single entry edge cases") {
   ps.setCurrent(n);
   CHECK(n == 0);
 }
+
+TEST_CASE("PlaylistStore empty store has nowhere to navigate") {
+  soar::app::PlaylistStore ps;
+  CHECK(ps.next() == soar::app::PlaylistStore::kNone);
+  CHECK(ps.prev() == soar::app::PlaylistStore::kNone);
+  CHECK(ps.advance() == soar::app::PlaylistStore::kNone);
+}
+
+TEST_CASE("PlaylistStore same-value setShuffle is a no-op, not a toggle") {
+  soar::app::PlaylistStore ps;
+  ps.add("a");
+  ps.add("b");
+  ps.setCurrent(0);
+  ps.setLoop(soar::app::PlaylistStore::Loop::Off);
+  ps.setShuffle(true);
+  ps.reseed(0xBEEF);
+
+  // First advance finishes "a": the round in progress has only "b" left.
+  auto n = ps.advance();
+  CHECK(n == 1);
+  ps.setCurrent(n);
+
+  // Re-asserting the same value must not start a fresh round — a reset
+  // here would put "a" back into the running and return 0, not kNone.
+  ps.setShuffle(true);
+  CHECK(ps.advance() == soar::app::PlaylistStore::kNone);
+}

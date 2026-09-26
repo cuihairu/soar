@@ -109,7 +109,11 @@ public:
   // PNG at `path`. Thread-safe (meant for the UI thread). On failure the
   // reason is recorded in lastError() only — no event, no state change:
   // a screenshot is a UI convenience, not a playback error.
-  bool saveScreenshot(const std::string& path);
+  // `forceFailEncoder` is test-only: when true, the codec context is
+  // configured with an invalid pixel format so avcodec_open2 fails,
+  // exercising the open-failure arm that would otherwise be structurally
+  // unreachable (the PNG encoder ships with FFmpeg on every platform).
+  bool saveScreenshot(const std::string& path, bool forceFailEncoder = false);
 
 private:
   // Internal types

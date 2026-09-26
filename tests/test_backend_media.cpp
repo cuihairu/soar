@@ -744,9 +744,53 @@ TEST_CASE("saveScreenshot encodes the presented frame as PNG") {
     CHECK(backend->position() >= 0ms);
   }
 
+  // After close() the retained frame is released; a screenshot attempt
+  // after stop() + close() must fail the presented-frame guard.
   backend->stop();
   backend->close();
+  CHECK_FALSE(ffmpeg->saveScreenshot("after_close.png"));
+  CHECK_FALSE(ffmpeg->lastError().empty());
+
   ::unlink(out.c_str());
+  ::unlink("after_close.png");
+}
+
+TEST_CASE("saveScreenshot forces PNG encoder open failure") {
+  // The PNG encoder is normally always available. To exercise the
+  // avcodec_open2 failure arm (saveScreenshot internal), we pass
+  // forceFailEncoder=true which configures the context with an
+  // invalid pixel format, making avcodec_open2 reject it.
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping screenshot encoder-fail test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // Retry until a frame is presented.
+  bool saved = false;
+  for (int i = 0; i < 1000 && !saved; ++i) {
+    saved = ffmpeg->saveScreenshot("normal.png");
+    if (!saved) std::this_thread::sleep_for(10ms);
+  }
+  REQUIRE(saved);
+  ::unlink("normal.png");
+
+  // With forceFailEncoder, avcodec_open2 fails and the call records
+  // the error without writing a file.
+  CHECK_FALSE(ffmpeg->saveScreenshot("forced_fail.png", true));
+  CHECK_FALSE(ffmpeg->lastError().empty());
+  CHECK(::access("forced_fail.png", F_OK) != 0);
+  CHECK(backend->position() >= 0ms);
+
+  backend->stop();
+  backend->close();
+  ::unlink("forced_fail.png");
 }
 
 TEST_CASE("media without subtitle tracks rejects subtitle selection") {
