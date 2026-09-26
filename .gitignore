@@ -66,4 +66,7 @@ docs/.vitepress/dist/
 *.gcov
 *.gcno
 *.gcda
+coverage.txt
+coverage-lines.txt
+gcovr-summary.txt
 
