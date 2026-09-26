@@ -15,14 +15,14 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ## 2. 当前水位与门禁
 
-| 维度 | 实测（P3c 下载进度批，本地 Linux，见 §2.1 P3c 段） | 门禁（`--fail-under-*`） |
+| 维度 | 实测（P3c 字幕批，本地 Linux，见 §2.1 P3c 段与 §3.9） | 门禁（`--fail-under-*`） |
 |---|---|---|
-| 行 | 94.4%（2513/2664） | 94.1% |
-| 分支 | 82.5%（2235/2709） | 82.4% |
+| 行 | 94.4%（2774/2939） | 94.1% |
+| 分支 | 82.0%（2477/3021） | 82.4% |
 
-分文件行覆盖：`main.cpp` 98%（124/126）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 96%（621/646）、`ffmpeg_backend.cpp` 90%（1095/1210）、`http_cache.cpp` 98%（404/410，本地多缺 206-208 三行是 fake-ip DNS 自探测跳过伪影，CI 诚实 DNS 下为 99%）、`null_backend.cpp` 99%、`player.cpp` 100%。
+分文件行覆盖：`main.cpp` 98.5%（130/132）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 95.8%（750/783）、`ffmpeg_backend.cpp` 91.0%（1221/1342）、`http_cache.cpp` 98.5%（404/410）、`null_backend.cpp` 99%、`player.cpp` 100%。
 
-分文件分支覆盖：`main.cpp` 93%、`ui_state.cpp` 96%、`ui_state.h` 100%、`player_window.cpp` 84%、`player.cpp` 89%、`ffmpeg_backend.cpp` 79%（822/1046）、`null_backend.cpp` 75%、`http_cache.cpp` 83%（424/511，本地摆动轮，CI 实测 85%/436）。
+分文件分支覆盖：`main.cpp` 93.4%、`ui_state.cpp` 96%、`ui_state.h` 100%、`player_window.cpp` 83.9%（744/887）、`player.cpp` 89.4%、`ffmpeg_backend.cpp` 78.0%（927/1188）、`null_backend.cpp` 75%、`http_cache.cpp` 83.0%（424/511）。
 
 ### 2.1 门禁重置的说明（必读，别当成"新代码拉低了覆盖率"）
 
@@ -117,6 +117,18 @@ P2 自适应协议批（77ae353/b6a2541）是纯测试批，零产品改动，�
 P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段，`ffmpeg_backend.cpp` 的分支分母 1032→1155（+123）、全局 2677→2883。多出的弧全部聚在 `Event{...}` 聚合构造点（gcov 行号定位到 748/879/993/1423 等 emit 站点）：GCC 在 -O0 为含非平凡成员（`std::string`）的聚合初始化生成异常清理边，边数随成员数扩展（~40 个构造点 × 每成员 ~3 弧），且全部 `never executed`——`uint64_t` 赋值不可能抛，清理弧结构不可覆盖。参数改 const& 传递不解决（弧在构造点不在拷贝点，实测 1156 不变）；去掉默认初始化 `{0}` 无济于事（同族清理边）。**政策**：`Event` 成员冻结在 type/state/position/message 四件，新增载荷打包进 `message` 并在 backend.h 注明格式（现状：`DownloadProgress` → `"downloaded/total"` 十进制字节，消费端 `sscanf` 解析；格式变更属破坏性契约，需同步 CLI 打印、UI 徽标与 StateSink）。
 
 伴随噪声：Event 收缩后 `backend.h` 两个接口虚析构行（89/95）翻成 Missing——析构在每个用例都真实执行，纯 GCC 行号归属噪声（§3.1 家族），随聚合成员布局变化翻转，不追。
+
+### 3.9 P3c 字幕批：SRT/WebVTT 解码 → ASS 文本提取 + 字幕帧队列
+
+本批（069529f）落地了 v0.2 字幕基础体验的核心管线：SRT/WebVTT 字幕在解码层通过 `avcodec_decode_subtitle2` 产出 `AVSubtitle`（ff_ass_get_dialog 回填），`assDialogueText` 剥离 `[...]` 括号与 ASS 覆写块，把 `"Dialogue:,...,text"` 的第 9 个逗号后载荷、或合成事件的第 8 个逗号后载荷抽出为纯文本；解码线程把字幕帧入 `std::queue<DecodedSubtitleFrame>`（相邻 SRT cue 背靠背解码时单槽会丢帧，队列保留全量），UI 主循环按 `pts`+`offset` 拉取渲染。
+
+覆盖率影响：`player_window.cpp` 新增 160+ 行字体/偏移/渲染代码、`ffmpeg_backend.cpp` 新增 50+ 行解码/队列/提取代码，但水位**没有**塌——X11 窗口用例真实覆盖 UI：本地全量验证（Xvfb + 夹具环境变量齐全）实测 `player_window.cpp` 行 95.8%（750/783）、分支 83.9%（744/887），与批前的 96%/84% 持平；CI coverage job 同样跑窗口用例（装 xvfb + python3-xlib、`SOAR_TEST_X11=1`，21 例 0 skip），不存在"无头 CI 只覆盖主干"的问题。
+
+**测量教训（§1 家族的新形态）**：本批期间出现过 `player_window.cpp` 行 41%、总体 79.3%/65.7% 的假读数——成因是**环境变量不齐时窗口用例静默跳过**（`SOAR_TEST_X11`/夹具 env 没进到 ctest 进程），叠加并行会话在同一构建树上跑测试污染 gcda。防范：本地测量必须 ① 用 `scripts/generate_test_media.sh` 的输出 export 全部夹具 + `SOAR_TEST_X11=1 DISPLAY=:99 PATH=/usr/bin:$PATH SDL_AUDIODRIVER=dummy`；② 确认没有别的 `soar` 进程存活（`pgrep -x soar`）；③ 怀疑被污染时用独立构建树（如 `build-cov2`）重测对照。假读数会顺着"门禁随水位同步"的惯例把门禁砍到 79.0/65.0——比真水位低 15 个点、形同虚设，这正是"改门禁前先复测"必须成为硬规则的原因。
+
+解码层缺口（`ffmpeg_backend.cpp` 行 91.0%、分支 78.0%，缺失集中在 `avcodec_decode_subtitle2` 失败路径、空 rect 列表、ASS/文本双分支的错误臂）属 §3.3 版本依赖与 §3.4 注入成本家族；分支总水位 82.0%（2477/3021）距门禁 82.4% 差 13 个分支，补测批进行中（字幕空 cue/空文本臂 + 窗口 overlay 补充步骤），门禁维持 94.1/82.4 不动。
+
+新增测试：`subtitle packets decode to text frames during playback`（`test_backend_media.cpp:1051`）在线播放 `subs_media.mkv`（首行 "Hello"、次行 "World"），断言提取文本包含预期词汇，同时钉死 ASS 括号剥离与逗号定位逻辑。该用例在 coverage job（`SOAR_TEST_SUBS_MEDIA`）与本地全量验证均绿。
 
 ### 3.5 测试基建教训：媒体 fixture 必须逐字节确定性
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。

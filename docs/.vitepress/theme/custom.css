@@ -1,0 +1,67 @@
+/* soar palette — 从 docs/public/logo.svg 的 #d4237a 提取:
+ *   rose      #d4237a  brand（链接、按钮、feature 图标）
+ *   deep      #b81d69  hover
+ *   wine      #9c1859  active / 标题强调
+ *   blush     #ff6ba8  暗色下的提亮
+ * 播放器气质：暖玫红 + 大面积留白，避免默认主题的"蓝紫科技味"。
+ */
+:root {
+  --vp-c-brand-1: #d4237a;
+  --vp-c-brand-2: #b81d69;
+  --vp-c-brand-3: #9c1859;
+  --vp-c-brand-soft: rgba(212, 35, 122, 0.13);
+
+  --vp-button-brand-bg: #d4237a;
+  --vp-button-brand-hover-bg: #b81d69;
+  --vp-button-brand-active-bg: #9c1859;
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(
+    115deg,
+    #9c1859 8%,
+    #d4237a 52%,
+    #ff6ba8 96%
+  );
+
+  --vp-custom-outline: #d4237a;
+
+  /* feature 卡片：让 SVG 图标坐在柔和的品牌底色上 */
+  .VPFeature .icon {
+    border-radius: 10px;
+    background-color: var(--vp-c-brand-soft);
+    color: var(--vp-c-brand-1);
+  }
+}
+
+/* 暗色模式：玫红压暗会发闷，整体提一档 */
+.dark {
+  --vp-c-brand-1: #ff5fa2;
+  --vp-c-brand-2: #e64a8b;
+  --vp-c-brand-3: #ffa8cd;
+  --vp-c-brand-soft: rgba(255, 95, 162, 0.16);
+
+  --vp-button-brand-bg: #d4237a;
+  --vp-button-brand-hover-bg: #ff5fa2;
+  --vp-button-brand-active-bg: #b81d69;
+
+  --vp-home-hero-name-background: linear-gradient(
+    115deg,
+    #ffa8cd 8%,
+    #ff5fa2 52%,
+    #d4237a 96%
+  );
+
+  --vp-custom-outline: #ff5fa2;
+}
+
+/* 代码块与行内代码沿用品牌色，替掉默认的蓝 */
+:root {
+  --vp-c-code-line-highlight-color: rgba(212, 35, 122, 0.1);
+}
+.dark {
+  --vp-c-code-line-highlight-color: rgba(255, 95, 162, 0.12);
+}
+
+code {
+  color: var(--vp-c-brand-1);
+}
