@@ -77,12 +77,20 @@ std::string assDialogueText(const char* ass) {
     return {};
   }
   std::string_view s(ass);
-  // Strip surrounding brackets if present (ff_ass_get_dialog format)
-  if (!s.empty() && s.front() == '[') {
-    s.remove_prefix(1);
-  }
-  if (!s.empty() && s.back() == ']') {
-    s.remove_suffix(1);
+  // Strip surrounding brackets if present (ff_ass_get_dialog format).
+  // ff_ass_get_dialog emits 8‑comma text like [readorder,layer,style,speaker,
+  // 0,0,0,,text] — the surrounding [ ] are stripped so the payload after the
+  // eighth comma is the plain text.  The ASS decoder passes full
+  // "Dialogue:..." lines through without surrounding brackets, and SRT/WebVTT
+  // synthesizers produce 8‑comma text without brackets; this code is a defensive
+  // no‑op for those paths but handles the occasional bracketed wrapper.
+  if (!s.empty()) {
+    if (s.front() == '[') {
+      s.remove_prefix(1);
+    }
+    if (!s.empty() && s.back() == ']') {
+      s.remove_suffix(1);
+    }
   }
   std::string out;
   std::size_t pos = 0;
