@@ -400,6 +400,29 @@ if mode == "stall":
         time.sleep(0.5)
     sys.exit(4)
 
+if mode == "download":
+    # A --cache-dir download is paced by playback: this short fixture's
+    # terminal 100% progress event lands near its 6s mark. Sit still past
+    # that point, then quit, so the run's event stream holds the whole
+    # download arc.
+    time.sleep(8)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        try:
+            win.set_input_focus(X.RevertToParent, X.CurrentTime)
+            d.sync()
+            xtest.fake_input(d, X.KeyPress, qk)
+            d.sync()
+            xtest.fake_input(d, X.KeyRelease, qk)
+            d.sync()
+        except Exception:
+            sys.exit(0)
+        if find_window() is None:
+            sys.exit(0)
+        time.sleep(0.5)
+    sys.exit(4)
+
 time.sleep(4.5)
 esc = d.keysym_to_keycode(0xFF1B)  # XK_Escape
 deadline = time.monotonic() + 60.0
@@ -1168,6 +1191,129 @@ TEST_CASE("windowed run over a stalled network source shows the buffering state"
   REQUIRE(last_info != std::string::npos);
   CHECK(run.output.find("sub=-1", last_info) != std::string::npos);
 #endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed run with --cache-dir over a Range server shows download progress") {
+  // P3c's windowed contract: playing an http:// source with --cache-dir
+  // emits DownloadProgress as playback-paced block fetches fill the cache
+  // (the download chip renders from exactly this event stream — the chip
+  // itself stays up most of the run because a 0.5 MB fixture fills at
+  // real-time decode pace). Same harness as the stalled-source case, but
+  // an honest Range server and the download injector mode.
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the download window test");
+    return;
+  }
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the download window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the download window test");
+  return;
+#else
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the download window test");
+    return;
+  }
+
+  // Serve a copy so the fixture path is never a live server root.
+  std::string tmpl = "/tmp/soar_cli_dlwin_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const std::string dir(tmp);
+  const std::string cache_dir = dir + "/cache";
+  const std::string name = media.substr(media.find_last_of('/') + 1);
+  REQUIRE(std::system(("cp '" + media + "' '" + dir + "/" + name + "'").c_str()) == 0);
+
+  // 26000+: clear of the 24000s the http_cache suite uses and of the
+  // 18000 + pid%2000 lottery port the python http.server case picks.
+  test_servers::RangeServer srv = test_servers::startRangeServer(dir, 26000);
+  if (srv.pid < 0) {
+    MESSAGE("local Range HTTP server unavailable; skipping");
+    REQUIRE(std::system(("rm -rf '" + dir + "'").c_str()) == 0);
+    return;
+  }
+
+  const std::string suffix = std::to_string(80 + (::getpid() % 10));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the download window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    srv.stop();
+    REQUIRE(std::system(("rm -rf '" + dir + "'").c_str()) == 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "download", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  // Keep the run out of the developer's real recent-files store.
+  const std::string state_home = "/tmp/soar_dlwin_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+
+  const std::string url = srv.base_url + "/" + name;
+  const auto run =
+      runCli({"--backend=ffmpeg", "--cache-dir=" + cache_dir, url});
+
+  std::printf("x11 download test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+  srv.stop();
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    REQUIRE(std::system(("rm -rf '" + dir + "'").c_str()) == 0);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  // The window came up and played the network source ...
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  // ... and the download arc ran to its terminal 100% event while the
+  // window was up — the chip's draw branch rides the same payload.
+  CHECK(run.output.find("event: download ") != std::string::npos);
+  CHECK(run.output.find("event: download 100% (") != std::string::npos);
+
+  REQUIRE(std::system(("rm -rf '" + dir + "'").c_str()) == 0);
 #endif
 #endif
 }

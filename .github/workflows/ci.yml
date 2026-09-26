@@ -289,9 +289,12 @@ jobs:
           # The fail-under gates lock in the reached levels (line 94.8%,
           # branch 83.6% after the P3b integration batch, which pinned the
           # seek-hole-fill and partial-cache offline resume contracts; the
-          # P3a cache backfill before it took http_cache.cpp from 80%/55%
-          # to 99%/85% and fixed the IPv6 literal url parsing along the
-          # way — see docs/coverage-notes.md §2.1/§3.7) with slack for the ±1-2 line
+          # P3c batch after it added the download-progress events with a
+          # flat local water line — its Event-payload policy lives in
+          # coverage-notes §3.8, and the P3a cache backfill before P3b
+          # took http_cache.cpp from 80%/55% to 99%/85% and fixed the
+          # IPv6 literal url parsing along the way — see
+          # docs/coverage-notes.md §2.1/§3.7/§3.8) with slack for the ±1-2 line
           # gcov counter jitter and for timing-dependent arcs that flip
           # under the window test's concurrent decode load, so a regression
           # fails here instead of slipping in silently.

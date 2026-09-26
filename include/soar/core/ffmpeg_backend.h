@@ -155,6 +155,13 @@ private:
   // its AVIOContext/buffer are freed by closeContext (avio_context_free
   // releases the buffer itself — do not av_free() it a second time).
   struct AvioCacheContext;
+  // True only while decodeLoop is running. The download-progress emit in
+  // avioReadCallback keys off this so progress is reported only from the
+  // decode thread: a stopped-state seek fills its hole blocks while holding
+  // decode_mutex_ (see seek()), and emitting from there would break the
+  // "events go out after the lock is released" invariant that lets sink
+  // callbacks re-enter the public API.
+  std::atomic<bool> decode_loop_running_{false};
   static int avioReadCallback(void* opaque, uint8_t* buf, int buf_size);
   static int64_t avioSeekCallback(void* opaque, int64_t offset, int whence);
 
@@ -162,7 +169,7 @@ private:
   // emitting, for code paths that already hold decode_mutex_ (events are
   // always emitted outside that lock so user callbacks may re-enter).
   bool hasMedia();
-  void emit(Event e);
+  void emit(const Event& e);
   bool fail(std::string message, bool emit_event = true);
   bool fatal(std::string message, bool emit_event = true);
 

@@ -1048,6 +1048,7 @@ TEST_CASE("fetchAll fails cleanly when the source dies before the warm-up") {
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <thread>
 
 using namespace std::chrono_literals;
@@ -1057,12 +1058,31 @@ namespace {
 struct StateSink : soar::IEventSink {
   std::atomic<int> ended{0};
   std::atomic<int> errors{0};
+  // DownloadProgress capture (P3c): the decode thread emits synchronously,
+  // so the series itself is single-threaded; the atomics exist for the
+  // polling test thread.
+  std::atomic<int> progress{0};
+  std::atomic<std::uint64_t> last_downloaded{0};
+  std::atomic<std::uint64_t> progress_total{0};
+  std::atomic<bool> progress_monotonic{true};
   void onEvent(const soar::Event& e) override {
     if (e.type == soar::EventType::StateChanged &&
         e.state == soar::PlaybackState::Ended) {
       ++ended;
     } else if (e.type == soar::EventType::Error) {
       ++errors;
+    } else if (e.type == soar::EventType::DownloadProgress) {
+      // Payload rides in message as "downloaded/total" (Event must not
+      // grow fields — backend.h / coverage-notes §3.8).
+      unsigned long long have = 0, total = 0;
+      if (std::sscanf(e.message.c_str(), "%llu/%llu", &have, &total) == 2) {
+        if (have < last_downloaded.load(std::memory_order_relaxed)) {
+          progress_monotonic.store(false, std::memory_order_relaxed);
+        }
+        last_downloaded.store(have, std::memory_order_relaxed);
+        progress_total.store(total, std::memory_order_relaxed);
+        ++progress;
+      }
     }
   }
 };
@@ -1192,16 +1212,24 @@ TEST_CASE("seeking into an uncached region fills just that hole and the partial 
   const std::string cache_dir = dir + "/cache";
 
   // Pass 1 (online): open, seek to ~58% of the duration while stopped (the
-  // synchronous state-machine path), then play past it.
+  // synchronous state-machine path), then play past it — far enough to walk
+  // off the seek target's blocks into the next hole, so the cache also
+  // grows *while the decode loop is running* (that growth is what P3c's
+  // progress series reports; a stopped-state seek fetches outside the loop
+  // and stays silent by design). The sink is shared with pass 2 so the
+  // offline pass can be pinned as progress-silent.
   int64_t dur_ms = 0;
+  StateSink sink;
   {
-    StateSink sink;
     auto backend = soar::makeFFmpegBackend();
     backend->setEventSink(&sink);
     REQUIRE(backend->open(soar::MediaSource{url, cache_dir}));
     dur_ms = backend->mediaInfo().duration.count();
     REQUIRE(dur_ms >= 5000);
     const auto target = std::chrono::milliseconds(3500);
+    // Well short of the end (the offline pass below must have a hole left
+    // to miss) but past the seek target's blocks.
+    const auto play_to = std::chrono::milliseconds(dur_ms) * 5 / 6;
     CHECK(backend->mediaInfo().seekable);
     CHECK(backend->seek(target));
     CHECK(backend->position() == target);
@@ -1210,19 +1238,23 @@ TEST_CASE("seeking into an uncached region fills just that hole and the partial 
     REQUIRE(backend->play());
     const auto deadline = std::chrono::steady_clock::now() + 240s;
     while (std::chrono::steady_clock::now() < deadline &&
-           backend->position() < std::chrono::milliseconds(4000) &&
-           sink.ended.load() == 0) {
+           backend->position() < play_to && sink.ended.load() == 0) {
       std::this_thread::sleep_for(50ms);
     }
-    CHECK(backend->position() >= std::chrono::milliseconds(4000));
+    CHECK(backend->position() >= play_to);
     backend->stop();
     backend->close();
     CHECK(sink.errors.load() == 0);
   }
+  // P3c online contract: growing the cache emits throttled progress.
+  CHECK(sink.progress.load() >= 1);
+  CHECK(sink.progress_monotonic.load());
+  const int progress_after_online = sink.progress.load();
 
   // The bitmap must show the seek-target block cached and the file as a
   // whole NOT fully cached: 3500ms of this ~6s source lands past the file
-  // midpoint, so the blocks between header and target were never read.
+  // midpoint, and the pass stops at 5/6, so the blocks between header and
+  // target stay empty.
   const MetaBitmap after_seek = readMetaBitmap(cache_dir, url);
   const size_t target_block = static_cast<size_t>(
       static_cast<uint64_t>(after_seek.size) * 3500 /
@@ -1233,6 +1265,8 @@ TEST_CASE("seeking into an uncached region fills just that hole and the partial 
     if (b) ++cached_count;
   }
   CHECK(cached_count < after_seek.blocks);
+  // The progress events named the true source size.
+  CHECK(sink.progress_total.load() == after_seek.size);
 
   // Offline probe: the meta alone (no server) already knows the partial
   // state.
@@ -1250,7 +1284,6 @@ TEST_CASE("seeking into an uncached region fills just that hole and the partial 
   // Pass 2 (offline resume): reopen on the partial cache and play the
   // cached span — target .. 4000ms sits inside the blocks pass 1 filled.
   {
-    StateSink sink;
     auto backend = soar::makeFFmpegBackend();
     backend->setEventSink(&sink);
     REQUIRE(backend->open(soar::MediaSource{url, cache_dir}));
@@ -1268,6 +1301,9 @@ TEST_CASE("seeking into an uncached region fills just that hole and the partial 
     backend->close();
     CHECK(sink.errors.load() == 0);
   }
+  // P3c offline contract: a fully-served session emits no new progress —
+  // the throttle step never moves because cachedBytes never grows.
+  CHECK(sink.progress.load() == progress_after_online);
 
   // Offline playback must not have "grown" the cache.
   {
@@ -1355,6 +1391,75 @@ TEST_CASE("an offline read inside a hole surfaces as an Error event, not a hang"
     backend->stop();
     backend->close();
   }
+
+  removeTree(dir);
+}
+
+TEST_CASE("playing a cached http source to its end ends playback instead of stalling") {
+  // The avio EOF contract, pinned without a window. Reading past the last
+  // cached byte must return AVERROR_EOF: the read callback used to return
+  // 0-as-success, and FFmpeg then treated it as "no data yet" and retried
+  // forever, so a cached source that reached its tail spun the decode
+  // thread instead of ending (found by the P3c windowed download test).
+  // Component level here so the regression does not need X11 to be caught.
+  std::string media = std::getenv("SOAR_TEST_MEDIA") == nullptr
+                          ? ""
+                          : std::getenv("SOAR_TEST_MEDIA");
+  if (media.empty()) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping cached EOF test");
+    return;
+  }
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping cached EOF test");
+    return;
+  }
+
+  const std::string dir = makeTempDir("cacheeof");
+  REQUIRE(!dir.empty());
+  const std::string name = media.substr(media.find_last_of('/') + 1);
+  REQUIRE(std::system(("cp '" + media + "' '" + dir + "/" + name + "'").c_str()) == 0);
+  RangeServer srv = startRangeServer(dir, 25000);
+  REQUIRE(srv.pid >= 0);
+  const std::string url = srv.base_url + "/" + name;
+  const std::string cache_dir = dir + "/cache";
+
+  StateSink sink;
+  int64_t dur_ms = 0;
+  {
+    auto backend = soar::makeFFmpegBackend();
+    backend->setEventSink(&sink);
+    REQUIRE(backend->open(soar::MediaSource{url, cache_dir}));
+    dur_ms = backend->mediaInfo().duration.count();
+    REQUIRE(dur_ms > 0);
+    REQUIRE(backend->setRate(8.0));
+    REQUIRE(backend->play());
+
+    // Ended, or an Error, or the deadline: the point is that *one of the
+    // two* arrives — a stuck decode loop is the regression.
+    const auto deadline = std::chrono::steady_clock::now() + 120s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           sink.ended.load() == 0 && sink.errors.load() == 0) {
+      std::this_thread::sleep_for(50ms);
+    }
+    CHECK(sink.ended.load() == 1);
+    CHECK(sink.errors.load() == 0);
+    // Playback ran to the tail rather than ending early.
+    CHECK(backend->position() > std::chrono::milliseconds(dur_ms) / 2);
+    backend->stop();
+    backend->close();
+  }
+
+  // Sequential playback caches the whole source, so the progress series
+  // terminates at downloaded == total — the exact condition the download
+  // chip hides on.
+  const MetaBitmap full = readMetaBitmap(cache_dir, url);
+  for (size_t i = 0; i < full.cached.size(); ++i) {
+    CHECK(full.cached[i]);
+  }
+  CHECK(sink.progress.load() >= 1);
+  CHECK(sink.progress_monotonic.load());
+  CHECK(sink.progress_total.load() == full.size);
+  CHECK(sink.last_downloaded.load() == full.size);
 
   removeTree(dir);
 }

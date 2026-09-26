@@ -14,6 +14,7 @@
 #endif
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <algorithm>
 #include <atomic>
@@ -103,12 +104,18 @@ int main(int argc, char** argv) {
   // Mirrors the BufferingStarted/Ended event pair for the window UI's
   // buffering chip (backend threads set it; the window loop polls it).
   std::atomic<bool> buffering{false};
-  player.setEventCallback([&player, &buffering](const soar::Event& e) {
+  // Mirrors the DownloadProgress payload for the download chip (P3c):
+  // total == 0 means no active download; the chip hides at bytes == total.
+  std::atomic<std::uint64_t> download_bytes{0};
+  std::atomic<std::uint64_t> download_total{0};
+  player.setEventCallback([&player, &buffering, &download_bytes,
+                           &download_total](const soar::Event& e) {
     if (e.type == soar::EventType::StateChanged) {
       fmt::print(stderr, "event: state={}\n", static_cast<int>(e.state));
       if (e.state == soar::PlaybackState::Error ||
           e.state == soar::PlaybackState::Ended) {
         buffering.store(false, std::memory_order_relaxed);
+        download_total.store(0, std::memory_order_relaxed);
       }
     } else if (e.type == soar::EventType::MediaInfoChanged) {
       const auto info = player.mediaInfo();
@@ -130,6 +137,16 @@ int main(int argc, char** argv) {
     } else if (e.type == soar::EventType::BufferingEnded) {
       fmt::print(stderr, "event: buffering ended\n");
       buffering.store(false, std::memory_order_relaxed);
+    } else if (e.type == soar::EventType::DownloadProgress) {
+      // Payload rides in message as "downloaded/total" decimal bytes
+      // (Event must not grow fields — backend.h / coverage-notes §3.8).
+      unsigned long long have = 0, total = 0;
+      if (std::sscanf(e.message.c_str(), "%llu/%llu", &have, &total) == 2) {
+        fmt::print(stderr, "event: download {}% ({}/{})\n",
+                   total > 0 ? have * 100 / total : 0, have, total);
+        download_bytes.store(have, std::memory_order_relaxed);
+        download_total.store(total, std::memory_order_relaxed);
+      }
     } else if (e.type == soar::EventType::Error) {
       fmt::print(stderr, "event: error={}\n", e.message);
     }
@@ -188,6 +205,8 @@ int main(int argc, char** argv) {
   ui_cfg.ffmpeg = ffmpeg_backend;
 #  endif
   ui_cfg.buffering = &buffering;
+  ui_cfg.download_bytes = &download_bytes;
+  ui_cfg.download_total = &download_total;
   return soar::app::runPlayerWindow(player, ui_cfg);
 #else
   fmt::print(stderr, "Window support not compiled in; use --headless.\n");

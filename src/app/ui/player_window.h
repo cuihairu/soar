@@ -7,6 +7,7 @@
 #define SOAR_APP_PLAYER_WINDOW_H_
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 
 namespace soar {
@@ -27,6 +28,11 @@ struct WindowUiConfig {
   // Set by the Player event callback (backend thread) on
   // BufferingStarted/Ended; the UI polls it each frame.
   std::atomic<bool>* buffering = nullptr;
+  // Mirrors the DownloadProgress event payload (P3c): bytes cached out of
+  // total source bytes while playing through the disk cache. total == 0
+  // means no active download; the chip hides once bytes == total.
+  std::atomic<std::uint64_t>* download_bytes = nullptr;
+  std::atomic<std::uint64_t>* download_total = nullptr;
 };
 
 // Runs the window loop until the user quits (Esc outside fullscreen /

@@ -59,13 +59,28 @@ enum class EventType {
   // enough to keep playing (BufferingStarted) and resumed doing so
   // (BufferingEnded). Local media never emits these.
   BufferingStarted,
-  BufferingEnded
+  BufferingEnded,
+  // P3c download progress: while playing through the http:// disk cache,
+  // emitted as cached bytes grow — downloaded counts cached bytes out of
+  // total source bytes. Throttled to 1/16 steps of the source size, so the
+  // series is bounded and monotonic with a terminal downloaded == total
+  // event. Non-cache sources (local files, https pass-through) never
+  // emit it.
+  DownloadProgress
 };
 
 struct Event {
   EventType type{EventType::StateChanged};
   PlaybackState state{PlaybackState::Stopped};
   std::chrono::milliseconds position{0};
+  // Human-readable payload. Error carries the message; DownloadProgress
+  // carries "downloaded/total" in decimal bytes (e.g. "524288/531609").
+  // Do not add fields to this struct: every Event{...} construction site
+  // pays GCCounter exception-cleanup branches that scale with the member
+  // count, and those branches are structurally un-executable (never
+  // executed), which permanently drags the branch-coverage gate down
+  // (docs/coverage-notes.md §3.8). Pack extra payloads into `message`
+  // with a documented format instead.
   std::string message;
 };
 

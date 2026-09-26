@@ -238,7 +238,7 @@ void FFmpegBackend::setEventSink(IEventSink* sink) {
   event_sink_ = sink;
 }
 
-void FFmpegBackend::emit(Event e) {
+void FFmpegBackend::emit(const Event& e) {
   IEventSink* sink = nullptr;
   {
     std::lock_guard<std::mutex> lock(event_mutex_);
@@ -256,9 +256,14 @@ void FFmpegBackend::emit(Event e) {
     position = current_position_;
   }
 
-  e.state = state;
-  e.position = position;
-  sink->onEvent(e);
+  // One copy here (to stamp the envelope fields) instead of a by-value
+  // parameter: a by-value emit paid that copy at every call site, which
+  // also blew up the branch-coverage denominator with per-site copy/cleanup
+  // arcs (see docs/coverage-notes.md §1 on arc noise).
+  Event stamped = e;
+  stamped.state = state;
+  stamped.position = position;
+  sink->onEvent(stamped);
 }
 
 bool FFmpegBackend::hasMedia() {
@@ -1017,6 +1022,16 @@ struct FFmpegBackend::AvioCacheContext {
   AVIOContext* pb = nullptr;
   uint8_t* buffer = nullptr;  // owned by pb after avio_alloc_context
   uint64_t pos = 0;
+  // The static avio callbacks need the backend for the progress emitter's
+  // decode-loop gate and emit(); set at the one construction site, so it is
+  // never null.
+  FFmpegBackend* owner = nullptr;
+  // Download-progress throttle state (P3c). Confined to whichever thread
+  // currently owns cache reads — the decode loop while playing, the seek
+  // caller otherwise — mirroring HttpCache's own one-reader-at-a-time
+  // contract, so a plain field is enough.
+  bool progress_calibrated = false;
+  uint64_t last_progress_step = 0;
 };
 
 int FFmpegBackend::avioReadCallback(void* opaque, uint8_t* buf, int buf_size) {
@@ -1028,7 +1043,42 @@ int FFmpegBackend::avioReadCallback(void* opaque, uint8_t* buf, int buf_size) {
   if (n == HttpCache::npos) {
     return AVERROR(EIO);  // state->cache->error() carries the reason
   }
+  if (n == 0) {
+    // End of source: avio's read callback must signal AVERROR_EOF.
+    // Returning 0 as success is not a defined outcome — some FFmpeg
+    // versions interpret it as "no data yet" and retry the callback
+    // forever, spinning the decode thread at end-of-file instead of
+    // ending playback (found by the P3c windowed cache test).
+    return AVERROR_EOF;
+  }
   state->pos += n;
+
+  // P3c download progress: report while playback pulls new blocks through
+  // the cache. Throttled to 1/16 steps of the source so the sink sees a
+  // bounded monotonic series ending at downloaded == total; a fully-cached
+  // (offline) session never changes the step and stays silent. The decode
+  // loop gate keeps the emit off the open()/stopped-seek paths, which run
+  // on the caller's thread while holding decode_mutex_.
+  if (state->owner->decode_loop_running_.load(std::memory_order_relaxed)) {
+    const uint64_t total = state->cache->size();
+    const uint64_t have = state->cache->cachedBytes();
+    const uint64_t step = total > 0 ? have * 16 / total : 0;
+    if (!state->progress_calibrated) {
+      // First read only calibrates: an offline session starts with
+      // cachedBytes already high, and step 0 would otherwise fake one
+      // bogus "progress" event.
+      state->progress_calibrated = true;
+      state->last_progress_step = step;
+    } else if (step != state->last_progress_step) {
+      state->last_progress_step = step;
+      Event e;
+      e.type = EventType::DownloadProgress;
+      // Payload rides in message as "downloaded/total" — Event must not
+      // grow fields (coverage-notes §3.8).
+      e.message = fmt::format("{}/{}", have, total);
+      state->owner->emit(e);
+    }
+  }
   return static_cast<int>(n);
 }
 
@@ -1122,6 +1172,7 @@ bool FFmpegBackend::openContext(const MediaSource& source, AVFormatContext** out
     !source.cache_dir.empty() && source.uri.rfind("http://", 0) == 0;
   if (use_cache) {
     auto state = std::make_unique<AvioCacheContext>();
+    state->owner = this;
     state->cache = std::make_unique<HttpCache>(source.cache_dir, source.uri);
     if (!state->cache->valid()) {
       const std::string err = state->cache->error();
@@ -1325,6 +1376,9 @@ void FFmpegBackend::decodeLoop() {
   network_read_started_ms_.store(0);
   network_stall_reported_.store(false);
   network_stall_exceeded_.store(false);
+  // Arms the download-progress emitter: from here until the loop exits,
+  // cache reads are playback reads, not open()-time header probes.
+  decode_loop_running_.store(true, std::memory_order_relaxed);
   while (!should_stop_decoding_) {
     // Check for pause/stop
     {
@@ -1489,6 +1543,7 @@ void FFmpegBackend::decodeLoop() {
     }
   }
 
+  decode_loop_running_.store(false, std::memory_order_relaxed);
   av_frame_free(&frame);
   av_packet_free(&packet);
 }

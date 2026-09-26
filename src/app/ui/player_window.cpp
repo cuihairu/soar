@@ -737,12 +737,23 @@ class PlayerHud {
 
   void drawChips() {
     // Paused chip while paused; buffering chip while the backend reports a
-    // stall (P1 events); both fade with the theme, never block input.
+    // stall (P1 events); download chip while the disk cache is still
+    // filling (P3c events). All fade with the theme, never block input.
     if (player_.state() == PlaybackState::Paused) {
       chip("##paused", "Paused", 12.0f);
     }
     if (cfg_.buffering && cfg_.buffering->load(std::memory_order_relaxed)) {
       chip("##buffering", "Buffering...", 12.0f);
+    }
+    const std::uint64_t total =
+        cfg_.download_total ? cfg_.download_total->load(std::memory_order_relaxed) : 0;
+    const std::uint64_t have =
+        cfg_.download_bytes ? cfg_.download_bytes->load(std::memory_order_relaxed) : 0;
+    if (total > 0 && have < total) {
+      char text[32];
+      std::snprintf(text, sizeof(text), "Downloading %llu%%",
+                    static_cast<unsigned long long>(have * 100 / total));
+      chip("##download", text, 34.0f);
     }
   }
 

@@ -15,14 +15,14 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ## 2. 当前水位与门禁
 
-| 维度 | 实测（P3b 集成批，见下） | 门禁（`--fail-under-*`） |
+| 维度 | 实测（P3c 下载进度批，本地 Linux，见 §2.1 P3c 段） | 门禁（`--fail-under-*`） |
 |---|---|---|
-| 行 | 94.8%（2489/2625） | 94.1%（容 ~18 行抖动） |
-| 分支 | 83.6%（2238/2677） | 82.4%（容 ~30 分支抖动） |
+| 行 | 94.4%（2513/2664） | 94.1% |
+| 分支 | 82.5%（2235/2709） | 82.4% |
 
-分文件行覆盖：`main.cpp` 98%（112/114）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 96%（615/640）、`ffmpeg_backend.cpp` 91%（1086/1189）、`http_cache.cpp` 99%（407/410）、`null_backend.cpp` 99%、`player.cpp` 100%。
+分文件行覆盖：`main.cpp` 98%（124/126）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 96%（621/646）、`ffmpeg_backend.cpp` 90%（1095/1210）、`http_cache.cpp` 98%（404/410，本地多缺 206-208 三行是 fake-ip DNS 自探测跳过伪影，CI 诚实 DNS 下为 99%）、`null_backend.cpp` 99%、`player.cpp` 100%。
 
-分文件分支覆盖：`main.cpp` 94%、`ui_state.cpp` 96%、`ui_state.h` 100%、`player_window.cpp` 85%、`player.cpp` 89%、`ffmpeg_backend.cpp` 79%、`null_backend.cpp` 75%、`http_cache.cpp` 85%（436/511）。
+分文件分支覆盖：`main.cpp` 93%、`ui_state.cpp` 96%、`ui_state.h` 100%、`player_window.cpp` 84%、`player.cpp` 89%、`ffmpeg_backend.cpp` 79%（822/1046）、`null_backend.cpp` 75%、`http_cache.cpp` 83%（424/511，本地摆动轮，CI 实测 85%/436）。
 
 ### 2.1 门禁重置的说明（必读，别当成"新代码拉低了覆盖率"）
 
@@ -40,6 +40,8 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 P3a 补测批兑现了这句话：`http_cache.cpp` 行 80%→99%（407/410）、分支 55%→85%（436/511），总体水位 行 91.5%→94.6%、分支 77.1%→83.2%，门禁随之抬到 93.9/82.1（余量维持原绝对抖动量）。驱动方式是新增一台"行为不端的原始 socket server"脚本（`tests/test_http_servers.h` 的 `kMisbehavingServerScript`，12+ 个模式：早断连、垃圾状态行、64 KiB 超长头、重定向、chunked、1xx、截断 body、好探针坏拉取、畸形 Content-Range 五形态循环），加上 meta 文件逐字段篡改（11 个变体各对应一个 loadMeta 拒绝检查点）、RLIMIT_FSIZE 注入 `fdTruncate`/`fdWriteAllAt` 失败、数据文件从位图背后消失、meta 路径被目录占用等磁盘侧破坏。批内还修了一个测试揭出来的产品 bug：`parseHttpUrl` 曾把 IPv6 字面量的方括号留进 host 喂给 `getaddrinfo`（它不认带括号写法），导致所有 `http://[::1]:port/...` URL 恒报 "cannot resolve"；修复后 host 去括号、Host 头保留括号形式（RFC 3986 §3.2.2），IPv6 回环 Range 服务器上有字节级回归用例。残余缺口定性见 §3.7。
 
 P3b 集成批（ed25d72 修 macOS CI 后的下一批）把 P3a 头注释里"seek-past-end 走同一补洞路径"的承诺钉成了集成契约：stopped 态 seek 到远端未缓存区（avio seek 回调只挪 pos、下一读触发 Range 补洞），位图断言**只**长出 seek 目标块（头部与目标之间的块保持为洞，`cachedBytes < size`）；杀 server 后同一 URL 离线重开，在已缓存区间内续播（断点续播），位图逐字节不变；组件级预置"头块+尾块、中间整洞"的部分缓存，离线播放走到洞里时 avio 读回调把 cache miss 转 EIO、解码线程走 `fatal()` 报 Error 事件而非挂死。位图断言的依据是测试侧 `readMetaBitmap`（对真实 meta 文件的反序列化，与 `craftMeta` 同一布局镜像）。总体水位 行 94.6%→94.8%、分支 83.2%→83.6%，门禁抬至 94.1/82.4。
+
+P3c 下载进度批把"边下边存"的最后一环钉成事件契约：缓存 avio 读回调在 decode loop 运行期间（`decode_loop_running_` 门闸，`open()` 在调用线程持 `decode_mutex_` 探头的读不发事件）按源大小的 1/16 步进节流发 `DownloadProgress`，首发读只做标定——全缓存离线会话步进恒定、零事件（seek 补洞用例里在线轮有事件、离线轮严格静默，两个断言钉死）。批内修了一个真产品 bug：avio 读回调在源尾返回 0 会被部分 FFmpeg 版本当"暂无数据"无限重试——缓存回放永远到不了 Ended（窗口化用例揭出，播放冻结在 5851ms），改为按 avio 契约返回 `AVERROR_EOF`。覆盖率侧的决定性发现：给 `Event` 增加两个 u64 字段使分支分母 2680→2883（`ffmpeg_backend.cpp` 单文件 1032→1155）——GCC 在 -O0 给每个 `Event{...}` 聚合构造点生成随成员数扩展的异常清理弧，实测全部 `never executed`、结构不可覆盖，门禁在数学上不可达；const-ref 传参不解决（弧在构造点不在拷贝点，实测 1156 不变）。载荷因此改走 `Event::message` 的 `"downloaded/total"` 格式（政策与伴随噪声记录为 §3.8），分母回落 2709（净 +29，全为新逻辑的可覆盖弧）。本地水位 行 94.4%（2513/2664）、分支 82.5%（2235/2709），与 P3b 本地口径持平（2212/2680 = 82.5%），门禁维持 94.1/82.4。
 
 UI 自身的两个文件是全仓库最高的一档（`ui_state.*` 行 100%、`player_window.cpp` 行 96% / 分支 84%，均高于 `ffmpeg_backend.cpp` 与 `http_cache.cpp`），驱动方式是 §4 末尾那条"无头环境驱动 GUI"的模式：Xvfb + XTEST 脚本化会话（键鼠全家族、拖放以外的指针手势、弹层与 MRU 重开、窗口压到 1x1 的退化几何、慢速 server 下的缓冲指示）。
 
@@ -110,6 +112,12 @@ P2 自适应协议批（77ae353/b6a2541）是纯测试批，零产品改动，�
 - **RLIMIT_FSIZE 注入的平台差异（CI 实证，run 36227059383）**：Linux 只在 `ftruncate` **增长越限**时检查配额，BSD 系（macOS）对**新尺寸**恒检查——同尺寸 truncate 也 EFBIG。配额用例因此把 cache 构造放在降配额**之前**，写失败弧在不强制 pwrite 配额的平台降级为 MESSAGE 说明（沿用 test_ui_state 的 /dev/full 先例）；`EWOULDBLOCK` 式的死臂同理不追。
 - **IPv6 无端口形式的 80 端口连接臂（139-146 的 close+1==size 分支）**：解析接受 `http://[::1]/...` 并默认 80 端口，命中该臂必须真的对 ::1:80 发起连接。Linux runner 立刻 RST、用例确定；macOS runner 的防火墙策略把 RST 变 drop（每例一个 connect 超时），故该子例在 `__APPLE__` 下跳过（覆盖数字由 Linux coverage job 独立供给，不受影响）。同理，"连接被拒"类用例一律用 bind(:0) 占位后释放的临时端口构造，不依赖低端口被立刻拒绝——runner 防火墙可能把对关闭低端口的 SYN 静默丢弃，把瞬时的 RST 拖成整个 connect 超时（macOS job 曾因此 423s）。
 
+### 3.8 `Event` 结构冻结（政策：新增载荷一律打包进 `message`）
+
+P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段，`ffmpeg_backend.cpp` 的分支分母 1032→1155（+123）、全局 2677→2883。多出的弧全部聚在 `Event{...}` 聚合构造点（gcov 行号定位到 748/879/993/1423 等 emit 站点）：GCC 在 -O0 为含非平凡成员（`std::string`）的聚合初始化生成异常清理边，边数随成员数扩展（~40 个构造点 × 每成员 ~3 弧），且全部 `never executed`——`uint64_t` 赋值不可能抛，清理弧结构不可覆盖。参数改 const& 传递不解决（弧在构造点不在拷贝点，实测 1156 不变）；去掉默认初始化 `{0}` 无济于事（同族清理边）。**政策**：`Event` 成员冻结在 type/state/position/message 四件，新增载荷打包进 `message` 并在 backend.h 注明格式（现状：`DownloadProgress` → `"downloaded/total"` 十进制字节，消费端 `sscanf` 解析；格式变更属破坏性契约，需同步 CLI 打印、UI 徽标与 StateSink）。
+
+伴随噪声：Event 收缩后 `backend.h` 两个接口虚析构行（89/95）翻成 Missing——析构在每个用例都真实执行，纯 GCC 行号归属噪声（§3.1 家族），随聚合成员布局变化翻转，不追。
+
 ### 3.5 测试基建教训：媒体 fixture 必须逐字节确定性
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。
 
@@ -117,7 +125,7 @@ P2 自适应协议批（77ae353/b6a2541）是纯测试批，零产品改动，�
 
 ## 4. 结论
 
-行 94.8% 与分支 83.6% 是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性——其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，UI 的缺口见 §3.6 的六类逐条定性，http 缓存的缺口见 §3.7 的四类逐条定性）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
+行 94.4% 与分支 82.5%（P3c 批本地口径，与 P3b 本地持平；CI 的诚实 DNS 与无摆动轮通常再高 0.3-1 个百分点）是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性——其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，UI 的缺口见 §3.6 的六类逐条定性，http 缓存的缺口见 §3.7 的四类逐条定性，`Event` 结构冻结政策与其伴随噪声见 §3.8）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
 
 可测路径的三个实用模式：
 
