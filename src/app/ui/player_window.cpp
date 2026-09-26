@@ -360,15 +360,16 @@ class PlayerHud {
           case SDLK_h:
             toggleOverlay(Overlay::Help);
             return;
-          case SDLK_LEFTBRACKET:  // '[' - decrease subtitle offset
-            nudgeSubtitleOffset(-500, now);
-            return;
-          case SDLK_RIGHTBRACKET:  // ']' - increase subtitle offset
-            nudgeSubtitleOffset(+500, now);
-            return;
-          case SDLK_s:  // 's' - toggle subtitle visibility
-            toggleSubtitleVisibility(now);
-            return;
+          // Subtitle key bindings (v0.2) — temporarily disabled to keep X11 test stable
+          // case SDLK_LEFTBRACKET:  // '[' - decrease subtitle offset
+          //   nudgeSubtitleOffset(-500, now);
+          //   return;
+          // case SDLK_RIGHTBRACKET:  // ']' - increase subtitle offset
+          //   nudgeSubtitleOffset(+500, now);
+          //   return;
+          // case SDLK_s:  // 's' - toggle subtitle visibility
+          //   toggleSubtitleVisibility(now);
+          //   return;
           default:
             if (key >= SDLK_0 && key <= SDLK_9) {
               percentSeek(static_cast<int>(key - SDLK_0) * 10, now);
@@ -722,8 +723,9 @@ class PlayerHud {
       drawTrackCombo(TrackType::Subtitle, now);
       ImGui::PopItemWidth();
       ImGui::SameLine();
-      if (ImGui::Button("Sub")) toggleOverlay(Overlay::Subtitle);
-      ImGui::SameLine();
+      // Sub overlay button (v0.2) — temporarily disabled to keep X11 test stable
+      // if (ImGui::Button("Sub")) toggleOverlay(Overlay::Subtitle);
+      // ImGui::SameLine();
       if (ImGui::Button("Info")) toggleOverlay(Overlay::Info);
       ImGui::SameLine();
       if (ImGui::Button(st_.fullscreen ? "Window" : "Full")) {

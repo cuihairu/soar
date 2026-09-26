@@ -1045,6 +1045,43 @@ TEST_CASE("subtitle and attachment streams enumerate; subtitles select") {
   CHECK(backend->state() == soar::PlaybackState::Stopped);
 }
 
+TEST_CASE("subtitle packets decode to text frames during playback") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping subtitle decode test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // The fixture's SRT carries "Hello" at 0-2s and "World" at 2-4s. The SRT
+  // decoder emits ASS-format subtitle rects, so this also pins the ASS
+  // wrapper stripping (a raw data[0] dump would show "Dialogue:" markup
+  // instead of the words).
+  std::string first, second;
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline && second.empty()) {
+    soar::FFmpegBackend::DecodedSubtitleFrame frame;
+    if (ffmpeg->tryGetSubtitleFrame(frame)) {
+      if (first.empty()) {
+        first = frame.text;
+      } else {
+        second = frame.text;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+
+  backend->stop();
+  backend->close();
+
+  CHECK(first.find("Hello") != std::string::npos);
+  CHECK(second.find("World") != std::string::npos);
+}
+
 TEST_CASE("a container with no audio or video streams fails to open") {
   std::string subs_only;
   if (!envMedia("SOAR_TEST_SUBS_ONLY", subs_only)) {

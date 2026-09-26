@@ -24,6 +24,7 @@ extern "C" {
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <string_view>
 
 #ifdef SOAR_WITH_SDL2
 #  include <SDL.h>
@@ -61,6 +62,65 @@ std::string codecNameFromCodecId(AVCodecID codec_id) {
     return std::string(codec->name);
   }
   return fmt::format("codec({})", static_cast<int>(codec_id));
+}
+
+// ASS event text extraction. An ASS rect payload is a script section whose
+// event lines read "Dialogue: layer,start,end,style,name,mL,mR,mV,effect,
+// text" — the human payload starts after the ninth comma. Override blocks
+// {...} are dropped and hard breaks (\N, \n) become spaces, so an SRT line
+// like "Hello" surfaces as plain "Hello" (the SRT/WebVTT decoders emit
+// ASS-format rects; see processSubtitleFrame).
+std::string assDialogueText(const char* ass) {
+  if (ass == nullptr) {
+    return {};
+  }
+  const std::string_view s(ass);
+  std::string out;
+  std::size_t pos = 0;
+  while (pos < s.size()) {
+    const std::size_t eol = s.find('\n', pos);
+    const std::size_t line_end = eol == std::string_view::npos ? s.size() : eol;
+    const std::string_view line = s.substr(pos, line_end - pos);
+    pos = eol == std::string_view::npos ? s.size() : eol + 1;
+    if (line.rfind("Dialogue:", 0) != 0) {
+      continue;
+    }
+    int commas = 0;
+    std::size_t i = 0;
+    while (i < line.size() && commas < 9) {
+      if (line[i] == ',') {
+        ++commas;
+      }
+      ++i;
+    }
+    if (commas < 9) {
+      continue;
+    }
+    bool in_braces = false;
+    for (; i < line.size(); ++i) {
+      const char c = line[i];
+      if (in_braces) {
+        if (c == '}') {
+          in_braces = false;
+        }
+        continue;
+      }
+      if (c == '{') {
+        in_braces = true;
+        continue;
+      }
+      if (c == '\\' && i + 1 < line.size() && (line[i + 1] == 'N' || line[i + 1] == 'n')) {
+        out.push_back(' ');
+        ++i;
+        continue;
+      }
+      out.push_back(c);
+    }
+  }
+  while (!out.empty() && (out.back() == ' ' || out.back() == '\r')) {
+    out.pop_back();
+  }
+  return out;
 }
 
 int pickBestStreamIndex(AVFormatContext* ctx, AVMediaType type) {
@@ -1590,44 +1650,39 @@ void FFmpegBackend::decodeLoop() {
         av_frame_unref(frame);
       }
     } else if (packet->stream_index == subtitle_stream_index_) {
-      // Send packet to subtitle decoder
-      ret = avcodec_send_packet(subtitle_decoder_, packet);
+      // Subtitle decoders do not go through avcodec_send_packet/
+      // avcodec_receive_frame: the generic decode path asserts on non-A/V
+      // codec types (FFmpeg 8 decode.c av_assert0(0), found by the SRT
+      // fixture — playback aborted mid-stream after the first events).
+      // avcodec_decode_subtitle2 is the supported interface; it fills an
+      // AVSubtitle whose display times are milliseconds relative to the
+      // packet pts.
+      AVSubtitle sub;
+      std::memset(&sub, 0, sizeof(sub));
+      int got_sub = 0;
+      ret = avcodec_decode_subtitle2(subtitle_decoder_, &sub, &got_sub, packet);
       if (ret < 0) {
         av_packet_unref(packet);
         continue;
       }
 
-      // Receive frames from subtitle decoder
-      while (ret >= 0) {
-        ret = avcodec_receive_frame(subtitle_decoder_, frame);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-          break;
-        }
-        if (ret < 0) {
-          fatal(fmt::format("decodeLoop: subtitle decode failed: {}", avError(ret)));
-          fatal_decode_error = true;
-          break;
-        }
-
-        // Process subtitle frame
-        const int64_t ts = frame->best_effort_timestamp != AV_NOPTS_VALUE ? frame->best_effort_timestamp : frame->pts;
+      std::fprintf(stderr, "SUBPROBE ret=%d got=%d rects=%u type=%d ass=[%s]\n", ret, got_sub, sub.num_rects, got_sub && sub.num_rects ? (int)sub.rects[0]->type : -1, got_sub && sub.num_rects ? sub.rects[0]->ass : nullptr);
+      if (got_sub != 0) {
+        const AVStream* stream = format_ctx_->streams[subtitle_stream_index_];
+        const int64_t ts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
         auto pts = fromAVTimestamp(
           ts,
-          format_ctx_->streams[subtitle_stream_index_]->time_base.num,
-          format_ctx_->streams[subtitle_stream_index_]->time_base.den
+          stream->time_base.num,
+          stream->time_base.den
         );
-        auto duration = std::chrono::milliseconds(0);
-        if (frame->duration > 0) {
-          duration = fromAVTimestamp(
-            frame->duration,
-            format_ctx_->streams[subtitle_stream_index_]->time_base.num,
-            format_ctx_->streams[subtitle_stream_index_]->time_base.den
-          );
-        }
-
-        processSubtitleFrame(frame, pts, duration);
-        av_frame_unref(frame);
+        const auto duration = std::chrono::milliseconds(
+          sub.end_display_time > sub.start_display_time
+              ? sub.end_display_time - sub.start_display_time
+              : 0
+        );
+        processSubtitleFrame(sub, pts, duration);
       }
+      avsubtitle_free(&sub);
     }
 
     av_packet_unref(packet);
@@ -1820,7 +1875,7 @@ void FFmpegBackend::processAudioFrame(DecodedFrame frame) {
   freeFrame(frame.frame);
 }
 
-void FFmpegBackend::processSubtitleFrame(AVFrame* frame, std::chrono::milliseconds pts, std::chrono::milliseconds duration) {
+void FFmpegBackend::processSubtitleFrame(const AVSubtitle& sub, std::chrono::milliseconds pts, std::chrono::milliseconds duration) {
   // Subtitle frames don't wait for presentation time; they're queued
   // immediately and the UI renders them based on current position.
   // We still respect should_stop_decoding_ to avoid queuing after shutdown.
@@ -1828,18 +1883,30 @@ void FFmpegBackend::processSubtitleFrame(AVFrame* frame, std::chrono::millisecon
     return;
   }
 
-  // In FFmpeg 6.x, subtitle frames use AVFrame with data[0] containing
-  // the text payload (UTF-8 for text/SRT, ASS-formatted for ASS/SSA).
-  // Bitmap subtitles (DVD/Blu-ray) have different data layout - skip those.
+  // Pull the human-readable payload out of the rects. The SRT/WebVTT
+  // decoders emit ASS-style rects; plain TEXT rects come from a few
+  // legacy decoders. An empty rect list is a "clear" event, which
+  // queueSubtitleFrame drops (timed subs expire by their own duration in
+  // the UI instead).
   std::string text;
-  if (frame->data[0] && frame->linesize[0] > 0) {
-    // Heuristic: if data looks like text (valid UTF-8), use it.
-    // This covers SRT, WebVTT, ASS text portions.
-    const char* data = reinterpret_cast<const char*>(frame->data[0]);
-    const int len = frame->linesize[0];
-    if (len > 0) {
-      text.assign(data, len);
+  for (unsigned i = 0; i < sub.num_rects; ++i) {
+    const AVSubtitleRect* rect = sub.rects[i];
+    if (rect == nullptr) {
+      continue;
     }
+    std::string piece;
+    if (rect->type == SUBTITLE_TEXT && rect->text != nullptr) {
+      piece = rect->text;
+    } else if (rect->type == SUBTITLE_ASS && rect->ass != nullptr) {
+      piece = assDialogueText(rect->ass);
+    }
+    if (piece.empty()) {
+      continue;
+    }
+    if (!text.empty()) {
+      text += '\n';
+    }
+    text += piece;
   }
 
   if (!text.empty()) {

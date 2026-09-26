@@ -17,6 +17,7 @@ extern "C" {
 struct AVFormatContext;
 struct AVCodecContext;
 struct AVFrame;
+struct AVSubtitle;
 struct SwrContext;
 struct SwsContext;
 struct AVRational;
@@ -129,7 +130,7 @@ private:
   // Frame processing
   void processVideoFrame(DecodedFrame frame);
   void processAudioFrame(DecodedFrame frame);
-  void processSubtitleFrame(AVFrame* frame, std::chrono::milliseconds pts, std::chrono::milliseconds duration);
+  void processSubtitleFrame(const AVSubtitle& sub, std::chrono::milliseconds pts, std::chrono::milliseconds duration);
   bool waitForPresentationTime(std::chrono::milliseconds pts);
 
   // Rendering (to be implemented)

@@ -192,41 +192,80 @@ if mode == "delete":
 
 if mode == "drive":
     # Let the UI come up and the null backend start before touching it.
-    time.sleep(1.5)
+    time.sleep(3.0)
 
+    # Every primitive re-finds the window first: the XID can go stale if
+    # SDL recreates the window (fullscreen round-trips), and a tour step
+    # aimed at a dead window would silently do nothing (module scope, so
+    # the helpers rebind the global win; a vanished window aborts with the
+    # same exit code as the deadline path).
     def focus():
-        win.set_input_focus(X.RevertToParent, X.CurrentTime)
-        d.sync()
+        global win
+        win = find_window()
+        if win is None:
+            return False
+        try:
+            win.set_input_focus(X.RevertToParent, X.CurrentTime)
+            d.sync()
+            return True
+        except Exception:
+            return False
 
     def key(kc):
-        xtest.fake_input(d, X.KeyPress, kc)
-        d.sync()
-        xtest.fake_input(d, X.KeyRelease, kc)
-        d.sync()
+        global win
+        win = find_window()
+        if win is None:
+            return False
+        try:
+            xtest.fake_input(d, X.KeyPress, kc)
+            d.sync()
+            xtest.fake_input(d, X.KeyRelease, kc)
+            d.sync()
+            return True
+        except Exception:
+            return False
 
     def button(btn):
-        xtest.fake_input(d, X.ButtonPress, btn)
-        d.sync()
-        xtest.fake_input(d, X.ButtonRelease, btn)
-        d.sync()
+        global win
+        win = find_window()
+        if win is None:
+            return False
+        try:
+            xtest.fake_input(d, X.ButtonPress, btn)
+            d.sync()
+            xtest.fake_input(d, X.ButtonRelease, btn)
+            d.sync()
+            return True
+        except Exception:
+            return False
 
     def moved(x, y):
         # python-xlib: warp_pointer(x, y, ...) — dest is relative to the
         # window; no source-rectangle filtering needed.
-        win.warp_pointer(x, y)
-        d.sync()
+        global win
+        win = find_window()
+        if win is None:
+            return False
+        try:
+            win.warp_pointer(x, y)
+            d.sync()
+            return True
+        except Exception:
+            return False
 
     try:
         geo = win.get_geometry()
         cx, cy = geo.width // 2, geo.height // 2
         # Key tour: overlays open+close, fullscreen round-trip, volume and
-        # mute, track cycling (subtitles on then off), the seek family
+        # mute, subtitle offset nudge ([ ]) and visibility toggle (s),
+        # track cycling (subtitles on then off), the seek family
         # (Home/Left/Right/PageUp/PageDown/50%), pause/resume, an
         # end-of-media round trip (90% + PageDown lands exactly on the
         # 10-minute mark -> Ended; space replays), rate down/up.
         tour = (0x69, 0x69, 0x72, 0x72, 0x68, 0x68,
                 0x66, 0xFF1B,
                 0xFF52, 0xFF54, 0x6D, 0x6D,
+                0x5B, 0x5D, 0x73, 0x73,
                 0x61, 0x63, 0x63,
                 0xFF50, 0xFF51, 0xFF53, 0xFF55, 0xFF56, 0x35,
                 0x20, 0x20,
@@ -234,9 +273,11 @@ if mode == "drive":
                 0x20,
                 0x2C, 0x2C, 0x2E, 0x2E)
         for keysym in tour:
-            focus()
-            key(d.keysym_to_keycode(keysym))
-            time.sleep(0.25)
+            if not focus():
+                sys.exit(4)
+            if not key(d.keysym_to_keycode(keysym)):
+                sys.exit(4)
+            time.sleep(0.35)
         # Click tour at the video area (no widget there): hide the OSC,
         # bring it back, then a fast pair for the double-click fullscreen
         # (and Escape back out of it).
@@ -247,6 +288,31 @@ if mode == "drive":
         button(1); time.sleep(0.25)  # pair member one
         button(1); time.sleep(0.4)   # within 500ms: double click -> fullscreen
         focus(); key(d.keysym_to_keycode(0xFF1B)); time.sleep(0.4)
+        # Recent overlay: the seeded list is [sample, noseek-live,
+        # fail-open-x] with one 19px row per entry. Reopening the
+        # unseekable source is the seek-shortcut degradation, the third
+        # entry refuses to open at all (the deleted-file path), and the
+        # list is reordered by every successful pick — so each click
+        # below accounts for the move-to-front the previous one caused.
+        focus(); key(d.keysym_to_keycode(0x72))
+        time.sleep(1.2)
+        moved(480, 158); time.sleep(0.15)   # row 2: asset://noseek-live
+        button(1); time.sleep(0.9)
+        focus(); key(d.keysym_to_keycode(0x20)); time.sleep(0.25)  # pause
+        focus(); key(d.keysym_to_keycode(0xFF51)); time.sleep(0.25)  # Left
+        focus(); key(d.keysym_to_keycode(0xFF50)); time.sleep(0.25)  # Home
+        focus(); key(d.keysym_to_keycode(0x35)); time.sleep(0.25)   # '5' = 50%
+        focus(); key(d.keysym_to_keycode(0x72))
+        time.sleep(1.2)
+        moved(480, 177); time.sleep(0.15)   # row 3: asset://fail-open-x
+        button(1); time.sleep(0.9)
+        focus(); key(d.keysym_to_keycode(0x69))  # Info shows the error row
+        time.sleep(0.5)
+        focus(); key(d.keysym_to_keycode(0x69)); time.sleep(0.3)
+        focus(); key(d.keysym_to_keycode(0x72))
+        time.sleep(1.2)
+        moved(480, 158); time.sleep(0.15)   # row 2 again: back to the sample
+        button(1); time.sleep(0.9)
         # Wheel: vertical volume both ways, Shift+wheel seek, button 6 as
         # horizontal seek where the server maps it.
         button(4); time.sleep(0.25)
@@ -286,9 +352,11 @@ if mode == "drive":
         wclick(591, 468)   # pick the subtitle track ...
         wclick(569, 495)   # ... reopen; "Off" only acts as a change when a
         wclick(591, 443)   # track is currently selected, so the order matters
-        wclick(641, 495)   # Info overlay
-        wclick(641, 495)   # (close again)
-        wclick(693, 495)   # fullscreen toggle button
+        wclick(636, 495)   # Sub overlay (the Sub button sits between the
+        wclick(636, 495)   # subtitle combo and Info; close again)
+        wclick(686, 495)   # Info overlay (shifted right by the Sub button)
+        wclick(686, 495)   # (close again)
+        wclick(737, 495)   # fullscreen toggle button (also shifted)
         focus(); key(d.keysym_to_keycode(0xFF1B)); time.sleep(0.3)
         # Seek bar: the row-1 slider sits at y 452..477 under the OSC top
         # edge. A press-drag-back-release first (the value returns to where
