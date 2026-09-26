@@ -105,6 +105,12 @@ public:
   // Thread-safe; returns true only when a new frame is available.
   bool tryGetSubtitleFrame(DecodedSubtitleFrame& out);
 
+  // v0.2 screenshot: encode the most recently presented video frame as a
+  // PNG at `path`. Thread-safe (meant for the UI thread). On failure the
+  // reason is recorded in lastError() only — no event, no state change:
+  // a screenshot is a UI convenience, not a playback error.
+  bool saveScreenshot(const std::string& path);
+
 private:
   // Internal types
   struct AudioParams {
@@ -217,6 +223,10 @@ private:
   bool video_frame_ready_{false};
   DecodedVideoFrame latest_video_frame_{};
   DecodedVideoFrame staging_video_frame_{};
+  // Last presented frame, retained for saveScreenshot(): the UI mailbox
+  // hands frames out by swap, so latest_video_frame_ holds nothing usable
+  // once the app has pulled. Filled under video_frame_mutex_.
+  DecodedVideoFrame presented_video_frame_{};
 
   // Subtitle frame handoff (for UI rendering on main thread)
   mutable std::mutex subtitle_frame_mutex_;

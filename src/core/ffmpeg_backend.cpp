@@ -23,6 +23,7 @@ extern "C" {
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <string_view>
 
@@ -592,6 +593,7 @@ void FFmpegBackend::close() {
     video_frame_ready_ = false;
     latest_video_frame_ = DecodedVideoFrame{};
     staging_video_frame_ = DecodedVideoFrame{};
+    presented_video_frame_ = DecodedVideoFrame{};
   }
 
   {
@@ -936,6 +938,114 @@ bool FFmpegBackend::tryGetSubtitleFrame(DecodedSubtitleFrame& out) {
   }
   out = std::move(subtitle_frames_.front());
   subtitle_frames_.pop();
+  return true;
+}
+
+bool FFmpegBackend::saveScreenshot(const std::string& path) {
+  // Snapshot the retained frame first: the encode below does file IO and
+  // must not run under video_frame_mutex_, which the decode thread holds
+  // while filling frames.
+  DecodedVideoFrame frame;
+  {
+    std::lock_guard<std::mutex> lock(video_frame_mutex_);
+    if (presented_video_frame_.width <= 0 || presented_video_frame_.height <= 0) {
+      // Nothing presented yet: never played, audio-only media, or a
+      // closed backend. Recorded without an event (see the header).
+      return fail("screenshot: no video frame has been presented", false);
+    }
+    frame = presented_video_frame_;
+  }
+
+  std::string error;
+  const AVCodec* encoder = avcodec_find_encoder(AV_CODEC_ID_PNG);
+  // No null-encoder special case: avcodec_alloc_context3 tolerates a null
+  // codec, and avcodec_open2 refuses the resulting context below, so a
+  // missing PNG encoder still fails cleanly through the open arm.
+  AVCodecContext* ctx = avcodec_alloc_context3(encoder);
+  AVFrame* yuv = av_frame_alloc();
+  AVFrame* rgb = av_frame_alloc();
+  AVPacket* packet = av_packet_alloc();
+  SwsContext* sws = nullptr;
+
+  if (!ctx || !yuv || !rgb || !packet) {
+    error = "screenshot: PNG encoder unavailable or out of memory";
+  } else {
+    ctx->width = frame.width;
+    ctx->height = frame.height;
+    ctx->pix_fmt = AV_PIX_FMT_RGB24;
+    ctx->time_base = AVRational{1, 1};
+    if (avcodec_open2(ctx, encoder, nullptr) < 0) {
+      error = "screenshot: PNG encoder could not be opened";
+    }
+  }
+
+  // Wrap the retained YUV420P planes (contiguous, stride == width,
+  // normalized by renderVideoFrame) in an AVFrame and convert to the
+  // RGB24 the PNG encoder takes. The conversion context is per-call:
+  // video_scaler_/video_convert_ belong to the decode thread.
+  if (error.empty()) {
+    yuv->format = AV_PIX_FMT_YUV420P;
+    yuv->width = frame.width;
+    yuv->height = frame.height;
+    yuv->data[0] = frame.y.data();
+    yuv->linesize[0] = frame.stride_y;
+    yuv->data[1] = frame.u.data();
+    yuv->linesize[1] = frame.stride_u;
+    yuv->data[2] = frame.v.data();
+    yuv->linesize[2] = frame.stride_v;
+
+    rgb->format = AV_PIX_FMT_RGB24;
+    rgb->width = frame.width;
+    rgb->height = frame.height;
+    if (av_frame_get_buffer(rgb, 32) < 0) {
+      error = "screenshot: RGB frame allocation failed";
+    } else {
+      sws = sws_getContext(frame.width, frame.height, AV_PIX_FMT_YUV420P,
+                           frame.width, frame.height, AV_PIX_FMT_RGB24,
+                           SWS_BILINEAR, nullptr, nullptr, nullptr);
+      if (!sws) {
+        error = "screenshot: color conversion setup failed";
+      } else if (sws_scale(sws, yuv->data, yuv->linesize, 0, frame.height,
+                           rgb->data, rgb->linesize) <= 0) {
+        error = "screenshot: color conversion failed";
+      }
+    }
+  }
+
+  if (error.empty()) {
+    rgb->pts = 0;
+    if (avcodec_send_frame(ctx, rgb) < 0) {
+      error = "screenshot: PNG encode failed";
+    } else {
+      // PNG is intra-only: the drained packet(s) are the whole image.
+      FILE* out = std::fopen(path.c_str(), "wb");
+      if (!out) {
+        error = "screenshot: cannot write " + path;
+      } else {
+        std::size_t expected = 0;
+        std::size_t written = 0;
+        while (avcodec_receive_packet(ctx, packet) == 0) {
+          expected += static_cast<std::size_t>(packet->size);
+          written += std::fwrite(packet->data, 1,
+                                 static_cast<std::size_t>(packet->size), out);
+          av_packet_unref(packet);
+        }
+        const bool close_ok = std::fclose(out) == 0;
+        if (!close_ok || expected == 0 || written != expected) {
+          error = "screenshot: write failed for " + path;
+        }
+      }
+    }
+  }
+
+  sws_freeContext(sws);
+  av_packet_free(&packet);
+  av_frame_free(&rgb);
+  av_frame_free(&yuv);
+  avcodec_free_context(&ctx);
+  if (!error.empty()) {
+    return fail(std::move(error), false);
+  }
   return true;
 }
 
@@ -2171,6 +2281,9 @@ void FFmpegBackend::renderVideoFrame(const AVFrame* frame) {
     std::lock_guard<std::mutex> lock(video_frame_mutex_);
     std::swap(latest_video_frame_, staging_video_frame_);
     video_frame_ready_ = true;
+    // Retained copy for saveScreenshot(); the mailbox above is handed to
+    // the app by swap, so nothing reliable survives there.
+    presented_video_frame_ = latest_video_frame_;
   }
 }
 

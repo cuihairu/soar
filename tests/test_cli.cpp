@@ -261,7 +261,8 @@ if mode == "drive":
         geo = win.get_geometry()
         cx, cy = geo.width // 2, geo.height // 2
         # Key tour: overlays open+close, fullscreen round-trip, volume and
-        # mute, subtitle offset nudge ([ ]) and visibility toggle (s),
+        # mute, subtitle offset nudge ([ ]) and visibility toggle (v),
+        # a screenshot attempt on the frame-less null backend (s),
         # track cycling (subtitles on then off), the seek family
         # (Home/Left/Right/PageUp/PageDown/50%), pause/resume, an
         # end-of-media round trip (90% + PageDown lands exactly on the
@@ -445,7 +446,10 @@ if mode == "subsdrive":
     time.sleep(2.2)
     focus(); key(d.keysym_to_keycode(0x20))  # space: freeze inside a cue
     time.sleep(0.6)
-    for keysym in (0x5B, 0x5D, 0x73, 0x73):  # [ ] nudge, s s visibility
+    # [ ] nudge the sync offset, v toggles visibility twice (both toast
+    # arms), s takes the screenshot (mpv binding) — all keyboard paths
+    # behind the Subtitle Settings page.
+    for keysym in (0x5B, 0x5D, 0x76, 0x76, 0x73):
         if not focus():
             sys.exit(4)
         key(d.keysym_to_keycode(keysym))
@@ -598,6 +602,14 @@ if mode == "stall":
         xtest.fake_input(d, X.KeyPress, c)
         d.sync()
         xtest.fake_input(d, X.KeyRelease, c)
+        d.sync()
+        # S: this fixture is audio-only, so no frame was ever presented —
+        # the screenshot fails with "no video frame" and the HUD reports
+        # it instead of writing a file (saveScreenshot's false path).
+        s = d.keysym_to_keycode(0x73)
+        xtest.fake_input(d, X.KeyPress, s)
+        d.sync()
+        xtest.fake_input(d, X.KeyRelease, s)
         d.sync()
     except Exception:
         pass
@@ -1407,6 +1419,13 @@ TEST_CASE("windowed FFmpeg run renders subtitles and drives the Subtitle Setting
   const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
   const ScopedEnv display_env("DISPLAY", display.c_str());
   const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // The injector's S press makes the child write screenshot.png into its
+  // working directory (popen inherits ours); drop any leftover first so
+  // a stale file from an earlier run cannot satisfy the check below.
+  char cwd_buf[4096];
+  REQUIRE(::getcwd(cwd_buf, sizeof(cwd_buf)) != nullptr);
+  const std::string shot_path = std::string(cwd_buf) + "/screenshot.png";
+  ::unlink(shot_path.c_str());
   // Real FFmpeg backend: the fixture carries an SRT cue track, so the
   // decode thread delivers subtitle frames while the injector drives.
   const auto run = runCli({"--backend=ffmpeg", media});
@@ -1439,6 +1458,17 @@ TEST_CASE("windowed FFmpeg run renders subtitles and drives the Subtitle Setting
   const std::size_t sub_off = run.output.find("selected(video=0,audio=1,sub=-1)", sub_on);
   CHECK(sub_off != std::string::npos);
   CHECK(run.output.rfind("selected(video=0,audio=1,sub=2)") > sub_off);
+  // S (pressed while paused on a live frame) saved a PNG: the backend's
+  // saveScreenshot ran through the encoder path and the HUD acknowledged
+  // it. Verify the magic bytes, then clean up the working directory.
+  {
+    std::ifstream shot(shot_path, std::ios::binary);
+    REQUIRE(shot.good());
+    std::string magic(8, '\0');
+    shot.read(magic.data(), 8);
+    CHECK(magic == std::string("\x89PNG\r\n\x1a\n", 8));
+  }
+  ::unlink(shot_path.c_str());
 #endif
 #endif
 #endif

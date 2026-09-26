@@ -363,16 +363,22 @@ class PlayerHud {
           case SDLK_h:
             toggleOverlay(Overlay::Help);
             return;
-          // Subtitle key bindings (v0.2) — temporarily disabled to keep X11 test stable
-          // case SDLK_LEFTBRACKET:  // '[' - decrease subtitle offset
-          //   nudgeSubtitleOffset(-500, now);
-          //   return;
-          // case SDLK_RIGHTBRACKET:  // ']' - increase subtitle offset
-          //   nudgeSubtitleOffset(+500, now);
-          //   return;
-          // case SDLK_s:  // 's' - toggle subtitle visibility
-          //   toggleSubtitleVisibility(now);
-          //   return;
+          // Subtitle keys (v0.2), back on since the X11 drive scripts
+          // pin every coordinate they used to disturb (subsdrive presses
+          // [ ] v with the overlay measured). `s` follows mpv and takes a
+          // screenshot instead of toggling visibility: V does that now.
+          case SDLK_LEFTBRACKET:  // '[' - decrease subtitle offset
+            nudgeSubtitleOffset(-500, now);
+            return;
+          case SDLK_RIGHTBRACKET:  // ']' - increase subtitle offset
+            nudgeSubtitleOffset(+500, now);
+            return;
+          case SDLK_v:  // 'v' - toggle subtitle visibility
+            toggleSubtitleVisibility(now);
+            return;
+          case SDLK_s:  // 's' - save a screenshot (PNG, mpv binding)
+            takeScreenshot(now);
+            return;
           default:
             if (key >= SDLK_0 && key <= SDLK_9) {
               percentSeek(static_cast<int>(key - SDLK_0) * 10, now);
@@ -654,6 +660,24 @@ class PlayerHud {
       cfg_.subtitle_visible->store(st_.subtitle_visible, std::memory_order_relaxed);
     }
     st_.toast.show(st_.subtitle_visible ? "Subtitles on" : "Subtitles off", now);
+  }
+
+  // Screenshot (v0.2, mpv's `s`): PNG of the last presented frame in the
+  // working directory. The dereference needs the full backend type, which
+  // only exists in FFmpeg builds (player_window.h keeps it opaque), and
+  // the null backend has no frames to capture at all.
+  void takeScreenshot(milliseconds now) {
+#ifdef SOAR_WITH_FFMPEG
+    if (cfg_.ffmpeg) {
+      if (cfg_.ffmpeg->saveScreenshot("screenshot.png")) {
+        st_.toast.show("Saved screenshot.png", now);
+      } else {
+        st_.toast.show("Screenshot failed: " + player_.lastError(), now);
+      }
+      return;
+    }
+#endif
+    st_.toast.show("Screenshot needs the FFmpeg backend", now);
   }
 
   bool shiftHeld() const { return (SDL_GetModState() & KMOD_SHIFT) != 0; }
@@ -1114,7 +1138,8 @@ class PlayerHud {
           {", / .", "Speed down / up"},
           {"A", "Cycle audio track"},
           {"C", "Cycle subtitles (incl. off)"},
-          {"S", "Toggle subtitles on/off"},
+          {"S", "Screenshot (PNG)"},
+          {"V", "Toggle subtitles on/off"},
           {"[ / ]", "Subtitle offset -500ms / +500ms"},
           {"L", "A-B loop (arm A, arm B, clear)"},
           {"F", "Fullscreen"},
@@ -1224,7 +1249,7 @@ class PlayerHud {
       }
 
       ImGui::Separator();
-      ImGui::TextDisabled("S: cycle subtitle  |  [: decrease offset  |  ]: increase offset");
+      ImGui::TextDisabled("C: cycle  |  V: show/hide  |  [ / ]: offset  |  S: screenshot");
     }
     ImGui::End();
     if (!open) st_.overlay = Overlay::None;

@@ -676,6 +676,79 @@ TEST_CASE("tryGetVideoFrame delivers frames during playback") {
   backend->close();
 }
 
+TEST_CASE("saveScreenshot encodes the presented frame as PNG") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping screenshot test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  const std::string out = "soar_backend_screenshot.png";
+  ::unlink(out.c_str());
+
+  // Before any frame is presented the call fails, records the reason in
+  // lastError(), and writes nothing.
+  CHECK_FALSE(ffmpeg->saveScreenshot(out));
+  CHECK_FALSE(ffmpeg->lastError().empty());
+  CHECK(::access(out.c_str(), F_OK) != 0);
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // The decode thread presents frames; the first call(s) may still land
+  // before one has been retained, so retry like the UI does on a keypress.
+  bool saved = false;
+  for (int i = 0; i < 1000 && !saved; ++i) {
+    saved = ffmpeg->saveScreenshot(out);
+    if (!saved) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  REQUIRE(saved);
+
+  // Validate the PNG container: signature, IHDR dimensions (the sample
+  // is testsrc rendered at 160x120), and a plausible payload size.
+  std::ifstream in(out, std::ios::binary);
+  REQUIRE(in.good());
+  std::vector<unsigned char> bytes(
+    (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  REQUIRE(bytes.size() > 32);
+  const unsigned char sig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  CHECK(std::equal(bytes.begin(), bytes.begin() + 8, sig));
+  CHECK(bytes[12] == 'I');
+  CHECK(bytes[13] == 'H');
+  CHECK(bytes[14] == 'D');
+  CHECK(bytes[15] == 'R');
+  const auto be32 = [&](std::size_t off) {
+    return (static_cast<unsigned long>(bytes[off]) << 24) |
+           (static_cast<unsigned long>(bytes[off + 1]) << 16) |
+           (static_cast<unsigned long>(bytes[off + 2]) << 8) |
+           static_cast<unsigned long>(bytes[off + 3]);
+  };
+  CHECK(be32(16) == 160);
+  CHECK(be32(20) == 120);
+
+  // An unwritable destination fails cleanly without disturbing playback.
+  CHECK_FALSE(ffmpeg->saveScreenshot("/nonexistent_dir_soar/shot.png"));
+  CHECK_FALSE(ffmpeg->lastError().empty());
+  CHECK(backend->position() >= 0ms);
+
+  // A destination that accepts the open but refuses the bytes (/dev/full,
+  // present on Linux and macOS) fails through the write-mismatch arm
+  // instead of the open arm above.
+  if (::access("/dev/full", W_OK) == 0) {
+    CHECK_FALSE(ffmpeg->saveScreenshot("/dev/full"));
+    CHECK_FALSE(ffmpeg->lastError().empty());
+    CHECK(backend->position() >= 0ms);
+  }
+
+  backend->stop();
+  backend->close();
+  ::unlink(out.c_str());
+}
+
 TEST_CASE("media without subtitle tracks rejects subtitle selection") {
   std::string media;
   if (!mediaAvailable(media)) {
