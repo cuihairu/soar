@@ -200,8 +200,10 @@ private:
 
   // Subtitle frame handoff (for UI rendering on main thread)
   mutable std::mutex subtitle_frame_mutex_;
-  bool subtitle_frame_ready_{false};
-  DecodedSubtitleFrame latest_subtitle_frame_{};
+  // Small FIFO, not a single-slot mailbox: adjacent SRT cues decode
+  // back-to-back whenever decoding outpaces playback, and one slot would
+  // silently drop everything but the newest.
+  std::queue<DecodedSubtitleFrame> subtitle_frames_;
 
   // FFmpeg contexts
   AVFormatContext* format_ctx_{nullptr};

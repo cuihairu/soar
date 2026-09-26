@@ -70,30 +70,38 @@ std::string codecNameFromCodecId(AVCodecID codec_id) {
 // {...} are dropped and hard breaks (\N, \n) become spaces, so an SRT line
 // like "Hello" surfaces as plain "Hello" (the SRT/WebVTT decoders emit
 // ASS-format rects; see processSubtitleFrame).
+// The ff_ass_get_dialog decoder wraps synthesized events in brackets:
+// "[readorder,layer,style,speaker,mL,mR,mV,effect,text]" — 8 commas, 9 fields.
 std::string assDialogueText(const char* ass) {
   if (ass == nullptr) {
     return {};
   }
-  const std::string_view s(ass);
+  std::string_view s(ass);
+  // Strip surrounding brackets if present (ff_ass_get_dialog format)
+  if (!s.empty() && s.front() == '[') {
+    s.remove_prefix(1);
+  }
+  if (!s.empty() && s.back() == ']') {
+    s.remove_suffix(1);
+  }
   std::string out;
   std::size_t pos = 0;
   while (pos < s.size()) {
     const std::size_t eol = s.find('\n', pos);
     const std::size_t line_end = eol == std::string_view::npos ? s.size() : eol;
-    const std::string_view line = s.substr(pos, line_end - pos);
+    std::string_view line = s.substr(pos, line_end - pos);
     pos = eol == std::string_view::npos ? s.size() : eol + 1;
-    if (line.rfind("Dialogue:", 0) != 0) {
-      continue;
-    }
+    const bool full_event = line.rfind("Dialogue:", 0) == 0;
+    const int commas_needed = full_event ? 9 : 8;
     int commas = 0;
     std::size_t i = 0;
-    while (i < line.size() && commas < 9) {
+    while (i < line.size() && commas < commas_needed) {
       if (line[i] == ',') {
         ++commas;
       }
       ++i;
     }
-    if (commas < 9) {
+    if (commas < commas_needed) {
       continue;
     }
     bool in_braces = false;
@@ -117,7 +125,7 @@ std::string assDialogueText(const char* ass) {
       out.push_back(c);
     }
   }
-  while (!out.empty() && (out.back() == ' ' || out.back() == '\r')) {
+  while (!out.empty() && (out.back() == ' ' || out.back() == '\r' || out.back() == ']')) {
     out.pop_back();
   }
   return out;
@@ -571,8 +579,7 @@ void FFmpegBackend::close() {
 
   {
     std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
-    subtitle_frame_ready_ = false;
-    latest_subtitle_frame_ = DecodedSubtitleFrame{};
+    subtitle_frames_ = {};
   }
 
   emit(Event{EventType::MediaInfoChanged});
@@ -901,11 +908,11 @@ bool FFmpegBackend::tryGetVideoFrame(DecodedVideoFrame& out) {
 
 bool FFmpegBackend::tryGetSubtitleFrame(DecodedSubtitleFrame& out) {
   std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
-  if (!subtitle_frame_ready_) {
+  if (subtitle_frames_.empty()) {
     return false;
   }
-  out = latest_subtitle_frame_;
-  subtitle_frame_ready_ = false;
+  out = std::move(subtitle_frames_.front());
+  subtitle_frames_.pop();
   return true;
 }
 
@@ -1545,8 +1552,7 @@ void FFmpegBackend::decodeLoop() {
       }
       {
         std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
-        subtitle_frame_ready_ = false;
-        latest_subtitle_frame_ = DecodedSubtitleFrame{};
+        subtitle_frames_ = {};
       }
     }
 
@@ -1666,7 +1672,6 @@ void FFmpegBackend::decodeLoop() {
         continue;
       }
 
-      std::fprintf(stderr, "SUBPROBE ret=%d got=%d rects=%u type=%d ass=[%s]\n", ret, got_sub, sub.num_rects, got_sub && sub.num_rects ? (int)sub.rects[0]->type : -1, got_sub && sub.num_rects ? sub.rects[0]->ass : nullptr);
       if (got_sub != 0) {
         const AVStream* stream = format_ctx_->streams[subtitle_stream_index_];
         const int64_t ts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
@@ -1744,8 +1749,10 @@ void FFmpegBackend::queueSubtitleFrame(const std::string& text, std::chrono::mil
   sub.duration = duration;
 
   std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
-  latest_subtitle_frame_ = sub;
-  subtitle_frame_ready_ = true;
+  subtitle_frames_.push(std::move(sub));
+  while (subtitle_frames_.size() > kMaxSubtitleQueueFrames) {
+    subtitle_frames_.pop();
+  }
 }
 
 void FFmpegBackend::drainFrameQueues() {
