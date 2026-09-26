@@ -6,7 +6,7 @@
 
 **万般格式，任其翱翔。**
 
-Soar 是一个用 C++17 从零打造的万能格式开源播放器：一套干净的核心播放抽象（Playback Abstraction），配上 FFmpeg 后端，把"能想到的格式都放得出来"作为长期目标。
+Soar 是一个基于 FFmpeg + SDL2 的 C++17 开源媒体播放器：自研一套核心播放抽象（Playback Abstraction）与桌面 UI，解码复用 FFmpeg，把"能想到的格式都放得出来"作为长期目标。
 
 [![ci](https://github.com/cuihairu/soar/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/soar/actions/workflows/ci.yml)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/17)
