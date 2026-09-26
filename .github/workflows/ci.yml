@@ -286,11 +286,12 @@ jobs:
           # The decode threads make gcov's branch counters go negative
           # (GCC bug 68080), which gcovr refuses to parse. Ignore those
           # branch lines; the line data itself is intact.
-          # The fail-under gates lock in the reached levels (line 94.6%,
-          # branch 83.2% after the P3a cache backfill batch, which took
-          # http_cache.cpp from 80%/55% to 99%/85% and fixed the IPv6
-          # literal url parsing along the way — see
-          # docs/coverage-notes.md §2.1/§3.7) with slack for the ±1-2 line
+          # The fail-under gates lock in the reached levels (line 94.8%,
+          # branch 83.6% after the P3b integration batch, which pinned the
+          # seek-hole-fill and partial-cache offline resume contracts; the
+          # P3a cache backfill before it took http_cache.cpp from 80%/55%
+          # to 99%/85% and fixed the IPv6 literal url parsing along the
+          # way — see docs/coverage-notes.md §2.1/§3.7) with slack for the ±1-2 line
           # gcov counter jitter and for timing-dependent arcs that flip
           # under the window test's concurrent decode load, so a regression
           # fails here instead of slipping in silently.
@@ -303,7 +304,7 @@ jobs:
             --txt coverage.txt --txt-metric branch \
             --exclude-throw-branches \
             --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
-            --fail-under-line 93.9 --fail-under-branch 82.1 \
+            --fail-under-line 94.1 --fail-under-branch 82.4 \
             --print-summary > gcovr-summary.txt
           cat gcovr-summary.txt
           gcovr --root . --filter src --filter include \

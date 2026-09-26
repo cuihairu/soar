@@ -151,6 +151,60 @@ uint32_t blocksFor(uint64_t size) {
   return static_cast<uint32_t>((size + kBlockSize - 1) / kBlockSize);
 }
 
+// Parses a live meta file back (the read-side mirror of craftMeta) so tests
+// can pin exactly which blocks the cache believes it holds — the ground
+// truth behind "a seek fills just its own hole" style claims.
+struct MetaBitmap {
+  uint64_t size = 0;
+  uint32_t blocks = 0;
+  std::vector<bool> cached;
+};
+
+MetaBitmap readMetaBitmap(const std::string& cache_dir, const std::string& url) {
+  FILE* f = std::fopen((cache_dir + "/" + cacheStem(url) + ".meta").c_str(), "rb");
+  REQUIRE(f != nullptr);
+  std::string m;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) m.append(buf, n);
+  std::fclose(f);
+
+  auto get32 = [&m](size_t off) {
+    return static_cast<uint32_t>(static_cast<uint8_t>(m[off])) |
+           (static_cast<uint32_t>(static_cast<uint8_t>(m[off + 1])) << 8) |
+           (static_cast<uint32_t>(static_cast<uint8_t>(m[off + 2])) << 16) |
+           (static_cast<uint32_t>(static_cast<uint8_t>(m[off + 3])) << 24);
+  };
+  auto get64 = [&](size_t off) {
+    return static_cast<uint64_t>(get32(off)) |
+           (static_cast<uint64_t>(get32(off + 4)) << 32);
+  };
+
+  MetaBitmap out;
+  REQUIRE(m.size() >= 8 + 4 + 4);
+  CHECK(m.compare(0, 8, "SOARCHN1") == 0);
+  CHECK(get32(8) == 1);  // version
+  const uint32_t url_len = get32(12);
+  size_t off = 16;
+  REQUIRE(m.size() >= off + url_len + 8 + 4);
+  CHECK(m.compare(off, url_len, url) == 0);
+  off += url_len;
+  out.size = get64(off);
+  off += 8;
+  out.blocks = get32(off);
+  off += 4;
+  REQUIRE(out.blocks == blocksFor(out.size));
+  const size_t bitmap_bytes = (out.blocks + 7) / 8;
+  REQUIRE(m.size() == off + bitmap_bytes);
+  // Bit b lives at 0x80 >> (b % 8) inside byte b / 8 — MSB first, matching
+  // the product's bitmap_[block >> 3] |= 0x80u >> (block & 7).
+  out.cached.assign(out.blocks, false);
+  for (uint32_t b = 0; b < out.blocks; ++b) {
+    out.cached[b] = ((static_cast<uint8_t>(m[off + b / 8]) >> (7 - (b % 8))) & 1) != 0;
+  }
+  return out;
+}
+
 // Grabs an ephemeral TCP port (bind :0, read it back, close) so "connection
 // refused" cases never depend on low ports being refused instantly — some
 // runner firewalls turn a closed low port into a silent drop, which would
@@ -1105,6 +1159,201 @@ TEST_CASE("playback through the cache replays offline after the server dies") {
     backend->stop();
     backend->close();
     CHECK(sink.errors.load() == 0);
+  }
+
+  removeTree(dir);
+}
+
+TEST_CASE("seeking into an uncached region fills just that hole and the partial cache replays offline") {
+  // P3b's integration promise, first half: a mid-playback seek to a far,
+  // never-fetched region issues a Range fetch for THAT region only — the
+  // bitmap gains the seek-target block(s) while the span between the
+  // header and the target stays empty. Second half: kill the server, and
+  // the partial (hole-ridden) cache still replays the cached span offline.
+  std::string media = std::getenv("SOAR_TEST_MEDIA") == nullptr
+                          ? ""
+                          : std::getenv("SOAR_TEST_MEDIA");
+  if (media.empty()) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping seek hole test");
+    return;
+  }
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping seek hole test");
+    return;
+  }
+
+  const std::string dir = makeTempDir("seekhole");
+  REQUIRE(!dir.empty());
+  const std::string name = media.substr(media.find_last_of('/') + 1);
+  REQUIRE(std::system(("cp '" + media + "' '" + dir + "/" + name + "'").c_str()) == 0);
+  RangeServer srv = startRangeServer(dir, 24920);
+  REQUIRE(srv.pid >= 0);
+  const std::string url = srv.base_url + "/" + name;
+  const std::string cache_dir = dir + "/cache";
+
+  // Pass 1 (online): open, seek to ~58% of the duration while stopped (the
+  // synchronous state-machine path), then play past it.
+  int64_t dur_ms = 0;
+  {
+    StateSink sink;
+    auto backend = soar::makeFFmpegBackend();
+    backend->setEventSink(&sink);
+    REQUIRE(backend->open(soar::MediaSource{url, cache_dir}));
+    dur_ms = backend->mediaInfo().duration.count();
+    REQUIRE(dur_ms >= 5000);
+    const auto target = std::chrono::milliseconds(3500);
+    CHECK(backend->mediaInfo().seekable);
+    CHECK(backend->seek(target));
+    CHECK(backend->position() == target);
+
+    REQUIRE(backend->setRate(8.0));
+    REQUIRE(backend->play());
+    const auto deadline = std::chrono::steady_clock::now() + 240s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           backend->position() < std::chrono::milliseconds(4000) &&
+           sink.ended.load() == 0) {
+      std::this_thread::sleep_for(50ms);
+    }
+    CHECK(backend->position() >= std::chrono::milliseconds(4000));
+    backend->stop();
+    backend->close();
+    CHECK(sink.errors.load() == 0);
+  }
+
+  // The bitmap must show the seek-target block cached and the file as a
+  // whole NOT fully cached: 3500ms of this ~6s source lands past the file
+  // midpoint, so the blocks between header and target were never read.
+  const MetaBitmap after_seek = readMetaBitmap(cache_dir, url);
+  const size_t target_block = static_cast<size_t>(
+      static_cast<uint64_t>(after_seek.size) * 3500 /
+      static_cast<uint64_t>(dur_ms) / kBlockSize);
+  CHECK(after_seek.cached[target_block]);
+  size_t cached_count = 0;
+  for (bool b : after_seek.cached) {
+    if (b) ++cached_count;
+  }
+  CHECK(cached_count < after_seek.blocks);
+
+  // Offline probe: the meta alone (no server) already knows the partial
+  // state.
+  uint64_t offline_cached_bytes = 0;
+  {
+    soar::HttpCache probe(cache_dir, url);
+    REQUIRE(probe.valid());
+    offline_cached_bytes = probe.cachedBytes();
+    CHECK(offline_cached_bytes < probe.size());
+  }
+
+  // Kill the server: no network from here on.
+  srv.stop();
+
+  // Pass 2 (offline resume): reopen on the partial cache and play the
+  // cached span — target .. 4000ms sits inside the blocks pass 1 filled.
+  {
+    StateSink sink;
+    auto backend = soar::makeFFmpegBackend();
+    backend->setEventSink(&sink);
+    REQUIRE(backend->open(soar::MediaSource{url, cache_dir}));
+    CHECK(backend->seek(std::chrono::milliseconds(3500)));
+    REQUIRE(backend->setRate(8.0));
+    REQUIRE(backend->play());
+    const auto deadline = std::chrono::steady_clock::now() + 240s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           backend->position() < std::chrono::milliseconds(4000) &&
+           sink.ended.load() == 0) {
+      std::this_thread::sleep_for(50ms);
+    }
+    CHECK(backend->position() >= std::chrono::milliseconds(4000));
+    backend->stop();
+    backend->close();
+    CHECK(sink.errors.load() == 0);
+  }
+
+  // Offline playback must not have "grown" the cache.
+  {
+    soar::HttpCache probe(cache_dir, url);
+    REQUIRE(probe.valid());
+    CHECK(probe.cachedBytes() == offline_cached_bytes);
+  }
+
+  removeTree(dir);
+}
+
+TEST_CASE("an offline read inside a hole surfaces as an Error event, not a hang") {
+  // P3b's failure contract: a partial cache with head and tail blocks but a
+  // hole in the middle replays fine until playback walks into the hole —
+  // then the avio adapter turns the cache miss into EIO and the decode
+  // loop reports an Error instead of stalling forever.
+  std::string media = std::getenv("SOAR_TEST_MEDIA") == nullptr
+                          ? ""
+                          : std::getenv("SOAR_TEST_MEDIA");
+  if (media.empty()) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping offline hole test");
+    return;
+  }
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping offline hole test");
+    return;
+  }
+
+  const std::string dir = makeTempDir("holeerr");
+  REQUIRE(!dir.empty());
+  const std::string name = media.substr(media.find_last_of('/') + 1);
+  REQUIRE(std::system(("cp '" + media + "' '" + dir + "/" + name + "'").c_str()) == 0);
+  RangeServer srv = startRangeServer(dir, 24960);
+  REQUIRE(srv.pid >= 0);
+  const std::string url = srv.base_url + "/" + name;
+  const std::string cache_dir = dir + "/cache";
+
+  // Component-level partial fill: block 0 (header) and the last block
+  // (tail, where matroska keeps its Cues) — everything between is a hole.
+  {
+    soar::HttpCache cache(cache_dir, url);
+    REQUIRE(cache.valid());
+    std::vector<uint8_t> buf(kBlockSize);
+    CHECK(cache.read(0, buf.data(), buf.size()) == kBlockSize);
+    // Offset of the last block (works for exact multiples too).
+    const uint64_t tail = ((cache.size() - 1) / kBlockSize) * kBlockSize;
+    CHECK(cache.read(tail, buf.data(),
+                     static_cast<size_t>(cache.size() - tail)) ==
+          cache.size() - tail);
+  }
+  const MetaBitmap partial = readMetaBitmap(cache_dir, url);
+  CHECK(partial.cached[0]);
+  CHECK(partial.cached[partial.blocks - 1]);
+  size_t cached_count = 0;
+  for (bool b : partial.cached) {
+    if (b) ++cached_count;
+  }
+  CHECK(cached_count == 2);
+
+  srv.stop();
+
+  // Component-level: an offline read inside the hole misses cleanly.
+  {
+    soar::HttpCache probe(cache_dir, url);
+    REQUIRE(probe.valid());
+    uint8_t byte = 0;
+    CHECK(probe.read(kBlockSize, &byte, 1) == soar::HttpCache::npos);
+    CHECK_FALSE(probe.error().empty());
+  }
+
+  // Backend-level: playback consumes block 0 and then hits the hole.
+  {
+    StateSink sink;
+    auto backend = soar::makeFFmpegBackend();
+    backend->setEventSink(&sink);
+    REQUIRE(backend->open(soar::MediaSource{url, cache_dir}));
+    REQUIRE(backend->setRate(8.0));
+    REQUIRE(backend->play());
+    const auto deadline = std::chrono::steady_clock::now() + 60s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           sink.errors.load() == 0 && sink.ended.load() == 0) {
+      std::this_thread::sleep_for(50ms);
+    }
+    CHECK(sink.errors.load() >= 1);
+    backend->stop();
+    backend->close();
   }
 
   removeTree(dir);
