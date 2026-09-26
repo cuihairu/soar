@@ -23,6 +23,7 @@
 #ifndef _WIN32
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -36,6 +37,8 @@ using test_servers::kRangeServerScript;
 // #ifndef _WIN32 block, so the using-declarations must be gated too.
 using test_servers::RangeServer;
 using test_servers::startRangeServer;
+using test_servers::startRangeServerV6;
+using test_servers::startRawServer;
 using test_servers::startPipedServer;
 #endif
 namespace {
@@ -103,6 +106,64 @@ std::string readSourceSlice(const std::string& path, size_t offset, size_t len) 
   REQUIRE(got == len);
   return std::string(buf.data(), buf.size());
 }
+
+void writeBytes(const std::string& path, const std::string& content) {
+  FILE* f = std::fopen(path.c_str(), "wb");
+  REQUIRE(f != nullptr);
+  REQUIRE(std::fwrite(content.data(), 1, content.size(), f) == content.size());
+  std::fclose(f);
+}
+
+// Constructs the cache and returns its error text (empty when valid) — the
+// one-liner every constructor-side error arc asserts on.
+std::string probeError(const std::string& cache_dir, const std::string& url) {
+  soar::HttpCache cache(cache_dir, url);
+  return cache.valid() ? std::string() : cache.error();
+}
+
+// Serializes a meta file exactly like saveMeta does, so individual fields
+// can be corrupted before planting it (one loadMeta reject arc per variant).
+std::string craftMeta(const std::string& url, uint64_t size, uint32_t blocks,
+                      const std::string& bitmap, uint32_t version = 1,
+                      int url_len_override = -1) {
+  std::string m("SOARCHN1", 8);
+  auto put32 = [&m](uint32_t v) {
+    for (int i = 0; i < 4; ++i) m.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+  };
+  auto put64 = [&m](uint64_t v) {
+    for (int i = 0; i < 8; ++i) m.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+  };
+  put32(version);
+  put32(url_len_override >= 0 ? static_cast<uint32_t>(url_len_override)
+                              : static_cast<uint32_t>(url.size()));
+  m += url;
+  put64(size);
+  put32(blocks);
+  m += bitmap;
+  return m;
+}
+
+uint32_t blocksFor(uint64_t size) {
+  return static_cast<uint32_t>((size + kBlockSize - 1) / kBlockSize);
+}
+
+// RAII guard around RLIMIT_FSIZE: every destructor path restores the
+// original limits, so a REQUIRE failure mid-case cannot leak a crippled
+// limit into the sibling cases of the same binary.
+struct FsizeLimit {
+  rlimit old{};
+  bool lowered = false;
+  explicit FsizeLimit(rlim_t soft) {
+    rlimit lim{};
+    if (::getrlimit(RLIMIT_FSIZE, &old) != 0) return;
+    lim = old;
+    lim.rlim_cur = soft;
+    lowered = ::setrlimit(RLIMIT_FSIZE, &lim) == 0;
+  }
+  ~FsizeLimit() {
+    if (lowered) ::setrlimit(RLIMIT_FSIZE, &old);
+  }
+};
 
 #endif  // !_WIN32
 
@@ -335,6 +396,527 @@ TEST_CASE("a server without range support is rejected with a clear error") {
     ::kill(pid, SIGTERM);
   }
   ::waitpid(pid, nullptr, 0);
+  removeTree(dir);
+#endif
+}
+
+// Port bases for the new servers: 24000+, clear of every other suite's
+// range (the media suite sits at 15000, the CLI suite at 15000/18200-18500
+// plus a 18000+pid%2000 lottery that cannot reach up here). All new tests
+// below are POSIX-only like the existing ones.
+
+TEST_CASE("malformed authorities fail the parse before any network traffic") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  const std::string dir = makeTempDir("parse");
+  REQUIRE(!dir.empty());
+  for (const char* authority :
+       {"/path",             // empty authority
+        ":80/x",             // empty host
+        "127.0.0.1:/x",      // empty port
+        "127.0.0.1:notaport/x",  // non-numeric port
+        "[::1",              // unclosed bracket
+        "[::1]x"}) {         // junk between bracket and port
+    CAPTURE(authority);
+    const std::string err = probeError(dir + "/c", std::string("http://") + authority);
+    CHECK(err.find("not a usable http:// url") != std::string::npos);
+  }
+
+  // An empty cache dir is rejected before anything is touched, and an
+  // invalid instance refuses reads with its own message.
+  CHECK(probeError("", "http://127.0.0.1:1/x.bin").find("cache dir is empty") !=
+        std::string::npos);
+  soar::HttpCache bad(dir + "/c", "ftp://host/file.bin");
+  REQUIRE(!bad.valid());
+  uint8_t byte = 0;
+  CHECK(bad.read(0, &byte, 1) == soar::HttpCache::npos);
+  CHECK(bad.error() == "http cache: instance is not valid");
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("resolve and connect failures are distinguishable") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  const std::string dir = makeTempDir("resolve");
+  REQUIRE(!dir.empty());
+  // .invalid is guaranteed never to resolve (RFC 2606); the url also has no
+  // path, exercising the authority-only parse arm.
+  const std::string err =
+      probeError(dir + "/c", "http://soar-nonexistent-host.invalid");
+  CHECK(err.find("cannot resolve") != std::string::npos);
+
+  // Loopback port 1 is never listening: a refusal must read as "cannot
+  // connect", not as a resolver failure.
+  const std::string refused = probeError(dir + "/c2", "http://127.0.0.1:1/x.bin");
+  CHECK(refused.find("cannot connect to 127.0.0.1:1") != std::string::npos);
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("a bracketed IPv6 literal url connects and serves exact bytes") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping ipv6 test");
+    return;
+  }
+  const std::string dir = makeTempDir("v6");
+  REQUIRE(!dir.empty());
+  const std::string src = makeSourceFile(dir, "v6.bin", 300000);
+  REQUIRE(!src.empty());
+  RangeServer srv = startRangeServerV6(dir, 24560);
+  if (srv.pid < 0) {
+    MESSAGE("no IPv6 loopback on this host; skipping the ipv6 test");
+    removeTree(dir);
+    return;
+  }
+  const std::string url = srv.base_url + "/v6.bin";  // http://[::1]:port/v6.bin
+  {
+    soar::HttpCache cache(dir + "/cache", url);
+    REQUIRE(cache.valid());
+    std::vector<uint8_t> buf(300000);
+    REQUIRE(cache.read(0, buf.data(), buf.size()) == buf.size());
+    CHECK(std::memcmp(buf.data(), readSourceSlice(src, 0, 300000).data(), 300000) == 0);
+  }
+
+  // No port after the bracket: parse still accepts (port defaults to 80)
+  // and the failure must be a *connect* refusal against the bare "::1" —
+  // proving the brackets were stripped for getaddrinfo but kept in the
+  // Host header form.
+  const std::string err = probeError(dir + "/cache_noport", "http://[::1]/x.bin");
+  CHECK(err.find("cannot connect to [::1]") != std::string::npos);
+
+  srv.stop();
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("broken header phase: early close, flood, garbage, mid-body cut") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping raw server tests");
+    return;
+  }
+  const std::string dir = makeTempDir("rawhdr");
+  REQUIRE(!dir.empty());
+  struct Mode {
+    const char* mode;
+    int port;
+    const char* needle;
+  };
+  const std::vector<Mode> modes = {
+      {"close_early", 24000, "connection closed before response headers"},
+      {"bigheaders", 24040, "response headers exceed 64 KiB"},
+      {"garbage", 24080, "malformed status line"},
+      {"truncated", 24120, "connection closed mid-body (0/1"},
+  };
+  for (const auto& m : modes) {
+    RangeServer srv = startRawServer(m.mode, m.port, 1000);
+    REQUIRE(srv.pid >= 0);
+    CAPTURE(m.mode);
+    const std::string err = probeError(dir + "/c_" + m.mode, srv.base_url + "/x.bin");
+    CHECK(err.find(m.needle) != std::string::npos);
+    srv.stop();
+  }
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("redirects, chunked encoding and odd statuses are rejected") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping raw server tests");
+    return;
+  }
+  const std::string dir = makeTempDir("status");
+  REQUIRE(!dir.empty());
+  struct Mode {
+    const char* mode;
+    int port;
+    const char* needle;
+  };
+  const std::vector<Mode> modes = {
+      {"redirect", 24160, "redirects are not supported (status 302)"},
+      {"chunked", 24200, "chunked transfer encoding is not supported"},
+      {"notfound", 24240, "unexpected status 404"},
+      // 1xx informational answers are not a final response either.
+      {"status100", 24880, "unexpected status 100"},
+      // 206 without a Content-Range is not a usable range answer either:
+      // the probe must say so instead of reporting a network failure.
+      {"probe206norange", 24280, "server does not support byte ranges (status 206)"},
+  };
+  for (const auto& m : modes) {
+    RangeServer srv = startRawServer(m.mode, m.port, 600000);
+    REQUIRE(srv.pid >= 0);
+    CAPTURE(m.mode);
+    const std::string err = probeError(dir + "/c_" + m.mode, srv.base_url + "/x.bin");
+    CHECK(err.find(m.needle) != std::string::npos);
+    srv.stop();
+  }
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("a giant request to a peer that never reads fails the send") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping send-failure test");
+    return;
+  }
+  // send() on a reset connection raises SIGPIPE; the component must be
+  // testable with the default disposition left aside, so ignore it here.
+  ::signal(SIGPIPE, SIG_IGN);
+  const std::string dir = makeTempDir("sendfail");
+  REQUIRE(!dir.empty());
+  RangeServer srv = startRawServer("close_early", 24520, 0);
+  REQUIRE(srv.pid >= 0);
+  // The 8 MiB query cannot fit any socket buffer, so sendAll runs into the
+  // peer's reset instead of finishing the write.
+  const std::string url = srv.base_url + "/pad.bin?" + std::string(8u << 20, 'a');
+  const std::string err = probeError(dir + "/c", url);
+  CHECK(err.find("send failed (errno ") != std::string::npos);
+  srv.stop();
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("range-fetch contract violations each produce their own error") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping fetch violation tests");
+    return;
+  }
+  const std::string dir = makeTempDir("fetchbad");
+  REQUIRE(!dir.empty());
+  // Each mode answers the bytes=0-0 probe correctly (so the cache opens
+  // online with size 600000) and sabotages the block fetch that follows.
+  struct Mode {
+    const char* mode;
+    int port;
+    const char* needle;
+  };
+  const std::vector<Mode> modes = {
+      {"fetch200", 24320,
+       "expected 206 Partial Content for a range fetch (status 200)"},
+      {"fetchnorange", 24480,
+       "expected 206 Partial Content for a range fetch (status 206)"},
+      {"fetchwrongrange", 24360, "server returned a different range than requested"},
+      {"fetchwrongtotal", 24400, "source size changed (cache 600000, server 600001)"},
+      {"fetchshort", 24440, "short range body (131072 of 262144 bytes)"},
+      {"fetchmalrange", 24840,
+       "expected 206 Partial Content for a range fetch (status 206)"},
+  };
+  for (const auto& m : modes) {
+    RangeServer srv = startRawServer(m.mode, m.port, 600000);
+    REQUIRE(srv.pid >= 0);
+    CAPTURE(m.mode);
+    soar::HttpCache cache(dir + "/c_" + m.mode, srv.base_url + "/x.bin");
+    REQUIRE(cache.valid());  // the probe was answered properly
+    std::vector<uint8_t> buf(64);
+    CHECK(cache.read(0, buf.data(), buf.size()) == soar::HttpCache::npos);
+    CHECK(cache.error().find(m.needle) != std::string::npos);
+    if (std::string(m.mode) == "fetchwrongrange") {
+      // A mid-file read mismatches on range_first (echo says 0-0), the
+      // block-0 retry above mismatches on range_last — both arms of the
+      // same check must trip.
+      CHECK(cache.read(300000, buf.data(), buf.size()) == soar::HttpCache::npos);
+      CHECK(cache.error().find(m.needle) != std::string::npos);
+    }
+    if (std::string(m.mode) == "fetchmalrange") {
+      // The server cycles through all five malformed Content-Range forms
+      // (all-whitespace, wrong unit, unparseable numbers, both wrong
+      // separators); every one of them must end in the has_range=false
+      // arm instead of a trusted parse.
+      for (int i = 0; i < 4; ++i) {
+        CHECK(cache.read(0, buf.data(), buf.size()) == soar::HttpCache::npos);
+        CHECK(cache.error().find(m.needle) != std::string::npos);
+      }
+    }
+    srv.stop();
+  }
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("a data file truncated behind the bitmap fails reads cleanly") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping vanish test");
+    return;
+  }
+  const std::string dir = makeTempDir("vanish");
+  REQUIRE(!dir.empty());
+  const std::string src = makeSourceFile(dir, "vanish.bin", 600000);
+  REQUIRE(!src.empty());
+  RangeServer srv = startRangeServer(dir, 24600);
+  REQUIRE(srv.pid >= 0);
+  const std::string url = srv.base_url + "/vanish.bin";
+  {
+    soar::HttpCache cache(dir + "/cache", url);
+    REQUIRE(cache.valid());
+    REQUIRE(cache.fetchAll());
+    CHECK(cache.cachedBytes() == 600000);
+  }
+  srv.stop();
+  {
+    // Offline reopen: the meta is the only source of truth now.
+    soar::HttpCache cache(dir + "/cache", url);
+    REQUIRE(cache.valid());
+    CHECK(cache.cachedBytes() == 600000);
+    // Sabotage: the data file goes away behind the bitmap's back. The read
+    // must report a positional-read failure instead of returning garbage.
+    REQUIRE(::truncate(cache.dataPath().c_str(), 0) == 0);
+    std::vector<uint8_t> buf(100);
+    CHECK(cache.read(0, buf.data(), buf.size()) == soar::HttpCache::npos);
+    CHECK(cache.error().find("read from data file failed") != std::string::npos);
+  }
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("a meta path occupied by a directory fails meta persistence and saves") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping occupied-meta test");
+    return;
+  }
+  const std::string dir = makeTempDir("occupied");
+  REQUIRE(!dir.empty());
+  const std::string src = makeSourceFile(dir, "occupied.bin", 600000);
+  REQUIRE(!src.empty());
+  RangeServer srv = startRangeServer(dir, 24640);
+  REQUIRE(srv.pid >= 0);
+  const std::string url = srv.base_url + "/occupied.bin";
+  const std::string cache_dir = dir + "/cache";
+  REQUIRE(::mkdir(cache_dir.c_str(), 0755) == 0);
+  // rename(tmp, target) cannot replace a directory with a file: every meta
+  // save fails at the finalize step while the cache itself stays usable
+  // in memory — and block fetches must refuse to pretend otherwise. The
+  // keeper file matters: remove() would happily rmdir an empty directory
+  // out of the way and the rename would then succeed.
+  REQUIRE(::mkdir((cache_dir + "/" + cacheStem(url) + ".meta").c_str(), 0755) == 0);
+  writeBytes(cache_dir + "/" + cacheStem(url) + ".meta/keep", "occupied");
+  {
+    soar::HttpCache cache(cache_dir, url);
+    CHECK(cache.valid());
+    CHECK(cache.error().find("cannot finalize meta file") != std::string::npos);
+    std::vector<uint8_t> buf(64);
+    CHECK(cache.read(0, buf.data(), buf.size()) == soar::HttpCache::npos);
+    CHECK(cache.error().find("cannot finalize meta file") != std::string::npos);
+  }
+  srv.stop();
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("a regular file where the cache dir belongs fails the data open") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping blocker test");
+    return;
+  }
+  const std::string dir = makeTempDir("blocker");
+  REQUIRE(!dir.empty());
+  REQUIRE(!makeSourceFile(dir, "blocker.bin", 4096).empty());
+  RangeServer srv = startRangeServer(dir, 24680);
+  REQUIRE(srv.pid >= 0);
+  const std::string url = srv.base_url + "/blocker.bin";
+  const std::string blocker = dir + "/blocker";
+  writeBytes(blocker, "in the way");
+  const std::string err = probeError(blocker + "/cache", url);
+  CHECK(err.find("cannot open data file") != std::string::npos);
+  CHECK(err.find("Not a directory") != std::string::npos);
+  srv.stop();
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("a file size quota turns cache growth into clean errors") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping quota test");
+    return;
+  }
+  // SIGXFSZ rides along with RLIMIT_FSIZE violations; the default
+  // disposition would kill the binary mid-case.
+  ::signal(SIGXFSZ, SIG_IGN);
+  const std::string dir = makeTempDir("quota");
+  REQUIRE(!dir.empty());
+  const std::string src = makeSourceFile(dir, "quota.bin", 600000);
+  REQUIRE(!src.empty());
+  RangeServer srv = startRangeServer(dir, 24720);
+  REQUIRE(srv.pid >= 0);
+  const std::string url = srv.base_url + "/quota.bin";
+  const std::string cache_dir = dir + "/cache";
+  {
+    // Fill exactly one block so the meta trusts block 0 only.
+    soar::HttpCache first(cache_dir, url);
+    REQUIRE(first.valid());
+    std::vector<uint8_t> buf(100);
+    REQUIRE(first.read(0, buf.data(), buf.size()) == buf.size());
+  }
+
+  {
+    // Writes that would grow the data file past the quota fail at the
+    // positional write, after the (allowed) range fetch.
+    FsizeLimit limit(1024);
+    REQUIRE(limit.lowered);
+    soar::HttpCache online(cache_dir, url);
+    REQUIRE(online.valid());  // truncate to the existing size is a no-op
+    REQUIRE(::truncate(online.dataPath().c_str(), 1000) == 0);
+    std::vector<uint8_t> buf(64);
+    CHECK(online.read(300000, buf.data(), buf.size()) == soar::HttpCache::npos);
+    CHECK(online.error().find("write to data file failed") != std::string::npos);
+    CHECK(online.error().find("File too large") != std::string::npos);
+  }
+
+  srv.stop();
+  {
+    // With the data file gone, the constructor's own grow-to-size step is
+    // what fails now — the cache refuses to open rather than lying about
+    // an empty file holding 600000 bytes.
+    FsizeLimit limit(1024);
+    REQUIRE(limit.lowered);
+    REQUIRE(::unlink((cache_dir + "/" + cacheStem(url) + ".data").c_str()) == 0);
+    soar::HttpCache offline(cache_dir, url);
+    CHECK(!offline.valid());
+    CHECK(offline.error().find("cannot size data file to 600000") != std::string::npos);
+    CHECK(offline.error().find("File too large") != std::string::npos);
+  }
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("an oversized meta file is refused instead of loaded") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  const std::string dir = makeTempDir("bigmeta");
+  REQUIRE(!dir.empty());
+  const std::string url = "http://127.0.0.1:1/oversize.bin";
+  const std::string cache_dir = dir + "/cache";
+  REQUIRE(::mkdir(cache_dir.c_str(), 0755) == 0);
+  // 5 MiB of junk: readWholeFile must bail at the 4 MiB cap instead of
+  // feeding the parser a truncated monster.
+  writeBytes(cache_dir + "/" + cacheStem(url) + ".meta", std::string(5u << 20, 'j'));
+  const std::string err = probeError(cache_dir, url);
+  CHECK(err.find("source unreachable") != std::string::npos);
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("every tampered meta variant is rebuilt, not trusted") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping tampered-meta test");
+    return;
+  }
+  const std::string dir = makeTempDir("tampered");
+  REQUIRE(!dir.empty());
+  REQUIRE(!makeSourceFile(dir, "tampered.bin", 600000).empty());
+  RangeServer srv = startRangeServer(dir, 24760);
+  REQUIRE(srv.pid >= 0);
+  const std::string url = srv.base_url + "/tampered.bin";
+  const std::string cache_dir = dir + "/cache";
+  REQUIRE(::mkdir(cache_dir.c_str(), 0755) == 0);
+  const std::string meta_path = cache_dir + "/" + cacheStem(url) + ".meta";
+  const std::string bitmap1(1, '\x80');  // block 0 set
+
+  // Each variant corrupts exactly one loadMeta checkpoint; every one of
+  // them must end in a rebuild (bitmap zeroed), never in a trusted load.
+  std::string bad_magic = craftMeta(url, 600000, 3, bitmap1);
+  bad_magic[3] = 'X';
+  std::string tampered_url = url;
+  tampered_url[tampered_url.size() - 5] = 'g';  // "tampered.bin" -> "tamperg.bin"
+  const std::string header_only = craftMeta(url, 600000, 3, bitmap1).substr(0, 16);
+  std::string tail_missing = craftMeta(url, 600000, 3, bitmap1);
+  tail_missing.resize(tail_missing.size() - 5);  // url_len fine, file too short
+
+  struct Variant {
+    const char* name;
+    std::string meta;
+  };
+  const std::vector<Variant> variants = {
+      {"header truncated mid-magic", craftMeta(url, 600000, 3, bitmap1).substr(0, 12)},
+      {"magic byte flipped", bad_magic},
+      {"version bumped", craftMeta(url, 600000, 3, bitmap1, /*version=*/2)},
+      {"url_len too small", craftMeta(url, 600000, 3, bitmap1, 1,
+                                      static_cast<int>(url.size()) - 1)},
+      {"url_len right but file short", tail_missing},
+      {"different url, same length", craftMeta(tampered_url, 600000, 3, bitmap1)},
+      {"header only, no payload", header_only},
+      {"size mismatch", craftMeta(url, 600001, 3, bitmap1)},
+      {"block count mismatch", craftMeta(url, 600000, 2, bitmap1)},
+      {"bitmap missing", craftMeta(url, 600000, 3, "")},
+      {"bitmap too long", craftMeta(url, 600000, 3, std::string(2, '\0'))},
+  };
+  for (const auto& v : variants) {
+    CAPTURE(v.name);
+    writeBytes(meta_path, v.meta);
+    soar::HttpCache cache(cache_dir, url);
+    CHECK(cache.valid());  // probed size wins, meta is rebuilt
+    CHECK(cache.cachedBytes() == 0);
+  }
+  srv.stop();
+  removeTree(dir);
+#endif
+}
+
+TEST_CASE("fetchAll fails cleanly when the source dies before the warm-up") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping warm-up test");
+    return;
+  }
+  const std::string dir = makeTempDir("warmup");
+  REQUIRE(!dir.empty());
+  REQUIRE(!makeSourceFile(dir, "warmup.bin", 600000).empty());
+  RangeServer srv = startRangeServer(dir, 24800);
+  REQUIRE(srv.pid >= 0);
+  const std::string url = srv.base_url + "/warmup.bin";
+  soar::HttpCache cache(dir + "/cache", url);
+  REQUIRE(cache.valid());
+  srv.stop();
+  CHECK_FALSE(cache.fetchAll());
+  CHECK(cache.error().find("cannot connect") != std::string::npos);
   removeTree(dir);
 #endif
 }

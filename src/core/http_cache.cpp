@@ -135,11 +135,13 @@ bool parseHttpUrl(const std::string& url, UrlParts* out) {
   if (authority.empty()) return false;
   std::string host = authority;
   std::string port = "80";
-  // Bracketed IPv6 literal: [::1]:8080
+  // Bracketed IPv6 literal: [::1]:8080. The host handed to getaddrinfo must
+  // be the bare address (::1); only hostport keeps the bracketed form, for
+  // the Host header (RFC 3986 §3.2.2).
   if (!authority.empty() && authority[0] == '[') {
     const size_t close = authority.find(']');
     if (close == std::string::npos) return false;
-    host = authority.substr(0, close + 1);
+    host = authority.substr(1, close - 1);
     if (close + 1 < authority.size()) {
       if (authority[close + 1] != ':') return false;
       port = authority.substr(close + 2);

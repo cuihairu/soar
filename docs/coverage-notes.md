@@ -15,14 +15,14 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ## 2. 当前水位与门禁
 
-| 维度 | 实测（UI 批，见下） | 门禁（`--fail-under-*`） |
+| 维度 | 实测（P3a 补测批，见下） | 门禁（`--fail-under-*`） |
 |---|---|---|
-| 行 | 91.5%（2402/2625） | 90.8%（容 ~18 行抖动） |
-| 分支 | 77.1%（2064/2677） | 76.0%（容 ~30 分支抖动） |
+| 行 | 94.6%（2484/2625） | 93.9%（容 ~18 行抖动） |
+| 分支 | 83.2%（2228/2677） | 82.1%（容 ~30 分支抖动） |
 
-分文件行覆盖：`main.cpp` 98%（112/114）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 96%（615/640）、`ffmpeg_backend.cpp` 90%、`http_cache.cpp` 80%、`null_backend.cpp` 99%、`player.cpp` 100%。
+分文件行覆盖：`main.cpp` 98%（112/114）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 96%（615/640）、`ffmpeg_backend.cpp` 91%（1081/1189）、`http_cache.cpp` 99%（407/410）、`null_backend.cpp` 99%、`player.cpp` 100%。
 
-分文件分支覆盖：`main.cpp` 94%、`ui_state.cpp` 96%、`ui_state.h` 100%、`player_window.cpp` 84%、`player.cpp` 89%、`ffmpeg_backend.cpp` 78%、`null_backend.cpp` 75%、`http_cache.cpp` 55%。
+分文件分支覆盖：`main.cpp` 94%、`ui_state.cpp` 96%、`ui_state.h` 100%、`player_window.cpp` 85%、`player.cpp` 89%、`ffmpeg_backend.cpp` 79%、`null_backend.cpp` 75%、`http_cache.cpp` 85%（436/511）。
 
 ### 2.1 门禁重置的说明（必读，别当成"新代码拉低了覆盖率"）
 
@@ -36,6 +36,8 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 也就是说 128499e（P3a，`http_cache.cpp` 410 行 / 511 分支）落地时门禁还停在 93.0/81.2，`coverage` job 从那一刻起就已经是红的——门禁不再拦截任何东西，只是恒红。P3a 的缺口定性（大量 HTTP/磁盘失败分支只可由"坏响应的本地 server"或注入构造）与 §3.1-§3.4 同族，单独补测是另一个批次的活，不在本批范围内。
 
 因此本批按 §2 末尾"门禁随实测水位同步"的惯例**重置**门禁到实测水位下方（行 90.8 / 分支 76.0，余量取 §1 记录的抖动量级：多线程计数损坏 ±1-2 行、窗口/解码并发下时序弧逐轮翻转 ~1 个百分点），并把新代码的缺口逐条写进 §3.6。后续 P3a 补测批把 `http_cache.cpp` 拉起来之后，门禁按惯例再上抬。
+
+P3a 补测批（本批）兑现了上面这句话：`http_cache.cpp` 行 80%→99%（407/410）、分支 55%→85%（436/511），总体水位 行 91.5%→94.6%、分支 77.1%→83.2%，门禁随之抬到 93.9/82.1（余量维持原绝对抖动量）。驱动方式是新增一台"行为不端的原始 socket server"脚本（`tests/test_http_servers.h` 的 `kMisbehavingServerScript`，12+ 个模式：早断连、垃圾状态行、64 KiB 超长头、重定向、chunked、1xx、截断 body、好探针坏拉取、畸形 Content-Range 五形态循环），加上 meta 文件逐字段篡改（11 个变体各对应一个 loadMeta 拒绝检查点）、RLIMIT_FSIZE 注入 `fdTruncate`/`fdWriteAllAt` 失败、数据文件从位图背后消失、meta 路径被目录占用等磁盘侧破坏。批内还修了一个测试揭出来的产品 bug：`parseHttpUrl` 曾把 IPv6 字面量的方括号留进 host 喂给 `getaddrinfo`（它不认带括号写法），导致所有 `http://[::1]:port/...` URL 恒报 "cannot resolve"；修复后 host 去括号、Host 头保留括号形式（RFC 3986 §3.2.2），IPv6 回环 Range 服务器上有字节级回归用例。残余缺口定性见 §3.7。
 
 UI 自身的两个文件是全仓库最高的一档（`ui_state.*` 行 100%、`player_window.cpp` 行 96% / 分支 84%，均高于 `ffmpeg_backend.cpp` 与 `http_cache.cpp`），驱动方式是 §4 末尾那条"无头环境驱动 GUI"的模式：Xvfb + XTEST 脚本化会话（键鼠全家族、拖放以外的指针手势、弹层与 MRU 重开、窗口压到 1x1 的退化几何、慢速 server 下的缓冲指示）。
 
@@ -95,6 +97,15 @@ P2 自适应协议批（77ae353/b6a2541）是纯测试批，零产品改动，�
 - **"No recent files yet."（850 行）**：窗口化流程里 MRU 永远非空——`PlayerHud` 构造即 `recordOpen(cfg.initial_uri)`，而 CLI 没有 URI 时根本进不到窗口。"空列表"的语义由 `soar_ui_tests` 的 `RecentStore` 单测覆盖。
 - **窗口尺寸守卫的新增行**（`drawUi` 的 `DisplaySize < 1` 早退）由驱动会话的 `win.configure(1x1)` 命中：没有窗口管理器时 `XResizeWindow` 直接生效，SDL 拿到退化 drawable 后必须跳过整帧绘制（否则 OSC 宽度会算成负数）。
 
+### 3.7 http 磁盘缓存（`src/core/http_cache.cpp`）的残余缺口
+
+行 99%（407/410，唯一缺的是 saveMeta 短写弧，见下）、分支 85%（436/511）。缓存组件的"坏 HTTP 响应"与"坏磁盘状态"两大弧族已由原始 socket server 模式族与磁盘破坏用例确定性覆盖（见 §2.1 P3a 补测批段落），剩下的缺失臂全部落入以下四族，无一是"测一下就有"的：
+
+- **saveMeta 短写（606-608 行，唯一缺失行）**：需要"fopen 成功但 fwrite 短写/失败"。注入手段只有文件系统故障或 RLIMIT_FSIZE，而后者被结构否定：fetchBlock 先写 256 KiB 数据块再写 ~40 字节的 meta，**允许数据块写入的配额必然允许更小的 meta 写入**，构造不出"meta 超限而数据块不超限"的窗口（ctor 的 fdTruncate 会先因配额失败）；`<meta>.tmp` 的路径形态也进不了 `/dev/full`。等价于需要真实 IO 故障注入层，超出"测真实链路"的边界。
+- **结构死臂（分支，编译期/契约级不可达）**：`readWholeFile` 的 limit 判断先于 `ok` 求值（112）；`parseHttpUrl` 的 scheme 复查（130，ctor 已验证前缀）、空 authority 死臂（141，空值已在更早分支返回）、路径三元的一臂归属噪声（134，§1 家族）；`getaddrinfo` 返回 0 却无结果的契约不可能臂（205/207）；`socket()` 创建失败需 EMFILE 级资源耗尽（213）；`httpFetch` 的无 Range 请求臂（347，组件恒带 Range）；响应头扫描器的 npos 臂（370/371/373/382，`\r\n\r\n` 终止子由 recvHeaders 保证，文本里必然有行边界）；`read()` 的兜底空错误文案（685，ensureBlock 的每条 false 路径都设置了 last_error_）。
+- **60 秒硬超时的文案臂（266/290-293 行分支）**：`kRecvTimeoutSec = 60` 是编译期常量且无注入口子（这是设计：看门狗进不了这个组件的 recv，超时是唯一的硬停）。命中超时文案需要真实等 60 秒，成本不成比例；超时**路径本身**（isTimeoutError 判定 + 断连文案）已由早断连/截断 body 模式覆盖。
+- **平台臂**：`isTimeoutError` 的 `EWOULDBLOCK` 分量在 Linux 上与 `EAGAIN` 同值，第二比较结构性不可达（193）；Windows 专属行（winsock 初始化、`_lseeki64`/`_write`/`_chsize_s` 臂）只存在于 Windows 编译，不计入本 Linux 口径。
+
 ### 3.5 测试基建教训：媒体 fixture 必须逐字节确定性
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。
 
@@ -102,7 +113,7 @@ P2 自适应协议批（77ae353/b6a2541）是纯测试批，零产品改动，�
 
 ## 4. 结论
 
-行 91.5% 与分支 77.1% 是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性——其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，UI 的缺口见 §3.6 的六类逐条定性）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
+行 94.6% 与分支 83.2% 是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性——其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，UI 的缺口见 §3.6 的六类逐条定性，http 缓存的缺口见 §3.7 的四类逐条定性）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
 
 可测路径的三个实用模式：
 
