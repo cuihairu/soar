@@ -105,6 +105,8 @@ P2 自适应协议批（77ae353/b6a2541）是纯测试批，零产品改动，�
 - **结构死臂（分支，编译期/契约级不可达）**：`readWholeFile` 的 limit 判断先于 `ok` 求值（112）；`parseHttpUrl` 的 scheme 复查（130，ctor 已验证前缀）、空 authority 死臂（141，空值已在更早分支返回）、路径三元的一臂归属噪声（134，§1 家族）；`getaddrinfo` 返回 0 却无结果的契约不可能臂（205/207）；`socket()` 创建失败需 EMFILE 级资源耗尽（213）；`httpFetch` 的无 Range 请求臂（347，组件恒带 Range）；响应头扫描器的 npos 臂（370/371/373/382，`\r\n\r\n` 终止子由 recvHeaders 保证，文本里必然有行边界）；`read()` 的兜底空错误文案（685，ensureBlock 的每条 false 路径都设置了 last_error_）。
 - **60 秒硬超时的文案臂（266/290-293 行分支）**：`kRecvTimeoutSec = 60` 是编译期常量且无注入口子（这是设计：看门狗进不了这个组件的 recv，超时是唯一的硬停）。命中超时文案需要真实等 60 秒，成本不成比例；超时**路径本身**（isTimeoutError 判定 + 断连文案）已由早断连/截断 body 模式覆盖。
 - **平台臂**：`isTimeoutError` 的 `EWOULDBLOCK` 分量在 Linux 上与 `EAGAIN` 同值，第二比较结构性不可达（193）；Windows 专属行（winsock 初始化、`_lseeki64`/`_write`/`_chsize_s` 臂）只存在于 Windows 编译，不计入本 Linux 口径。
+- **RLIMIT_FSIZE 注入的平台差异（CI 实证，run 36227059383）**：Linux 只在 `ftruncate` **增长越限**时检查配额，BSD 系（macOS）对**新尺寸**恒检查——同尺寸 truncate 也 EFBIG。配额用例因此把 cache 构造放在降配额**之前**，写失败弧在不强制 pwrite 配额的平台降级为 MESSAGE 说明（沿用 test_ui_state 的 /dev/full 先例）；`EWOULDBLOCK` 式的死臂同理不追。
+- **IPv6 无端口形式的 80 端口连接臂（139-146 的 close+1==size 分支）**：解析接受 `http://[::1]/...` 并默认 80 端口，命中该臂必须真的对 ::1:80 发起连接。Linux runner 立刻 RST、用例确定；macOS runner 的防火墙策略把 RST 变 drop（每例一个 connect 超时），故该子例在 `__APPLE__` 下跳过（覆盖数字由 Linux coverage job 独立供给，不受影响）。同理，"连接被拒"类用例一律用 bind(:0) 占位后释放的临时端口构造，不依赖低端口被立刻拒绝——runner 防火墙可能把对关闭低端口的 SYN 静默丢弃，把瞬时的 RST 拖成整个 connect 超时（macOS job 曾因此 423s）。
 
 ### 3.5 测试基建教训：媒体 fixture 必须逐字节确定性
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。
