@@ -38,6 +38,10 @@ public:
   bool selectTrack(TrackType type, TrackId id);
   bool disableSubtitles();
 
+  bool setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b);
+  bool clearLoopAB();
+  bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const;
+
   PlaybackState state() const;
   std::string lastError() const;
 

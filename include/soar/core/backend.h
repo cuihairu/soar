@@ -114,6 +114,17 @@ public:
   virtual bool selectTrack(TrackType type, TrackId id) = 0;
   virtual bool disableSubtitles() = 0;
 
+  // A-B loop (v0.2): replay the [a, b) window forever while playing. The
+  // wrap happens on the decode thread (a seek back to `a` once the play
+  // clock reaches `b`, or at end-of-stream when `b` anchors the media
+  // end). Arming is validated up front — the media must be open and
+  // seekable, and 0 <= a < b <= duration — and a manual seek() disarms
+  // the loop (the user moved outside the window on purpose).
+  virtual bool setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b) = 0;
+  virtual bool clearLoopAB() = 0;
+  // True while a loop is armed; the endpoints land in out_a/out_b.
+  virtual bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const = 0;
+
   virtual PlaybackState state() const = 0;
   virtual std::string lastError() const = 0;
 };

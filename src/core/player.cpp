@@ -78,6 +78,18 @@ bool Player::disableSubtitles() {
   return backend_ ? backend_->disableSubtitles() : false;
 }
 
+bool Player::setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b) {
+  return backend_ ? backend_->setLoopAB(a, b) : false;
+}
+
+bool Player::clearLoopAB() {
+  return backend_ ? backend_->clearLoopAB() : false;
+}
+
+bool Player::loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const {
+  return backend_ ? backend_->loopAB(out_a, out_b) : false;
+}
+
 PlaybackState Player::state() const {
   return backend_ ? backend_->state() : PlaybackState::Stopped;
 }

@@ -144,4 +144,109 @@ std::string defaultRecentPath() {
 #endif
 }
 
+//=============================================================================
+// Playlist queue (docs/mvp.md §2)
+//=============================================================================
+
+void PlaylistStore::add(std::string uri) {
+  entries_.push_back(std::move(uri));
+  played_.push_back(false);
+  // A freshly opened file is what is playing; an empty list has no other
+  // candidate for "current".
+  if (current_ == kNone) current_ = entries_.size() - 1;
+}
+
+bool PlaylistStore::remove(std::size_t index) {
+  if (index >= entries_.size()) return false;
+  entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(index));
+  played_.erase(played_.begin() + static_cast<std::ptrdiff_t>(index));
+  if (entries_.empty()) {
+    current_ = kNone;
+    return true;
+  }
+  if (index < current_) --current_;
+  // Removing the current entry leaves `current_` pointing at its successor;
+  // removing the tail clamps back onto the new last entry.
+  if (current_ >= entries_.size()) current_ = entries_.size() - 1;
+  return true;
+}
+
+bool PlaylistStore::setCurrent(std::size_t index) {
+  if (index >= entries_.size()) return false;
+  current_ = index;
+  return true;
+}
+
+void PlaylistStore::clear() {
+  entries_.clear();
+  played_.clear();
+  current_ = kNone;
+}
+
+void PlaylistStore::setShuffle(bool on) {
+  if (on == shuffle_) return;
+  shuffle_ = on;
+  // A toggle starts a fresh round either way: the flags describe the round
+  // in progress, and switching order mid-round would leave a half-played
+  // set behind.
+  played_.assign(entries_.size(), false);
+}
+
+std::uint64_t PlaylistStore::draw() {
+  // splitmix64: one fixed sequence per seed on every standard library.
+  rng_state_ += 0x9E3779B97F4A7C15ULL;
+  std::uint64_t z = rng_state_;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+
+std::size_t PlaylistStore::pickOther() {
+  // Caller guarantees size() > 1 and a valid current_, so the +1 nudge
+  // below can never wrap onto current_ itself.
+  std::size_t pick = static_cast<std::size_t>(draw() % entries_.size());
+  if (pick == current_) pick = (pick + 1) % entries_.size();
+  return pick;
+}
+
+std::size_t PlaylistStore::next() {
+  if (entries_.empty() || current_ == kNone) return kNone;
+  if (shuffle_ && entries_.size() > 1) return pickOther();
+  if (current_ + 1 < entries_.size()) return current_ + 1;
+  return loop_ == Loop::Off ? kNone : 0;
+}
+
+std::size_t PlaylistStore::prev() {
+  if (entries_.empty() || current_ == kNone) return kNone;
+  if (shuffle_ && entries_.size() > 1) return pickOther();
+  if (current_ > 0) return current_ - 1;
+  return loop_ == Loop::Off ? kNone : entries_.size() - 1;
+}
+
+std::size_t PlaylistStore::advance() {
+  if (entries_.empty() || current_ == kNone) return kNone;
+  if (loop_ == Loop::One) return current_;
+  if (!shuffle_) return next();
+
+  // Shuffle walks one round without repeats: the entry that just finished
+  // counts as played, so Loop::Off stops when every entry had a turn and
+  // Loop::All opens the next round instead.
+  played_[current_] = true;
+  std::vector<std::size_t> candidates;
+  for (std::size_t i = 0; i < entries_.size(); ++i) {
+    if (!played_[i]) candidates.push_back(i);
+  }
+  if (candidates.empty()) {
+    if (loop_ == Loop::Off) return kNone;
+    played_.assign(entries_.size(), false);
+    // Re-pick without the entry that just finished (no back-to-back
+    // repeat); n == 1 falls through to the replay below.
+    for (std::size_t i = 0; i < entries_.size(); ++i) {
+      if (i != current_) candidates.push_back(i);
+    }
+    if (candidates.empty()) return current_;
+  }
+  return candidates[static_cast<std::size_t>(draw() % candidates.size())];
+}
+
 }  // namespace soar::app

@@ -188,6 +188,47 @@ TEST_CASE("setVolume and setMuted accept the configured ranges") {
   CHECK(fx.player.setMuted(false));
 }
 
+TEST_CASE("A-B loop arms, queries and clears through the facade") {
+  Fixture fx;
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+
+  // Invalid windows are rejected and never leave a half-armed state.
+  std::chrono::milliseconds a{0}, b{0};
+  CHECK_FALSE(fx.player.setLoopAB(2000ms, 1000ms));
+  CHECK_FALSE(fx.player.setLoopAB(-1ms, 1000ms));
+  CHECK_FALSE(fx.player.loopAB(a, b));
+  CHECK_FALSE(fx.player.lastError().empty());
+
+  CHECK(fx.player.setLoopAB(1500ms, 65000ms));
+  REQUIRE(fx.player.loopAB(a, b));
+  CHECK(a == 1500ms);
+  CHECK(b == 65000ms);
+
+  // stop() keeps the window; clearing drops it.
+  REQUIRE(fx.player.play());
+  CHECK(fx.player.stop());
+  CHECK(fx.player.loopAB(a, b));
+  CHECK(fx.player.clearLoopAB());
+  CHECK_FALSE(fx.player.loopAB(a, b));
+}
+
+TEST_CASE("A-B loop rejects unseekable sources and survives close") {
+  Fixture fx;
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://noseek"}));
+
+  CHECK_FALSE(fx.player.setLoopAB(0ms, 1000ms));
+  CHECK(fx.player.lastError().find("setLoopAB") != std::string::npos);
+  // Clearing needs no seekable media: it is a safe no-op when disarmed.
+  CHECK(fx.player.clearLoopAB());
+
+  // An armed window on a seekable source is torn down by close().
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  REQUIRE(fx.player.setLoopAB(0ms, 60000ms));
+  fx.player.close();
+  std::chrono::milliseconds a{0}, b{0};
+  CHECK_FALSE(fx.player.loopAB(a, b));
+}
+
 TEST_CASE("selectTrack validates ids and updates media info") {
   Fixture fx;
   REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
@@ -253,6 +294,10 @@ TEST_CASE("player without a backend fails safely") {
   CHECK_FALSE(player.setMuted(true));
   CHECK_FALSE(player.selectTrack(soar::TrackType::Audio, 1));
   CHECK_FALSE(player.disableSubtitles());
+  std::chrono::milliseconds loop_a{0}, loop_b{0};
+  CHECK_FALSE(player.setLoopAB(0ms, 1s));
+  CHECK_FALSE(player.clearLoopAB());
+  CHECK_FALSE(player.loopAB(loop_a, loop_b));
   player.close(); // no backend: must be a no-op, not a crash
 
   CHECK(player.state() == soar::PlaybackState::Stopped);

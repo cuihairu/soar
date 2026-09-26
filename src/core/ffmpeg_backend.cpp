@@ -122,6 +122,11 @@ std::string assDialogueText(const char* ass) {
         ++i;
         continue;
       }
+      // \N at end of line: also convert to space for robust handling
+      if (c == '\\' && i + 1 >= line.size()) {
+        out.push_back(' ');
+        continue;
+      }
       out.push_back(c);
     }
   }
@@ -570,6 +575,10 @@ void FFmpegBackend::close() {
     last_emitted_position_ = std::chrono::milliseconds(0);
   }
 
+  // close() tears down all playback state, the A-B window with it.
+  loop_a_ms_.store(-1, std::memory_order_relaxed);
+  loop_b_ms_.store(-1, std::memory_order_relaxed);
+
   {
     std::lock_guard<std::mutex> lock(video_frame_mutex_);
     video_frame_ready_ = false;
@@ -763,6 +772,12 @@ bool FFmpegBackend::seek(std::chrono::milliseconds position) {
     std::chrono::milliseconds(0),
     duration
   );
+
+  // A manual seek disarms the A-B loop: the user moved outside the window
+  // on purpose, so the loop must not yank them back (mpv semantics). The
+  // decode-thread wrap path never goes through here.
+  loop_a_ms_.store(-1, std::memory_order_relaxed);
+  loop_b_ms_.store(-1, std::memory_order_relaxed);
 
   // The whole seek decision and, when no decode thread is running, the
   // actual seekToTimestamp() must stay under decode_mutex_: it protects
@@ -1090,6 +1105,84 @@ bool FFmpegBackend::disableSubtitles() {
     media_info_.selected_subtitle = -1;
   }
   emit(Event{EventType::MediaInfoChanged});
+  return true;
+}
+
+//=============================================================================
+// A-B loop
+//=============================================================================
+
+bool FFmpegBackend::setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b) {
+  {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (!format_ctx_) {
+      return fail("setLoopAB: no media opened");
+    }
+  }
+  const auto info = mediaInfo();
+  if (!info.seekable) {
+    return fail("setLoopAB: media is not seekable");
+  }
+  if (a < std::chrono::milliseconds(0) || a >= b || b > info.duration) {
+    return fail("setLoopAB: loop window must satisfy 0 <= A < B <= duration");
+  }
+  loop_a_ms_.store(a.count(), std::memory_order_relaxed);
+  loop_b_ms_.store(b.count(), std::memory_order_relaxed);
+  return true;
+}
+
+bool FFmpegBackend::clearLoopAB() {
+  {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (!format_ctx_) {
+      return fail("clearLoopAB: no media opened");
+    }
+  }
+  loop_a_ms_.store(-1, std::memory_order_relaxed);
+  loop_b_ms_.store(-1, std::memory_order_relaxed);
+  return true;
+}
+
+bool FFmpegBackend::loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const {
+  const auto a = loop_a_ms_.load(std::memory_order_relaxed);
+  const auto b = loop_b_ms_.load(std::memory_order_relaxed);
+  if (a < 0 || b < 0) {
+    return false;
+  }
+  out_a = std::chrono::milliseconds(a);
+  out_b = std::chrono::milliseconds(b);
+  return true;
+}
+
+bool FFmpegBackend::checkLoopWrap(bool at_eof) {
+  if (loop_b_ms_.load(std::memory_order_relaxed) < 0) {
+    return false;
+  }
+
+  if (!at_eof) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (playback_state_ != PlaybackState::Playing) {
+      return false;
+    }
+    const auto rate = playback_rate_.load();
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - clock_origin_).count());
+    const auto position = std::chrono::milliseconds(
+        static_cast<std::chrono::milliseconds::rep>(elapsed.count() * rate));
+    if (position < std::chrono::milliseconds(loop_b_ms_.load(std::memory_order_relaxed))) {
+      return false;
+    }
+  }
+
+  // Route the wrap through the decode loop's own seek machinery (same
+  // channel the public seek() uses while a decode thread runs): it rebases
+  // the play clock, clears the frame queues and emits PositionChanged, so
+  // the wrap is indistinguishable from a user seek back to A — except that
+  // it must not disarm the loop it is serving.
+  seek_target_.store(loop_a_ms_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  seek_requested_.store(true, std::memory_order_relaxed);
+  decode_cv_.notify_all();
   return true;
 }
 
@@ -1556,6 +1649,13 @@ void FFmpegBackend::decodeLoop() {
       }
     }
 
+    // A-B loop: once the play clock reaches the armed B point, route a
+    // seek back to A through the handler above. Checked per packet, so
+    // the wrap overshoot is bounded by one frame's pacing latency.
+    if (checkLoopWrap(/*at_eof=*/false)) {
+      continue;
+    }
+
     // Read packet. Timestamp the read so the interrupt callback — called
     // from FFmpeg's network poll loop while this blocks — can watch for a
     // stalled source (report buffering, abort past the tolerance window).
@@ -1579,7 +1679,11 @@ void FFmpegBackend::decodeLoop() {
         break;
       }
       if (ret == AVERROR_EOF) {
-        // End of file
+        // End of file — unless an A-B loop is armed: an end-anchored loop
+        // (B == duration) replays from A instead of ending here.
+        if (checkLoopWrap(/*at_eof=*/true)) {
+          continue;
+        }
         {
           std::lock_guard<std::mutex> lock(state_mutex_);
           playback_state_ = PlaybackState::Ended;

@@ -345,6 +345,9 @@ class PlayerHud {
           case SDLK_f:
             setFullscreen(!st_.fullscreen);
             return;
+          case SDLK_l:
+            cycleLoopAB(now);
+            return;
           case SDLK_a:
             cycleTrack(TrackType::Audio, now);
             return;
@@ -587,6 +590,7 @@ class PlayerHud {
   void openSource(const std::string& uri) {
     if (player_.open(soar::MediaSource{uri, cfg_.cache_dir})) {
       recordOpen(uri);
+      st_.loop_a_set = false;  // a fresh source starts without a pending A
       st_.toast.show("Opened " + baseName(uri), nowMs());
       player_.play();
     } else {
@@ -601,6 +605,37 @@ class PlayerHud {
 
   void toggleOverlay(Overlay which) {
     st_.overlay = st_.overlay == which ? Overlay::None : which;
+  }
+
+  // A-B loop (v0.2): L cycles arm-A -> arm-B -> clear. Point A is held in
+  // the UI state because the backend only knows armed pairs; the B press
+  // validates the pair through the player (so A >= B or B > duration land
+  // as a toast instead of a silent no-op).
+  void cycleLoopAB(milliseconds now) {
+    std::chrono::milliseconds a{0}, b{0};
+    if (player_.loopAB(a, b)) {
+      if (player_.clearLoopAB()) {
+        st_.loop_a_set = false;
+        st_.toast.show("A-B loop cleared", now);
+      }
+      return;
+    }
+    if (!st_.loop_a_set) {
+      st_.loop_a_set = true;
+      st_.loop_a_ms = player_.position();
+      st_.toast.show(
+          std::string("Loop point A set at ") + formatClock(st_.loop_a_ms), now);
+      return;
+    }
+    st_.loop_a_set = false;
+    if (player_.setLoopAB(st_.loop_a_ms, player_.position())) {
+      st_.toast.show(
+          std::string("A-B loop ") + formatClock(st_.loop_a_ms) + " - " +
+              formatClock(player_.position()),
+          now);
+    } else {
+      st_.toast.show(player_.lastError(), now);
+    }
   }
 
   void nudgeSubtitleOffset(int delta_ms, milliseconds now) {
@@ -998,6 +1033,13 @@ class PlayerHud {
       ImGui::Text("Rate: %.2gx  Volume: %d%%%s", st_.last_rate,
                   static_cast<int>(st_.last_volume * 100),
                   st_.last_muted ? " (muted)" : "");
+      {
+        std::chrono::milliseconds loop_a{0}, loop_b{0};
+        if (player_.loopAB(loop_a, loop_b)) {
+          ImGui::Text("A-B Loop: %s - %s", formatClock(loop_a).c_str(),
+                      formatClock(loop_b).c_str());
+        }
+      }
       const std::string err = player_.lastError();
       if (!err.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.365f, 0.365f, 1.0f));
@@ -1074,6 +1116,7 @@ class PlayerHud {
           {"C", "Cycle subtitles (incl. off)"},
           {"S", "Toggle subtitles on/off"},
           {"[ / ]", "Subtitle offset -500ms / +500ms"},
+          {"L", "A-B loop (arm A, arm B, clear)"},
           {"F", "Fullscreen"},
           {"I", "Media info"},
           {"R", "Recent files"},
@@ -1211,6 +1254,11 @@ class PlayerHud {
     std::string current_subtitle;
     std::chrono::milliseconds subtitle_pts{0};
     std::chrono::milliseconds subtitle_duration{0};
+
+    // A-B loop arming state (v0.2): the backend only knows armed pairs,
+    // so point A waits here until the L press that supplies B.
+    bool loop_a_set = false;
+    std::chrono::milliseconds loop_a_ms{0};
   };
 
   soar::Player& player_;

@@ -90,8 +90,10 @@ TEST_CASE("unopened backend: control surface semantics") {
   CHECK_FALSE(backend->disableSubtitles());
   CHECK_FALSE(backend->setRate(0.0));
   CHECK_FALSE(backend->setRate(-1.0));
+  CHECK_FALSE(backend->setLoopAB(0ms, 1000ms));
+  CHECK_FALSE(backend->clearLoopAB());
   CHECK(backend->lastError().empty() == false);
-  CHECK(sink.errors.load() >= 7);
+  CHECK(sink.errors.load() >= 9);
 
   // Rate/volume/mute are pure playback parameters: they succeed without
   // media (rate must be positive; volume is clamped into [0, 1]).
@@ -106,6 +108,8 @@ TEST_CASE("unopened backend: control surface semantics") {
   CHECK(backend->position() == 0ms);
   CHECK(backend->mediaInfo().tracks.empty());
   CHECK_FALSE(backend->mediaInfo().seekable);
+  std::chrono::milliseconds loop_a{0}, loop_b{0};
+  CHECK_FALSE(backend->loopAB(loop_a, loop_b));
   // tryGetVideoFrame is an FFmpegBackend extension beyond IBackend.
   soar::DecodedVideoFrame frame;
   CHECK_FALSE(static_cast<soar::FFmpegBackend*>(backend.get())->tryGetVideoFrame(frame));
@@ -318,6 +322,121 @@ TEST_CASE("setRate during playback keeps the clock moving forward") {
   CHECK(backend->state() == soar::PlaybackState::Playing);
 
   backend->stop();
+  backend->close();
+}
+
+TEST_CASE("an armed A-B loop wraps playback back to point A") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping A-B loop test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // Invalid windows are rejected up front and leave the previous arming
+  // (here: none) untouched.
+  std::chrono::milliseconds a{0}, b{0};
+  CHECK_FALSE(backend->setLoopAB(2000ms, 1000ms));   // A >= B
+  CHECK_FALSE(backend->setLoopAB(1000ms, 1000ms));   // empty window
+  CHECK_FALSE(backend->setLoopAB(-100ms, 1000ms));   // A below zero
+  CHECK_FALSE(backend->setLoopAB(1000ms, 7000ms));   // B past the 6s end
+  CHECK_FALSE(backend->loopAB(a, b));
+
+  // Arm a 1s..2s window and watch the play clock cross B and reappear
+  // back inside [A, B): the wrap routes through the decode loop's seek
+  // machinery, so the position re-converges on A like any seek. The
+  // crossed_b guard keeps the initial 0 -> A ramp from faking a wrap.
+  REQUIRE(backend->setLoopAB(1000ms, 2000ms));
+  REQUIRE(backend->loopAB(a, b));
+  CHECK(a == 1000ms);
+  CHECK(b == 2000ms);
+
+  bool crossed_b = false;
+  bool wrapped = false;
+  for (int i = 0; i < 300 && !(crossed_b && wrapped); ++i) {
+    const auto p = backend->position();
+    if (p >= 1900ms) crossed_b = true;
+    if (crossed_b && p < 1200ms) wrapped = true;
+    std::this_thread::sleep_for(50ms);
+  }
+  CHECK(crossed_b);
+  CHECK(wrapped);
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  // A manual seek disarms the loop (mpv semantics): after seeking past B
+  // the clock keeps climbing instead of being yanked back to A.
+  CHECK(backend->seek(3000ms));
+  CHECK_FALSE(backend->loopAB(a, b));
+  bool seeked = false;
+  for (int i = 0; i < 200 && !seeked; ++i) {
+    seeked = backend->position() >= 3000ms;
+    if (!seeked) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(seeked);
+  std::this_thread::sleep_for(300ms);
+  CHECK(backend->position() >= 3000ms);
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  // stop() keeps a window armed (re-arm here: the seek above disarmed the
+  // original); close() tears it down with everything else.
+  CHECK(backend->setLoopAB(500ms, 1500ms));
+  CHECK(backend->stop());
+  CHECK(backend->loopAB(a, b));
+  CHECK(a == 500ms);
+  CHECK(b == 1500ms);
+  backend->close();
+  CHECK_FALSE(backend->loopAB(a, b));
+}
+
+TEST_CASE("an end-anchored A-B loop wraps at end-of-stream instead of ending") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping end-anchored A-B loop test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+
+  // At 2x the 6s media reaches its end in ~3s of wall time; the window
+  // [4s, 6s] anchors the media end, so EOF must rewind to A rather than
+  // transition to Ended.
+  CHECK(backend->setRate(2.0));
+  REQUIRE(backend->play());
+  REQUIRE(backend->setLoopAB(4000ms, 6000ms));
+
+  bool neared_end = false;
+  bool wrapped = false;
+  for (int i = 0; i < 300 && !wrapped; ++i) {
+    if (backend->state() == soar::PlaybackState::Ended) {
+      break;
+    }
+    const auto p = backend->position();
+    if (p >= 5000ms) neared_end = true;
+    if (neared_end && p < 4500ms) wrapped = true;
+    std::this_thread::sleep_for(50ms);
+  }
+  CHECK(neared_end);
+  CHECK(wrapped);
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  // Clearing the loop restores the natural end: the stream runs out and
+  // lands in Ended.
+  CHECK(backend->clearLoopAB());
+  bool ended = false;
+  for (int i = 0; i < 300 && !ended; ++i) {
+    ended = backend->state() == soar::PlaybackState::Ended;
+    if (!ended) {
+      std::this_thread::sleep_for(50ms);
+    }
+  }
+  CHECK(ended);
+
   backend->close();
 }
 

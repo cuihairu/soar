@@ -51,6 +51,8 @@ public:
     position_ = std::chrono::milliseconds(0);
     info_ = MediaInfo{};
     state_ = PlaybackState::Stopped;
+    loop_a_ = std::chrono::milliseconds(-1);
+    loop_b_ = std::chrono::milliseconds(-1);
     emit(Event{EventType::MediaInfoChanged});
     emit(Event{EventType::StateChanged, state_});
   }
@@ -173,6 +175,43 @@ public:
     return true;
   }
 
+  // The null backend has no decode thread, so it arms/disarms and validates
+  // the loop but never wraps: its clock only moves when a test calls seek().
+  // The FFmpeg backend owns the actual replay behavior (see
+  // FFmpegBackend::checkLoopWrap).
+  bool setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b) override {
+    if (!opened_) {
+      return fail("setLoopAB: no media opened");
+    }
+    if (!info_.seekable) {
+      return fail("setLoopAB: media is not seekable");
+    }
+    if (a < std::chrono::milliseconds(0) || a >= b || b > info_.duration) {
+      return fail("setLoopAB: loop window must satisfy 0 <= A < B <= duration");
+    }
+    loop_a_ = a;
+    loop_b_ = b;
+    return true;
+  }
+
+  bool clearLoopAB() override {
+    if (!opened_) {
+      return fail("clearLoopAB: no media opened");
+    }
+    loop_a_ = std::chrono::milliseconds(-1);
+    loop_b_ = std::chrono::milliseconds(-1);
+    return true;
+  }
+
+  bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const override {
+    if (loop_a_ < std::chrono::milliseconds(0) || loop_b_ < std::chrono::milliseconds(0)) {
+      return false;
+    }
+    out_a = loop_a_;
+    out_b = loop_b_;
+    return true;
+  }
+
   PlaybackState state() const override {
     return state_;
   }
@@ -207,6 +246,8 @@ private:
   double rate_{1.0};
   double volume01_{1.0};
   bool muted_{false};
+  std::chrono::milliseconds loop_a_{-1};
+  std::chrono::milliseconds loop_b_{-1};
 };
 
 } // namespace

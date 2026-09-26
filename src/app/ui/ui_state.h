@@ -11,6 +11,7 @@
 #define SOAR_APP_UI_STATE_H_
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -113,6 +114,83 @@ class RecentStore {
  private:
   std::string path_;
   std::vector<std::string> entries_;
+};
+
+// Playlist queue (docs/mvp.md §2: 追加/删除/下一首/上一首/循环/随机). Pure
+// index arithmetic over a vector of URIs — the window owns "open the picked
+// uri", this owns "which entry is next". No persistence in v0.2: a fresh
+// launch starts from the file that was opened (mpv/IINA do not persist
+// playlists either).
+class PlaylistStore {
+ public:
+  static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+
+  // Loop::One replays the current entry when playback ends (advance());
+  // manual stepping treats One like All and wraps, so Next still moves.
+  enum class Loop { Off, All, One };
+
+  // Appends. An empty list adopts the new entry as current — a freshly
+  // opened file is what is playing.
+  void add(std::string uri);
+
+  // Removes one entry; `current` follows the removal (earlier entries shift
+  // it left, removing the current entry adopts its successor, an emptied
+  // list leaves kNone). False for an out-of-range index.
+  bool remove(std::size_t index);
+
+  // Marks `index` as the playing entry. False (and unchanged) when out of
+  // range, which includes the empty list.
+  bool setCurrent(std::size_t index);
+
+  void clear();
+
+  std::size_t current() const { return current_; }
+  bool empty() const { return entries_.empty(); }
+  std::size_t size() const { return entries_.size(); }
+  const std::vector<std::string>& entries() const { return entries_; }
+
+  Loop loop() const { return loop_; }
+  void setLoop(Loop mode) { loop_ = mode; }
+  bool shuffle() const { return shuffle_; }
+  // Enabling shuffle starts a fresh round (nothing counts as played yet).
+  void setShuffle(bool on);
+
+  // Pins the shuffle sequence: the picker is a splitmix64 step, never
+  // std::uniform_int_distribution (whose sequence differs per standard
+  // library), so the tests can assert exact picks.
+  void reseed(std::uint64_t seed) { rng_state_ = seed; }
+
+  // One step forward/back from `current`: shuffle (n > 1) picks another
+  // pseudo-random entry instead of the neighbour, otherwise step with wrap
+  // (Loop::All and Loop::One wrap, Loop::Off stops at the end). kNone means
+  // nowhere to go (empty, unset, or exhausted under Loop::Off). Pure: the
+  // caller adopts the returned index once that entry opens.
+  std::size_t next();
+  std::size_t prev();
+
+  // Where to continue when the current entry finishes: Loop::One replays
+  // it, sequential mode behaves like next(), and shuffle walks one round
+  // without repeats — the round's played flags are marked here, so
+  // Loop::Off stops once every entry has had a turn (manual next()/prev()
+  // never mark: an explicit pick is its own round). Loop::All starts the
+  // next round instead of stopping.
+  std::size_t advance();
+
+ private:
+  // One splitmix64 step: the pick source for both the neighbour-free
+  // shuffle step and the round picker (fixed constants, identical on every
+  // standard library — std::uniform_int_distribution is not).
+  std::uint64_t draw();
+  std::size_t pickOther();
+
+  std::vector<std::string> entries_;
+  // Parallel to entries_: "already had a turn in this shuffle round".
+  // Spliced on add/remove; only the shuffle path of advance() reads it.
+  std::vector<bool> played_;
+  std::size_t current_{kNone};
+  Loop loop_{Loop::Off};
+  bool shuffle_{false};
+  std::uint64_t rng_state_{0x9E3779B97F4A7C15ULL};
 };
 
 // XDG state dir on POSIX (APPDATA on Windows): <dir>/soar/recent.txt.

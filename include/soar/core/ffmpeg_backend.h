@@ -90,6 +90,10 @@ public:
   bool selectTrack(TrackType type, TrackId id) override;
   bool disableSubtitles() override;
 
+  bool setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b) override;
+  bool clearLoopAB() override;
+  bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const override;
+
   PlaybackState state() const override;
   std::string lastError() const override;
 
@@ -158,6 +162,13 @@ private:
   // back to the current position so playback continues seamlessly.
   bool audioTrackPending();
   void applyPendingAudioTrack();
+
+  // A-B loop wrap (decode thread only): once the play clock reaches the
+  // armed B point, seek back to A and rebase the clock. Returns true when
+  // a wrap happened. atEof skips the elapsed>=B check — at end-of-stream
+  // any armed loop wraps regardless of where B sits (b == duration is the
+  // end-anchored loop).
+  bool checkLoopWrap(bool at_eof);
 
   // Utility functions
   static std::string getCodecName(AVCodecContext* ctx);
@@ -286,6 +297,10 @@ private:
 
   // Seek operation
   std::atomic<bool> seek_requested_{false};
+  // A-B loop endpoints in ms, -1 = disarmed (backend.h contract). Atomics:
+  // armed from the caller thread, consumed on the decode thread.
+  std::atomic<std::chrono::milliseconds::rep> loop_a_ms_{-1};
+  std::atomic<std::chrono::milliseconds::rep> loop_b_ms_{-1};
   std::atomic<std::chrono::milliseconds::rep> seek_target_{0};
 
   // Pending audio track switch (guarded by pending_audio_mutex_)

@@ -1,0 +1,3316 @@
+        -:    0:Source:/home/cui/workspaces/soar/tests/test_backend_concurrency.cpp
+        -:    0:Graph:build-cov/tests/CMakeFiles/soar_backend_tests.dir/test_backend_concurrency.cpp.gcno
+        -:    0:Data:build-cov/tests/CMakeFiles/soar_backend_tests.dir/test_backend_concurrency.cpp.gcda
+        -:    0:Runs:3
+        -:    1:// Concurrency tests for FFmpegBackend.
+        -:    2://
+        -:    3:// format_ctx_ must only be touched under decode_mutex_ (see the fix that
+        -:    4:// introduced hasMedia() and the locked open/seek paths). The storms below
+        -:    5:// hammer exactly those entry points from multiple threads so that a race
+        -:    6:// detector (TSan in CI) or plain scheduler noise catches a regression.
+        -:    7://
+        -:    8:// When SOAR_TEST_MEDIA points at a real media file, playback-time storms
+        -:    9:// run as well; otherwise those cases report a message and return early.
+        -:   10:// CI (Linux) generates the media with the ffmpeg CLI.
+        -:   11:
+        -:   12:#ifdef SOAR_WITH_FFMPEG
+        -:   13:#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+        -:   14:#include <doctest/doctest.h>
+        -:   15:
+        -:   16:#include "soar/core/ffmpeg_backend.h"
+        -:   17:
+        -:   18:#include <atomic>
+        -:   19:#include <chrono>
+        -:   20:#include <cstdlib>
+        -:   21:#include <fstream>
+        -:   22:#include <random>
+        -:   23:#include <string>
+        -:   24:#include <thread>
+        -:   25:#include <vector>
+        -:   26:
+        -:   27:using namespace std::chrono_literals;
+        -:   28:
+        -:   29:namespace {
+        -:   30:
+function (anonymous namespace)::mediaAvailable(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&) called 12 returned 100% blocks executed 75%
+       12:   31:bool mediaAvailable(std::string& out_path) {
+       12:   32:  const char* media = std::getenv("SOAR_TEST_MEDIA");
+       12:   32-block 2
+call    0 returned 12
+       12:   33:  if (!media || !*media) {
+branch  0 taken 12 (fallthrough)
+branch  1 taken 0
+       12:   33-block 4
+branch  2 taken 0 (fallthrough)
+branch  3 taken 12
+    #####:   34:    return false;
+    %%%%%:   34-block 5
+        -:   35:  }
+       12:   36:  std::ifstream f(media);
+       12:   36-block 6
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+       12:   37:  if (!f.good()) {
+       12:   37-block 7
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+       12:   37-block 8
+branch  3 taken 0 (fallthrough)
+branch  4 taken 12
+    #####:   38:    return false;
+    %%%%%:   38-block 9
+        -:   39:  }
+       12:   40:  out_path = media;
+       12:   40-block 10
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+       12:   41:  return true;
+       12:   41-block 11
+       12:   42:}
+       12:   42-block 12
+call    0 returned 12
+    $$$$$:   42-block 15
+call    1 never executed
+        -:   43:
+        -:   44:// Runs fn on `threads` threads concurrently and joins them.
+        -:   45:template <typename Fn>
+        9:   46:void runStorm(int threads, std::chrono::milliseconds duration, Fn&& fn) {
+        9:   47:  std::atomic<bool> stop{false};
+        9:   48:  std::vector<std::thread> workers;
+        9:   49:  workers.reserve(static_cast<std::size_t>(threads));
+       45:   50:  for (int i = 0; i < threads; ++i) {
+    #####:   51:    workers.emplace_back([&stop, &fn, i] {
+       36:   52:      std::mt19937 rng(static_cast<unsigned>(i) + 1u);
+       12:   52-block 2
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+       12:   52-block 2
+call    3 returned 12
+branch  4 taken 12 (fallthrough)
+branch  5 taken 0 (throw)
+       12:   52-block 2
+call    6 returned 12
+branch  7 taken 12 (fallthrough)
+branch  8 taken 0 (throw)
+  1856182:   53:      while (!stop.load(std::memory_order_relaxed)) {
+       12:   53-block 3
+   171400:   53-block 6
+call    0 returned 171377
+branch  1 taken 171370
+branch  2 taken 7 (fallthrough)
+       12:   53-block 3
+  1337104:   53-block 6
+call    3 returned 1334089
+branch  4 taken 1334127
+branch  5 taken -38 (fallthrough)
+       12:   53-block 3
+   347678:   53-block 6
+call    6 returned 347559
+branch  7 taken 347571
+branch  8 taken -12 (fallthrough)
+  1853068:   54:        fn(rng);
+   171370:   54-block 4
+call    0 returned 171388
+branch  1 taken 171388 (fallthrough)
+branch  2 taken 0 (throw)
+  1334127:   54-block 4
+call    3 returned 1337092
+branch  4 taken 1337092 (fallthrough)
+branch  5 taken 0 (throw)
+   347571:   54-block 4
+call    6 returned 347666
+branch  7 taken 347666 (fallthrough)
+branch  8 taken 0 (throw)
+        -:   55:      }
+        -:   56:    });
+        -:   57:  }
+        9:   58:  std::this_thread::sleep_for(duration);
+        9:   59:  stop.store(true);
+       54:   60:  for (auto& t : workers) {
+       36:   61:    t.join();
+        -:   62:  }
+        9:   63:}
+------------------
+void (anonymous namespace)::runStorm<DOCTEST_ANON_FUNC_25()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}>(int, std::chrono::duration<long, std::ratio<1l, 1000l> >, DOCTEST_ANON_FUNC_25()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}&&):
+function void (anonymous namespace)::runStorm<DOCTEST_ANON_FUNC_25()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}>(int, std::chrono::duration<long, std::ratio<1l, 1000l> >, DOCTEST_ANON_FUNC_25()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}&&) called 3 returned 100% blocks executed 87%
+        3:   46:void runStorm(int threads, std::chrono::milliseconds duration, Fn&& fn) {
+        3:   47:  std::atomic<bool> stop{false};
+        3:   48:  std::vector<std::thread> workers;
+        3:   48-block 2
+call    0 returned 3
+        3:   49:  workers.reserve(static_cast<std::size_t>(threads));
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+       15:   50:  for (int i = 0; i < threads; ++i) {
+        3:   50-block 4
+       15:   50-block 7
+branch  0 taken 12
+branch  1 taken 3 (fallthrough)
+       12:   51:    workers.emplace_back([&stop, &fn, i] {
+       12:   51-block 5
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+       12:   51-block 6
+    $$$$$:   51-block 27
+        -:   52:      std::mt19937 rng(static_cast<unsigned>(i) + 1u);
+        -:   53:      while (!stop.load(std::memory_order_relaxed)) {
+        -:   54:        fn(rng);
+        -:   55:      }
+        -:   56:    });
+        -:   57:  }
+        3:   58:  std::this_thread::sleep_for(duration);
+        3:   58-block 8
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:   59:  stop.store(true);
+        3:   59-block 9
+call    0 returned 3
+       18:   60:  for (auto& t : workers) {
+call    0 returned 3
+call    1 returned 3
+       15:   60-block 24
+branch  2 taken 12
+branch  3 taken 3 (fallthrough)
+       12:   61:    t.join();
+       12:   61-block 14
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+        -:   62:  }
+        3:   63:}
+        3:   63-block 25
+call    0 returned 3
+    $$$$$:   63-block 29
+call    1 never executed
+------------------
+void (anonymous namespace)::runStorm<DOCTEST_ANON_FUNC_19()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}>(int, std::chrono::duration<long, std::ratio<1l, 1000l> >, DOCTEST_ANON_FUNC_19()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}&&):
+function void (anonymous namespace)::runStorm<DOCTEST_ANON_FUNC_19()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}>(int, std::chrono::duration<long, std::ratio<1l, 1000l> >, DOCTEST_ANON_FUNC_19()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}&&) called 3 returned 100% blocks executed 87%
+        3:   46:void runStorm(int threads, std::chrono::milliseconds duration, Fn&& fn) {
+        3:   47:  std::atomic<bool> stop{false};
+        3:   48:  std::vector<std::thread> workers;
+        3:   48-block 2
+call    0 returned 3
+        3:   49:  workers.reserve(static_cast<std::size_t>(threads));
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+       15:   50:  for (int i = 0; i < threads; ++i) {
+        3:   50-block 4
+       15:   50-block 7
+branch  0 taken 12
+branch  1 taken 3 (fallthrough)
+       12:   51:    workers.emplace_back([&stop, &fn, i] {
+       12:   51-block 5
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+       12:   51-block 6
+    $$$$$:   51-block 27
+        -:   52:      std::mt19937 rng(static_cast<unsigned>(i) + 1u);
+        -:   53:      while (!stop.load(std::memory_order_relaxed)) {
+        -:   54:        fn(rng);
+        -:   55:      }
+        -:   56:    });
+        -:   57:  }
+        3:   58:  std::this_thread::sleep_for(duration);
+        3:   58-block 8
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:   59:  stop.store(true);
+        3:   59-block 9
+call    0 returned 3
+       18:   60:  for (auto& t : workers) {
+call    0 returned 3
+call    1 returned 3
+       15:   60-block 24
+branch  2 taken 12
+branch  3 taken 3 (fallthrough)
+       12:   61:    t.join();
+       12:   61-block 14
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+        -:   62:  }
+        3:   63:}
+        3:   63-block 25
+call    0 returned 3
+    $$$$$:   63-block 29
+call    1 never executed
+------------------
+void (anonymous namespace)::runStorm<DOCTEST_ANON_FUNC_14()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}>(int, std::chrono::duration<long, std::ratio<1l, 1000l> >, DOCTEST_ANON_FUNC_14()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}&&):
+function void (anonymous namespace)::runStorm<DOCTEST_ANON_FUNC_14()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}>(int, std::chrono::duration<long, std::ratio<1l, 1000l> >, DOCTEST_ANON_FUNC_14()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}&&) called 3 returned 100% blocks executed 87%
+        3:   46:void runStorm(int threads, std::chrono::milliseconds duration, Fn&& fn) {
+        3:   47:  std::atomic<bool> stop{false};
+        3:   48:  std::vector<std::thread> workers;
+        3:   48-block 2
+call    0 returned 3
+        3:   49:  workers.reserve(static_cast<std::size_t>(threads));
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+       15:   50:  for (int i = 0; i < threads; ++i) {
+        3:   50-block 4
+       15:   50-block 7
+branch  0 taken 12
+branch  1 taken 3 (fallthrough)
+       12:   51:    workers.emplace_back([&stop, &fn, i] {
+       12:   51-block 5
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+       12:   51-block 6
+    $$$$$:   51-block 27
+        -:   52:      std::mt19937 rng(static_cast<unsigned>(i) + 1u);
+        -:   53:      while (!stop.load(std::memory_order_relaxed)) {
+        -:   54:        fn(rng);
+        -:   55:      }
+        -:   56:    });
+        -:   57:  }
+        3:   58:  std::this_thread::sleep_for(duration);
+        3:   58-block 8
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:   59:  stop.store(true);
+        3:   59-block 9
+call    0 returned 3
+       18:   60:  for (auto& t : workers) {
+call    0 returned 3
+call    1 returned 3
+       15:   60-block 24
+branch  2 taken 12
+branch  3 taken 3 (fallthrough)
+       12:   61:    t.join();
+       12:   61-block 14
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+        -:   62:  }
+        3:   63:}
+        3:   63-block 25
+call    0 returned 3
+    $$$$$:   63-block 29
+call    1 never executed
+------------------
+        -:   64:
+        -:   65:} // namespace
+        -:   66:
+function DOCTEST_ANON_FUNC_14() called 3 returned 100% blocks executed 45%
+        3:   67:TEST_CASE("unopened backend survives a control-call storm") {
+        3:   68:  auto backend = soar::makeFFmpegBackend();
+        3:   68-block 2
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        -:   69:
+function DOCTEST_ANON_FUNC_14()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}::operator()(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&) const called 347437 returned 101% blocks executed 95%
+        3:   70:  runStorm(4, 150ms, [&backend](std::mt19937& rng) {
+        3:   70-block 3
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:   70-block 4
+call    3 returned 3
+branch  4 taken 3 (fallthrough)
+branch  5 taken 0 (throw)
+        3:   70-block 5
+call    6 returned 3
+branch  7 taken 3 (fallthrough)
+branch  8 taken 0 (throw)
+    $$$$$:   70-block 83
+   347437:   71:    switch (rng() % 6) {
+   347437:   71-block 2
+call    0 returned 347880
+branch  1 taken 58229
+branch  2 taken 58626
+branch  3 taken 58500
+branch  4 taken 58831
+branch  5 taken 58869
+branch  6 taken 54825
+    58229:   72:      case 0: (void)backend->pause(); break;
+    58229:   72-block 4
+call    0 returned 58191
+call    1 returned 58150
+    58626:   73:      case 1: (void)backend->stop(); break;
+    58626:   73-block 6
+call    0 returned 58585
+call    1 returned 58549
+    58500:   74:      case 2: (void)backend->seek(100ms); break;
+    58500:   74-block 8
+call    0 returned 58448
+call    1 returned 58460
+call    2 returned 58419
+    58831:   75:      case 3: (void)backend->state(); break;
+    58831:   75-block 11
+call    0 returned 58771
+call    1 returned 58951
+    58869:   76:      case 4: (void)backend->position(); break;
+    58869:   76-block 13
+call    0 returned 58854
+call    1 returned 59030
+branch  2 taken 59030 (fallthrough)
+branch  3 taken 0 (throw)
+    59030:   76-block 15
+    $$$$$:   76-block 21
+call    4 never executed
+    54825:   77:      default: (void)backend->lastError(); break;
+    54825:   77-block 16
+call    0 returned 58710
+call    1 returned 58853
+branch  2 taken 58853 (fallthrough)
+branch  3 taken 0 (throw)
+    58853:   77-block 18
+call    4 returned 58764
+        -:   78:    }
+   351863:   79:  });
+   351863:   79-block 20
+        -:   80:
+        -:   81:  // The backend must still be usable and consistent afterwards.
+       6*:   82:  CHECK(backend->state() == soar::PlaybackState::Stopped);
+        3:   82-block 6
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:   82-block 11
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:   82-block 12
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:   82-block 13
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:   82-block 14
+call   17 returned 3
+        3:   82-block 16
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:   82-block 17
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:   82-block 18
+call   23 never executed
+        3:   82-block 19
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:   82-block 20
+call   27 returned 3
+    $$$$$:   82-block 87
+call   28 never executed
+    $$$$$:   82-block 89
+    $$$$$:   82-block 90
+    $$$$$:   82-block 91
+    $$$$$:   82-block 92
+    $$$$$:   82-block 93
+    $$$$$:   82-block 94
+    $$$$$:   82-block 95
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:   82-block 97
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:   82-block 98
+call   36 never executed
+    $$$$$:   82-block 100
+call   37 never executed
+      12*:   83:  CHECK_FALSE(backend->open(soar::MediaSource{"/definitely/missing/file.mp4"}));
+        3:   83-block 22
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+        3:   83-block 28
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:   83-block 29
+call    8 returned 3
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:   83-block 31
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:   83-block 32
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:   83-block 33
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:   83-block 34
+call   21 returned 3
+call   22 returned 3
+branch 23 taken 0 (fallthrough)
+branch 24 taken 3
+    %%%%%:   83-block 37
+call   25 never executed
+        3:   83-block 40
+call   26 returned 3
+branch 27 taken 3 (fallthrough)
+branch 28 taken 0 (throw)
+        3:   83-block 41
+branch 29 taken 0 (fallthrough)
+branch 30 taken 3
+    %%%%%:   83-block 42
+call   31 never executed
+        3:   83-block 43
+call   32 returned 3
+branch 33 taken 3 (fallthrough)
+branch 34 taken 0 (throw)
+        3:   83-block 44
+call   35 returned 3
+    $$$$$:   83-block 106
+call   36 never executed
+    $$$$$:   83-block 108
+call   37 never executed
+    $$$$$:   83-block 110
+branch 38 never executed (fallthrough)
+branch 39 never executed
+    $$$$$:   83-block 111
+call   40 never executed
+    $$$$$:   83-block 115
+    $$$$$:   83-block 116
+    $$$$$:   83-block 117
+    $$$$$:   83-block 118
+    $$$$$:   83-block 119
+    $$$$$:   83-block 120
+    $$$$$:   83-block 121
+    $$$$$:   83-block 122
+call   41 never executed
+call   42 never executed
+branch 43 never executed (fallthrough)
+branch 44 never executed (throw)
+    $$$$$:   83-block 124
+call   45 never executed
+branch 46 never executed (fallthrough)
+branch 47 never executed (throw)
+    $$$$$:   83-block 125
+call   48 never executed
+    $$$$$:   83-block 127
+call   49 never executed
+       6*:   84:  CHECK_FALSE(backend->lastError().empty());
+        3:   84-block 46
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:   84-block 51
+call    8 returned 3
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:   84-block 53
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:   84-block 54
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:   84-block 55
+call   18 returned 3
+call   19 returned 3
+        3:   84-block 58
+call   20 returned 3
+branch 21 taken 3 (fallthrough)
+branch 22 taken 0 (throw)
+        3:   84-block 59
+branch 23 taken 0 (fallthrough)
+branch 24 taken 3
+    %%%%%:   84-block 60
+call   25 never executed
+        3:   84-block 61
+call   26 returned 3
+branch 27 taken 3 (fallthrough)
+branch 28 taken 0 (throw)
+        3:   84-block 62
+call   29 returned 3
+    $$$$$:   84-block 133
+call   30 never executed
+    $$$$$:   84-block 135
+call   31 never executed
+    $$$$$:   84-block 137
+    $$$$$:   84-block 138
+    $$$$$:   84-block 139
+    $$$$$:   84-block 140
+    $$$$$:   84-block 141
+    $$$$$:   84-block 142
+    $$$$$:   84-block 143
+call   32 never executed
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:   84-block 145
+call   36 never executed
+branch 37 never executed (fallthrough)
+branch 38 never executed (throw)
+    $$$$$:   84-block 146
+call   39 never executed
+    $$$$$:   84-block 148
+call   40 never executed
+       6*:   85:  CHECK(backend->mediaInfo().tracks.empty());
+        3:   85-block 64
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:   85-block 69
+call    8 returned 3
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:   85-block 71
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:   85-block 72
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:   85-block 73
+call   18 returned 3
+call   19 returned 3
+        3:   85-block 76
+call   20 returned 3
+branch 21 taken 3 (fallthrough)
+branch 22 taken 0 (throw)
+        3:   85-block 77
+branch 23 taken 0 (fallthrough)
+branch 24 taken 3
+    %%%%%:   85-block 78
+call   25 never executed
+        3:   85-block 79
+call   26 returned 3
+branch 27 taken 3 (fallthrough)
+branch 28 taken 0 (throw)
+        3:   85-block 80
+call   29 returned 3
+    $$$$$:   85-block 154
+call   30 never executed
+    $$$$$:   85-block 156
+call   31 never executed
+    $$$$$:   85-block 158
+    $$$$$:   85-block 159
+    $$$$$:   85-block 160
+    $$$$$:   85-block 161
+    $$$$$:   85-block 162
+    $$$$$:   85-block 163
+    $$$$$:   85-block 164
+call   32 never executed
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:   85-block 166
+call   36 never executed
+branch 37 never executed (fallthrough)
+branch 38 never executed (throw)
+    $$$$$:   85-block 167
+call   39 never executed
+    $$$$$:   85-block 169
+call   40 never executed
+        3:   86:}
+call    0 returned 3
+    $$$$$:   86-block 172
+call    1 never executed
+        -:   87:
+function DOCTEST_ANON_FUNC_16() called 3 returned 100% blocks executed 53%
+        3:   88:TEST_CASE("open/close storm against control calls is race-free") {
+        3:   89:  std::string media;
+        3:   89-block 2
+call    0 returned 3
+        3:   90:  if (!mediaAvailable(media)) {
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:   90-block 4
+branch  3 taken 0 (fallthrough)
+branch  4 taken 3
+    #####:   91:    MESSAGE("SOAR_TEST_MEDIA not set; skipping open/close storm");
+    %%%%%:   91-block 5
+call    0 never executed
+branch  1 never executed (fallthrough)
+branch  2 never executed (throw)
+    %%%%%:   91-block 6
+call    3 never executed
+branch  4 never executed (fallthrough)
+branch  5 never executed (throw)
+    %%%%%:   91-block 7
+call    6 never executed
+branch  7 never executed (fallthrough)
+branch  8 never executed (throw)
+    %%%%%:   91-block 8
+branch  9 never executed (fallthrough)
+branch 10 never executed
+    %%%%%:   91-block 9
+call   11 never executed
+    %%%%%:   91-block 10
+call   12 never executed
+branch 13 never executed (fallthrough)
+branch 14 never executed (throw)
+    %%%%%:   91-block 11
+call   15 never executed
+    $$$$$:   91-block 92
+call   16 never executed
+    #####:   92:    return;
+        -:   93:  }
+        -:   94:
+        3:   95:  auto backend = soar::makeFFmpegBackend();
+        3:   95-block 13
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:   96:  std::atomic<int> open_ok{0};
+        3:   97:  std::atomic<int> open_failed{0};
+        -:   98:
+        -:   99:  // Two threads fight over the media lifecycle while two more hammer the
+        -:  100:  // control surface; before the decode_mutex_ fix, the unlocked
+        -:  101:  // format_ctx_ reads in pause/stop/seek raced with the writer in open().
+        3:  102:  std::atomic<bool> stop_flag{false};
+        3:  103:  std::vector<std::thread> workers;
+        3:  103-block 14
+call    0 returned 3
+function DOCTEST_ANON_FUNC_16()::{lambda()#1}::operator()() const called 3 returned 100% blocks executed 67%
+        3:  104:  workers.emplace_back([&] {
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+    $$$$$:  104-block 95
+      753:  105:    while (!stop_flag.load()) {
+        3:  105-block 2
+      753:  105-block 14
+call    0 returned 753
+branch  1 taken 750
+branch  2 taken 3 (fallthrough)
+     750*:  106:      if (backend->open(soar::MediaSource{media})) {
+      750:  106-block 3
+call    0 returned 750
+call    1 returned 750
+branch  2 taken 750 (fallthrough)
+branch  3 taken 0 (throw)
+      750:  106-block 5
+call    4 returned 750
+call    5 returned 750
+branch  6 taken 750 (fallthrough)
+branch  7 taken 0 (throw)
+      750:  106-block 7
+call    8 returned 750
+branch  9 taken 0 (fallthrough)
+branch 10 taken 750
+    %%%%%:  106-block 9
+call   11 never executed
+      750:  106-block 10
+branch 12 taken 750 (fallthrough)
+branch 13 taken 0
+    $$$$$:  106-block 17
+call   14 never executed
+    $$$$$:  106-block 19
+branch 15 never executed (fallthrough)
+branch 16 never executed
+    $$$$$:  106-block 20
+call   17 never executed
+      750:  107:        ++open_ok;
+      750:  107-block 11
+call    0 returned 750
+        -:  108:      } else {
+    #####:  109:        ++open_failed;
+    %%%%%:  109-block 12
+call    0 never executed
+        -:  110:      }
+        -:  111:    }
+        3:  112:  });
+        3:  112-block 16
+function DOCTEST_ANON_FUNC_16()::{lambda()#2}::operator()() const called 3 returned 100% blocks executed 100%
+        3:  113:  workers.emplace_back([&] {
+        3:  113-block 16
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+    $$$$$:  113-block 96
+    18557:  114:    while (!stop_flag.load()) {
+        3:  114-block 2
+    18557:  114-block 5
+call    0 returned 18557
+branch  1 taken 18554
+branch  2 taken 3 (fallthrough)
+    18554:  115:      backend->close();
+    18554:  115-block 3
+call    0 returned 18554
+call    1 returned 18554
+        -:  116:    }
+        3:  117:  });
+function DOCTEST_ANON_FUNC_16()::{lambda()#3}::operator()() const called 3 returned 100% blocks executed 100%
+        3:  118:  workers.emplace_back([&] {
+        3:  118-block 17
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+    $$$$$:  118-block 97
+        3:  119:    std::mt19937 rng(7);
+        3:  119-block 2
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+    50439:  120:    while (!stop_flag.load()) {
+        3:  120-block 3
+    50439:  120-block 17
+call    0 returned 50439
+branch  1 taken 50436
+branch  2 taken 3 (fallthrough)
+    50436:  121:      switch (rng() % 3) {
+    50436:  121-block 4
+call    0 returned 50436
+branch  1 taken 50436 (fallthrough)
+branch  2 taken 0 (throw)
+    50436:  121-block 5
+branch  3 taken 16661
+branch  4 taken 17049
+branch  5 taken 16726
+    16661:  122:        case 0: (void)backend->pause(); break;
+    16661:  122-block 6
+call    0 returned 16661
+call    1 returned 16661
+branch  2 taken 16661 (fallthrough)
+branch  3 taken 0 (throw)
+    16661:  122-block 8
+    17049:  123:        case 1: (void)backend->stop(); break;
+    17049:  123-block 9
+call    0 returned 17049
+call    1 returned 17049
+branch  2 taken 17049 (fallthrough)
+branch  3 taken 0 (throw)
+    17049:  123-block 11
+    16726:  124:        default: (void)backend->seek(50ms); break;
+    16726:  124-block 12
+call    0 returned 16726
+call    1 returned 16726
+branch  2 taken 16726 (fallthrough)
+branch  3 taken 0 (throw)
+    16726:  124-block 14
+call    4 returned 16726
+branch  5 taken 16726 (fallthrough)
+branch  6 taken 0 (throw)
+    16726:  124-block 15
+        -:  125:      }
+        -:  126:    }
+        3:  127:  });
+        3:  127-block 19
+function DOCTEST_ANON_FUNC_16()::{lambda()#4}::operator()() const called 3 returned 100% blocks executed 93%
+        3:  128:  workers.emplace_back([&] {
+        3:  128-block 18
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+    $$$$$:  128-block 98
+  1507574:  129:    while (!stop_flag.load()) {
+        3:  129-block 2
+  1507574:  129-block 11
+call    0 returned 1507574
+branch  1 taken 1507571
+branch  2 taken 3 (fallthrough)
+  1507571:  130:      (void)backend->position();
+  1507571:  130-block 3
+call    0 returned 1507571
+call    1 returned 1507571
+branch  2 taken 1507571 (fallthrough)
+branch  3 taken 0 (throw)
+    $$$$$:  130-block 14
+call    4 never executed
+  1507571:  131:      (void)backend->state();
+  1507571:  131-block 5
+call    0 returned 1507571
+call    1 returned 1507571
+  1507571:  132:      (void)backend->mediaInfo();
+call    0 returned 1507571
+call    1 returned 1507571
+branch  2 taken 1507571 (fallthrough)
+branch  3 taken 0 (throw)
+  1507571:  132-block 9
+call    4 returned 1507571
+        -:  133:    }
+        3:  134:  });
+        3:  134-block 13
+        -:  135:
+        3:  136:  std::this_thread::sleep_for(300ms);
+        3:  136-block 19
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:  136-block 20
+call    3 returned 3
+branch  4 taken 3 (fallthrough)
+branch  5 taken 0 (throw)
+    $$$$$:  136-block 99
+        3:  137:  stop_flag.store(true);
+        3:  137-block 21
+call    0 returned 3
+       18:  138:  for (auto& t : workers) {
+call    0 returned 3
+call    1 returned 3
+       15:  138-block 36
+branch  2 taken 12
+branch  3 taken 3 (fallthrough)
+       12:  139:    t.join();
+       12:  139-block 26
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+        -:  140:  }
+        -:  141:
+      12*:  142:  CHECK(open_ok.load() + open_failed.load() > 0);
+        3:  142-block 38
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+        3:  142-block 48
+call    4 returned 3
+        3:  142-block 55
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  142-block 56
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  142-block 57
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  142-block 58
+call   14 returned 3
+        3:  142-block 60
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  142-block 61
+branch 18 taken 0 (fallthrough)
+branch 19 taken 3
+    %%%%%:  142-block 62
+call   20 never executed
+        3:  142-block 63
+call   21 returned 3
+branch 22 taken 3 (fallthrough)
+branch 23 taken 0 (throw)
+        3:  142-block 64
+call   24 returned 3
+    $$$$$:  142-block 104
+call   25 never executed
+    $$$$$:  142-block 106
+    $$$$$:  142-block 107
+    $$$$$:  142-block 108
+    $$$$$:  142-block 109
+    $$$$$:  142-block 110
+    $$$$$:  142-block 111
+    $$$$$:  142-block 112
+call   26 never executed
+call   27 never executed
+branch 28 never executed (fallthrough)
+branch 29 never executed (throw)
+    $$$$$:  142-block 114
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  142-block 115
+call   33 never executed
+    $$$$$:  142-block 117
+call   34 never executed
+        3:  143:  backend->close();
+call    0 returned 3
+call    1 returned 3
+branch  2 taken 3 (fallthrough)
+branch  3 taken 0 (throw)
+       6*:  144:  CHECK(backend->state() == soar::PlaybackState::Stopped);
+        3:  144-block 68
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  144-block 73
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  144-block 74
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  144-block 75
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  144-block 76
+call   17 returned 3
+        3:  144-block 78
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  144-block 79
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  144-block 80
+call   23 never executed
+        3:  144-block 81
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  144-block 82
+call   27 returned 3
+    $$$$$:  144-block 123
+call   28 never executed
+    $$$$$:  144-block 125
+    $$$$$:  144-block 126
+    $$$$$:  144-block 127
+    $$$$$:  144-block 128
+    $$$$$:  144-block 129
+    $$$$$:  144-block 130
+    $$$$$:  144-block 131
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  144-block 133
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  144-block 134
+call   36 never executed
+    $$$$$:  144-block 136
+call   37 never executed
+        3:  145:}
+call    0 returned 3
+call    1 returned 3
+        3:  145-block 86
+call    2 returned 3
+branch  3 taken 3 (fallthrough)
+branch  4 taken 0
+    $$$$$:  145-block 139
+call    5 never executed
+    $$$$$:  145-block 141
+call    6 never executed
+    $$$$$:  145-block 143
+call    7 never executed
+        -:  146:
+function DOCTEST_ANON_FUNC_19() called 3 returned 100% blocks executed 44%
+        3:  147:TEST_CASE("playback-time control storm stays consistent") {
+        3:  148:  std::string media;
+        3:  148-block 2
+call    0 returned 3
+        3:  149:  if (!mediaAvailable(media)) {
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:  149-block 4
+branch  3 taken 0 (fallthrough)
+branch  4 taken 3
+    #####:  150:    MESSAGE("SOAR_TEST_MEDIA not set; skipping playback storm");
+    %%%%%:  150-block 5
+call    0 never executed
+branch  1 never executed (fallthrough)
+branch  2 never executed (throw)
+    %%%%%:  150-block 6
+call    3 never executed
+branch  4 never executed (fallthrough)
+branch  5 never executed (throw)
+    %%%%%:  150-block 7
+call    6 never executed
+branch  7 never executed (fallthrough)
+branch  8 never executed (throw)
+    %%%%%:  150-block 8
+branch  9 never executed (fallthrough)
+branch 10 never executed
+    %%%%%:  150-block 9
+call   11 never executed
+    %%%%%:  150-block 10
+call   12 never executed
+branch 13 never executed (fallthrough)
+branch 14 never executed (throw)
+    %%%%%:  150-block 11
+call   15 never executed
+    $$$$$:  150-block 112
+call   16 never executed
+    #####:  151:    return;
+        -:  152:  }
+        -:  153:
+        3:  154:  auto backend = soar::makeFFmpegBackend();
+        3:  154-block 13
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+       6*:  155:  REQUIRE(backend->open(soar::MediaSource{media}));
+        3:  155-block 15
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  155-block 20
+call    8 returned 3
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:  155-block 22
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:  155-block 23
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  155-block 24
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  155-block 25
+call   21 returned 3
+call   22 returned 3
+branch 23 taken 0 (fallthrough)
+branch 24 taken 3
+    %%%%%:  155-block 28
+call   25 never executed
+        3:  155-block 29
+        3:  155-block 30
+call   26 returned 3
+branch 27 taken 3 (fallthrough)
+branch 28 taken 0 (throw)
+        3:  155-block 31
+branch 29 taken 0 (fallthrough)
+branch 30 taken 3
+    %%%%%:  155-block 32
+call   31 never executed
+        3:  155-block 33
+call   32 returned 3
+branch 33 taken 3 (fallthrough)
+branch 34 taken 0 (throw)
+        3:  155-block 34
+call   35 returned 3
+    $$$$$:  155-block 118
+call   36 never executed
+    $$$$$:  155-block 120
+call   37 never executed
+    $$$$$:  155-block 122
+branch 38 never executed (fallthrough)
+branch 39 never executed
+    $$$$$:  155-block 123
+call   40 never executed
+    $$$$$:  155-block 125
+    $$$$$:  155-block 126
+    $$$$$:  155-block 127
+    $$$$$:  155-block 128
+    $$$$$:  155-block 129
+    $$$$$:  155-block 130
+    $$$$$:  155-block 131
+call   41 never executed
+call   42 never executed
+branch 43 never executed (fallthrough)
+branch 44 never executed (throw)
+    $$$$$:  155-block 133
+call   45 never executed
+branch 46 never executed (fallthrough)
+branch 47 never executed (throw)
+    $$$$$:  155-block 134
+call   48 never executed
+    $$$$$:  155-block 136
+call   49 never executed
+       6*:  156:  REQUIRE(backend->play());
+        3:  156-block 36
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  156-block 41
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  156-block 42
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  156-block 43
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  156-block 44
+call   17 returned 3
+        3:  156-block 46
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  156-block 47
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  156-block 48
+call   23 never executed
+        3:  156-block 49
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  156-block 50
+call   27 returned 3
+    $$$$$:  156-block 142
+call   28 never executed
+    $$$$$:  156-block 144
+    $$$$$:  156-block 145
+    $$$$$:  156-block 146
+    $$$$$:  156-block 147
+    $$$$$:  156-block 148
+    $$$$$:  156-block 149
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  156-block 151
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  156-block 152
+call   36 never executed
+    $$$$$:  156-block 154
+call   37 never executed
+        -:  157:
+function DOCTEST_ANON_FUNC_19()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}::operator()(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&) const called 1304388 returned 103% blocks executed 93%
+        3:  158:  runStorm(4, 300ms, [&backend](std::mt19937& rng) {
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:  158-block 52
+call    3 returned 3
+branch  4 taken 3 (fallthrough)
+branch  5 taken 0 (throw)
+        3:  158-block 53
+call    6 returned 3
+branch  7 taken 3 (fallthrough)
+branch  8 taken 0 (throw)
+    $$$$$:  158-block 157
+  1304388:  159:    switch (rng() % 5) {
+  1304388:  159-block 2
+call    0 returned 1331181
+branch  1 taken 270450
+branch  2 taken 269022
+branch  3 taken 269178
+branch  4 taken 267981
+branch  5 taken 254550
+   270450:  160:      case 0: (void)backend->pause(); break;
+   270450:  160-block 4
+call    0 returned 269928
+call    1 returned 270234
+   269022:  161:      case 1: (void)backend->play(); break;
+   269022:  161-block 6
+call    0 returned 268493
+call    1 returned 268778
+   269178:  162:      case 2: (void)backend->seek(std::chrono::milliseconds(rng() % 3000)); break;
+   269178:  162-block 8
+call    0 returned 268638
+call    1 returned 268571
+branch  2 taken 268571 (fallthrough)
+branch  3 taken 0 (throw)
+   268571:  162-block 10
+call    4 returned 268509
+call    5 returned 269842
+branch  6 taken 269842 (fallthrough)
+branch  7 taken 0 (throw)
+   269842:  162-block 12
+    $$$$$:  162-block 26
+    $$$$$:  162-block 27
+call    8 never executed
+   267981:  163:      case 3: (void)backend->setRate(rng() % 2 ? 1.0 : 1.5); break;
+   267981:  163-block 13
+call    0 returned 267423
+call    1 returned 268057
+branch  2 taken 133979 (fallthrough)
+branch  3 taken 134078
+   133979:  163-block 16
+   134078:  163-block 17
+   268057:  163-block 18
+call    4 returned 268467
+   254550:  164:      default: {
+   254550:  165:        const auto s = backend->state();
+   254550:  165-block 19
+call    0 returned 268268
+call    1 returned 269403
+branch  2 taken 269403 (fallthrough)
+branch  3 taken 0 (throw)
+   269403:  166:        const auto p = backend->position();
+   269403:  166-block 21
+call    0 returned 268967
+call    1 returned 269386
+branch  2 taken 269386 (fallthrough)
+branch  3 taken 0 (throw)
+        -:  167:        (void)s;
+        -:  168:        (void)p;
+   269386:  169:        break;
+   269386:  169-block 23
+        -:  170:      }
+        -:  171:    }
+  1346707:  172:  });
+  1346707:  172-block 25
+        -:  173:
+       6*:  174:  CHECK(backend->stop());
+        3:  174-block 54
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  174-block 59
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  174-block 60
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  174-block 61
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  174-block 62
+call   17 returned 3
+        3:  174-block 64
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  174-block 65
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  174-block 66
+call   23 never executed
+        3:  174-block 67
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  174-block 68
+call   27 returned 3
+    $$$$$:  174-block 161
+call   28 never executed
+    $$$$$:  174-block 163
+    $$$$$:  174-block 164
+    $$$$$:  174-block 165
+    $$$$$:  174-block 166
+    $$$$$:  174-block 167
+    $$$$$:  174-block 168
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  174-block 170
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  174-block 171
+call   36 never executed
+    $$$$$:  174-block 173
+call   37 never executed
+        3:  175:  backend->close();
+call    0 returned 3
+call    1 returned 3
+branch  2 taken 3 (fallthrough)
+branch  3 taken 0 (throw)
+       6*:  176:  CHECK(backend->state() == soar::PlaybackState::Stopped);
+        3:  176-block 72
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  176-block 77
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  176-block 78
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  176-block 79
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  176-block 80
+call   17 returned 3
+        3:  176-block 82
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  176-block 83
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  176-block 84
+call   23 never executed
+        3:  176-block 85
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  176-block 86
+call   27 returned 3
+    $$$$$:  176-block 179
+call   28 never executed
+    $$$$$:  176-block 181
+    $$$$$:  176-block 182
+    $$$$$:  176-block 183
+    $$$$$:  176-block 184
+    $$$$$:  176-block 185
+    $$$$$:  176-block 186
+    $$$$$:  176-block 187
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  176-block 189
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  176-block 190
+call   36 never executed
+    $$$$$:  176-block 192
+call   37 never executed
+       6*:  177:  CHECK(backend->position() == 0ms);
+        3:  177-block 88
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+branch  4 taken 3 (fallthrough)
+branch  5 taken 0 (throw)
+        3:  177-block 91
+call    6 returned 3
+call    7 returned 3
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  177-block 94
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  177-block 95
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  177-block 96
+call   17 returned 3
+branch 18 taken 3 (fallthrough)
+branch 19 taken 0 (throw)
+        3:  177-block 97
+call   20 returned 3
+        3:  177-block 99
+call   21 returned 3
+branch 22 taken 3 (fallthrough)
+branch 23 taken 0 (throw)
+        3:  177-block 100
+branch 24 taken 0 (fallthrough)
+branch 25 taken 3
+    %%%%%:  177-block 101
+call   26 never executed
+        3:  177-block 102
+call   27 returned 3
+branch 28 taken 3 (fallthrough)
+branch 29 taken 0 (throw)
+        3:  177-block 103
+call   30 returned 3
+    $$$$$:  177-block 198
+call   31 never executed
+    $$$$$:  177-block 200
+    $$$$$:  177-block 201
+    $$$$$:  177-block 202
+    $$$$$:  177-block 203
+    $$$$$:  177-block 204
+    $$$$$:  177-block 205
+    $$$$$:  177-block 206
+call   32 never executed
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  177-block 208
+call   36 never executed
+branch 37 never executed (fallthrough)
+branch 38 never executed (throw)
+    $$$$$:  177-block 209
+call   39 never executed
+    $$$$$:  177-block 211
+call   40 never executed
+        3:  178:}
+call    0 returned 3
+        3:  178-block 106
+call    1 returned 3
+branch  2 taken 3 (fallthrough)
+branch  3 taken 0
+    $$$$$:  178-block 214
+call    4 never executed
+    $$$$$:  178-block 216
+call    5 never executed
+        -:  179:
+        -:  180:namespace {
+        -:  181:
+        -:  182:// Returns the audio (and one video) track ids of the test media.
+        -:  183:struct TrackIds {
+        -:  184:  std::vector<soar::TrackId> audio;
+        -:  185:  soar::TrackId video{-1};
+        -:  186:};
+        -:  187:
+function (anonymous namespace)::collectTracks(soar::MediaInfo const&) called 6 returned 100% blocks executed 92%
+        6:  188:TrackIds collectTracks(const soar::MediaInfo& info) {
+        6:  189:  TrackIds ids;
+        6:  189-block 2
+call    0 returned 6
+       30:  190:  for (const auto& t : info.tracks) {
+call    0 returned 6
+call    1 returned 6
+       24:  190-block 20
+branch  2 taken 18
+branch  3 taken 6 (fallthrough)
+       18:  191:    if (t.type == soar::TrackType::Audio) {
+       18:  191-block 7
+branch  0 taken 12 (fallthrough)
+branch  1 taken 6
+       12:  192:      ids.audio.push_back(t.id);
+       12:  192-block 8
+call    0 returned 12
+branch  1 taken 12 (fallthrough)
+branch  2 taken 0 (throw)
+        6:  193:    } else if (t.type == soar::TrackType::Video) {
+        6:  193-block 9
+branch  0 taken 6 (fallthrough)
+branch  1 taken 0
+        6:  194:      ids.video = t.id;
+        6:  194-block 10
+        -:  195:    }
+        -:  196:  }
+        6:  197:  return ids;
+        6:  197-block 21
+        6:  197-block 22
+    =====:  198:}
+    $$$$$:  198-block 24
+call    0 never executed
+        -:  199:
+        -:  200:// Waits until the decode loop has installed the requested audio track
+        -:  201:// (the switch is applied asynchronously at a packet boundary).
+function (anonymous namespace)::waitSelectedAudio(soar::IBackend&, int) called 9 returned 100% blocks executed 47%
+        9:  202:bool waitSelectedAudio(soar::IBackend& backend, soar::TrackId id) {
+       9*:  203:  for (int i = 0; i < 200; ++i) {
+        9:  203-block 2
+        9:  203-block 10
+branch  0 taken 9
+branch  1 taken 0 (fallthrough)
+        9:  204:    if (backend.mediaInfo().selected_audio == id) {
+        9:  204-block 3
+call    0 returned 9
+branch  1 taken 9 (fallthrough)
+branch  2 taken 0 (throw)
+        9:  204-block 4
+call    3 returned 9
+branch  4 taken 9 (fallthrough)
+branch  5 taken 0
+    $$$$$:  204-block 16
+call    6 never executed
+        9:  205:      return true;
+        9:  205-block 6
+        -:  206:    }
+    #####:  207:    std::this_thread::sleep_for(10ms);
+    %%%%%:  207-block 7
+call    0 never executed
+branch  1 never executed (fallthrough)
+branch  2 never executed (throw)
+    %%%%%:  207-block 8
+call    3 never executed
+branch  4 never executed (fallthrough)
+branch  5 never executed (throw)
+    %%%%%:  207-block 9
+    $$$$$:  207-block 17
+call    6 never executed
+        -:  208:  }
+    #####:  209:  return backend.mediaInfo().selected_audio == id;
+    %%%%%:  209-block 11
+call    0 never executed
+branch  1 never executed (fallthrough)
+branch  2 never executed (throw)
+    %%%%%:  209-block 12
+    %%%%%:  209-block 13
+call    3 never executed
+        -:  210:}
+        -:  211:
+        -:  212:} // namespace
+        -:  213:
+function DOCTEST_ANON_FUNC_22() called 3 returned 100% blocks executed 44%
+        3:  214:TEST_CASE("runtime audio track switching while playing and paused") {
+        3:  215:  std::string media;
+        3:  215-block 2
+call    0 returned 3
+        3:  216:  if (!mediaAvailable(media)) {
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:  216-block 4
+branch  3 taken 0 (fallthrough)
+branch  4 taken 3
+    #####:  217:    MESSAGE("SOAR_TEST_MEDIA not set; skipping track-switching test");
+    %%%%%:  217-block 5
+call    0 never executed
+branch  1 never executed (fallthrough)
+branch  2 never executed (throw)
+    %%%%%:  217-block 6
+call    3 never executed
+branch  4 never executed (fallthrough)
+branch  5 never executed (throw)
+    %%%%%:  217-block 7
+call    6 never executed
+branch  7 never executed (fallthrough)
+branch  8 never executed (throw)
+    %%%%%:  217-block 8
+branch  9 never executed (fallthrough)
+branch 10 never executed
+    %%%%%:  217-block 9
+call   11 never executed
+    %%%%%:  217-block 10
+call   12 never executed
+branch 13 never executed (fallthrough)
+branch 14 never executed (throw)
+    %%%%%:  217-block 11
+call   15 never executed
+    $$$$$:  217-block 311
+call   16 never executed
+    #####:  218:    return;
+        -:  219:  }
+        -:  220:
+        3:  221:  auto backend = soar::makeFFmpegBackend();
+        3:  221-block 13
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+       6*:  222:  REQUIRE(backend->open(soar::MediaSource{media}));
+        3:  222-block 15
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  222-block 20
+call    8 returned 3
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:  222-block 22
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:  222-block 23
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  222-block 24
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  222-block 25
+call   21 returned 3
+call   22 returned 3
+branch 23 taken 0 (fallthrough)
+branch 24 taken 3
+    %%%%%:  222-block 28
+call   25 never executed
+        3:  222-block 29
+        3:  222-block 30
+call   26 returned 3
+branch 27 taken 3 (fallthrough)
+branch 28 taken 0 (throw)
+        3:  222-block 31
+branch 29 taken 0 (fallthrough)
+branch 30 taken 3
+    %%%%%:  222-block 32
+call   31 never executed
+        3:  222-block 33
+call   32 returned 3
+branch 33 taken 3 (fallthrough)
+branch 34 taken 0 (throw)
+        3:  222-block 34
+call   35 returned 3
+    $$$$$:  222-block 317
+call   36 never executed
+    $$$$$:  222-block 319
+call   37 never executed
+    $$$$$:  222-block 321
+branch 38 never executed (fallthrough)
+branch 39 never executed
+    $$$$$:  222-block 322
+call   40 never executed
+    $$$$$:  222-block 324
+    $$$$$:  222-block 325
+    $$$$$:  222-block 326
+    $$$$$:  222-block 327
+    $$$$$:  222-block 328
+    $$$$$:  222-block 329
+    $$$$$:  222-block 330
+call   41 never executed
+call   42 never executed
+branch 43 never executed (fallthrough)
+branch 44 never executed (throw)
+    $$$$$:  222-block 332
+call   45 never executed
+branch 46 never executed (fallthrough)
+branch 47 never executed (throw)
+    $$$$$:  222-block 333
+call   48 never executed
+    $$$$$:  222-block 335
+call   49 never executed
+        3:  223:  const auto ids = collectTracks(backend->mediaInfo());
+call    0 returned 3
+call    1 returned 3
+branch  2 taken 3 (fallthrough)
+branch  3 taken 0 (throw)
+        3:  223-block 37
+call    4 returned 3
+branch  5 taken 3 (fallthrough)
+branch  6 taken 0 (throw)
+        3:  223-block 38
+call    7 returned 3
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+    $$$$$:  223-block 338
+call   11 never executed
+    $$$$$:  223-block 340
+       6*:  224:  REQUIRE(ids.audio.size() >= 2);
+        3:  224-block 40
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  224-block 45
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  224-block 46
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  224-block 47
+call   14 returned 3
+        3:  224-block 49
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  224-block 50
+branch 18 taken 0 (fallthrough)
+branch 19 taken 3
+    %%%%%:  224-block 51
+call   20 never executed
+        3:  224-block 52
+call   21 returned 3
+branch 22 taken 3 (fallthrough)
+branch 23 taken 0 (throw)
+        3:  224-block 53
+call   24 returned 3
+    $$$$$:  224-block 344
+call   25 never executed
+    $$$$$:  224-block 346
+    $$$$$:  224-block 347
+    $$$$$:  224-block 348
+    $$$$$:  224-block 349
+    $$$$$:  224-block 350
+    $$$$$:  224-block 351
+    $$$$$:  224-block 352
+call   26 never executed
+call   27 never executed
+branch 28 never executed (fallthrough)
+branch 29 never executed (throw)
+    $$$$$:  224-block 354
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  224-block 355
+call   33 never executed
+    $$$$$:  224-block 357
+call   34 never executed
+        -:  225:
+        -:  226:  // Unknown ids and video tracks stay rejected.
+       6*:  227:  CHECK_FALSE(backend->selectTrack(soar::TrackType::Audio, 9999));
+        3:  227-block 55
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  227-block 60
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  227-block 61
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  227-block 62
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  227-block 63
+call   17 returned 3
+        3:  227-block 65
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  227-block 66
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  227-block 67
+call   23 never executed
+        3:  227-block 68
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  227-block 69
+call   27 returned 3
+    $$$$$:  227-block 363
+call   28 never executed
+    $$$$$:  227-block 365
+    $$$$$:  227-block 366
+    $$$$$:  227-block 367
+    $$$$$:  227-block 368
+    $$$$$:  227-block 369
+    $$$$$:  227-block 370
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  227-block 372
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  227-block 373
+call   36 never executed
+    $$$$$:  227-block 375
+call   37 never executed
+       6*:  228:  CHECK_FALSE(backend->selectTrack(soar::TrackType::Video, ids.video));
+        3:  228-block 71
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  228-block 76
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  228-block 77
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  228-block 78
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  228-block 79
+call   17 returned 3
+        3:  228-block 81
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  228-block 82
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  228-block 83
+call   23 never executed
+        3:  228-block 84
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  228-block 85
+call   27 returned 3
+    $$$$$:  228-block 381
+call   28 never executed
+    $$$$$:  228-block 383
+    $$$$$:  228-block 384
+    $$$$$:  228-block 385
+    $$$$$:  228-block 386
+    $$$$$:  228-block 387
+    $$$$$:  228-block 388
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  228-block 390
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  228-block 391
+call   36 never executed
+    $$$$$:  228-block 393
+call   37 never executed
+        -:  229:
+        -:  230:  // Switch while playing: applied asynchronously, playback continues.
+       6*:  231:  REQUIRE(backend->play());
+        3:  231-block 87
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  231-block 92
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  231-block 93
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  231-block 94
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  231-block 95
+call   17 returned 3
+        3:  231-block 97
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  231-block 98
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  231-block 99
+call   23 never executed
+        3:  231-block 100
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  231-block 101
+call   27 returned 3
+    $$$$$:  231-block 399
+call   28 never executed
+    $$$$$:  231-block 401
+    $$$$$:  231-block 402
+    $$$$$:  231-block 403
+    $$$$$:  231-block 404
+    $$$$$:  231-block 405
+    $$$$$:  231-block 406
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  231-block 408
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  231-block 409
+call   36 never executed
+    $$$$$:  231-block 411
+call   37 never executed
+       6*:  232:  CHECK(backend->selectTrack(soar::TrackType::Audio, ids.audio[1]));
+        3:  232-block 103
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+call    6 returned 3
+branch  7 taken 3 (fallthrough)
+branch  8 taken 0 (throw)
+        3:  232-block 109
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:  232-block 110
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:  232-block 111
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  232-block 112
+call   18 returned 3
+        3:  232-block 114
+call   19 returned 3
+branch 20 taken 3 (fallthrough)
+branch 21 taken 0 (throw)
+        3:  232-block 115
+branch 22 taken 0 (fallthrough)
+branch 23 taken 3
+    %%%%%:  232-block 116
+call   24 never executed
+        3:  232-block 117
+call   25 returned 3
+branch 26 taken 3 (fallthrough)
+branch 27 taken 0 (throw)
+        3:  232-block 118
+call   28 returned 3
+    $$$$$:  232-block 417
+call   29 never executed
+    $$$$$:  232-block 419
+    $$$$$:  232-block 420
+    $$$$$:  232-block 421
+    $$$$$:  232-block 422
+    $$$$$:  232-block 423
+    $$$$$:  232-block 424
+call   30 never executed
+call   31 never executed
+branch 32 never executed (fallthrough)
+branch 33 never executed (throw)
+    $$$$$:  232-block 426
+call   34 never executed
+branch 35 never executed (fallthrough)
+branch 36 never executed (throw)
+    $$$$$:  232-block 427
+call   37 never executed
+    $$$$$:  232-block 429
+call   38 never executed
+       6*:  233:  CHECK(waitSelectedAudio(*backend, ids.audio[1]));
+        3:  233-block 120
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+call    6 returned 3
+branch  7 taken 3 (fallthrough)
+branch  8 taken 0 (throw)
+        3:  233-block 126
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:  233-block 127
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:  233-block 128
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  233-block 129
+call   18 returned 3
+        3:  233-block 131
+call   19 returned 3
+branch 20 taken 3 (fallthrough)
+branch 21 taken 0 (throw)
+        3:  233-block 132
+branch 22 taken 0 (fallthrough)
+branch 23 taken 3
+    %%%%%:  233-block 133
+call   24 never executed
+        3:  233-block 134
+call   25 returned 3
+branch 26 taken 3 (fallthrough)
+branch 27 taken 0 (throw)
+        3:  233-block 135
+call   28 returned 3
+    $$$$$:  233-block 435
+call   29 never executed
+    $$$$$:  233-block 437
+    $$$$$:  233-block 438
+    $$$$$:  233-block 439
+    $$$$$:  233-block 440
+    $$$$$:  233-block 441
+    $$$$$:  233-block 442
+call   30 never executed
+call   31 never executed
+branch 32 never executed (fallthrough)
+branch 33 never executed (throw)
+    $$$$$:  233-block 444
+call   34 never executed
+branch 35 never executed (fallthrough)
+branch 36 never executed (throw)
+    $$$$$:  233-block 445
+call   37 never executed
+    $$$$$:  233-block 447
+call   38 never executed
+       6*:  234:  CHECK(backend->state() == soar::PlaybackState::Playing);
+        3:  234-block 137
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  234-block 142
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  234-block 143
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  234-block 144
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  234-block 145
+call   17 returned 3
+        3:  234-block 147
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  234-block 148
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  234-block 149
+call   23 never executed
+        3:  234-block 150
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  234-block 151
+call   27 returned 3
+    $$$$$:  234-block 453
+call   28 never executed
+    $$$$$:  234-block 455
+    $$$$$:  234-block 456
+    $$$$$:  234-block 457
+    $$$$$:  234-block 458
+    $$$$$:  234-block 459
+    $$$$$:  234-block 460
+    $$$$$:  234-block 461
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  234-block 463
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  234-block 464
+call   36 never executed
+    $$$$$:  234-block 466
+call   37 never executed
+        -:  235:
+        -:  236:  // Switch while paused: the decode loop applies it from its wait state.
+       6*:  237:  CHECK(backend->pause());
+        3:  237-block 153
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  237-block 158
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  237-block 159
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  237-block 160
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  237-block 161
+call   17 returned 3
+        3:  237-block 163
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  237-block 164
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  237-block 165
+call   23 never executed
+        3:  237-block 166
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  237-block 167
+call   27 returned 3
+    $$$$$:  237-block 472
+call   28 never executed
+    $$$$$:  237-block 474
+    $$$$$:  237-block 475
+    $$$$$:  237-block 476
+    $$$$$:  237-block 477
+    $$$$$:  237-block 478
+    $$$$$:  237-block 479
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  237-block 481
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  237-block 482
+call   36 never executed
+    $$$$$:  237-block 484
+call   37 never executed
+       6*:  238:  CHECK(backend->selectTrack(soar::TrackType::Audio, ids.audio[0]));
+        3:  238-block 169
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+call    6 returned 3
+branch  7 taken 3 (fallthrough)
+branch  8 taken 0 (throw)
+        3:  238-block 175
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:  238-block 176
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:  238-block 177
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  238-block 178
+call   18 returned 3
+        3:  238-block 180
+call   19 returned 3
+branch 20 taken 3 (fallthrough)
+branch 21 taken 0 (throw)
+        3:  238-block 181
+branch 22 taken 0 (fallthrough)
+branch 23 taken 3
+    %%%%%:  238-block 182
+call   24 never executed
+        3:  238-block 183
+call   25 returned 3
+branch 26 taken 3 (fallthrough)
+branch 27 taken 0 (throw)
+        3:  238-block 184
+call   28 returned 3
+    $$$$$:  238-block 490
+call   29 never executed
+    $$$$$:  238-block 492
+    $$$$$:  238-block 493
+    $$$$$:  238-block 494
+    $$$$$:  238-block 495
+    $$$$$:  238-block 496
+    $$$$$:  238-block 497
+call   30 never executed
+call   31 never executed
+branch 32 never executed (fallthrough)
+branch 33 never executed (throw)
+    $$$$$:  238-block 499
+call   34 never executed
+branch 35 never executed (fallthrough)
+branch 36 never executed (throw)
+    $$$$$:  238-block 500
+call   37 never executed
+    $$$$$:  238-block 502
+call   38 never executed
+       6*:  239:  CHECK(waitSelectedAudio(*backend, ids.audio[0]));
+        3:  239-block 186
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+call    6 returned 3
+branch  7 taken 3 (fallthrough)
+branch  8 taken 0 (throw)
+        3:  239-block 192
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:  239-block 193
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:  239-block 194
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  239-block 195
+call   18 returned 3
+        3:  239-block 197
+call   19 returned 3
+branch 20 taken 3 (fallthrough)
+branch 21 taken 0 (throw)
+        3:  239-block 198
+branch 22 taken 0 (fallthrough)
+branch 23 taken 3
+    %%%%%:  239-block 199
+call   24 never executed
+        3:  239-block 200
+call   25 returned 3
+branch 26 taken 3 (fallthrough)
+branch 27 taken 0 (throw)
+        3:  239-block 201
+call   28 returned 3
+    $$$$$:  239-block 508
+call   29 never executed
+    $$$$$:  239-block 510
+    $$$$$:  239-block 511
+    $$$$$:  239-block 512
+    $$$$$:  239-block 513
+    $$$$$:  239-block 514
+    $$$$$:  239-block 515
+call   30 never executed
+call   31 never executed
+branch 32 never executed (fallthrough)
+branch 33 never executed (throw)
+    $$$$$:  239-block 517
+call   34 never executed
+branch 35 never executed (fallthrough)
+branch 36 never executed (throw)
+    $$$$$:  239-block 518
+call   37 never executed
+    $$$$$:  239-block 520
+call   38 never executed
+       6*:  240:  CHECK(backend->state() == soar::PlaybackState::Paused);
+        3:  240-block 203
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  240-block 208
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  240-block 209
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  240-block 210
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  240-block 211
+call   17 returned 3
+        3:  240-block 213
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  240-block 214
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  240-block 215
+call   23 never executed
+        3:  240-block 216
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  240-block 217
+call   27 returned 3
+    $$$$$:  240-block 526
+call   28 never executed
+    $$$$$:  240-block 528
+    $$$$$:  240-block 529
+    $$$$$:  240-block 530
+    $$$$$:  240-block 531
+    $$$$$:  240-block 532
+    $$$$$:  240-block 533
+    $$$$$:  240-block 534
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  240-block 536
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  240-block 537
+call   36 never executed
+    $$$$$:  240-block 539
+call   37 never executed
+       6*:  241:  CHECK(backend->play());
+        3:  241-block 219
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  241-block 224
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  241-block 225
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  241-block 226
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  241-block 227
+call   17 returned 3
+        3:  241-block 229
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  241-block 230
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  241-block 231
+call   23 never executed
+        3:  241-block 232
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  241-block 233
+call   27 returned 3
+    $$$$$:  241-block 545
+call   28 never executed
+    $$$$$:  241-block 547
+    $$$$$:  241-block 548
+    $$$$$:  241-block 549
+    $$$$$:  241-block 550
+    $$$$$:  241-block 551
+    $$$$$:  241-block 552
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  241-block 554
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  241-block 555
+call   36 never executed
+    $$$$$:  241-block 557
+call   37 never executed
+        -:  242:
+        -:  243:  // Switching to the track that is already selected succeeds as a no-op.
+       6*:  244:  CHECK(backend->selectTrack(soar::TrackType::Audio, ids.audio[0]));
+        3:  244-block 235
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+call    6 returned 3
+branch  7 taken 3 (fallthrough)
+branch  8 taken 0 (throw)
+        3:  244-block 241
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:  244-block 242
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:  244-block 243
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  244-block 244
+call   18 returned 3
+        3:  244-block 246
+call   19 returned 3
+branch 20 taken 3 (fallthrough)
+branch 21 taken 0 (throw)
+        3:  244-block 247
+branch 22 taken 0 (fallthrough)
+branch 23 taken 3
+    %%%%%:  244-block 248
+call   24 never executed
+        3:  244-block 249
+call   25 returned 3
+branch 26 taken 3 (fallthrough)
+branch 27 taken 0 (throw)
+        3:  244-block 250
+call   28 returned 3
+    $$$$$:  244-block 563
+call   29 never executed
+    $$$$$:  244-block 565
+    $$$$$:  244-block 566
+    $$$$$:  244-block 567
+    $$$$$:  244-block 568
+    $$$$$:  244-block 569
+    $$$$$:  244-block 570
+call   30 never executed
+call   31 never executed
+branch 32 never executed (fallthrough)
+branch 33 never executed (throw)
+    $$$$$:  244-block 572
+call   34 never executed
+branch 35 never executed (fallthrough)
+branch 36 never executed (throw)
+    $$$$$:  244-block 573
+call   37 never executed
+    $$$$$:  244-block 575
+call   38 never executed
+       6*:  245:  CHECK(waitSelectedAudio(*backend, ids.audio[0]));
+        3:  245-block 252
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+call    6 returned 3
+branch  7 taken 3 (fallthrough)
+branch  8 taken 0 (throw)
+        3:  245-block 258
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:  245-block 259
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:  245-block 260
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  245-block 261
+call   18 returned 3
+        3:  245-block 263
+call   19 returned 3
+branch 20 taken 3 (fallthrough)
+branch 21 taken 0 (throw)
+        3:  245-block 264
+branch 22 taken 0 (fallthrough)
+branch 23 taken 3
+    %%%%%:  245-block 265
+call   24 never executed
+        3:  245-block 266
+call   25 returned 3
+branch 26 taken 3 (fallthrough)
+branch 27 taken 0 (throw)
+        3:  245-block 267
+call   28 returned 3
+    $$$$$:  245-block 581
+call   29 never executed
+    $$$$$:  245-block 583
+    $$$$$:  245-block 584
+    $$$$$:  245-block 585
+    $$$$$:  245-block 586
+    $$$$$:  245-block 587
+    $$$$$:  245-block 588
+call   30 never executed
+call   31 never executed
+branch 32 never executed (fallthrough)
+branch 33 never executed (throw)
+    $$$$$:  245-block 590
+call   34 never executed
+branch 35 never executed (fallthrough)
+branch 36 never executed (throw)
+    $$$$$:  245-block 591
+call   37 never executed
+    $$$$$:  245-block 593
+call   38 never executed
+        -:  246:
+       6*:  247:  CHECK(backend->stop());
+        3:  247-block 269
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  247-block 274
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  247-block 275
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  247-block 276
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  247-block 277
+call   17 returned 3
+        3:  247-block 279
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  247-block 280
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  247-block 281
+call   23 never executed
+        3:  247-block 282
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  247-block 283
+call   27 returned 3
+    $$$$$:  247-block 599
+call   28 never executed
+    $$$$$:  247-block 601
+    $$$$$:  247-block 602
+    $$$$$:  247-block 603
+    $$$$$:  247-block 604
+    $$$$$:  247-block 605
+    $$$$$:  247-block 606
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  247-block 608
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  247-block 609
+call   36 never executed
+    $$$$$:  247-block 611
+call   37 never executed
+        3:  248:  backend->close();
+call    0 returned 3
+call    1 returned 3
+branch  2 taken 3 (fallthrough)
+branch  3 taken 0 (throw)
+       6*:  249:  CHECK(backend->state() == soar::PlaybackState::Stopped);
+        3:  249-block 287
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  249-block 292
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  249-block 293
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  249-block 294
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  249-block 295
+call   17 returned 3
+        3:  249-block 297
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  249-block 298
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  249-block 299
+call   23 never executed
+        3:  249-block 300
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  249-block 301
+call   27 returned 3
+    $$$$$:  249-block 617
+call   28 never executed
+    $$$$$:  249-block 619
+    $$$$$:  249-block 620
+    $$$$$:  249-block 621
+    $$$$$:  249-block 622
+    $$$$$:  249-block 623
+    $$$$$:  249-block 624
+    $$$$$:  249-block 625
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  249-block 627
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  249-block 628
+call   36 never executed
+    $$$$$:  249-block 630
+call   37 never executed
+        3:  250:}
+call    0 returned 3
+call    1 returned 3
+        3:  250-block 305
+call    2 returned 3
+branch  3 taken 3 (fallthrough)
+branch  4 taken 0
+    $$$$$:  250-block 633
+call    5 never executed
+    $$$$$:  250-block 635
+call    6 never executed
+    $$$$$:  250-block 637
+call    7 never executed
+        -:  251:
+function DOCTEST_ANON_FUNC_25() called 3 returned 100% blocks executed 44%
+        3:  252:TEST_CASE("track-switch storm against control calls is race-free") {
+        3:  253:  std::string media;
+        3:  253-block 2
+call    0 returned 3
+        3:  254:  if (!mediaAvailable(media)) {
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:  254-block 4
+branch  3 taken 0 (fallthrough)
+branch  4 taken 3
+    #####:  255:    MESSAGE("SOAR_TEST_MEDIA not set; skipping track-switch storm");
+    %%%%%:  255-block 5
+call    0 never executed
+branch  1 never executed (fallthrough)
+branch  2 never executed (throw)
+    %%%%%:  255-block 6
+call    3 never executed
+branch  4 never executed (fallthrough)
+branch  5 never executed (throw)
+    %%%%%:  255-block 7
+call    6 never executed
+branch  7 never executed (fallthrough)
+branch  8 never executed (throw)
+    %%%%%:  255-block 8
+branch  9 never executed (fallthrough)
+branch 10 never executed
+    %%%%%:  255-block 9
+call   11 never executed
+    %%%%%:  255-block 10
+call   12 never executed
+branch 13 never executed (fallthrough)
+branch 14 never executed (throw)
+    %%%%%:  255-block 11
+call   15 never executed
+    $$$$$:  255-block 154
+call   16 never executed
+    #####:  256:    return;
+        -:  257:  }
+        -:  258:
+        3:  259:  auto backend = soar::makeFFmpegBackend();
+        3:  259-block 13
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+       6*:  260:  REQUIRE(backend->open(soar::MediaSource{media}));
+        3:  260-block 15
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  260-block 20
+call    8 returned 3
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:  260-block 22
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:  260-block 23
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  260-block 24
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  260-block 25
+call   21 returned 3
+call   22 returned 3
+branch 23 taken 0 (fallthrough)
+branch 24 taken 3
+    %%%%%:  260-block 28
+call   25 never executed
+        3:  260-block 29
+        3:  260-block 30
+call   26 returned 3
+branch 27 taken 3 (fallthrough)
+branch 28 taken 0 (throw)
+        3:  260-block 31
+branch 29 taken 0 (fallthrough)
+branch 30 taken 3
+    %%%%%:  260-block 32
+call   31 never executed
+        3:  260-block 33
+call   32 returned 3
+branch 33 taken 3 (fallthrough)
+branch 34 taken 0 (throw)
+        3:  260-block 34
+call   35 returned 3
+    $$$$$:  260-block 160
+call   36 never executed
+    $$$$$:  260-block 162
+call   37 never executed
+    $$$$$:  260-block 164
+branch 38 never executed (fallthrough)
+branch 39 never executed
+    $$$$$:  260-block 165
+call   40 never executed
+    $$$$$:  260-block 167
+    $$$$$:  260-block 168
+    $$$$$:  260-block 169
+    $$$$$:  260-block 170
+    $$$$$:  260-block 171
+    $$$$$:  260-block 172
+    $$$$$:  260-block 173
+call   41 never executed
+call   42 never executed
+branch 43 never executed (fallthrough)
+branch 44 never executed (throw)
+    $$$$$:  260-block 175
+call   45 never executed
+branch 46 never executed (fallthrough)
+branch 47 never executed (throw)
+    $$$$$:  260-block 176
+call   48 never executed
+    $$$$$:  260-block 178
+call   49 never executed
+        3:  261:  const auto ids = collectTracks(backend->mediaInfo());
+call    0 returned 3
+call    1 returned 3
+branch  2 taken 3 (fallthrough)
+branch  3 taken 0 (throw)
+        3:  261-block 37
+call    4 returned 3
+branch  5 taken 3 (fallthrough)
+branch  6 taken 0 (throw)
+        3:  261-block 38
+call    7 returned 3
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+    $$$$$:  261-block 181
+call   11 never executed
+    $$$$$:  261-block 183
+       6*:  262:  REQUIRE(ids.audio.size() >= 2);
+        3:  262-block 40
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  262-block 45
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  262-block 46
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  262-block 47
+call   14 returned 3
+        3:  262-block 49
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  262-block 50
+branch 18 taken 0 (fallthrough)
+branch 19 taken 3
+    %%%%%:  262-block 51
+call   20 never executed
+        3:  262-block 52
+call   21 returned 3
+branch 22 taken 3 (fallthrough)
+branch 23 taken 0 (throw)
+        3:  262-block 53
+call   24 returned 3
+    $$$$$:  262-block 187
+call   25 never executed
+    $$$$$:  262-block 189
+    $$$$$:  262-block 190
+    $$$$$:  262-block 191
+    $$$$$:  262-block 192
+    $$$$$:  262-block 193
+    $$$$$:  262-block 194
+    $$$$$:  262-block 195
+call   26 never executed
+call   27 never executed
+branch 28 never executed (fallthrough)
+branch 29 never executed (throw)
+    $$$$$:  262-block 197
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  262-block 198
+call   33 never executed
+    $$$$$:  262-block 200
+call   34 never executed
+       6*:  263:  REQUIRE(backend->play());
+        3:  263-block 55
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  263-block 60
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  263-block 61
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  263-block 62
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  263-block 63
+call   17 returned 3
+        3:  263-block 65
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  263-block 66
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  263-block 67
+call   23 never executed
+        3:  263-block 68
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  263-block 69
+call   27 returned 3
+    $$$$$:  263-block 206
+call   28 never executed
+    $$$$$:  263-block 208
+    $$$$$:  263-block 209
+    $$$$$:  263-block 210
+    $$$$$:  263-block 211
+    $$$$$:  263-block 212
+    $$$$$:  263-block 213
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  263-block 215
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  263-block 216
+call   36 never executed
+    $$$$$:  263-block 218
+call   37 never executed
+        -:  264:
+        -:  265:  // One thread flips between the two audio tracks while the others hammer
+        -:  266:  // the control surface; before the pending-decoder handoff this raced on
+        -:  267:  // audio_decoder_ (and the error-string path aborted on macOS).
+function DOCTEST_ANON_FUNC_25()::{lambda(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&)#1}::operator()(std::mersenne_twister_engine<unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul>&) const called 171337 returned 100% blocks executed 92%
+        3:  268:  runStorm(4, 300ms, [&backend, &ids](std::mt19937& rng) {
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+        3:  268-block 71
+call    3 returned 3
+branch  4 taken 3 (fallthrough)
+branch  5 taken 0 (throw)
+    $$$$$:  268-block 221
+   171337:  269:    switch (rng() % 5) {
+   171337:  269-block 2
+call    0 returned 171331
+branch  1 taken 34042
+branch  2 taken 34295
+branch  3 taken 34646
+branch  4 taken 34346
+branch  5 taken 34002
+    34042:  270:      case 0: (void)backend->selectTrack(soar::TrackType::Audio, ids.audio[rng() % 2]); break;
+    34042:  270-block 4
+call    0 returned 34033
+call    1 returned 34032
+call    2 returned 34034
+call    3 returned 34055
+    34295:  271:      case 1: (void)backend->pause(); break;
+    34295:  271-block 8
+call    0 returned 34285
+call    1 returned 34177
+    34646:  272:      case 2: (void)backend->play(); break;
+    34646:  272-block 10
+call    0 returned 34628
+call    1 returned 34640
+    34346:  273:      case 3: (void)backend->seek(std::chrono::milliseconds(rng() % 3000)); break;
+    34346:  273-block 12
+call    0 returned 34334
+call    1 returned 34337
+branch  2 taken 34337 (fallthrough)
+branch  3 taken 0 (throw)
+    34337:  273-block 14
+call    4 returned 34337
+call    5 returned 34352
+branch  6 taken 34352 (fallthrough)
+branch  7 taken 0 (throw)
+    34352:  273-block 16
+    $$$$$:  273-block 24
+    $$$$$:  273-block 25
+call    8 never executed
+    34002:  274:      default: {
+    34002:  275:        const auto s = backend->state();
+    34002:  275-block 17
+call    0 returned 34198
+call    1 returned 34215
+    34215:  276:        const auto i = backend->mediaInfo().selected_audio;
+call    0 returned 34213
+call    1 returned 34214
+branch  2 taken 34214 (fallthrough)
+branch  3 taken 0 (throw)
+    34214:  276-block 21
+call    4 returned 34213
+        -:  277:        (void)s;
+        -:  278:        (void)i;
+    34213:  279:        break;
+        -:  280:      }
+        -:  281:    }
+   171437:  282:  });
+   171437:  282-block 23
+        -:  283:
+        -:  284:  // The backend must still shut down cleanly after the storm.
+        3:  285:  const auto final_state = backend->state();
+        3:  285-block 72
+call    0 returned 3
+call    1 returned 3
+branch  2 taken 3 (fallthrough)
+branch  3 taken 0 (throw)
+        3:  285-block 74
+call    4 returned 3
+branch  5 taken 3 (fallthrough)
+branch  6 taken 0 (throw)
+       6*:  286:  CHECK((final_state == soar::PlaybackState::Playing ||
+        3:  286-block 75
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+branch  4 taken 2 (fallthrough)
+branch  5 taken 1
+        2:  286-block 79
+branch  6 taken 0 (fallthrough)
+branch  7 taken 2
+    %%%%%:  286-block 80
+branch  8 never executed (fallthrough)
+branch  9 never executed
+        3:  286-block 81
+    %%%%%:  286-block 82
+        3:  286-block 83
+call   10 returned 3
+branch 11 taken 3 (fallthrough)
+branch 12 taken 0 (throw)
+        3:  286-block 84
+call   13 returned 3
+branch 14 taken 3 (fallthrough)
+branch 15 taken 0 (throw)
+        3:  286-block 85
+call   16 returned 3
+branch 17 taken 3 (fallthrough)
+branch 18 taken 0 (throw)
+        3:  286-block 86
+call   19 returned 3
+        3:  286-block 88
+call   20 returned 3
+branch 21 taken 3 (fallthrough)
+branch 22 taken 0 (throw)
+        3:  286-block 89
+branch 23 taken 0 (fallthrough)
+branch 24 taken 3
+    %%%%%:  286-block 90
+call   25 never executed
+        3:  286-block 91
+call   26 returned 3
+branch 27 taken 3 (fallthrough)
+branch 28 taken 0 (throw)
+        3:  286-block 92
+call   29 returned 3
+    $$$$$:  286-block 225
+call   30 never executed
+    $$$$$:  286-block 227
+    $$$$$:  286-block 228
+    $$$$$:  286-block 229
+    $$$$$:  286-block 230
+    $$$$$:  286-block 231
+    $$$$$:  286-block 232
+call   31 never executed
+call   32 never executed
+branch 33 never executed (fallthrough)
+branch 34 never executed (throw)
+    $$$$$:  286-block 234
+call   35 never executed
+branch 36 never executed (fallthrough)
+branch 37 never executed (throw)
+    $$$$$:  286-block 235
+call   38 never executed
+    $$$$$:  286-block 237
+call   39 never executed
+        -:  287:         final_state == soar::PlaybackState::Paused ||
+        -:  288:         final_state == soar::PlaybackState::Stopped));
+       6*:  289:  CHECK(backend->stop());
+        3:  289-block 94
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  289-block 99
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  289-block 100
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  289-block 101
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  289-block 102
+call   17 returned 3
+        3:  289-block 104
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  289-block 105
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  289-block 106
+call   23 never executed
+        3:  289-block 107
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  289-block 108
+call   27 returned 3
+    $$$$$:  289-block 243
+call   28 never executed
+    $$$$$:  289-block 245
+    $$$$$:  289-block 246
+    $$$$$:  289-block 247
+    $$$$$:  289-block 248
+    $$$$$:  289-block 249
+    $$$$$:  289-block 250
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  289-block 252
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  289-block 253
+call   36 never executed
+    $$$$$:  289-block 255
+call   37 never executed
+        3:  290:  backend->close();
+call    0 returned 3
+call    1 returned 3
+branch  2 taken 3 (fallthrough)
+branch  3 taken 0 (throw)
+       6*:  291:  CHECK(backend->state() == soar::PlaybackState::Stopped);
+        3:  291-block 112
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  291-block 117
+call    8 returned 3
+branch  9 taken 3 (fallthrough)
+branch 10 taken 0 (throw)
+        3:  291-block 118
+call   11 returned 3
+branch 12 taken 3 (fallthrough)
+branch 13 taken 0 (throw)
+        3:  291-block 119
+call   14 returned 3
+branch 15 taken 3 (fallthrough)
+branch 16 taken 0 (throw)
+        3:  291-block 120
+call   17 returned 3
+        3:  291-block 122
+call   18 returned 3
+branch 19 taken 3 (fallthrough)
+branch 20 taken 0 (throw)
+        3:  291-block 123
+branch 21 taken 0 (fallthrough)
+branch 22 taken 3
+    %%%%%:  291-block 124
+call   23 never executed
+        3:  291-block 125
+call   24 returned 3
+branch 25 taken 3 (fallthrough)
+branch 26 taken 0 (throw)
+        3:  291-block 126
+call   27 returned 3
+    $$$$$:  291-block 261
+call   28 never executed
+    $$$$$:  291-block 263
+    $$$$$:  291-block 264
+    $$$$$:  291-block 265
+    $$$$$:  291-block 266
+    $$$$$:  291-block 267
+    $$$$$:  291-block 268
+    $$$$$:  291-block 269
+call   29 never executed
+call   30 never executed
+branch 31 never executed (fallthrough)
+branch 32 never executed (throw)
+    $$$$$:  291-block 271
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  291-block 272
+call   36 never executed
+    $$$$$:  291-block 274
+call   37 never executed
+       6*:  292:  CHECK(backend->mediaInfo().tracks.empty());
+        3:  292-block 128
+call    0 returned 3
+branch  1 taken 3 (fallthrough)
+branch  2 taken 0 (throw)
+call    3 returned 3
+call    4 returned 3
+call    5 returned 3
+branch  6 taken 3 (fallthrough)
+branch  7 taken 0 (throw)
+        3:  292-block 133
+call    8 returned 3
+call    9 returned 3
+branch 10 taken 3 (fallthrough)
+branch 11 taken 0 (throw)
+        3:  292-block 135
+call   12 returned 3
+branch 13 taken 3 (fallthrough)
+branch 14 taken 0 (throw)
+        3:  292-block 136
+call   15 returned 3
+branch 16 taken 3 (fallthrough)
+branch 17 taken 0 (throw)
+        3:  292-block 137
+call   18 returned 3
+call   19 returned 3
+        3:  292-block 140
+call   20 returned 3
+branch 21 taken 3 (fallthrough)
+branch 22 taken 0 (throw)
+        3:  292-block 141
+branch 23 taken 0 (fallthrough)
+branch 24 taken 3
+    %%%%%:  292-block 142
+call   25 never executed
+        3:  292-block 143
+call   26 returned 3
+branch 27 taken 3 (fallthrough)
+branch 28 taken 0 (throw)
+        3:  292-block 144
+call   29 returned 3
+    $$$$$:  292-block 280
+call   30 never executed
+    $$$$$:  292-block 282
+call   31 never executed
+    $$$$$:  292-block 284
+    $$$$$:  292-block 285
+    $$$$$:  292-block 286
+    $$$$$:  292-block 287
+    $$$$$:  292-block 288
+    $$$$$:  292-block 289
+    $$$$$:  292-block 290
+call   32 never executed
+call   33 never executed
+branch 34 never executed (fallthrough)
+branch 35 never executed (throw)
+    $$$$$:  292-block 292
+call   36 never executed
+branch 37 never executed (fallthrough)
+branch 38 never executed (throw)
+    $$$$$:  292-block 293
+call   39 never executed
+    $$$$$:  292-block 295
+call   40 never executed
+        3:  293:}
+call    0 returned 3
+call    1 returned 3
+        3:  293-block 148
+call    2 returned 3
+branch  3 taken 3 (fallthrough)
+branch  4 taken 0
+    $$$$$:  293-block 298
+call    5 never executed
+    $$$$$:  293-block 300
+call    6 never executed
+    $$$$$:  293-block 302
+call    7 never executed
+        -:  294:
+        -:  295:#else // !SOAR_WITH_FFMPEG
+        -:  296:
+        -:  297:// Keep the test binary meaningful when the FFmpeg backend is not compiled.
+        -:  298:#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+        -:  299:#include <doctest/doctest.h>
+        -:  300:
+        -:  301:TEST_CASE("ffmpeg backend concurrency tests require SOAR_WITH_FFMPEG") {
+        -:  302:  MESSAGE("FFmpeg backend not compiled in; nothing to test here");
+        -:  303:}
+        -:  304:
+        -:  305:#endif
