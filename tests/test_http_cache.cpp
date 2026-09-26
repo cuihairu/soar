@@ -174,7 +174,9 @@ int freeTcpPort() {
     return -1;
   }
   ::close(s);
-  return ::ntohs(addr.sin_port);
+  // No :: prefix: on BSD-derived systems ntohs is a function-like macro,
+  // and "::ntohs(...)" is a syntax error. (Linux tolerates both.)
+  return ntohs(addr.sin_port);
 }
 
 // RAII guard around RLIMIT_FSIZE: every destructor path restores the
