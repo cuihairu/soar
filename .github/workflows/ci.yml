@@ -103,6 +103,8 @@ jobs:
         # tsan timeouts in runs 36068584525 and 36078113614), because the
         # captured doctest output — including the last test case started —
         # is otherwise discarded.
+        env:
+          SDL_AUDIODRIVER: dummy
         run: ctest --preset linux-system --output-on-failure
 
       - name: Test (macOS/Windows)
