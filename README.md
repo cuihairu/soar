@@ -115,7 +115,7 @@ cmake --preset default && cmake --build --preset default   # Debug
 ## 路线图
 
 - **v0.1（MVP，进行中）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）；
-- **v0.2**：播放列表、截图、A-B 循环、音频设备选择（后三项已落地）、HLS/DASH/RTSP、字幕体验（字体/大小/同步偏移）；
+- **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP 冒烟、字幕体验（字体/大小/同步偏移）——除播放列表的窗口集成外均已落地；
 - **v1.0**：硬解（Hardware Decoding）与 HDR、投屏（AirPlay/Chromecast/DLNA）、媒体库与刮削、插件体系。
 
 完整边界与"明确不做"清单见 [docs/mvp.md](docs/mvp.md)。

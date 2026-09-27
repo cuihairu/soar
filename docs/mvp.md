@@ -52,8 +52,8 @@
 - 截图已落地：`S` 键把最近呈现的视频帧保存为 `screenshot.png`（FFmpeg 内置 PNG 编码器，YUV420P→RGB24 转换；失败只记 lastError 并 Toast 提示）
 - 音频输出设备选择已落地（桌面）：`IBackend` 增加端点枚举/查询/切换三方法（空串=系统默认），FFmpeg 后端经 SDL2 枚举设备，解码线程在下一个音频帧按新端点重开（旧端点队列自然放完，无突兀间断；暂停时切换在恢复播放时生效），OSC 音轨菜单尾部列出「Output: default」+ 主机端点；选择是端点状态而非媒体状态，open 前即可用，close 不重置
 - A-B 循环已落地：`L` 键三段（定 A → 定 B → 清除），解码线程到点回跳（到 EOF 也回跳，即尾锚定循环），手动 seek 解除（mpv 语义）
-- 更完整协议：HLS/DASH/RTSP（取决于后端）
-- 字幕体验：字体/大小/同步偏移（基础）
+- 更完整协议已落地：HLS/DASH 走本地 HTTP server 冒烟（单 variant/master 双 variant VOD seek 与播放推进，`SOAR_TEST_HLS_*`/`SOAR_TEST_DASH_AUDIO` 夹具），RTSP 走测试内嵌的最小 RTSP 服务器（DESCRIBE/SETUP/PLAY + PCMA over RTP）做直播流冒烟；三者都是 FFmpeg demuxer 透传，后端零改动（已知边界：`.sdp` 文件入口会被 libavformat 对嵌套 rtp 子流的默认白名单拒绝，rtsp:// 直连不受影响）
+- 字幕体验已落地（基础）：字幕设置浮层（字号滑条、同步偏移、可见性），`V` 显隐、`[`/`]` 偏移步进，渲染与解析管线见 §1.3 与字幕批次说明
 - 网络流基线：HTTP(S) 顺序播放冒烟、缓冲感知事件（见 §5 的 P0–P2）
 
 ## 3. v1.0（“万能播放器”更接近的形态）
