@@ -94,6 +94,10 @@ public:
   bool clearLoopAB() override;
   bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const override;
 
+  std::vector<std::string> audioOutputDevices() const override;
+  std::string currentAudioOutputDevice() const override;
+  bool selectAudioOutputDevice(const std::string& name) override;
+
   PlaybackState state() const override;
   std::string lastError() const override;
 
@@ -263,6 +267,14 @@ private:
 
   struct SDLAudio;
   std::unique_ptr<SDLAudio> sdl_audio_;
+
+  // Requested output endpoint, "" = system default (backend.h contract).
+  // Guarded by its own mutex: selected from the UI thread, read by the
+  // decode thread when (re)opening the device. `sdl_audio_` itself is
+  // only touched under decode control except for a live device switch,
+  // which goes through SDLAudio's internal lock.
+  mutable std::mutex audio_device_mutex_;
+  std::string audio_device_;
 
   // Stream parameters
   AudioParams audio_params_{};

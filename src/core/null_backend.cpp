@@ -212,6 +212,25 @@ public:
     return true;
   }
 
+  // One fake endpoint named "null": enough to drive the selection state
+  // machine. Enumeration and selection do not require an open media — a
+  // desktop player picks the output before opening anything.
+  std::vector<std::string> audioOutputDevices() const override {
+    return {"null"};
+  }
+
+  std::string currentAudioOutputDevice() const override {
+    return device_;
+  }
+
+  bool selectAudioOutputDevice(const std::string& name) override {
+    if (!name.empty() && name != "null") {
+      return fail("selectAudioOutputDevice: unknown device '" + name + "'");
+    }
+    device_ = name;
+    return true;
+  }
+
   PlaybackState state() const override {
     return state_;
   }
@@ -248,6 +267,7 @@ private:
   bool muted_{false};
   std::chrono::milliseconds loop_a_{-1};
   std::chrono::milliseconds loop_b_{-1};
+  std::string device_;
 };
 
 } // namespace

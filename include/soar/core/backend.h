@@ -125,6 +125,24 @@ public:
   // True while a loop is armed; the endpoints land in out_a/out_b.
   virtual bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const = 0;
 
+  // Audio output device selection (v0.2, desktop): enumerate the host's
+  // audio output endpoints. The names are backend-specific strings; the
+  // empty string always means "system default". Enumeration does not
+  // require an open media; backends without a selectable endpoint (no
+  // SDL2 audio) return an empty list.
+  virtual std::vector<std::string> audioOutputDevices() const = 0;
+  // The endpoint the backend plays through, or is about to ("" = system
+  // default). This is the requested selection, not a probe of the host:
+  // it stays put until selectAudioOutputDevice() succeeds.
+  virtual std::string currentAudioOutputDevice() const = 0;
+  // Switch the output endpoint. With live playback the switch takes
+  // effect within one audio frame (what is queued on the old endpoint
+  // plays out first); with no device open yet the choice is remembered
+  // and the next open uses it. Rejects names that are neither "" nor in
+  // audioOutputDevices(). A rejected switch is a UI-level mistake: it
+  // lands in lastError() only, no Error event, no state change.
+  virtual bool selectAudioOutputDevice(const std::string& name) = 0;
+
   virtual PlaybackState state() const = 0;
   virtual std::string lastError() const = 0;
 };

@@ -9,6 +9,7 @@
 #include "ui/ui_state.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <string>
@@ -264,6 +265,17 @@ TEST_CASE("defaultRecentPath follows XDG_STATE_HOME then HOME") {
   CHECK(soar::app::defaultRecentPath() == "soar-recent.txt");
   ::setenv("HOME", home, 1);
 
+  // Set but empty: a shell that exports XDG_STATE_HOME= (or a CI runner
+  // with HOME=) must not produce a path rooted at the working directory,
+  // so an empty value counts as unset and the next source is tried.
+  ::setenv("XDG_STATE_HOME", "", 1);
+  CHECK(soar::app::defaultRecentPath() ==
+        std::string(home) + "/.local/state/soar/recent.txt");
+  ::unsetenv("XDG_STATE_HOME");
+  ::setenv("HOME", "", 1);
+  CHECK(soar::app::defaultRecentPath() == "soar-recent.txt");
+  ::setenv("HOME", home, 1);
+
   // Not a fixture leak: restore nothing — XDG_STATE_HOME unset is the
   // default state for the next test binary run.
 }
@@ -448,6 +460,41 @@ TEST_CASE("PlaylistStore next/prev shuffle picks other entry deterministically")
   CHECK(ps.next() == n1);
   ps.setCurrent(n1);
   CHECK(ps.next() == n2);
+
+  // prev() is the same picker, not a mirrored step: shuffling backward
+  // lands on another entry, never on the one playing.
+  ps.reseed(0x4321);
+  ps.setCurrent(0);
+  const std::size_t back = ps.prev();
+  CHECK(back < 3);
+  CHECK(back != 0);
+  ps.reseed(0x4321);
+  CHECK(ps.prev() == back);
+}
+
+TEST_CASE("PlaylistStore shuffle never picks the current entry, whatever the seed") {
+  // The picker nudges a collision by one slot. A fixed seed cannot prove
+  // the nudge is there, so walk a stretch of seeds and assert the
+  // contract: with three entries, a step returns an index that is not the
+  // current one. Any seed whose raw draw lands on current_ goes through
+  // the nudge, and the sequence still satisfies the contract.
+  soar::app::PlaylistStore ps;
+  ps.add("a");
+  ps.add("b");
+  ps.add("c");
+  ps.setCurrent(1);
+  ps.setShuffle(true);
+
+  std::size_t collisions = 0;
+  for (std::uint64_t seed = 1; seed <= 64; ++seed) {
+    ps.reseed(seed);
+    const std::size_t picked = ps.next();
+    REQUIRE(picked < 3);
+    if (picked == 1) {
+      ++collisions;  // the nudge failed: the contract is broken
+    }
+  }
+  CHECK(collisions == 0);
 }
 
 TEST_CASE("PlaylistStore advance sequential with Loop::Off stops when exhausted") {

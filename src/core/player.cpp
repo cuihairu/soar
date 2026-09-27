@@ -90,6 +90,18 @@ bool Player::loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds&
   return backend_ ? backend_->loopAB(out_a, out_b) : false;
 }
 
+std::vector<std::string> Player::audioOutputDevices() const {
+  return backend_ ? backend_->audioOutputDevices() : std::vector<std::string>{};
+}
+
+std::string Player::currentAudioOutputDevice() const {
+  return backend_ ? backend_->currentAudioOutputDevice() : std::string{};
+}
+
+bool Player::selectAudioOutputDevice(const std::string& name) {
+  return backend_ ? backend_->selectAudioOutputDevice(name) : false;
+}
+
 PlaybackState Player::state() const {
   return backend_ ? backend_->state() : PlaybackState::Stopped;
 }

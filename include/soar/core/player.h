@@ -42,6 +42,11 @@ public:
   bool clearLoopAB();
   bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const;
 
+  // Audio output device selection (see IBackend for the contract).
+  std::vector<std::string> audioOutputDevices() const;
+  std::string currentAudioOutputDevice() const;
+  bool selectAudioOutputDevice(const std::string& name);
+
   PlaybackState state() const;
   std::string lastError() const;
 

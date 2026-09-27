@@ -234,6 +234,37 @@ TEST_CASE("A-B loop rejects unseekable sources and survives close") {
   CHECK_FALSE(fx.player.loopAB(a, b));
 }
 
+TEST_CASE("audio output device selection works before open") {
+  Fixture fx;
+
+  // A desktop player picks the output before opening anything: the null
+  // backend exposes one fake endpoint and tracks the choice. "" is the
+  // system default, both before any selection and after switching back.
+  const auto devices = fx.player.audioOutputDevices();
+  REQUIRE(devices.size() == 1);
+  CHECK(devices[0] == "null");
+  CHECK(fx.player.currentAudioOutputDevice().empty());
+
+  CHECK(fx.player.selectAudioOutputDevice("null"));
+  CHECK(fx.player.currentAudioOutputDevice() == "null");
+  CHECK(fx.player.selectAudioOutputDevice(""));
+  CHECK(fx.player.currentAudioOutputDevice().empty());
+
+  // Unknown names are rejected without touching the selection.
+  CHECK_FALSE(fx.player.selectAudioOutputDevice("no-such-endpoint"));
+  CHECK(fx.player.lastError().find("selectAudioOutputDevice") != std::string::npos);
+  CHECK(fx.player.currentAudioOutputDevice().empty());
+  CHECK(fx.player.state() == soar::PlaybackState::Stopped);
+
+  // The choice survives opening media (it is endpoint state, not media
+  // state) and close() does not reset it either.
+  CHECK(fx.player.selectAudioOutputDevice("null"));
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  CHECK(fx.player.currentAudioOutputDevice() == "null");
+  fx.player.close();
+  CHECK(fx.player.currentAudioOutputDevice() == "null");
+}
+
 TEST_CASE("selectTrack validates ids and updates media info") {
   Fixture fx;
   REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
@@ -303,6 +334,9 @@ TEST_CASE("player without a backend fails safely") {
   CHECK_FALSE(player.setLoopAB(0ms, 1s));
   CHECK_FALSE(player.clearLoopAB());
   CHECK_FALSE(player.loopAB(loop_a, loop_b));
+  CHECK(player.audioOutputDevices().empty());
+  CHECK(player.currentAudioOutputDevice().empty());
+  CHECK_FALSE(player.selectAudioOutputDevice(""));
   player.close(); // no backend: must be a no-op, not a crash
 
   CHECK(player.state() == soar::PlaybackState::Stopped);

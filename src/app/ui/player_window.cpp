@@ -860,6 +860,32 @@ class PlayerHud {
         }
       }
     }
+    // Output endpoint under the audio combo (v0.2): the tracks above pick
+    // the stream, these entries pick where it comes out. Enumerated only
+    // while the combo is open — SDL device discovery is not per-frame
+    // material. Host names can be long descriptive strings; the label is
+    // clipped but the selection carries the full name.
+    if (type == TrackType::Audio) {
+      ImGui::Separator();
+      const std::string current = player_.currentAudioOutputDevice();
+      auto deviceItem = [&](const char* label, const std::string& value) {
+        const bool is_sel = current == value;
+        if (ImGui::Selectable(label, is_sel) && !is_sel) {
+          if (player_.selectAudioOutputDevice(value)) {
+            st_.toast.show(value.empty() ? "Output: default"
+                                         : "Output: " + value.substr(0, 24),
+                           now);
+          } else {
+            st_.toast.show("Device switch failed", now);
+          }
+        }
+      };
+      deviceItem("Output: default", "");
+      for (const auto& d : player_.audioOutputDevices()) {
+        const std::string label = d.substr(0, 28);
+        deviceItem(label.c_str(), d);
+      }
+    }
     ImGui::EndCombo();
   }
 

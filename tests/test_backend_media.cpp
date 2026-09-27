@@ -52,6 +52,21 @@ bool mediaAvailable(std::string& out_path) {
   return envMedia("SOAR_TEST_MEDIA", out_path);
 }
 
+// Position-based wait instead of a fixed sleep: on a cold page cache the
+// first frame can take seconds to arrive, and a sleep long enough for the
+// slow case only makes the fast case slower.
+bool waitForPosition(const soar::IBackend& backend, std::chrono::milliseconds min_pos,
+                     std::chrono::milliseconds budget) {
+  const auto deadline = std::chrono::steady_clock::now() + budget;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (backend.position() >= min_pos) {
+      return true;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+  return backend.position() >= min_pos;
+}
+
 struct CountingSink : soar::IEventSink {
   std::atomic<int> state_changed{0};
   std::atomic<int> media_info_changed{0};
@@ -791,6 +806,86 @@ TEST_CASE("saveScreenshot forces PNG encoder open failure") {
   backend->stop();
   backend->close();
   ::unlink("forced_fail.png");
+}
+
+TEST_CASE("audio output devices enumerate and switch without media") {
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  // Selection is endpoint state, not media state: it works before open.
+  // "" means system default and is always valid.
+  CHECK(backend->currentAudioOutputDevice().empty());
+  CHECK(backend->selectAudioOutputDevice(""));
+
+  // Unknown names are a UI-level mistake: lastError() only, no Error
+  // event (the saveScreenshot precedent), no selection change.
+  CHECK_FALSE(backend->selectAudioOutputDevice("soar-no-such-device"));
+  CHECK(backend->lastError().find("selectAudioOutputDevice") != std::string::npos);
+  CHECK(sink.errors.load() == 0);
+  CHECK(backend->currentAudioOutputDevice().empty());
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+
+  // Whatever the host enumerates (the dummy driver reports one device;
+  // a runner without any audio stack may report none), every listed
+  // name is selectable and sticks.
+  for (const auto& name : backend->audioOutputDevices()) {
+    INFO("device: ", name);
+    CHECK(backend->selectAudioOutputDevice(name));
+    CHECK(backend->currentAudioOutputDevice() == name);
+  }
+  CHECK(backend->selectAudioOutputDevice(""));
+  CHECK(backend->currentAudioOutputDevice().empty());
+  CHECK(sink.errors.load() == 0);
+}
+
+TEST_CASE("output device switch during playback keeps playing") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping device-switch test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  // Pick a concrete endpoint *before* the first frame: that makes the
+  // decode thread open that device by name instead of the default one.
+  const auto devices = backend->audioOutputDevices();
+  if (!devices.empty()) {
+    REQUIRE(backend->selectAudioOutputDevice(devices.front()));
+  }
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+  REQUIRE(waitForPosition(*backend, 1ms, 30s));
+  const auto before = backend->position();
+
+  // Live switch back to the default: the open endpoint is re-opened on
+  // the spot, the decode thread re-fills the new queue, the clock never
+  // stops.
+  REQUIRE(backend->selectAudioOutputDevice(""));
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+  CHECK(waitForPosition(*backend, before + 200ms, 30s));
+
+  // And back to the concrete device, still playing.
+  if (!devices.empty()) {
+    REQUIRE(backend->selectAudioOutputDevice(devices.front()));
+    CHECK(backend->state() == soar::PlaybackState::Playing);
+    const auto after = backend->position();
+    CHECK(waitForPosition(*backend, after + 200ms, 30s));
+  }
+  CHECK(sink.errors.load() == 0);
+
+  backend->stop();
+  backend->close();
+
+  // Selection outlives the media: the endpoint stays as it was chosen,
+  // and it is what the next open will use.
+  if (!devices.empty()) {
+    CHECK(backend->currentAudioOutputDevice() == devices.front());
+  }
 }
 
 TEST_CASE("media without subtitle tracks rejects subtitle selection") {

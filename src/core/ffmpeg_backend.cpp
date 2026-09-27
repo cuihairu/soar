@@ -210,8 +210,21 @@ struct FFmpegBackend::SDLAudio {
   SDL_AudioSpec obtained{};
   int sample_rate{0};
   int channels{0};
+  // Endpoint currently open (or last opened): "" = system default. Part
+  // of the reuse check — a device switch must re-open even when the
+  // stream parameters did not change.
+  std::string device;
 
-  bool ensureOpen(int target_rate, int target_channels, std::string& err) {
+  // Everything here is reachable from the decode thread (open, queue,
+  // backpressure probe) and from whoever calls stop()/close() — the UI
+  // thread — so the struct guards itself. The lock is not contended in
+  // practice: a device switch does not close anything, it only changes the
+  // name the next ensureOpen() compares against. Mutable: the queue-depth
+  // probe is a const read that still has to serialize.
+  mutable std::mutex mtx;
+
+  bool ensureOpen(int target_rate, int target_channels, const std::string& device_name, std::string& err) {
+    std::lock_guard<std::mutex> lock(mtx);
     if (SDL_WasInit(SDL_INIT_AUDIO) == 0) {
       if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
         err = SDL_GetError();
@@ -219,11 +232,11 @@ struct FFmpegBackend::SDLAudio {
       }
     }
 
-    if (dev != 0 && sample_rate == target_rate && channels == target_channels) {
+    if (dev != 0 && sample_rate == target_rate && channels == target_channels && device == device_name) {
       return true;
     }
 
-    close();
+    closeLocked();
 
     SDL_AudioSpec wanted{};
     wanted.freq = target_rate;
@@ -232,7 +245,8 @@ struct FFmpegBackend::SDLAudio {
     wanted.samples = 2048;
     wanted.callback = nullptr; // queued audio
 
-    dev = SDL_OpenAudioDevice(nullptr, 0, &wanted, &obtained, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
+    dev = SDL_OpenAudioDevice(device_name.empty() ? nullptr : device_name.c_str(), 0, &wanted,
+                              &obtained, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
     if (dev == 0) {
       err = SDL_GetError();
       return false;
@@ -240,17 +254,29 @@ struct FFmpegBackend::SDLAudio {
 
     sample_rate = obtained.freq;
     channels = obtained.channels;
+    device = device_name;
     SDL_PauseAudioDevice(dev, 0);
     return true;
   }
 
+  // There is deliberately no "reopen for another device" entry point: the
+  // switch is a name change plus the next ensureOpen() from the decode
+  // thread, which re-opens under this same lock. Doing it in the UI
+  // thread would mean closing an endpoint while a queue is draining.
+
   void clear() {
+    std::lock_guard<std::mutex> lock(mtx);
     if (dev != 0) {
       SDL_ClearQueuedAudio(dev);
     }
   }
 
   void close() {
+    std::lock_guard<std::mutex> lock(mtx);
+    closeLocked();
+  }
+
+  void closeLocked() {
     if (dev != 0) {
       SDL_CloseAudioDevice(dev);
       dev = 0;
@@ -258,9 +284,11 @@ struct FFmpegBackend::SDLAudio {
     sample_rate = 0;
     channels = 0;
     obtained = SDL_AudioSpec{};
+    device.clear();
   }
 
   std::size_t queuedBytes() const {
+    std::lock_guard<std::mutex> lock(mtx);
     if (dev == 0) {
       return 0;
     }
@@ -268,6 +296,7 @@ struct FFmpegBackend::SDLAudio {
   }
 
   bool queue(const void* data, std::size_t bytes, std::string& err) {
+    std::lock_guard<std::mutex> lock(mtx);
     if (dev == 0) {
       err = "audio device not open";
       return false;
@@ -281,7 +310,7 @@ struct FFmpegBackend::SDLAudio {
 };
 #else
 struct FFmpegBackend::SDLAudio {
-  bool ensureOpen(int, int, std::string&) { return false; }
+  bool ensureOpen(int, int, const std::string&, std::string&) { return false; }
   void clear() {}
   void close() {}
   std::size_t queuedBytes() const { return 0; }
@@ -1269,6 +1298,57 @@ bool FFmpegBackend::loopAB(std::chrono::milliseconds& out_a, std::chrono::millis
   }
   out_a = std::chrono::milliseconds(a);
   out_b = std::chrono::milliseconds(b);
+  return true;
+}
+
+std::vector<std::string> FFmpegBackend::audioOutputDevices() const {
+#ifndef SOAR_WITH_SDL2
+  return {};
+#else
+  // Enumeration needs the audio subsystem but not an open stream; without
+  // a usable driver (headless CI) SDL reports zero devices and the caller
+  // sees an empty list.
+  if (SDL_WasInit(SDL_INIT_AUDIO) == 0) {
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+      return {};
+    }
+  }
+  std::vector<std::string> names;
+  const int count = SDL_GetNumAudioDevices(/*iscapture=*/0);
+  for (int i = 0; i < count; ++i) {
+    const char* name = SDL_GetAudioDeviceName(i, /*iscapture=*/0);
+    if (name && *name) {
+      names.emplace_back(name);
+    }
+  }
+  return names;
+#endif
+}
+
+std::string FFmpegBackend::currentAudioOutputDevice() const {
+  std::lock_guard<std::mutex> lock(audio_device_mutex_);
+  return audio_device_;
+}
+
+bool FFmpegBackend::selectAudioOutputDevice(const std::string& name) {
+  // A UI-level mistake, not a playback error: lastError() only (the
+  // saveScreenshot precedent — no Error event, no state change).
+  if (!name.empty()) {
+    const std::vector<std::string> known = audioOutputDevices();
+    if (std::find(known.begin(), known.end(), name) == known.end()) {
+      return fail("selectAudioOutputDevice: unknown device '" + name + "'", /*emit_event=*/false);
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(audio_device_mutex_);
+    audio_device_ = name;
+  }
+  // Live playback: the decode thread's next ensureOpen() re-opens on the
+  // new endpoint (the name is part of its reuse check), so the switch
+  // lands within one audio frame. What is still queued on the old device
+  // plays out first — that is the shortest, least audible switch, and it
+  // costs the UI thread nothing. A switch made while paused applies on
+  // resume, for the same reason.
   return true;
 }
 
@@ -2310,7 +2390,12 @@ void FFmpegBackend::playAudioFrame(const AVFrame* frame) {
   const int target_rate = std::clamp(static_cast<int>(std::lround(in_rate * rate)), 8000, 192000);
 
   std::string sdl_err;
-  if (!sdl_audio_->ensureOpen(target_rate, in_channels, sdl_err)) {
+  std::string device_name;
+  {
+    std::lock_guard<std::mutex> lock(audio_device_mutex_);
+    device_name = audio_device_;
+  }
+  if (!sdl_audio_->ensureOpen(target_rate, in_channels, device_name, sdl_err)) {
     return;
   }
 
