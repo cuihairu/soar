@@ -10,19 +10,22 @@ CI 的 coverage job（Ubuntu，GCC `--coverage` + gcovr）统计 `src/` + `inclu
 - 解码线程会让 gcov 的分支计数变负（GCC bug #68080），用 `--gcov-ignore-parse-errors negative_hits.warn_once_per_file` 忽略；行数据不受影响；
 - 多线程计数噪声：忽略负值后个别行计数偶发归零，覆盖率对比时 ±1-2 行抖动**不是回归**；
 - **计数损坏会伪装成"行缺失"**：窗口 CLI（解码线程 + 主循环 + SDL 线程）里，纹理重建的 212/215 两行曾**连续两轮**报 missing，但控制流证明它们必然执行过（213/214 覆盖而 212 缺失在 -O0 精确计数下不可能成立；CLI 事件流的 position 推进到 4333ms 证明第二/三分辨率帧确实发布过）。第三轮计数正常即显形覆盖。定性行缺失时先做控制流一致性检查，必要时用被测进程的事件流交叉验证，不要把假缺失定性成不可达。
+- **仓库里同时存在两棵带插桩的树 = 读数作废**：gcovr 递归扫的是整个 `--root`，`--object-directory` 只是加了一个搜索路径，不构成限制。另一棵树残留的 `.gcno` 会被一起读进来，而它的行号来自**它自己那版源码**，与本树错位；两份数据的并集看起来比任何一次真实测量都高（2026-09-27 同一份代码先后读出 89.7% 与 77.6%，真值 94.2%）。本地复现门禁前先 `find . -name '*.gcno' -not -path './<本树>/*' -delete`，或干脆在干净 worktree 里单测一棵树。同一原因，测完要清掉手工 `gcov -o` / `gcovr --gcov-keep` 落在仓库根的 `.gcov` 中间文件——陈旧的中间文件也会被下一次 gcovr 当数据吃进去。
 
 FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job 是 `ffmpeg_backend.cpp` 覆盖数字的唯一来源。
 
 ## 2. 当前水位与门禁
 
-| 维度 | 实测（A-B loop + playlist 批后，本地 Linux，见 §3.9 续） | 门禁（`--fail-under-*`） |
+| 维度 | 实测（音频输出设备选择批后，CI coverage job，见下） | 门禁（`--fail-under-*`） |
 |---|---|---|
-| 行 | 94.4%（2950/3124） | 94.1% |
-| 分支 | 82.4%（2662/3231） | 82.4% |
+| 行 | 94.3%（3116/3304） | 94.1% |
+| 分支 | 83.3%（2786/3346） | 82.4% |
 
-分文件行覆盖：`main.cpp` 93.4%（127/136）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 84.6%（778/920）、`ffmpeg_backend.cpp` 91.0%（1274/1400）、`http_cache.cpp` 98.5%（404/410）、`null_backend.cpp` 99.3%（142/143）、`player.cpp` 100%（59/59）。
+分文件行覆盖：`main.cpp` 98.5%（130/132）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 94.4%（812/860）、`ffmpeg_backend.cpp` 91.1%（1376/1511）、`http_cache.cpp` 99.3%（407/410）、`null_backend.cpp` 100%、`player.cpp` 100%、四个头文件 100%。
 
-分文件分支覆盖：`main.cpp` 93.4%（127/136）、`ui_state.cpp` 90.0%（162/180）、`ui_state.h` 92.9%（13/14）、`player_window.cpp` 84.6%（778/920）、`player.cpp` 90.6%（48/53）、`ffmpeg_backend.cpp` 77.8%（972/1249）、`null_backend.cpp` 78.0%（131/168）、`http_cache.cpp` 83.0%（424/511）。
+分文件分支覆盖：`main.cpp` 93.8%（120/128）、`ui_state.cpp` 96.7%（176/182）、`ui_state.h` 92.9%（13/14）、`player_window.cpp` 83.4%（807/968）、`player.cpp` 92.7%（51/55）、`ffmpeg_backend.cpp` 79.1%（1053/1332）、`null_backend.cpp` 83.3%（130/156）、`http_cache.cpp` 85.3%（436/511）。
+
+这一版的数字改用 **CI coverage job 上传的 `coverage-report` 产物**（`coverage.txt` 分支表 / `coverage-lines.txt` 行表）作引用源，而不是某一次本地复现：门禁本身跑在 CI 上，只有同一台 runner、同一版 gcovr 的读数才与门禁同口径（12402ff 的那次运行，行 94.3% / 分支 83.3%，绿）。本地复现的**分母系统性偏大**（同一提交本地分支 3475 vs CI 3346、行 3330 vs 3304——CI 侧 `negative_hits` 过滤丢掉的负计数弧，本地 gcovr 7.2 没丢），本地的绝对百分比因此会低于 CI 零点几个到几个点：本地读数只适合比**相对差值**（一批改动前后），判门禁一律看 CI。§1 记录的"两棵插桩树"陷阱是本地读数最常见的失真来源。
 
 ### 2.1 门禁重置的说明（必读，别当成"新代码拉低了覆盖率"）
 
