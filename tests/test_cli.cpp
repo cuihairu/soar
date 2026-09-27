@@ -533,6 +533,15 @@ if mode == "subsdrive":
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
+        # A combo popup left open by a lagged click pair owns the keyboard —
+        # the app's popup guard swallows q/Escape while it is up (the wedge
+        # that hung the coverage CI runs mid-tour). A single click on the
+        # bare video area dismisses any popup first; it only toggles the
+        # OSC, and the > 500 ms spacing keeps two loop clicks from ever
+        # reading as the double-click fullscreen toggle.
+        if moved(200, 400):
+            button(1)
+        time.sleep(0.7)
         try:
             focus()
             key(qk)
@@ -574,6 +583,12 @@ if mode == "audiodrive":
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
+        # Same popup-wedge defense as subsdrive: the clicks above leave a
+        # combo open when the instrumented app lags, and a stuck popup
+        # swallows the q storm below.
+        if moved(200, 400):
+            button(1)
+        time.sleep(0.7)
         try:
             focus()
             key(qk)
@@ -668,6 +683,14 @@ if mode == "download":
     sys.exit(4)
 
 time.sleep(4.5)
+# An ImGui combo popup left open by lagged clicks owns the keyboard —
+# the app's popup guard swallows every shortcut, Escape included, so the
+# quit storm below would spin until the injector's deadline. One click
+# on the bare video area (single click only toggles the OSC) dismisses
+# any popup first.
+if moved(200, 400):
+    button(1)
+    time.sleep(0.5)
 esc = d.keysym_to_keycode(0xFF1B)  # XK_Escape
 deadline = time.monotonic() + 60.0
 while time.monotonic() < deadline:
@@ -686,7 +709,7 @@ while time.monotonic() < deadline:
 sys.exit(4)
 )PY";
 
-RunResult runCli(const std::vector<std::string>& args) {
+RunResult runCli(const std::vector<std::string>& args, int child_timeout_secs = 600) {
   // Windows _popen routes through `cmd.exe /C`, which (for lines with more
   // than two quotes) strips the first and the last quote character:
   // `"exe" "a" "b"` becomes `exe" "a" "b` and fails to run at all. Quoting
@@ -718,8 +741,10 @@ RunResult runCli(const std::vector<std::string>& args) {
   // such command (its homebrew build installs gtimeout instead) and
   // prefixing it made every child exit 127.
   // Coverage builds (--coverage -O0 -g) are significantly slower; allow
-  // up to 600s so heavy UI-scripted cases don't time out under instrumentation.
-  cmd.insert(0, "timeout 600 ");
+  // up to 600s by default so heavy UI-scripted cases don't time out under
+  // instrumentation. Cases whose child outlives even that (measured, see
+  // the call sites) pass a bigger budget instead of everyone sharing one.
+  cmd.insert(0, "timeout " + std::to_string(child_timeout_secs) + " ");
 #endif
 
   RunResult result;
@@ -1430,7 +1455,17 @@ TEST_CASE("windowed FFmpeg run renders subtitles and drives the Subtitle Setting
   ::unlink(shot_path.c_str());
   // Real FFmpeg backend: the fixture carries an SRT cue track, so the
   // decode thread delivers subtitle frames while the injector drives.
-  const auto run = runCli({"--backend=ffmpeg", media});
+  // Child budget 1500s: the suite's longest scripted session. Under
+  // --coverage -O0 the app lags seconds behind the injector, and before
+  // the quit loop dismissed stale combo popups (see its comment) a lag
+  // pair left one open, swallowed every key including the q storm, and
+  // hung the child until the cap killed it — CI runs 36298838808 /
+  // 36299389988 / 36301040326 died exactly there. With the dismissal in
+  // place a healthy instrumented run takes ~1-2 min; the generous cap
+  // only bounds a genuinely wedged child as a normal failing assertion
+  // instead of a context-free suite timeout. Every other case fits the
+  // default.
+  const auto run = runCli({"--backend=ffmpeg", media}, 1500);
 
   std::printf("x11 subtitle window test: cli exit=%d, output:\n%s\n", run.exit_code,
               run.output.c_str());

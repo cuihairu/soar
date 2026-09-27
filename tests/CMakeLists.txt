@@ -103,9 +103,17 @@ if(TARGET soar)
 # A subprocess that hangs (e.g. an SDL window loop on a runner where
 # video init unexpectedly succeeds) would otherwise pin the whole CI
 # job until its two-digit-minute timeout. CTest kills the test at the
-# 5-minute mark instead, so one wedged case costs minutes, not the job.
+# 10-minute mark instead, so one wedged case costs minutes, not the job.
 set_tests_properties(soar_core_tests soar_backend_tests soar_ui_tests
-  soar_subtitle_tests soar_cli_tests PROPERTIES TIMEOUT 600)
+  soar_subtitle_tests PROPERTIES TIMEOUT 600)
+# soar_cli_tests needs its own, bigger budget. Under coverage
+# instrumentation (--coverage -O0 -g) the scripted window cases crawl: the
+# subtitle-settings tour alone takes ~10 min on a quiet CI runner (noted in
+# 09c1da9; CI runs 36298838808 / 36299389988 / 36301040326 still died at the
+# shared 600 s mark). Its child is capped separately inside runCli (1500 s
+# for that case), so the suite ceiling has to clear one such worst case plus
+# the other 23 (~50 s each when instrumented, measured locally).
+set_tests_properties(soar_cli_tests PROPERTIES TIMEOUT 2700)
 # http_cache_tests contains the offline-replay integration case: two
 # playback passes with their own 240 s deadlines, so a runner where the
 # clock crawls can legitimately exceed the shared 300 s budget (local run
