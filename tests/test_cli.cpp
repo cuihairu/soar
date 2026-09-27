@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -539,6 +540,75 @@ if mode == "subsdrive":
         # bare video area dismisses any popup first; it only toggles the
         # OSC, and the > 500 ms spacing keeps two loop clicks from ever
         # reading as the double-click fullscreen toggle.
+        if moved(200, 400):
+            button(1)
+        time.sleep(0.7)
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
+if mode == "sidecar":
+    # The sidecar-pick case over a private copy of the subs fixture: three
+    # looks at the settings page's track combo. Every popup is closed by a
+    # row pick or an outside click before the combo is clicked again — a
+    # combo click while its own popup is up toggles the popup shut. Pass 1
+    # picks the single (good) candidate row — loadExternalSubtitle +
+    # selectTrack through the menu. Reopen A shows the all-loaded state:
+    # the sidecar is now a real track and filtered from the candidates, so
+    # the sidecar section renders nothing. The harness then stages a
+    # cue-less .srt (argv[4]); reopen B offers exactly that row — one slot
+    # lower than in pass 1, the loaded sidecar now rendering as a track
+    # row above it — and picking it runs the load-failed toast arm.
+    # Coordinates probed under SOAR_UI_BITMAP_FONT=1.
+    time.sleep(2.2)
+    focus(); key(d.keysym_to_keycode(0x20))  # space: wake the HUD, pause
+    time.sleep(0.8)
+
+    def sclick(x, y):
+        moved(x, y); time.sleep(0.15)
+        button(1); time.sleep(0.5)
+
+    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    time.sleep(0.9)
+    sclick(459, 190)   # Track combo: popup = Off / srt / sep / candidate
+    time.sleep(1.0)
+    sclick(460, 274)   # the candidate row -> load + select the external id
+    time.sleep(1.0)
+    # Repeat guard: if a lag frame swallowed the pick above, the popup is
+    # still up and this re-picks the row. On the normal path the popup is
+    # closed and this lands on the page's Sync-offset slider (same spot,
+    # different context) — a setting this case never asserts on, and the
+    # per-pid XDG_STATE_HOME keeps it from leaking anywhere.
+    sclick(460, 274)
+    time.sleep(1.0)
+    sclick(459, 190)   # reopen A: sidecar loaded+filtered, no section
+    time.sleep(1.0)
+    sclick(200, 400)   # outside click closes the popup (video: OSC toggle)
+    time.sleep(0.5)
+    if len(sys.argv) > 4:
+        open(sys.argv[4], "wb").close()  # stage the cue-less sibling now
+    time.sleep(0.3)
+    sclick(459, 190)   # reopen B: Off / srt / loaded#4 / sep / broken@290
+    time.sleep(1.0)
+    sclick(460, 290)   # pick it -> loadExternalSubtitle fails, toast arm
+    time.sleep(1.0)
+    sclick(460, 290)   # repeat guard, same as above
+    time.sleep(1.0)
+    sclick(200, 400)   # bare video area: dismiss any popup, toggle nothing
+    time.sleep(0.5)
+    sclick(637, 495)   # close the settings page
+    time.sleep(0.5)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        # Same popup-wedge defense as subsdrive: with a popup up, every
+        # key — q included — is swallowed by the app.
         if moved(200, 400):
             button(1)
         time.sleep(0.7)
@@ -1506,6 +1576,138 @@ TEST_CASE("windowed FFmpeg run renders subtitles and drives the Subtitle Setting
     CHECK(magic == std::string("\x89PNG\r\n\x1a\n", 8));
   }
   ::unlink(shot_path.c_str());
+#endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run loads a sidecar pick from the subtitle menu") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // The subtitle menu and its sidecar section are ImGui widgets; the
+  // bare-SDL build has neither.
+  MESSAGE("app built without the ImGui overlay; skipping the sidecar window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the sidecar window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the sidecar window test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping the sidecar window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the sidecar window test");
+    return;
+  }
+
+  // The sidecar scan reads the media's directory, so the case plays a copy
+  // of the fixture from its own scratch dir and stages siblings there. Pass
+  // 1 sees exactly one candidate (the good sidecar); the cue-less sibling
+  // is staged by the injector only when the failure pass needs it, keeping
+  // every popup at one candidate row and every coordinate fixed.
+  const std::string scratch = "/tmp/soar_sidecar_x11_" + std::to_string(::getpid());
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  REQUIRE(std::filesystem::create_directories(scratch, ec));
+  REQUIRE_FALSE(ec);
+  const std::string played = scratch + "/feature_film.mkv";
+  std::filesystem::copy_file(media, played,
+                             std::filesystem::copy_options::overwrite_existing, ec);
+  REQUIRE_FALSE(ec);
+  {
+    std::ofstream srt(scratch + "/feature_film.en.srt", std::ios::binary);
+    REQUIRE(srt.good());
+    srt << "1\n00:00:00,500 --> 00:00:02,500\nHello from sidecar\n\n"
+           "2\n00:00:03,000 --> 00:00:05,000\nSecond cue\n";
+  }
+  const std::string broken_sidecar = scratch + "/feature_film.bad.srt";
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the sidecar window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "sidecar", broken_sidecar.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const std::string state_home = "/tmp/soar_sidecar_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const auto run = runCli({"--backend=ffmpeg", played});
+
+  std::printf("x11 sidecar window test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(scratch, ec);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  CHECK(run.output.find("event: state=1") != std::string::npos);
+  // The pick loaded the sidecar as a real track: an external id sits past
+  // the container's stream range. The subs fixture exposes 3 tracks but
+  // carries a font-attachment stream too (nb_streams = 4), so the first
+  // sidecar lands on id 4 — the selection trail proves the menu ->
+  // loadExternalSubtitle -> selectTrack wiring end to end.
+  const std::size_t sidecar_on = run.output.find("selected(video=0,audio=1,sub=4)");
+  CHECK(sidecar_on != std::string::npos);
+  // The initial media-info legitimately has the subtitle stream deselected;
+  // nothing after the pick may have turned subtitles back off — a stray Off
+  // pick from a mis-aimed click would show up here.
+  if (sidecar_on != std::string::npos) {
+    CHECK(run.output.find("selected(video=0,audio=1,sub=-1)", sidecar_on) ==
+          std::string::npos);
+  }
+  std::filesystem::remove_all(scratch, ec);
 #endif
 #endif
 #endif
