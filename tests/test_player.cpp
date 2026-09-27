@@ -289,6 +289,41 @@ TEST_CASE("disableSubtitles clears the selection") {
   CHECK(fx.player.mediaInfo().selected_subtitle == -1);
 }
 
+TEST_CASE("loadExternalSubtitle reports why the null backend cannot") {
+  Fixture fx;
+  soar::TrackId id = 12345;
+
+  // Before open: the same "no media" answer every other control call gives.
+  CHECK_FALSE(fx.player.loadExternalSubtitle("movie.srt", id));
+  CHECK(id == -1);
+  CHECK(fx.log.countOf(soar::EventType::Error) >= 1);
+
+  // With media open it still refuses, but for the real reason: the null
+  // backend has no subtitle source to attach. The UI lists sidecar
+  // candidates on any backend (the provider just reads the directory), so
+  // this failure is the one a user can actually reach, and it must land in
+  // lastError rather than throw or crash.
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  CHECK_FALSE(fx.player.loadExternalSubtitle("movie.srt", id));
+  CHECK(id == -1);
+  CHECK(fx.player.lastError().find("FFmpeg") != std::string::npos);
+  // Refusing must not invent a track: the media's own track list stands.
+  bool invented = false;
+  for (const auto& t : fx.player.mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle && t.title == "movie.srt") {
+      invented = true;
+    }
+  }
+  CHECK_FALSE(invented);
+}
+
+TEST_CASE("loadExternalSubtitle fails safely without a backend") {
+  soar::Player player{nullptr};
+  soar::TrackId id = 7;
+  CHECK_FALSE(player.loadExternalSubtitle("movie.srt", id));
+  CHECK(id == 7);  // untouched: the facade never even reached a backend
+}
+
 TEST_CASE("events carry the state and position at emit time") {
   Fixture fx;
   REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));

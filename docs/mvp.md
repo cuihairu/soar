@@ -30,6 +30,7 @@
 - 读取 `MediaInfo`：时长、是否可 seek、轨道列表
 - 选择音轨/字幕轨
 - 关闭字幕
+- 加载外部字幕（sidecar）：`loadExternalSubtitle` 把媒体同目录的 `.srt`/`.vtt` 挂成一条字幕轨并可选中，字幕菜单与 Subtitle Settings 浮层列出候选（见 §6）
 
 ### 1.4 事件与指标（可观测）
 
@@ -86,9 +87,11 @@
 
 依赖顺序：先落地 v0.2 的字幕渲染基础（字体/大小/偏移），再接外部字幕源。
 
-- **字幕下载**：按媒体哈希/文件名从 OpenSubtitles 等公开源检索、下载、与轨道对齐；做成可插拔的 `SubtitleProvider` 接口（核心定义接口，实现可换源），失败静默降级为无字幕。**接口与本地 sidecar 实现已落地**：`SubtitleProvider` 只有 `findCandidates`（列候选）与 `fetch`（取文本）两个方法，`SidecarSubtitleProvider` 在媒体同目录找同名 `.srt`/`.vtt`（支持 `movie.en.srt`、`movie.en.forced.srt` 这类语言/forced 标签，大小写不敏感），SRT 与 WebVTT 的文本解析是无依赖纯函数、容错口径写在头注释里（BOM、CRLF/裸 CR、缺小时字段、1-6 位小数、WebVTT 的 NOTE/STYLE/头部块、坏块跳过继续等）。检索/下载源实现与 UI 接线（字幕菜单列出 sidecar 候选）待做。
+- **字幕下载**：按媒体哈希/文件名从 OpenSubtitles 等公开源检索、下载、与轨道对齐；做成可插拔的 `SubtitleProvider` 接口（核心定义接口，实现可换源），失败静默降级为无字幕。**接口、本地 sidecar 实现与播放链路已落地**：`SubtitleProvider` 只有 `findCandidates`（列候选）与 `fetch`（取文本）两个方法，`SidecarSubtitleProvider` 在媒体同目录找同名 `.srt`/`.vtt`（支持 `movie.en.srt`、`movie.en.forced.srt` 这类语言/forced 标签，大小写不敏感），SRT 与 WebVTT 的文本解析是无依赖纯函数、容错口径写在头注释里（BOM、CRLF/裸 CR、缺小时字段、1-6 位小数、WebVTT 的 NOTE/STYLE/头部块、坏块跳过继续等）。`IBackend::loadExternalSubtitle(path, out_id)` 把一个 sidecar 挂成一条真正的字幕轨：外部轨 id 从容器流数起算（`nb_streams + slot`），永不与内嵌轨冲突，轨名是文件名、codec 按内容判为 `subrip`/`webvtt`；`selectTrack` 相应放宽到接受这个 id。sidecar 没有解码线程，所以帧由播放头在 `tryGetSubtitleFrame` 里泵进**内嵌字幕同一个队列**（UI 渲染零改动、也分不清两者来源）：播放头倒退（seek / A-B 回绕 / 重播）时游标从头重扫，前进跳过大段时只入队最后 4 条。加载失败（无媒体 / 读不了 / 无 cue）只落 `lastError`、不发 Error 事件——sidecar 缺失是常态，媒体照播。UI 侧在字幕菜单与 Subtitle Settings 浮层里列出候选（只在菜单打开时枚举目录，无文件对话框），选中即加载并选中。**检索/下载源（OpenSubtitles 一类 HTTP 客户端）仍待做**：`ExternalSubtitleProvider` 已留好空实现（findCandidates 恒空、fetch 恒 false），核心不内置任何 API key、不发网络请求。
 - **字幕文本翻译**：已有字幕轨/字幕文件时，把文本批量送 LLM/翻译 API，生成翻译字幕轨（轻量路径）。
 - **语音实时翻译**：无字幕轨媒体走 ASR（本地 whisper 类模型或云端）+ 翻译 + 字幕渲染（重量级路径，放最后）。
+
+已知边界：sidecar 与内嵌字幕共用一条队列，而解码线程始终解内嵌字幕流（内嵌轨的"选择"至今只是元数据，不控制解码）。所以给一个**同时带内嵌字幕轨**的媒体选 sidecar 时，两边字幕可能先后都出现在屏幕上。真正的修法是让解码线程按 `selected_subtitle` 决定是否处理字幕包，属于内嵌轨选择语义的一并改造，不在本批范围。
 
 架构约定：翻译/ASR 服务走 **OpenAI 兼容端点由用户自配**（base URL + key），核心不内置任何云厂商凭据，不做强制联网；所有 AI 能力都是可选插件式服务，离线场景一切照旧。
 

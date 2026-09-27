@@ -717,7 +717,9 @@ RunResult runCli(const std::vector<std::string>& args) {
   // Linux-only: coreutils' timeout is guaranteed there; macOS ships no
   // such command (its homebrew build installs gtimeout instead) and
   // prefixing it made every child exit 127.
-  cmd.insert(0, "timeout 90 ");
+  // Coverage builds (--coverage -O0 -g) are significantly slower; allow
+  // up to 300s so heavy UI-scripted cases don't time out under instrumentation.
+  cmd.insert(0, "timeout 300 ");
 #endif
 
   RunResult result;

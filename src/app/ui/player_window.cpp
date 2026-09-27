@@ -15,6 +15,7 @@
 #include "player_window.h"
 
 #include "soar/core/player.h"
+#include "soar/core/subtitle_provider.h"
 #include "ui_state.h"
 
 #include <fmt/format.h>
@@ -546,6 +547,60 @@ class PlayerHud {
     st_.toast.show(std::string(item) + " speed", now);
   }
 
+  // Sidecar subtitle candidates (docs/mvp.md §6): what a SubtitleProvider
+  // finds next to the media. Shared by the subtitle combo and the Subtitle
+  // Settings overlay; both call it only while their menu is open, because
+  // enumerating means reading a directory. Picking one loads it as a real
+  // subtitle track (its id sits past the container's stream range, so it
+  // shows up in the track list like any other) and selects it.
+  //
+  // Already-loaded sidecars are not offered again — the track above carries
+  // them, and loading is idempotent by path anyway.
+  void drawSidecarEntries(const MediaInfo& info, milliseconds now) {
+    const std::vector<SubtitleCandidate> candidates =
+        sidecar_.findCandidates(MediaSource{current_uri_, {}});
+    if (candidates.empty()) {
+      ImGui::Separator();
+      ImGui::TextDisabled("No sidecar subtitle files");
+      return;
+    }
+    // A loaded external track is titled with its file name, and the
+    // candidates all come from the media's own directory, so a name match
+    // identifies one without the track list having to carry the path.
+    std::vector<const SubtitleCandidate*> pending;
+    for (const auto& c : candidates) {
+      const bool loaded = std::any_of(
+        info.tracks.begin(),
+        info.tracks.end(),
+        [&](const TrackInfo& t) {
+          return t.type == TrackType::Subtitle && t.title == c.title;
+        });
+      if (!loaded) pending.push_back(&c);
+    }
+    if (pending.empty()) {
+      return;
+    }
+    ImGui::Separator();
+    for (const auto* c : pending) {
+      std::string item = c->title;
+      if (!c->language.empty()) {
+        item += " (" + c->language + ")";
+      }
+      if (!ImGui::Selectable(item.c_str())) {
+        continue;
+      }
+      TrackId id = -1;
+      if (player_.loadExternalSubtitle(c->path, id) &&
+          player_.selectTrack(TrackType::Subtitle, id)) {
+        st_.toast.show("Loaded " + c->title, now);
+      } else {
+        // A missing or cue-less file is a normal outcome, so this is a
+        // toast, not an error dialog.
+        st_.toast.show("Sidecar load failed", now);
+      }
+    }
+  }
+
   void cycleTrack(TrackType type, milliseconds now) {
     const MediaInfo info = player_.mediaInfo();
     std::vector<TrackId> ids;
@@ -885,6 +940,10 @@ class PlayerHud {
         const std::string label = d.substr(0, 28);
         deviceItem(label.c_str(), d);
       }
+    } else {
+      // Sidecar subtitle files: the loader for tracks that are not in the
+      // container (docs/mvp.md §6).
+      drawSidecarEntries(info, now);
     }
     ImGui::EndCombo();
   }
@@ -1208,6 +1267,10 @@ class PlayerHud {
 
       if (sub_tracks.empty()) {
         ImGui::TextDisabled("No subtitle tracks available");
+        // A media with no subtitle track of its own is exactly the case a
+        // sidecar is for, so they go in the open overlay body instead of
+        // behind a combo that has nothing to select.
+        drawSidecarEntries(info, nowMs());
       } else {
         ImGui::Text("Track:");
         ImGui::SameLine();
@@ -1235,6 +1298,9 @@ class PlayerHud {
               }
             }
           }
+          // Sidecar files join the container's own tracks in the same
+          // popup; the open popup is what gates the directory walk.
+          drawSidecarEntries(info, nowMs());
           ImGui::EndCombo();
         }
       }
@@ -1318,6 +1384,10 @@ class PlayerHud {
   RecentStore recent_;
   std::string current_uri_;
   SubtitleFonts subtitle_fonts_;
+  // Enumerates sidecar subtitle files next to the media (§6). Stateless and
+  // cheap, so it lives with the HUD rather than in the backend: the directory
+  // is only walked while a menu that offers sidecars is open.
+  SidecarSubtitleProvider sidecar_;
   State st_;
 };
 

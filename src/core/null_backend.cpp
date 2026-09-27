@@ -175,6 +175,19 @@ public:
     return true;
   }
 
+  // The null backend simulates a media timeline; it has no subtitle source
+  // to attach, so an external track can never be offered here. The windowed
+  // UI still lists sidecar candidates (the provider reads the directory
+  // next to the media), and picking one lands in lastError() exactly like
+  // the other unsupported operations.
+  bool loadExternalSubtitle(const std::string& path, TrackId& out_id) override {
+    out_id = -1;
+    if (!opened_) {
+      return fail("loadExternalSubtitle: no media opened");
+    }
+    return fail("loadExternalSubtitle: external subtitles need the FFmpeg backend");
+  }
+
   // The null backend has no decode thread, so it arms/disarms and validates
   // the loop but never wraps: its clock only moves when a test calls seek().
   // The FFmpeg backend owns the actual replay behavior (see

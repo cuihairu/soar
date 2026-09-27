@@ -97,6 +97,7 @@ if(TARGET soar)
     target_compile_definitions(soar_cli_tests PRIVATE SOAR_CLI_HAS_IMGUI=1)
   endif()
 
+  add_dependencies(soar_cli_tests soar)
   add_test(NAME soar_cli_tests COMMAND soar_cli_tests)
 
 # A subprocess that hangs (e.g. an SDL window loop on a runner where

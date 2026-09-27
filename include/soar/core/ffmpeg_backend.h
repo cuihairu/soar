@@ -1,6 +1,7 @@
 #pragma once
 
 #include "soar/core/backend.h"
+#include "soar/core/subtitle_text.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -89,6 +90,7 @@ public:
 
   bool selectTrack(TrackType type, TrackId id) override;
   bool disableSubtitles() override;
+  bool loadExternalSubtitle(const std::string& path, TrackId& out_id) override;
 
   bool setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b) override;
   bool clearLoopAB() override;
@@ -106,7 +108,9 @@ public:
   bool tryGetVideoFrame(DecodedVideoFrame& out);
 
   // Optional: allow the app to pull the latest decoded subtitle frame.
-  // Thread-safe; returns true only when a new frame is available.
+  // Thread-safe; returns true only when a new frame is available. The pull
+  // also drives external subtitles: a sidecar has no decoder thread to
+  // queue frames, so the playhead is advanced here (see pumpExternalCues).
   bool tryGetSubtitleFrame(DecodedSubtitleFrame& out);
 
   // v0.2 screenshot: encode the most recently presented video frame as a
@@ -159,6 +163,31 @@ private:
   void processAudioFrame(DecodedFrame frame);
   void processSubtitleFrame(const AVSubtitle& sub, std::chrono::milliseconds pts, std::chrono::milliseconds duration);
   bool waitForPresentationTime(std::chrono::milliseconds pts);
+
+  // External subtitles (docs/mvp.md §6, Stage 2). A sidecar file is parsed
+  // once at load time into plain cues; there is no decoder and no decode
+  // thread behind it, so the frames are pumped from the playhead when the
+  // UI pulls them, through the same queue the embedded path uses (the UI
+  // cannot tell the two apart). Guarded by external_mutex_, which is never
+  // held across a call into the frame queue.
+  struct ExternalSubtitle {
+    std::string path;
+    std::vector<SubtitleCue> cues;
+  };
+  mutable std::mutex external_mutex_;
+  std::vector<ExternalSubtitle> external_subtitles_;
+  // Index into external_subtitles_ of the track selectTrack() last selected,
+  // or -1 when an embedded track (or nothing) is active.
+  int active_external_{-1};
+  // How far into the active cue list the pump has got, plus the playhead it
+  // last saw. A playhead that went backwards (seek, A-B wrap, replay) re-arms
+  // the cursor by rescanning from the top.
+  std::size_t external_cue_pos_{0};
+  std::chrono::milliseconds external_last_pos_{0};
+  // Queue every cue the playhead has reached, newest ones only.
+  void pumpExternalCues(std::chrono::milliseconds now);
+  // Drop the loaded sidecars (open()/close()).
+  void clearExternalSubtitles();
 
   // Rendering (to be implemented)
   void renderVideoFrame(const AVFrame* frame);

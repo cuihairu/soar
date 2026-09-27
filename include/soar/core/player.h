@@ -37,6 +37,7 @@ public:
 
   bool selectTrack(TrackType type, TrackId id);
   bool disableSubtitles();
+  bool loadExternalSubtitle(const std::string& path, TrackId& out_id);
 
   bool setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b);
   bool clearLoopAB();

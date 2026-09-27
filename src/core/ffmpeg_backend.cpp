@@ -25,6 +25,7 @@ extern "C" {
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string_view>
 
 #ifdef SOAR_WITH_SDL2
@@ -630,6 +631,10 @@ void FFmpegBackend::close() {
     subtitle_frames_ = {};
   }
 
+  // Sidecars belong to the media that was open: the next open gets the ones
+  // next to *its* file, so nothing survives a close.
+  clearExternalSubtitles();
+
   emit(Event{EventType::MediaInfoChanged});
   emit(Event{EventType::StateChanged});
 }
@@ -961,6 +966,10 @@ bool FFmpegBackend::tryGetVideoFrame(DecodedVideoFrame& out) {
 }
 
 bool FFmpegBackend::tryGetSubtitleFrame(DecodedSubtitleFrame& out) {
+  // A sidecar track has no decoder thread to queue frames, so this pull is
+  // what advances it: queue whatever the playhead has reached. Embedded
+  // tracks keep coming from the decode thread, untouched by this.
+  pumpExternalCues(position());
   std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
   if (subtitle_frames_.empty()) {
     return false;
@@ -968,6 +977,60 @@ bool FFmpegBackend::tryGetSubtitleFrame(DecodedSubtitleFrame& out) {
   out = std::move(subtitle_frames_.front());
   subtitle_frames_.pop();
   return true;
+}
+
+// External subtitles: nothing decodes a sidecar, so the cue list parsed at
+// load time is replayed against the playhead here, into the same queue the
+// embedded path writes. The UI pulls frames and times them itself, so it
+// cannot tell the two apart.
+void FFmpegBackend::pumpExternalCues(std::chrono::milliseconds now) {
+  std::vector<DecodedSubtitleFrame> batch;
+  {
+    std::lock_guard<std::mutex> lock(external_mutex_);
+    if (active_external_ < 0 ||
+        static_cast<std::size_t>(active_external_) >= external_subtitles_.size()) {
+      return;
+    }
+    const std::vector<SubtitleCue>& cues = external_subtitles_[active_external_].cues;
+    // A playhead that moved backwards means the cue list has to be walked
+    // again: a seek, an A-B wrap or a replay all land here, and none of
+    // them goes through the decode loop the embedded path relies on.
+    if (now < external_last_pos_) {
+      external_cue_pos_ = 0;
+    }
+    external_last_pos_ = now;
+
+    std::size_t due = external_cue_pos_;
+    while (due < cues.size() && cues[due].begin <= now) {
+      ++due;
+    }
+    if (due == external_cue_pos_) {
+      return;
+    }
+    // Only the newest few survive the queue cap anyway, and after a forward
+    // seek everything in between is already over — so skip straight to the
+    // tail instead of replaying hundreds of stale cues.
+    const std::size_t first =
+      due > kMaxSubtitleQueueFrames ? due - kMaxSubtitleQueueFrames : 0;
+    for (std::size_t i = first < external_cue_pos_ ? external_cue_pos_ : first; i < due; ++i) {
+      batch.push_back(DecodedSubtitleFrame{cues[i].text, cues[i].begin,
+                                           cues[i].end - cues[i].begin});
+    }
+    external_cue_pos_ = due;
+  }
+  // Outside the lock: queueSubtitleFrame takes the frame-queue mutex, and
+  // external_mutex_ must not be held across it.
+  for (const DecodedSubtitleFrame& frame : batch) {
+    queueSubtitleFrame(frame.text, frame.pts, frame.duration);
+  }
+}
+
+void FFmpegBackend::clearExternalSubtitles() {
+  std::lock_guard<std::mutex> lock(external_mutex_);
+  external_subtitles_.clear();
+  active_external_ = -1;
+  external_cue_pos_ = 0;
+  external_last_pos_ = std::chrono::milliseconds(0);
 }
 
 bool FFmpegBackend::saveScreenshot(const std::string& path, bool forceFailEncoder) {
@@ -1089,11 +1152,13 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
     state = playback_state_;
   }
 
+  int nb_streams = 0;
   {
     std::lock_guard<std::mutex> lock(decode_mutex_);
     if (!format_ctx_) {
       return fail("selectTrack: no media opened");
     }
+    nb_streams = static_cast<int>(format_ctx_->nb_streams);
   }
 
   if (type == TrackType::Video) {
@@ -1103,13 +1168,28 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
   // Subtitle selection is metadata only (no subtitle decoder yet), so it is
   // safe in any state.
   if (type == TrackType::Subtitle) {
+    // External tracks (docs/mvp.md §6) live past the container's stream
+    // range, so the embedded check below only sees ids below that count.
+    int external_slot = -1;
+    {
+      std::lock_guard<std::mutex> lock(external_mutex_);
+      for (std::size_t i = 0; i < external_subtitles_.size(); ++i) {
+        if (id == static_cast<TrackId>(nb_streams + static_cast<int>(i))) {
+          external_slot = static_cast<int>(i);
+          break;
+        }
+      }
+    }
+
     std::string error;
     {
       std::lock_guard<std::mutex> lock(decode_mutex_);
-      if (id < 0 || id >= static_cast<TrackId>(format_ctx_->nb_streams)) {
+      if (external_slot < 0 &&
+          (id < 0 || id >= static_cast<TrackId>(format_ctx_->nb_streams))) {
         error = "selectTrack: unknown subtitle track id";
-      } else if (!format_ctx_->streams[id] || !format_ctx_->streams[id]->codecpar ||
-                 format_ctx_->streams[id]->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
+      } else if (external_slot < 0 &&
+                 (!format_ctx_->streams[id] || !format_ctx_->streams[id]->codecpar ||
+                  format_ctx_->streams[id]->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE)) {
         error = "selectTrack: unknown subtitle track id";
       }
     }
@@ -1118,6 +1198,14 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
       return fail(std::move(error));
     }
 
+    {
+      // Arm the pump from the top: the new track's cue 0 may already be
+      // behind the playhead, and a seek away from it re-arms it again.
+      std::lock_guard<std::mutex> lock(external_mutex_);
+      active_external_ = external_slot;
+      external_cue_pos_ = 0;
+      external_last_pos_ = std::chrono::milliseconds(0);
+    }
     {
       std::lock_guard<std::mutex> lock(info_mutex_);
       media_info_.selected_subtitle = id;
@@ -1251,6 +1339,90 @@ bool FFmpegBackend::disableSubtitles() {
     std::lock_guard<std::mutex> lock(info_mutex_);
     media_info_.selected_subtitle = -1;
   }
+  {
+    // Stop pumping the sidecar: a stale frame would outlive the selection.
+    std::lock_guard<std::mutex> lock(external_mutex_);
+    active_external_ = -1;
+    external_cue_pos_ = 0;
+  }
+  emit(Event{EventType::MediaInfoChanged});
+  return true;
+}
+
+//=============================================================================
+// External subtitles (docs/mvp.md §6)
+//=============================================================================
+
+bool FFmpegBackend::loadExternalSubtitle(const std::string& path, TrackId& out_id) {
+  out_id = -1;
+
+  int nb_streams = 0;
+  {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (!format_ctx_) {
+      return fail("loadExternalSubtitle: no media opened", /*emit_event=*/false);
+    }
+    nb_streams = static_cast<int>(format_ctx_->nb_streams);
+  }
+
+  // Read + parse outside every lock: this is file IO and can be slow on a
+  // network mount, and nothing here may block the decode thread.
+  std::string text;
+  if (!readSubtitleFile(path, text)) {
+    return fail("loadExternalSubtitle: cannot read '" + path + "'", /*emit_event=*/false);
+  }
+  const std::vector<SubtitleCue> cues = parseSubtitleText(text);
+  if (cues.empty()) {
+    return fail("loadExternalSubtitle: no cues in '" + path + "'", /*emit_event=*/false);
+  }
+
+  // Named the way the embedded tracks are ("subrip", "mov_text"), so the
+  // menu reads the same for both. A sidecar's language tag lives in its
+  // file name and is left to the provider; the title below carries it.
+  const char* codec = detectSubtitleFormat(text) == SubtitleFormat::WebVtt ? "webvtt"
+                                                                         : "subrip";
+
+  TrackId id = -1;
+  {
+    std::lock_guard<std::mutex> lock(external_mutex_);
+    // Same path twice: replace in place and keep the id it already had, so
+    // re-picking a sidecar cannot pile up duplicate tracks.
+    std::size_t slot = external_subtitles_.size();
+    for (std::size_t i = 0; i < external_subtitles_.size(); ++i) {
+      if (external_subtitles_[i].path == path) {
+        slot = i;
+        break;
+      }
+    }
+    // Ids start at the container's stream count, so an external track can
+    // never collide with an embedded one.
+    id = static_cast<TrackId>(nb_streams + static_cast<int>(slot));
+    if (slot == external_subtitles_.size()) {
+      external_subtitles_.push_back(ExternalSubtitle{path, {}});
+    }
+    external_subtitles_[slot].cues = cues;
+  }
+
+  {
+    const TrackInfo track{id,
+                          TrackType::Subtitle,
+                          codec,
+                          "",
+                          std::filesystem::path(path).filename().string(),
+                          false};
+    std::lock_guard<std::mutex> lock(info_mutex_);
+    const auto it = std::find_if(
+      media_info_.tracks.begin(),
+      media_info_.tracks.end(),
+      [&](const TrackInfo& t) { return t.id == id; });
+    if (it != media_info_.tracks.end()) {
+      *it = track;
+    } else {
+      media_info_.tracks.push_back(track);
+    }
+  }
+
+  out_id = id;
   emit(Event{EventType::MediaInfoChanged});
   return true;
 }

@@ -114,6 +114,21 @@ public:
   virtual bool selectTrack(TrackType type, TrackId id) = 0;
   virtual bool disableSubtitles() = 0;
 
+  // External subtitles (docs/mvp.md §6, Stage 2): attach a plain-text
+  // subtitle file (SubRip / WebVTT) as one more subtitle track. The id
+  // handed back starts at the container's stream count, so it can never
+  // collide with an embedded track, and it is what selectTrack(Subtitle,
+  // id) takes; the track then shows up in mediaInfo().tracks like any
+  // other, with the file name as its title.
+  //
+  // False — leaving out_id at -1 — when no media is open, when the path is
+  // not a readable subtitle file, or when it holds no cue at all. A missing
+  // or broken sidecar is a normal outcome, not an error worth an Error
+  // event: the media keeps playing without that subtitle (see the
+  // SubtitleProvider contract in subtitle_provider.h). Loading the same
+  // path twice replaces the earlier copy in place and returns its id.
+  virtual bool loadExternalSubtitle(const std::string& path, TrackId& out_id) = 0;
+
   // A-B loop (v0.2): replay the [a, b) window forever while playing. The
   // wrap happens on the decode thread (a seek back to `a` once the play
   // clock reaches `b`, or at end-of-stream when `b` anchors the media

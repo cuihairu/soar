@@ -78,6 +78,10 @@ bool Player::disableSubtitles() {
   return backend_ ? backend_->disableSubtitles() : false;
 }
 
+bool Player::loadExternalSubtitle(const std::string& path, TrackId& out_id) {
+  return backend_ ? backend_->loadExternalSubtitle(path, out_id) : false;
+}
+
 bool Player::setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b) {
   return backend_ ? backend_->setLoopAB(a, b) : false;
 }

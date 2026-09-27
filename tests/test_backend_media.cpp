@@ -12,12 +12,14 @@
 #include <doctest/doctest.h>
 
 #include "soar/core/ffmpeg_backend.h"
+#include "soar/core/subtitle_provider.h"
 #include "test_http_servers.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <string>
@@ -86,6 +88,72 @@ struct CountingSink : soar::IEventSink {
     }
   }
 };
+
+// Scratch directory for the external-subtitle cases. The media fixture is
+// copied in under a chosen name so the sidecar beside it is a *different*
+// file from the container's own embedded subtitle stream, and so the
+// provider's name matching is exercised end to end rather than assumed.
+struct ScratchDir {
+  std::string path;
+
+  ScratchDir() {
+    std::string tmpl = "/tmp/soar_extsub_test_XXXXXX";
+    std::vector<char> buf(tmpl.begin(), tmpl.end());
+    buf.push_back('\0');
+    const char* dir = ::mkdtemp(buf.data());
+    path = dir ? std::string(dir) : std::string(".");
+  }
+
+  ~ScratchDir() {
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
+  }
+
+  std::string file(const std::string& name) const {
+    return (std::filesystem::path(path) / name).string();
+  }
+
+  void write(const std::string& name, const std::string& content) const {
+    std::ofstream out(file(name), std::ios::binary);
+    out << content;
+  }
+
+  // Copy the fixture in under `name`. Returns the new path, or "" when the
+  // copy failed (a full or read-only /tmp would otherwise look like a
+  // backend bug three assertions later).
+  std::string copyIn(const std::string& src, const std::string& name) const {
+    std::error_code ec;
+    std::filesystem::copy_file(
+      src, file(name), std::filesystem::copy_options::overwrite_existing, ec);
+    return ec ? std::string() : file(name);
+  }
+};
+
+// Pull subtitle frames until `count` of them have been collected or the
+// budget runs out. The playhead is what advances a sidecar (there is no
+// decode thread behind one), so these cases cannot be tested without
+// actually playing.
+std::vector<soar::DecodedSubtitleFrame> pullSubtitleFrames(
+    soar::FFmpegBackend* ffmpeg, std::size_t count, std::chrono::milliseconds budget) {
+  std::vector<soar::DecodedSubtitleFrame> frames;
+  const auto deadline = std::chrono::steady_clock::now() + budget;
+  while (std::chrono::steady_clock::now() < deadline && frames.size() < count) {
+    soar::DecodedSubtitleFrame frame;
+    while (ffmpeg->tryGetSubtitleFrame(frame)) {
+      frames.push_back(frame);
+    }
+    std::this_thread::sleep_for(5ms);
+  }
+  return frames;
+}
+
+bool contains(const std::vector<soar::DecodedSubtitleFrame>& frames,
+              const std::string& needle) {
+  for (const auto& f : frames) {
+    if (f.text.find(needle) != std::string::npos) return true;
+  }
+  return false;
+}
 
 } // namespace
 
@@ -1620,6 +1688,461 @@ TEST_CASE("a burst of adjacent cues overflows the subtitle FIFO in order") {
   CHECK(pulled[1].find("Cue 4") != std::string::npos);
   CHECK(pulled[2].find("Cue 5") != std::string::npos);
   CHECK(pulled[3].find("Cue 6") != std::string::npos);
+}
+
+TEST_CASE("a sidecar file loads as a subtitle track and plays") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping sidecar playback test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  // Two cues in the first two seconds, so the playhead reaches them well
+  // before the 6 s fixture ends. The payload is deliberately unlike
+  // anything in the fixture: this one has no subtitle stream at all, so
+  // every frame pulled below can only have come from the sidecar.
+  dir.write("movie.srt",
+            "1\n00:00:00,000 --> 00:00:01,000\nSidecar One\n\n"
+            "2\n00:00:01,000 --> 00:00:02,000\nSidecar Two\n\n");
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  // A sidecar is opt-in, exactly like an embedded track: loading it does
+  // not start showing it.
+  CHECK(backend->mediaInfo().selected_subtitle == -1);
+
+  soar::TrackId id = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("movie.srt"), id));
+  CHECK(id >= 0);
+  CHECK(sink.media_info_changed.load() >= 1);
+
+  // The track is a first-class entry, shaped like an embedded one: the
+  // codec names the format so the menu reads the same for both, the title
+  // is the file name, and the language stays empty because a sidecar's
+  // language tag is a provider concern carried by the name.
+  const auto info = backend->mediaInfo();
+  const soar::TrackInfo* ext = nullptr;
+  for (const auto& t : info.tracks) {
+    if (t.id == id) ext = &t;
+  }
+  REQUIRE(ext != nullptr);
+  CHECK(ext->type == soar::TrackType::Subtitle);
+  CHECK(ext->codec == "subrip");
+  CHECK(ext->title == "movie.srt");
+  CHECK(ext->language.empty());
+
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, id));
+  CHECK(backend->mediaInfo().selected_subtitle == id);
+
+  REQUIRE(backend->play());
+  const auto frames = pullSubtitleFrames(
+    static_cast<soar::FFmpegBackend*>(backend.get()), 2, std::chrono::seconds(30));
+  backend->stop();
+  backend->close();
+
+  // The cues arrive in file order...
+  REQUIRE(frames.size() >= 2);
+  CHECK(frames[0].text.find("Sidecar One") != std::string::npos);
+  CHECK(frames[1].text.find("Sidecar Two") != std::string::npos);
+  // ...and timed from the file, not from the decode clock: the UI shows a
+  // frame for `duration` starting at `pts`, so both have to be the file's.
+  CHECK(frames[0].pts == 0ms);
+  CHECK(frames[0].duration == 1000ms);
+  CHECK(frames[1].pts == 1000ms);
+  CHECK(frames[1].duration == 1000ms);
+}
+
+TEST_CASE("an external subtitle id sits past the container's stream range") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping external id test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "clip.mkv");
+  REQUIRE_FALSE(local.empty());
+  dir.write("clip.en.srt", "1\n00:00:00,000 --> 00:00:02,000\nEnglish\n\n");
+  dir.write("clip.zh.vtt", "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nChinese\n\n");
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  // This fixture does carry a subtitle stream of its own (plus an attached
+  // text file, which track enumeration must ignore), which is exactly the
+  // case where an id scheme that reused stream indices would collide.
+  const auto info = backend->mediaInfo();
+  soar::TrackId max_embedded = -1;
+  int subtitle_streams = 0;
+  std::vector<soar::TrackId> embedded_ids;
+  for (const auto& t : info.tracks) {
+    max_embedded = std::max(max_embedded, t.id);
+    embedded_ids.push_back(t.id);
+    if (t.type == soar::TrackType::Subtitle) ++subtitle_streams;
+  }
+  REQUIRE(subtitle_streams == 1);
+
+  soar::TrackId en = -1, zh = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("clip.en.srt"), en));
+  REQUIRE(backend->loadExternalSubtitle(dir.file("clip.zh.vtt"), zh));
+
+  // Two sidecars take two consecutive slots, both clear of the container's
+  // own range.
+  CHECK(zh == en + 1);
+  CHECK(en > max_embedded);
+
+  // Neither lands on an id the container was already using.
+  for (const soar::TrackId id : embedded_ids) {
+    CHECK(id != en);
+    CHECK(id != zh);
+  }
+
+  // The format is read from the content, not the extension, so a WebVTT
+  // sidecar is labelled as one even though the menu cannot tell formats
+  // apart at a glance.
+  const soar::TrackInfo* en_track = nullptr;
+  const soar::TrackInfo* zh_track = nullptr;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.id == en) en_track = &t;
+    if (t.id == zh) zh_track = &t;
+  }
+  REQUIRE(en_track != nullptr);
+  REQUIRE(zh_track != nullptr);
+  CHECK(en_track->codec == "subrip");
+  CHECK(zh_track->codec == "webvtt");
+  CHECK(en_track->title == "clip.en.srt");
+  CHECK(zh_track->title == "clip.zh.vtt");
+
+  // Both ids are accepted by selectTrack, which is the functional proof
+  // that they live outside the embedded range the old check covered.
+  CHECK(backend->selectTrack(soar::TrackType::Subtitle, en));
+  CHECK(backend->selectTrack(soar::TrackType::Subtitle, zh));
+  CHECK(backend->mediaInfo().selected_subtitle == zh);
+
+  // An id past the loaded sidecars is still unknown, and so is the
+  // container's own attachment stream, which is in range but is not a
+  // subtitle. Neither may be selectable just because external ids widened
+  // the range.
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Subtitle, zh + 1));
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Subtitle, zh + 100));
+  CHECK(backend->mediaInfo().selected_subtitle == zh);
+
+  backend->close();
+}
+
+TEST_CASE("discovery and loading agree on what a sidecar is") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping discovery test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "clip.mkv");
+  REQUIRE_FALSE(local.empty());
+  dir.write("clip.en.srt", "1\n00:00:00,000 --> 00:00:02,000\nEnglish\n\n");
+  dir.write("clip.zh.vtt", "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nChinese\n\n");
+  // A bitmap subtitle needs a decoder, not a parser, so the provider must
+  // never offer it — and the backend must never be handed one.
+  dir.write("clip.pgs.sup", "\x50\x47\x53");
+
+  // The provider is what the menu lists, so the list and what the backend
+  // accepts have to be the same set of files.
+  const soar::SidecarSubtitleProvider provider;
+  const auto candidates = provider.findCandidates(soar::MediaSource{local, {}});
+  REQUIRE(candidates.size() == 2);
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  for (const auto& c : candidates) {
+    soar::TrackId id = -1;
+    CHECK(backend->loadExternalSubtitle(c.path, id));
+    CHECK(id >= 0);
+    // What the provider labelled is what the track is called, which is how
+    // the menu tells a loaded sidecar from a still-offered one.
+    const auto info = backend->mediaInfo();
+    const soar::TrackInfo* match = nullptr;
+    for (const auto& t : info.tracks) {
+      if (t.id == id) match = &t;
+    }
+    REQUIRE(match != nullptr);
+    CHECK(match->title == c.title);
+  }
+
+  backend->close();
+}
+
+TEST_CASE("a sidecar that cannot be used leaves the media alone") {
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  // No media: nothing to attach a subtitle to.
+  soar::TrackId id = 999;
+  CHECK_FALSE(backend->loadExternalSubtitle("/tmp/soar-absent.srt", id));
+  CHECK(id == -1);
+  CHECK(backend->lastError().find("no media") != std::string::npos);
+
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping sidecar failure test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "clip.mkv");
+  REQUIRE_FALSE(local.empty());
+  dir.write("prose.txt", "this file is not a subtitle at all\n");
+  dir.write("one.srt", "1\n00:00:00,000 --> 00:00:01,000\nOnly one\n\n");
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  // A path that does not exist.
+  id = 999;
+  CHECK_FALSE(backend->loadExternalSubtitle(dir.file("absent.srt"), id));
+  CHECK(id == -1);
+  CHECK(backend->lastError().find("cannot read") != std::string::npos);
+
+  // A directory is a path that exists and still is not a subtitle file.
+  id = 999;
+  CHECK_FALSE(backend->loadExternalSubtitle(dir.path, id));
+  CHECK(id == -1);
+
+  // A real file with nothing parseable in it: worth reporting (the user
+  // picked it) but not worth a track.
+  id = 999;
+  CHECK_FALSE(backend->loadExternalSubtitle(dir.file("prose.txt"), id));
+  CHECK(id == -1);
+
+  // A file whose cues are all unparseable lands in the same place.
+  dir.write("broken.srt", "1\nnot a timestamp at all\nHello\n\n2\n??? --> ???\nWorld\n\n");
+  id = 999;
+  CHECK_FALSE(backend->loadExternalSubtitle(dir.file("broken.srt"), id));
+  CHECK(id == -1);
+  CHECK(backend->lastError().find("no cues") != std::string::npos);
+
+  // None of that invented a track...
+  CHECK(backend->mediaInfo().selected_subtitle == -1);
+  for (const auto& t : backend->mediaInfo().tracks) {
+    CHECK(t.type != soar::TrackType::Subtitle);
+  }
+  // ...and none of it raised an Error event: a missing or broken sidecar is
+  // a normal outcome, so the media simply plays without that subtitle.
+  CHECK(sink.errors.load() == 0);
+
+  // Playback is untouched by any of it.
+  REQUIRE(backend->play());
+  CHECK(waitForPosition(*backend, 500ms, std::chrono::seconds(30)));
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("reloading a sidecar replaces it in place") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping sidecar reload test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "clip.mkv");
+  REQUIRE_FALSE(local.empty());
+  const std::string path = dir.file("clip.srt");
+  dir.write("clip.srt", "1\n00:00:00,000 --> 00:00:01,000\nVersion One\n\n");
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  soar::TrackId first = -1, again = -1;
+  REQUIRE(backend->loadExternalSubtitle(path, first));
+  // Same path, different content: the menu lets a user re-pick a sidecar
+  // (after fixing a bad download, say), and that must not pile up a second
+  // track or move the first one.
+  dir.write("clip.srt", "1\n00:00:00,000 --> 00:00:01,000\nVersion Two\n\n");
+  REQUIRE(backend->loadExternalSubtitle(path, again));
+  CHECK(again == first);
+
+  int titled = 0;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.title == "clip.srt") ++titled;
+  }
+  CHECK(titled == 1);
+
+  // The replacement is what plays: the old cues are gone, not shadowed.
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, again));
+  REQUIRE(backend->play());
+  const auto frames = pullSubtitleFrames(
+    static_cast<soar::FFmpegBackend*>(backend.get()), 1, std::chrono::seconds(30));
+  backend->stop();
+  backend->close();
+
+  REQUIRE(frames.size() >= 1);
+  CHECK(frames[0].text.find("Version Two") != std::string::npos);
+  CHECK(frames[0].text.find("Version One") == std::string::npos);
+}
+
+TEST_CASE("closing the media drops its sidecars") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping sidecar lifecycle test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "clip.mkv");
+  REQUIRE_FALSE(local.empty());
+  dir.write("clip.srt", "1\n00:00:00,000 --> 00:00:01,000\nHello\n\n");
+  const std::string path = dir.file("clip.srt");
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  soar::TrackId before = -1;
+  REQUIRE(backend->loadExternalSubtitle(path, before));
+
+  backend->close();
+
+  // A sidecar belongs to the media that was open: the next open gets the
+  // ones next to *its* file. Reopening the same path therefore hands out
+  // the same id again instead of continuing a count that outlived the
+  // media, and the track list starts clean.
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  CHECK(backend->mediaInfo().selected_subtitle == -1);
+  int titled = 0;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.title == "clip.srt") ++titled;
+  }
+  CHECK(titled == 0);
+
+  soar::TrackId after = -1;
+  REQUIRE(backend->loadExternalSubtitle(path, after));
+  CHECK(after == before);
+
+  backend->close();
+}
+
+TEST_CASE("a backward seek replays the sidecar from the top") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping sidecar seek test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  dir.write("movie.srt",
+            "1\n00:00:00,000 --> 00:00:01,000\nSidecar One\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\nSidecar Two\n\n"
+            "3\n00:00:04,000 --> 00:00:05,000\nSidecar Three\n\n");
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  soar::TrackId id = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("movie.srt"), id));
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, id));
+  REQUIRE(backend->play());
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+
+  // Play past the first two cues so the pump cursor has moved on.
+  auto frames = pullSubtitleFrames(ffmpeg, 2, std::chrono::seconds(30));
+  REQUIRE(frames.size() >= 2);
+  CHECK(frames[0].text.find("Sidecar One") != std::string::npos);
+  REQUIRE(waitForPosition(*backend, 2500ms, std::chrono::seconds(30)));
+
+  // Seeking back has to re-arm the cursor: the cues behind the playhead
+  // were already queued and are long gone from the FIFO, so without a
+  // rescan the first half of the file would stay blank for the rest of
+  // the seek.
+  REQUIRE(backend->seek(0ms));
+  frames = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  backend->stop();
+  backend->close();
+
+  REQUIRE(frames.size() >= 1);
+  CHECK(frames[0].text.find("Sidecar One") != std::string::npos);
+}
+
+TEST_CASE("a forward seek shows the tail of a dense sidecar, in order") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping sidecar forward-seek test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  // Six cues crammed into the first half second, so seeking past them
+  // leaves a whole burst behind the playhead.
+  std::string srt;
+  for (int i = 1; i <= 6; ++i) {
+    srt += std::to_string(i) + "\n00:00:00,000 --> 00:00:00,500\nCue " +
+           std::to_string(i) + "\n\n";
+  }
+  dir.write("movie.srt", srt);
+  dir.write("movie.tail.srt", "1\n00:00:03,000 --> 00:00:04,000\nTail\n\n");
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  soar::TrackId id = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("movie.srt"), id));
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, id));
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+
+  // The pump is driven by the playhead, so reaching the tail of the file
+  // is what makes the skipped burst surface. What comes out is the newest
+  // handful in cue order: a forward seek is not a request to replay a
+  // hundred cues the user seeked away from.
+  REQUIRE(backend->seek(3900ms));
+  REQUIRE(backend->play());
+  const auto frames = pullSubtitleFrames(ffmpeg, 4, std::chrono::seconds(30));
+  backend->stop();
+  backend->close();
+
+  CHECK(frames.size() == 4);
+  if (frames.size() == 4) {
+    CHECK(frames[0].text.find("Cue 3") != std::string::npos);
+    CHECK(frames[1].text.find("Cue 4") != std::string::npos);
+    CHECK(frames[2].text.find("Cue 5") != std::string::npos);
+    CHECK(frames[3].text.find("Cue 6") != std::string::npos);
+  }
+}
+
+TEST_CASE("disabling subtitles stops the sidecar") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping sidecar disable test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  dir.write("movie.srt",
+            "1\n00:00:00,000 --> 00:00:01,000\nSidecar One\n\n"
+            "2\n00:00:01,000 --> 00:00:02,000\nSidecar Two\n\n");
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  soar::TrackId id = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("movie.srt"), id));
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, id));
+  // Turning subtitles off has to stop the pump, not just the rendering: a
+  // cue that was already due must not surface after the user asked for
+  // silence. The track itself stays loaded, so it can be switched back on.
+  REQUIRE(backend->disableSubtitles());
+  CHECK(backend->mediaInfo().selected_subtitle == -1);
+
+  REQUIRE(backend->play());
+  const auto frames = pullSubtitleFrames(
+    static_cast<soar::FFmpegBackend*>(backend.get()), 1, std::chrono::seconds(3));
+  backend->stop();
+
+  int titled = 0;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.title == "movie.srt") ++titled;
+  }
+  CHECK(titled == 1);
+  backend->close();
+
+  CHECK(frames.empty());
 }
 
 TEST_CASE("a container with no audio or video streams fails to open") {
