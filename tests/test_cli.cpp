@@ -622,6 +622,85 @@ if mode == "sidecar":
             sys.exit(0)
     sys.exit(4)
 
+if mode == "playlist":
+    # The queue timeline (docs/mvp.md §2) over two 6s fixtures that the
+    # media-info trail tells apart by track count (audio_only tracks=1,
+    # subs_media tracks=3), plus a third queued path that does not exist —
+    # its only role is a failed open (n onto it), which must leave the
+    # queue and the current entry untouched. Keys only until the overlay
+    # buttons are needed; the Playlist overlay (P) stays open the whole
+    # run — overlay windows do not swallow keys, only combo popups do.
+    # Coordinates probed under SOAR_UI_BITMAP_FONT=1. Expected media-info
+    # trail, launch included, each step tagged with the gesture that
+    # produced it (the two fixtures are told apart by track count, so the
+    # trail needs no screenshots):
+    #   1 (launch) 3 (manual n) 1 (manual Shift+N)
+    #   3 (auto-advance at the first entry's EOF)
+    #   1 (Loop::All wrap at the queued entry's EOF)
+    #   1 (single-entry replay under Loop::One)
+    # The dead path is removed with an "x" click once the failed opens
+    # are done, so both later EOF advances land on real entries; the
+    # failed opens, the removals and the empty-queue n emit no content
+    # media-info, so nothing may follow the last replay. Manual n under
+    # a loop mode wraps (next() at the tail re-opens the head), which is
+    # why every n here either targets a real entry or an empty queue.
+    time.sleep(2.2)
+    focus()
+    key(d.keysym_to_keycode(0x6e))  # n: jump to the queued entry
+    time.sleep(1.0)
+    key(d.keysym_to_keycode(0x70))  # p: open the Playlist overlay
+    time.sleep(0.8)
+    key(d.keysym_to_keycode(0x6e))  # n onto the dead entry: open fails,
+    time.sleep(0.8)                 # current entry and queue stay untouched
+    key(d.keysym_to_keycode(0x6e))  # n again: the failed open is
+    time.sleep(0.8)                 # idempotent, so a repeat only re-fails
+    sh = d.keysym_to_keycode(0xFFE1)  # Shift_L
+    xtest.fake_input(d, X.KeyPress, sh); d.sync()
+    key(d.keysym_to_keycode(0x6e))  # Shift+N: back to the first entry
+    xtest.fake_input(d, X.KeyRelease, sh); d.sync()
+    time.sleep(0.8)
+    moved(383, 204); time.sleep(0.15)
+    button(1); time.sleep(0.5)      # "x" on row 3 ("   missing.mp4"):
+                                    # drop the dead entry from the queue
+    time.sleep(6.5)  # across the first entry's natural EOF: auto-advance
+    moved(300, 140); time.sleep(0.15)
+    button(1); time.sleep(0.5)      # Loop button: off -> all
+    time.sleep(6.5)  # across the queued entry's EOF: Loop::All wraps
+    key(d.keysym_to_keycode(0x69))  # i: info overlay reads "Loop all"
+    time.sleep(0.9)
+    key(d.keysym_to_keycode(0x69))  # ... and close it (overlays are
+    time.sleep(0.4)                 # single-valued, so re-open the queue)
+    key(d.keysym_to_keycode(0x70))  # p: Playlist overlay again
+    time.sleep(0.6)
+    moved(300, 140); time.sleep(0.15)
+    button(1); time.sleep(0.5)      # Loop button: all -> one
+    time.sleep(4.6)  # across the wrapped entry's EOF: One replays it
+    moved(400, 184); time.sleep(0.15)
+    button(1); time.sleep(0.7)      # "x" on row 2: drop the queued entry
+    moved(393, 165); time.sleep(0.15)
+    button(1); time.sleep(0.7)      # "x" on row 1: queue is empty, hint
+                                    # shows (removing the playing entry
+                                    # only re-points, playback runs on)
+    key(d.keysym_to_keycode(0x6e))  # n on an empty queue: toast, no crash
+    time.sleep(0.8)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        # No popup is up in this mode, but keep the same safe exit shape
+        # as the other modes: a click, a pause, then q until it lands.
+        if moved(200, 400):
+            button(1)
+        time.sleep(0.7)
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
 if mode == "audiodrive":
     # Real-backend window run over the dual-audio fixture: two audio
     # streams and no subtitle stream at all. That combination is where
@@ -1708,6 +1787,146 @@ TEST_CASE("windowed FFmpeg run loads a sidecar pick from the subtitle menu") {
           std::string::npos);
   }
   std::filesystem::remove_all(scratch, ec);
+#endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run walks the play queue end to end") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // The queue UI (P overlay, its buttons) is an ImGui widget; the
+  // bare-SDL build has no HUD to drive.
+  MESSAGE("app built without the ImGui overlay; skipping the playlist window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the playlist window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the playlist window test");
+  return;
+#else
+  std::string first;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", first)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the playlist window test");
+    return;
+  }
+  std::string second;
+  if (!envMediaPath("SOAR_TEST_SUBS_MEDIA", second)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping the playlist window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the playlist window test");
+    return;
+  }
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the playlist window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "playlist", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  // Keep the run's MRU entries out of the real user state dir.
+  const std::string state_home = "/tmp/soar_playlist_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // The first positional plays; the second queues behind it (mpv's
+  // multi-argument semantics). Both fixtures run 6s but expose different
+  // track counts, so every queue step is visible in the media-info trail
+  // without any screenshots. The third path does not exist: it only gives
+  // the queue a dead entry, whose failed open (n onto it) and removal are
+  // part of the scripted tour.
+  const auto run =
+      runCli({"--backend=ffmpeg", first, second, "/nonexistent-dir/missing.mp4"});
+
+  std::printf("x11 playlist window test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  // The queue timeline, launch included — each open publishes MediaInfo,
+  // so the trail reads as the fixture identities in play order (audio_only
+  // is the 1-track fixture, subs_media the 3-track one):
+  //   1 (launch) 3 (manual n) 1 (manual Shift+N) 3 (auto-advance at EOF)
+  //   1 (Loop::All wrap) 1 (single-entry replay under Loop::One).
+  // The failed open onto the missing entry closes the player without
+  // publishing a content media-info, and the removals plus the
+  // empty-queue n produce nothing either.
+  // Each find resumes past the previous match (start + needle length):
+  // searching from the match start itself would re-match the same line
+  // and let the next step silently alias the previous occurrence.
+  const std::string kT1 = "tracks=1 selected";
+  const std::string kT3 = "tracks=3 selected";
+  const std::size_t launch = run.output.find(kT1);
+  CHECK(launch != std::string::npos);
+  const std::size_t manual_next = run.output.find(kT3, launch + kT1.size());
+  CHECK(manual_next != std::string::npos);
+  const std::size_t manual_prev = run.output.find(kT1, manual_next + kT3.size());
+  CHECK(manual_prev != std::string::npos);
+  const std::size_t auto_advance = run.output.find(kT3, manual_prev + kT1.size());
+  CHECK(auto_advance != std::string::npos);
+  const std::size_t loop_wrap = run.output.find(kT1, auto_advance + kT3.size());
+  CHECK(loop_wrap != std::string::npos);
+  const std::size_t replay = run.output.find(kT1, loop_wrap + kT1.size());
+  CHECK(replay != std::string::npos);
+  // The removed entry never comes back: after the queue dropped to one
+  // entry, no later open may surface the 3-track fixture again. The same
+  // goes for the 1-track fixture — the failed open onto the dead entry
+  // ends content playback, and an emptied queue must not advance.
+  if (replay != std::string::npos) {
+    const std::size_t after_replay = replay + kT1.size();
+    CHECK(run.output.find(kT3, after_replay) == std::string::npos);
+    CHECK(run.output.find(kT1, after_replay) == std::string::npos);
+  }
 #endif
 #endif
 #endif

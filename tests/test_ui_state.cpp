@@ -646,3 +646,16 @@ TEST_CASE("PlaylistStore same-value setShuffle is a no-op, not a toggle") {
   ps.setShuffle(true);
   CHECK(ps.advance() == soar::app::PlaylistStore::kNone);
 }
+
+TEST_CASE("PlaylistStore cycleLoop walks off -> all -> one -> off") {
+  soar::app::PlaylistStore ps;
+  using Loop = soar::app::PlaylistStore::Loop;
+  // mpv's `l` order: the common modes first, the sticky One last.
+  CHECK(ps.cycleLoop() == Loop::All);
+  CHECK(ps.loop() == Loop::All);
+  CHECK(ps.cycleLoop() == Loop::One);
+  CHECK(ps.cycleLoop() == Loop::Off);
+  CHECK(ps.loop() == Loop::Off);
+  // Keeps cycling, never sticks.
+  CHECK(ps.cycleLoop() == Loop::All);
+}
