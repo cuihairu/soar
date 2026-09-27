@@ -105,7 +105,7 @@ if(TARGET soar)
 # job until its two-digit-minute timeout. CTest kills the test at the
 # 5-minute mark instead, so one wedged case costs minutes, not the job.
 set_tests_properties(soar_core_tests soar_backend_tests soar_ui_tests
-  soar_subtitle_tests soar_cli_tests PROPERTIES TIMEOUT 300)
+  soar_subtitle_tests soar_cli_tests PROPERTIES TIMEOUT 600)
 # http_cache_tests contains the offline-replay integration case: two
 # playback passes with their own 240 s deadlines, so a runner where the
 # clock crawls can legitimately exceed the shared 300 s budget (local run

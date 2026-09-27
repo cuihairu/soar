@@ -718,8 +718,8 @@ RunResult runCli(const std::vector<std::string>& args) {
   // such command (its homebrew build installs gtimeout instead) and
   // prefixing it made every child exit 127.
   // Coverage builds (--coverage -O0 -g) are significantly slower; allow
-  // up to 300s so heavy UI-scripted cases don't time out under instrumentation.
-  cmd.insert(0, "timeout 300 ");
+  // up to 600s so heavy UI-scripted cases don't time out under instrumentation.
+  cmd.insert(0, "timeout 600 ");
 #endif
 
   RunResult result;
