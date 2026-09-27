@@ -1,16 +1,20 @@
 // Unit tests for the external-subtitle core (docs/mvp.md §6): the SRT /
 // WebVTT text parser (src/core/subtitle_text.*) and the pluggable
-// SubtitleProvider with its local sidecar implementation
-// (src/core/subtitle_provider.*).
+// SubtitleProvider — its local sidecar implementation plus the HTTP
+// download provider (src/core/subtitle_provider.*).
 //
-// Both are pure logic over strings plus one temp directory, so the suite
-// needs no display, no media fixture and no network.
+// The parser and the sidecar provider are pure logic over strings plus one
+// temp directory. The download cases need a POSIX fork and python3: they
+// run against a local fixture catalog server (test_http_servers.h), never
+// against the real network.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
 #include "soar/core/subtitle_provider.h"
 #include "soar/core/subtitle_text.h"
+
+#include "test_http_servers.h"
 
 #include <cerrno>
 #include <chrono>
@@ -20,6 +24,7 @@
 #include <vector>
 
 #ifndef _WIN32
+#  include <csignal>
 #  include <fcntl.h>
 #  include <sys/resource.h>
 #  include <unistd.h>
@@ -27,14 +32,26 @@
 
 using namespace std::chrono_literals;
 using soar::detectSubtitleFormat;
+using soar::ExternalSubtitleProvider;
+using soar::HttpSubtitleConfig;
 using soar::kDefaultCueDuration;
 using soar::MediaSource;
+using soar::mediaHashHex;
 using soar::parseSubtitleText;
 using soar::readSubtitleFile;
 using soar::SidecarSubtitleProvider;
+using soar::storeExternalSubtitle;
 using soar::SubtitleCandidate;
 using soar::SubtitleCue;
 using soar::SubtitleFormat;
+
+#ifndef _WIN32
+// POSIX-only fixtures: these symbols live inside the shared header's
+// #ifndef _WIN32 block, so the using-declarations must be gated too.
+using test_servers::RangeServer;
+using test_servers::startRawServer;
+using test_servers::startSubtitleServer;
+#endif
 
 namespace {
 
@@ -145,6 +162,33 @@ struct ScopedFdExhaustion {
   ScopedFdExhaustion(const ScopedFdExhaustion&) = delete;
   ScopedFdExhaustion& operator=(const ScopedFdExhaustion&) = delete;
 };
+
+// RAII guard around RLIMIT_FSIZE (same shape as the http-cache quota
+// guard): a real refusal from the OS, nothing mocked in the code under
+// test. The default SIGXFSZ disposition would kill the binary mid-case,
+// so the case arms `SIG_IGN` before lowering the limit.
+struct ScopedFsizeLimit {
+  struct rlimit saved {};
+  bool lowered = false;
+
+  explicit ScopedFsizeLimit(rlim_t soft) {
+    if (::getrlimit(RLIMIT_FSIZE, &saved) != 0) {
+      return;
+    }
+    struct rlimit next = saved;
+    next.rlim_cur = soft;
+    lowered = ::setrlimit(RLIMIT_FSIZE, &next) == 0;
+  }
+
+  ~ScopedFsizeLimit() {
+    if (lowered) {
+      ::setrlimit(RLIMIT_FSIZE, &saved);
+    }
+  }
+
+  ScopedFsizeLimit(const ScopedFsizeLimit&) = delete;
+  ScopedFsizeLimit& operator=(const ScopedFsizeLimit&) = delete;
+};
 #endif
 
 // A UTF-8 BOM. Written as its own literal because "\xEF\xBB\xBF" glued to
@@ -160,6 +204,36 @@ std::vector<std::string> titlesOf(const std::vector<SubtitleCandidate>& c) {
   }
   return out;
 }
+
+#ifndef _WIN32
+// The catalog the fixture server returns verbatim from /search, plus the
+// files its /dl/ serves. The first lines exercise the parser's skip rules
+// (comments, malformed lines, an https:// candidate, a format the core
+// cannot read); the rest are candidates in catalog order, covering the
+// field corners: empty title (falls back to the url), uppercase and alias
+// extensions, a five-field line (extras ignored).
+void writeCatalog(const TempDir& root, int port) {
+  const std::string base = "http://127.0.0.1:" + std::to_string(port);
+  std::filesystem::create_directories(root.file("dl"));
+  root.write("dl/movie.en.srt",
+             "1\n00:00:01,000 --> 00:00:02,500\nhello from the network\n");
+  root.write("dl/movie.zh.vtt",
+             "WEBVTT\n\n00:00:01.000 --> 00:00:02.500\n\xE5\xAD\x97\xE5\xB9\x95 from the network\n");
+  root.write("catalog.tsv",
+             "# url<TAB>lang<TAB>title<TAB>ext, one candidate per line\n"
+             "\n"
+             "not a candidate line\n"
+             "https://mirror.example.invalid/movie.es.srt\tes\tHTTPS is skipped\tsrt\n"
+             "http://127.0.0.1:1/movie.ass\tja\tASS needs a decoder\tass\n"
+             + base + "/dl/movie.en.srt\ten\tMovie EN (downloaded)\tsrt\n"
+             + base + "/dl/movie.zh.vtt\tzh-Hans\tMovie ZH VTT\tvtt\n"
+             + base + "/dl/movie.en.srt\tund\t\tvtt\n"
+             + base + "/dl/movie.en.srt\ten-GB\tUK SRT\tSRT\n"
+             + base + "/dl/movie.en.srt\tfr\tSubRip alias\tsubrip\n"
+             + base + "/dl/movie.en.srt\tde\tFive fields\tvtt\tignored-extra\n"
+             + base + "/dl/movie.en.srt\tpt\tBr VTT\tWEBVTT\n");
+}
+#endif
 
 // =========================================================================
 // subtitleFormatFromPath / detectSubtitleFormat
@@ -722,6 +796,788 @@ TEST_CASE("sidecar_finds_a_media_opened_by_a_bare_file_name") {
   const SidecarSubtitleProvider provider;
   CHECK(titlesOf(provider.findCandidates(MediaSource{"movie.mkv", {}})) ==
         std::vector<std::string>{"movie.srt"});
+}
+
+// =========================================================================
+// ExternalSubtitleProvider — offline and configuration arcs (no server
+// needed; these run on every platform)
+// =========================================================================
+
+TEST_CASE("unconfigured_provider_stays_offline") {
+  // The core never ships an endpoint: an unconfigured provider answers
+  // nothing without touching any socket, per the no-forced-networking rule.
+  const ExternalSubtitleProvider provider;
+  CHECK(provider.findCandidates(MediaSource{"movie.mkv", {}}).empty());
+
+  std::string out;
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "http://127.0.0.1:1/x.srt", "en", "x.srt", SubtitleFormat::SubRip}, out));
+  CHECK(out.empty());
+}
+
+TEST_CASE("configure_swaps_the_config_after_construction") {
+  // The default-constructed provider then configured offline still
+  // answers nothing; configure() exists so a window can apply environment
+  // settings after the member is built.
+  ExternalSubtitleProvider provider;
+  provider.configure(HttpSubtitleConfig{});  // endpoint stays empty
+  CHECK(provider.findCandidates(MediaSource{"movie.mkv", {}}).empty());
+}
+
+TEST_CASE("https_endpoint_and_https_candidates_degrade_to_offline") {
+  // TLS is deliberately out of scope (see http_cache.h): an https://
+  // endpoint is refused locally, before any name lookup or connection,
+  // exactly like an unconfigured one.
+  const TempDir tmp;
+  tmp.write("movie.mkv", std::string(64, 'M'));
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = "https://subtitles.example.invalid/search";
+  provider.configure(cfg);
+  CHECK(provider.findCandidates(MediaSource{tmp.file("movie.mkv"), {}}).empty());
+
+  std::string out;
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "https://mirror.example.invalid/movie.srt", "en", "movie.srt",
+      SubtitleFormat::SubRip}, out));
+  CHECK(out.empty());
+}
+
+TEST_CASE("unreachable_endpoint_degrades_to_no_candidates") {
+  // A connection-refused search is just "no external subtitles", not an
+  // error — and it must come back promptly, not hang.
+  const TempDir tmp;
+  tmp.write("movie.mkv", std::string(64, 'M'));
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = "http://127.0.0.1:1/search";  // nothing listens here
+  cfg.timeout = 2000ms;
+  provider.configure(cfg);
+  CHECK(provider.findCandidates(MediaSource{tmp.file("movie.mkv"), {}}).empty());
+
+  std::string out;
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "http://127.0.0.1:1/movie.en.srt", "en", "movie.en.srt",
+      SubtitleFormat::SubRip}, out));
+}
+
+TEST_CASE("media_hash_hex") {
+  const TempDir tmp;
+  CHECK(mediaHashHex(tmp.file("missing.mkv")).empty());
+  tmp.mkdir("adir");
+  CHECK(mediaHashHex(tmp.file("adir")).empty());
+
+  // Golden value: 16 bytes 0x00..0x0f are two little-endian words,
+  // 0x0706050403020100 + 0x0f0e0d0c0b0a0908 = 0x161412100e0c0a08, plus the
+  // size 0x10 — so a service can recompute this digest independently.
+  std::string bytes;
+  for (int i = 0; i < 16; ++i) {
+    bytes.push_back(static_cast<char>(i));
+  }
+  tmp.write("tiny.bin", bytes);
+  CHECK(mediaHashHex(tmp.file("tiny.bin")) == "161412100e0c0a18");
+
+  // An empty file still has a size to hash.
+  tmp.write("empty.bin", "");
+  CHECK(mediaHashHex(tmp.file("empty.bin")) == "0000000000000000");
+
+  tmp.write("a.bin", std::string(200, 'x'));
+  const std::string ha = mediaHashHex(tmp.file("a.bin"));
+  CHECK(ha.size() == 16);
+  CHECK(ha == mediaHashHex(tmp.file("a.bin")));  // deterministic
+  tmp.write("b.bin", std::string(201, 'x'));
+  CHECK(ha != mediaHashHex(tmp.file("b.bin")));  // the size counts in
+
+  // Beyond the 64 KiB window the tail chunk joins the sum, so a change in
+  // either the head or the tail byte moves the digest.
+  std::string big(3 * 64 * 1024, 'q');
+  tmp.write("big.bin", big);
+  const std::string hb = mediaHashHex(tmp.file("big.bin"));
+  CHECK(!hb.empty());
+  CHECK(hb == mediaHashHex(tmp.file("big.bin")));
+  big[0] = 'r';
+  tmp.write("big2.bin", big);
+  CHECK(hb != mediaHashHex(tmp.file("big2.bin")));
+  big[0] = 'q';
+  big[big.size() - 1] = 'z';
+  tmp.write("big3.bin", big);
+  CHECK(hb != mediaHashHex(tmp.file("big3.bin")));
+}
+
+TEST_CASE("store_external_subtitle") {
+  const TempDir tmp;
+  SubtitleCandidate cand;
+  cand.format = SubtitleFormat::SubRip;
+  const std::string kText = "1\n00:00:01,000 --> 00:00:02,000\nstored\n";
+
+  SUBCASE("a hostile title is sanitized, the content intact") {
+    cand.title = "..\\..\\evil name?.srt";
+    const std::string p = storeExternalSubtitle(tmp.path, cand, kText);
+    REQUIRE(!p.empty());
+    // One component inside <dir>/subtitles/, no separators left to climb
+    // out with, and exactly the characters the sanitizer keeps.
+    CHECK(std::filesystem::path(p).parent_path() == tmp.file("subtitles"));
+    CHECK(std::filesystem::path(p).filename() == ".._.._evil_name_.srt");
+    std::string round;
+    REQUIRE(readSubtitleFile(p, round));
+    CHECK(round == kText);
+  }
+
+  SUBCASE("a pure traversal title collapses to a fixed name") {
+    cand.title = "..";
+    const std::string p = storeExternalSubtitle(tmp.path, cand, kText);
+    REQUIRE(!p.empty());
+    CHECK(std::filesystem::path(p).filename() == "subtitle.srt");
+  }
+
+  SUBCASE("a title without an extension gets one from the format") {
+    cand.title = "movie zh";
+    const std::string srt = storeExternalSubtitle(tmp.path, cand, kText);
+    REQUIRE(!srt.empty());
+    CHECK(std::filesystem::path(srt).filename() == "movie_zh.srt");
+
+    cand.format = SubtitleFormat::WebVtt;
+    const std::string vtt = storeExternalSubtitle(tmp.path, cand, "WEBVTT\n");
+    REQUIRE(!vtt.empty());
+    CHECK(std::filesystem::path(vtt).filename() == "movie_zh.vtt");
+  }
+
+  SUBCASE("a directory that cannot be created yields empty") {
+    tmp.write("plainfile", "not a directory");
+    CHECK(storeExternalSubtitle(tmp.file("plainfile"), cand, kText).empty());
+  }
+
+  SUBCASE("an empty title survives as subtitle.srt") {
+    cand.title = "";
+    const std::string p = storeExternalSubtitle(tmp.path, cand, kText);
+    REQUIRE(!p.empty());
+    CHECK(std::filesystem::path(p).filename() == "subtitle.srt");
+  }
+
+  SUBCASE("an empty dir lands in the system temp") {
+    cand.title = "temp-store.srt";
+    const std::string p = storeExternalSubtitle("", cand, kText);
+    REQUIRE(!p.empty());
+    CHECK(p.find("subtitles") != std::string::npos);
+    std::string round;
+    REQUIRE(readSubtitleFile(p, round));
+    CHECK(round == kText);
+    std::error_code ec;
+    std::filesystem::remove(p, ec);  // leave no litter in the shared temp
+  }
+}
+
+// =========================================================================
+// ExternalSubtitleProvider — wire arcs against the local fixture server
+// (POSIX + python3, mirroring the test_http_cache.cpp gating)
+// =========================================================================
+
+TEST_CASE("search_finds_candidates_and_fetch_downloads_one") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startSubtitleServer(root.path, "catalog", "sekret-key");
+  REQUIRE(srv.pid >= 0);
+  writeCatalog(root, srv.port);
+  root.write("movie.mkv", std::string(4096, 'M'));
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  cfg.api_key = "sekret-key";
+  cfg.timeout = 5000ms;
+  provider.configure(cfg);
+
+  // Reaching the catalog at all proves the request carried the right
+  // X-API-Key and a query the server validates (size/hash/name present and
+  // well formed — anything else is a 400).
+  const std::vector<SubtitleCandidate> c =
+      provider.findCandidates(MediaSource{root.file("movie.mkv"), {}});
+  REQUIRE(c.size() == 7);  // junk, https and .ass catalog lines are skipped
+  CHECK(c[0].path == srv.base_url + "/dl/movie.en.srt");
+  CHECK(c[0].language == "en");
+  CHECK(c[0].title == "Movie EN (downloaded)");
+  CHECK(c[0].format == SubtitleFormat::SubRip);
+  CHECK(c[1].path == srv.base_url + "/dl/movie.zh.vtt");
+  CHECK(c[1].language == "zh-Hans");
+  CHECK(c[1].title == "Movie ZH VTT");
+  CHECK(c[1].format == SubtitleFormat::WebVtt);
+  // Corner rows: an empty title falls back to the url, extensions are
+  // matched case-insensitively ("SRT", "WEBVTT") with "subrip" as an
+  // alias, and a five-field line keeps its extra columns as noise.
+  CHECK(c[2].title == c[2].path);
+  CHECK(c[2].format == SubtitleFormat::WebVtt);
+  CHECK(c[3].title == "UK SRT");
+  CHECK(c[3].format == SubtitleFormat::SubRip);
+  CHECK(c[4].title == "SubRip alias");
+  CHECK(c[4].format == SubtitleFormat::SubRip);
+  CHECK(c[5].title == "Five fields");
+  CHECK(c[6].title == "Br VTT");
+  CHECK(c[6].format == SubtitleFormat::WebVtt);
+
+  SUBCASE("fetch returns text the core parser accepts") {
+    std::string out;
+    REQUIRE(provider.fetch(c[0], out));
+    const std::vector<SubtitleCue> cues = parseSubtitleText(out, c[0].format);
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "hello from the network");
+  }
+
+  SUBCASE("a download joins the sidecar pipeline via the store") {
+    std::string text;
+    REQUIRE(provider.fetch(c[1], text));
+    const std::string stored = storeExternalSubtitle(root.path, c[1], text);
+    REQUIRE(!stored.empty());
+    std::string round;
+    REQUIRE(readSubtitleFile(stored, round));
+    const std::vector<SubtitleCue> cues =
+        parseSubtitleText(round, SubtitleFormat::WebVtt);
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "\xE5\xAD\x97\xE5\xB9\x95 from the network");
+  }
+
+  SUBCASE("an endpoint that already carries a query merges with &") {
+    ExternalSubtitleProvider p2;
+    HttpSubtitleConfig cfg2 = cfg;
+    cfg2.endpoint = srv.base_url + "/search?src=unit";
+    p2.configure(cfg2);
+    CHECK(p2.findCandidates(MediaSource{root.file("movie.mkv"), {}}).size() == 7);
+  }
+#endif
+}
+
+TEST_CASE("wrong_or_missing_api_key_yields_no_candidates") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startSubtitleServer(root.path, "catalog", "sekret-key");
+  REQUIRE(srv.pid >= 0);
+  writeCatalog(root, srv.port);
+  root.write("movie.mkv", std::string(64, 'M'));
+
+  SUBCASE("a wrong key is a 401, reported as no candidates") {
+    ExternalSubtitleProvider provider;
+    HttpSubtitleConfig cfg;
+    cfg.endpoint = srv.base_url + "/search";
+    cfg.api_key = "wrong-key";
+    provider.configure(cfg);
+    CHECK(provider.findCandidates(MediaSource{root.file("movie.mkv"), {}}).empty());
+  }
+
+  SUBCASE("no key against a server that wants one degrades the same way") {
+    ExternalSubtitleProvider provider;
+    HttpSubtitleConfig cfg;
+    cfg.endpoint = srv.base_url + "/search";
+    provider.configure(cfg);
+    CHECK(provider.findCandidates(MediaSource{root.file("movie.mkv"), {}}).empty());
+  }
+#endif
+}
+
+TEST_CASE("server_answer_degrades_to_no_candidates") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  const TempDir root;
+  root.write("movie.mkv", std::string(64, 'M'));
+
+  std::string mode;
+  SUBCASE("an empty catalog is no candidates") {
+    mode = "empty";
+  }
+  SUBCASE("an http 500 is no candidates") {
+    mode = "status500";
+  }
+  SUBCASE("an http 404 is no candidates") {
+    mode = "status404";
+  }
+
+  const RangeServer srv = startSubtitleServer(root.path, mode, "");
+  REQUIRE(srv.pid >= 0);
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  cfg.timeout = 5000ms;
+  provider.configure(cfg);
+  CHECK(provider.findCandidates(MediaSource{root.file("movie.mkv"), {}}).empty());
+#endif
+}
+
+TEST_CASE("a_stalling_server_is_cut_off_by_the_timeout") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  const TempDir root;
+  // The server accepts, then sleeps 40s before answering. The client's
+  // socket timeout — not the test's patience — is what must end the wait.
+  const RangeServer srv = startSubtitleServer(root.path, "stall", "");
+  REQUIRE(srv.pid >= 0);
+  root.write("movie.mkv", std::string(64, 'M'));
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  cfg.timeout = 300ms;
+  provider.configure(cfg);
+
+  const auto t0 = std::chrono::steady_clock::now();
+  const std::vector<SubtitleCandidate> c =
+      provider.findCandidates(MediaSource{root.file("movie.mkv"), {}});
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+  CHECK(c.empty());
+  // Generous margin for slow machines, still far below the 40s stall.
+  CHECK(elapsed < std::chrono::seconds(10));
+#endif
+}
+
+TEST_CASE("fetch_rejects_non_subtitle_answers") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startSubtitleServer(root.path, "catalog", "");
+  REQUIRE(srv.pid >= 0);
+  writeCatalog(root, srv.port);
+  root.write("dl/junk.html", "<html><body>not a subtitle</body></html>");
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  provider.configure(cfg);
+
+  SUBCASE("a missing download is a 404 and a false fetch") {
+    std::string out;
+    CHECK_FALSE(provider.fetch(SubtitleCandidate{
+        srv.base_url + "/dl/gone.srt", "en", "gone.srt",
+        SubtitleFormat::SubRip}, out));
+    CHECK(out.empty());
+  }
+
+  SUBCASE("a 200 body that parses as no subtitle format is a false fetch") {
+    // An HTML error page served with 200 must never become a track.
+    std::string out;
+    CHECK_FALSE(provider.fetch(SubtitleCandidate{
+        srv.base_url + "/dl/junk.html", "en", "junk.html",
+        SubtitleFormat::SubRip}, out));
+    CHECK(out.empty());
+  }
+
+  SUBCASE("an unreachable download url is a false fetch") {
+    std::string out;
+    CHECK_FALSE(provider.fetch(SubtitleCandidate{
+        "http://127.0.0.1:1/gone.srt", "en", "gone.srt",
+        SubtitleFormat::SubRip}, out));
+  }
+#endif
+}
+
+TEST_CASE("transport_garbage_degrades_to_no_candidates_and_false_fetch") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  // A raw socket that answers "NOT-HTTP-AT-ALL" to everything: the client
+  // must read it as a failed request, never as content.
+  const RangeServer srv = startRawServer("garbage", 25200, 0);
+  REQUIRE(srv.pid >= 0);
+  const TempDir root;
+  root.write("movie.mkv", std::string(64, 'M'));
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  provider.configure(cfg);
+  CHECK(provider.findCandidates(MediaSource{root.file("movie.mkv"), {}}).empty());
+
+  std::string out;
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      srv.base_url + "/movie.en.srt", "en", "movie.en.srt",
+      SubtitleFormat::SubRip}, out));
+#endif
+}
+
+TEST_CASE("unreadable_media_yields_no_candidates_before_any_dial") {
+  // A directory or a missing file has no hash, so the search is refused
+  // locally — the endpoint never sees a request for media we cannot
+  // identify. The unreachable endpoint makes a stray dial loud (it would
+  // still be empty, just via the wrong arm).
+  const TempDir tmp;
+  tmp.mkdir("adir");
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = "http://127.0.0.1:1/search";
+  provider.configure(cfg);
+  CHECK(provider.findCandidates(MediaSource{tmp.file("adir"), {}}).empty());
+  CHECK(provider.findCandidates(MediaSource{tmp.file("gone.mkv"), {}}).empty());
+}
+
+TEST_CASE("provider_constructor_takes_the_config_inline") {
+  // The config-taking constructor and the default-ctor-plus-configure
+  // pair must land in the same state: an empty endpoint stays offline,
+  // an unreachable one still answers with empty candidates.
+  const ExternalSubtitleProvider offline(HttpSubtitleConfig{});
+  CHECK(offline.findCandidates(MediaSource{"/nonexistent/gone.mkv", {}}).empty());
+
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = "http://127.0.0.1:1/search";
+  const ExternalSubtitleProvider unreachable(cfg);
+  CHECK(unreachable.findCandidates(MediaSource{"/nonexistent/gone.mkv", {}}).empty());
+}
+
+TEST_CASE("media_hash_hex_of_an_http_stream_is_empty") {
+  // A remote source has no bytes here to hash; the digest is refused
+  // locally (with an endpoint configured, no less) before any network
+  // question could carry a fake one.
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = "http://127.0.0.1:1/search";
+  ExternalSubtitleProvider provider;
+  provider.configure(cfg);
+  CHECK(provider.findCandidates(
+      MediaSource{"http://example.invalid/movie.mkv", {}}).empty());
+}
+
+TEST_CASE("names_with_reserved_characters_are_percent_encoded") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  // The search url carries the media's stem; a space or a brace would
+  // break the request line raw, so they must come back escaped. The
+  // fixture catalog answers whatever the name is, so a full candidate
+  // list proves the escaped request was served.
+  const TempDir root;
+  root.mkdir("dl");
+  root.write("dl/movie.en.srt", "1\n00:00:00,000 --> 00:00:01,000\nHi\n");
+  const RangeServer srv = startSubtitleServer(root.path, "catalog", "");
+  REQUIRE(srv.pid >= 0);
+  root.write("catalog.tsv",
+             srv.base_url + "/dl/movie.en.srt\ten\tPct srt\tsrt\n");
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  provider.configure(cfg);
+
+  const std::string media = root.file("weird name {v2}.mkv");
+  root.write("weird name {v2}.mkv", "M");
+  const std::vector<SubtitleCandidate> candidates =
+      provider.findCandidates(MediaSource{media, {}});
+  REQUIRE(candidates.size() == 1);
+  CHECK(candidates[0].title == "Pct srt");
+#endif
+}
+
+TEST_CASE("media_hash_hex_returns_empty_when_the_file_cannot_be_opened") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  // A stat succeeds on a file fopen cannot open: descriptor exhaustion
+  // sits exactly between the two checks (EMFILE, not ENOENT).
+  const TempDir tmp;
+  tmp.write("movie.mkv", std::string(64, 'M'));
+  ScopedFdExhaustion exhaust(tmp.file("movie.mkv"));
+  if (!exhaust.armed) {
+    MESSAGE("could not exhaust descriptors; skipping the fopen-failure arm");
+    return;
+  }
+  CHECK(mediaHashHex(tmp.file("movie.mkv")).empty());
+#endif
+}
+
+TEST_CASE("store_external_subtitle_degrades_when_the_write_quota_is_hit") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  // RLIMIT_FSIZE makes the store's write fail mid-stream — the OS
+  // refuses, nothing is mocked. SIGXFSZ rides along with the violation;
+  // the default disposition would kill the binary.
+  ::signal(SIGXFSZ, SIG_IGN);
+  const TempDir tmp;
+  const SubtitleCandidate cand{"", "", "Quota srt", SubtitleFormat::SubRip};
+  {
+    ScopedFsizeLimit limit(32);
+    if (!limit.lowered) {
+      MESSAGE("could not lower RLIMIT_FSIZE; skipping the quota arm");
+      return;
+    }
+    CHECK(storeExternalSubtitle(tmp.path, cand, std::string(200, 'q')).empty());
+  }
+  // The quota is restored: the same call now writes through.
+  const std::string ok =
+      storeExternalSubtitle(tmp.path, cand, std::string(64, 'q'));
+  CHECK(!ok.empty());
+#endif
+}
+
+TEST_CASE("oversized_response_headers_degrade_the_search") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  // 70 KB of unterminated header bytes: the 64 KiB header cap fires
+  // before the client can mistake the stream for an answer.
+  const TempDir root;
+  root.write("movie.mkv", std::string(64, 'M'));
+  const RangeServer srv = startRawServer("bigheaders", 25200, 0);
+  REQUIRE(srv.pid >= 0);
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  cfg.timeout = std::chrono::milliseconds(3000);
+  provider.configure(cfg);
+  CHECK(provider.findCandidates(MediaSource{root.file("movie.mkv"), {}}).empty());
+#endif
+}
+
+TEST_CASE("a_stalled_mid_body_download_times_out") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  // A 100-byte body promised, three delivered, the connection held: the
+  // receive timeout must end the fetch (a clean close mid-body is the
+  // sibling arm, covered by the truncated-download case).
+  const RangeServer srv = startRawServer("stallbody", 25200, 0);
+  REQUIRE(srv.pid >= 0);
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  cfg.timeout = std::chrono::milliseconds(300);
+  provider.configure(cfg);
+  std::string text;
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{srv.base_url + "/x.srt", "en",
+                                                "x", SubtitleFormat::SubRip},
+                              text));
+#endif
+}
+
+TEST_CASE("malformed_candidate_urls_fail_at_parse_time") {
+  // The client speaks http:// only, with a strict authority grammar:
+  // bracketed IPv6 (with or without a port), no empty authority, digits
+  // only in the port. Each of these is refused before (or while) dialing,
+  // never parsed into something else. The default provider is enough —
+  // fetch() takes the url from the candidate, not the config.
+  const ExternalSubtitleProvider provider;
+  std::string out;
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "http://[::1]:1/x.srt", "en", "x.srt", SubtitleFormat::SubRip}, out));
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "http://[::1]/x.srt", "en", "x.srt", SubtitleFormat::SubRip}, out));
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "http://[::1:x]/x.srt", "en", "x.srt", SubtitleFormat::SubRip}, out));
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "http:///x.srt", "en", "x.srt", SubtitleFormat::SubRip}, out));
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "http://127.0.0.1:notaport/x.srt", "en", "x.srt",
+      SubtitleFormat::SubRip}, out));
+
+  // The same grammar guards the endpoint side of the search.
+  const TempDir tmp;
+  tmp.write("movie.mkv", std::string(64, 'M'));
+  ExternalSubtitleProvider p2;
+  HttpSubtitleConfig cfg2;
+  cfg2.endpoint = "http://[::1:x]/search";
+  p2.configure(cfg2);
+  CHECK(p2.findCandidates(MediaSource{tmp.file("movie.mkv"), {}}).empty());
+  cfg2.endpoint = "http:///search";
+  p2.configure(cfg2);
+  CHECK(p2.findCandidates(MediaSource{tmp.file("movie.mkv"), {}}).empty());
+  cfg2.endpoint = "http://127.0.0.1:notaport/search";
+  p2.configure(cfg2);
+  CHECK(p2.findCandidates(MediaSource{tmp.file("movie.mkv"), {}}).empty());
+}
+
+TEST_CASE("answers_without_content_length_are_read_to_eof") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  // HTTP/1.1 with no Content-Length and Connection: close — the body is
+  // whatever arrives until EOF. The catalog parses just the same and the
+  // download completes.
+  const TempDir root;
+  const RangeServer srv = startSubtitleServer(root.path, "nolength", "");
+  REQUIRE(srv.pid >= 0);
+  writeCatalog(root, srv.port);
+  root.write("movie.mkv", std::string(64, 'M'));
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  provider.configure(cfg);
+  const std::vector<SubtitleCandidate> c =
+      provider.findCandidates(MediaSource{root.file("movie.mkv"), {}});
+  REQUIRE(c.size() == 7);
+
+  std::string out;
+  REQUIRE(provider.fetch(c[0], out));
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, c[0].format);
+  REQUIRE(cues.size() == 1);
+  CHECK(cues[0].text == "hello from the network");
+#endif
+}
+
+TEST_CASE("downloads_past_the_cap_are_refused") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  // The server advertises 9 MiB — past the client's 8 MiB download cap —
+  // and sends nothing: the refusal must happen before the first body byte,
+  // both for a search and for a fetch.
+  const TempDir root;
+  const RangeServer srv = startSubtitleServer(root.path, "biglen", "");
+  REQUIRE(srv.pid >= 0);
+  writeCatalog(root, srv.port);
+  root.write("movie.mkv", std::string(64, 'M'));
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  provider.configure(cfg);
+  CHECK(provider.findCandidates(MediaSource{root.file("movie.mkv"), {}}).empty());
+
+  std::string out;
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      srv.base_url + "/dl/big.srt", "en", "big.srt", SubtitleFormat::SubRip},
+      out));
+  CHECK(out.empty());
+#endif
+}
+
+TEST_CASE("an_oversized_stream_is_cut_off_midway") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  // 9 MiB streamed with no length advertised: the read-to-EOF path must
+  // give up at the cap instead of buffering forever.
+  const TempDir root;
+  const RangeServer srv = startSubtitleServer(root.path, "big", "");
+  REQUIRE(srv.pid >= 0);
+  writeCatalog(root, srv.port);
+  root.write("movie.mkv", std::string(64, 'M'));
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  provider.configure(cfg);
+  CHECK(provider.findCandidates(MediaSource{root.file("movie.mkv"), {}}).empty());
+
+  std::string out;
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      srv.base_url + "/dl/stream.bin", "en", "stream.bin",
+      SubtitleFormat::SubRip}, out));
+  CHECK(out.empty());
+#endif
+}
+
+TEST_CASE("a_truncated_download_is_a_failed_fetch") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping external subtitle tests");
+    return;
+  }
+  // The server promises 100 bytes, sends 3 and hangs up: a clean close
+  // mid-body is still a failed fetch, never a partial subtitle.
+  const TempDir root;
+  const RangeServer srv = startSubtitleServer(root.path, "shortbody", "");
+  REQUIRE(srv.pid >= 0);
+
+  ExternalSubtitleProvider provider;
+  HttpSubtitleConfig cfg;
+  cfg.endpoint = srv.base_url + "/search";
+  provider.configure(cfg);
+  std::string out;
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      srv.base_url + "/dl/short.srt", "en", "short.srt",
+      SubtitleFormat::SubRip}, out));
+  CHECK(out.empty());
+#endif
+}
+
+TEST_CASE("unwritable_store_targets_fail_cleanly") {
+  // Nothing in the store path may throw or create a file outside the
+  // subtitles directory, whatever the title or the directory state.
+  const TempDir tmp;
+  SubtitleCandidate cand;
+  cand.format = SubtitleFormat::SubRip;
+  const std::string kText = "1\n00:00:01,000 --> 00:00:02,000\nx\n";
+
+  SUBCASE("the subtitles path already exists as a file") {
+    tmp.write("subtitles", "not a directory");
+    CHECK(storeExternalSubtitle(tmp.path, cand, kText).empty());
+  }
+
+  SUBCASE("a title longer than any filesystem allows") {
+    cand.title = std::string(300, 'a') + ".srt";
+    CHECK(storeExternalSubtitle(tmp.path, cand, kText).empty());
+  }
 }
 
 } // namespace

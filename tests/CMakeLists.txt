@@ -110,10 +110,11 @@ set_tests_properties(soar_core_tests soar_backend_tests soar_ui_tests
 # instrumentation (--coverage -O0 -g) the scripted window cases crawl: the
 # subtitle-settings tour alone takes ~10 min on a quiet CI runner (noted in
 # 09c1da9; CI runs 36298838808 / 36299389988 / 36301040326 still died at the
-# shared 600 s mark). Its child is capped separately inside runCli (1500 s
-# for that case), so the suite ceiling has to clear one such worst case plus
-# the other 23 (~50 s each when instrumented, measured locally).
-set_tests_properties(soar_cli_tests PROPERTIES TIMEOUT 2700)
+# shared 600 s mark). Two children are capped at 1500 s inside runCli
+# (subsdrive, and the stalled-source case — the cap saved it on a shared
+# loaded box where 600 s ran out), so the ceiling clears two such worst
+# cases plus the other ~25 (~50 s each when instrumented, measured locally).
+set_tests_properties(soar_cli_tests PROPERTIES TIMEOUT 4500)
 # http_cache_tests contains the offline-replay integration case: two
 # playback passes with their own 240 s deadlines, so a runner where the
 # clock crawls can legitimately exceed the shared 300 s budget (local run

@@ -145,7 +145,25 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 残余缺口只有 2 条分支（`subtitle_text.cpp` 146/147 的 `} else if (!parseUnsigned(hours) || !parseUnsigned(minutes))`），是 §3.1/§3.8 家族的 **-O0 异常清理弧**：`head.substr(...)` 的两个 `std::string` 临时量各带一个 landing pad，弧的终点是临时量的析构调用。证据是四个**逻辑**方向都已走到——146 上 99 次求值（96 次继续求第二个操作数 + 3 次小时字段失败短路），147 上 96 次（92 继续 + 4 拒绝），只有清理弧 `never executed`；objdump 也确认该函数里 `parseUnsigned` 的四次真实调用（143/146/147/152 行）计数都非零，而 `never executed` 的那条 call 是重定位到清理例程的。`--exclude-throw-branches` 过滤的是 gcov 标了 `(throw)` 的弧，这几条清理弧没被标上，但同族不可覆盖，不追。
 
+### 3.11 字幕下载源批：`ExternalSubtitleProvider` HTTP 客户端 + `[download]` UI
+
+本批把 §3.10 留空的 `ExternalSubtitleProvider`（findCandidates 恒空、fetch 恒 false）实现成自含的小型阻塞 HTTP 客户端，对话一个**自定文档化行协议**（不宣称兼容 OpenSubtitles 等现有服务 API）：检索 `GET {endpoint}?size&hash&name`（key 走 `X-API-Key` 头）、200 应答每行一个 TAB 分隔候选、只收 `http://`；下载体须过 `detectSubtitleFormat` 才算成功。端点与 key 一律环境变量注入，未配置恒空候选、零网络——「不强制联网」的口径不靠自觉，靠未配置分支的早退。`mediaHashHex`（头尾各 64 KiB u64 小端词求和 + 文件大小）与 `storeExternalSubtitle`（标题净化防路径穿越）落在本文件。
+
+水位：`subtitle_provider.cpp` **行 97.1%（369/380）**、UI 侧 `player_window.cpp` 的 download 路径（`remoteCandidates` 缓存、`[download]` 段、`downloadAndLoad` 的双失败 toast 臂）由 X11 窗口用例 subsdl 走通真实链路（菜单 → fetch → store → `loadExternalSubtitle` → `selectTrack`，断言外部轨 id 的选中轨迹）。全库行 94.50%、分支 83.40%（本地 cov4 口径）。
+
+协议分支全部打**本地 fixture 服务器**（`test_http_servers.h`），不打真实外网，key 不进仓库：
+
+- **检索命中/未命中**：catalog.tsv（含 `#` 注释、https 跳过行、坏扩展名跳过行、空 title 回退 url、5+ 列容错、`SubRip`/`WEBVTT` 别名大小写）；未配置/不可达/超时/HTTP 500/404/空 catalog 逐个静默降级。
+- **坏体**：200 的 HTML 错误页被格式探测拒绝；`shortbody`（承诺 100 发 3 字节干净关闭）钉「closed mid-body」；`stallbody`（无 Content-Length、发 3 字节后挂连接）钉 read-to-EOF 路径的**接收超时**臂——注意这两条是不同的臂：带 Content-Length 的体把 `r <= 0` 一律记作 clean close，只有无长度流才走 `recvSome` 的 errno/timeout 分类。
+- **原始字节垃圾**与**70 KB 未终止头**（raw socket 与 `bigheaders` 模式）：64 KiB 头上限在误读前触发。
+- **key 门**：错 key/无 key 401，正确 key 放行——环境变量到 `X-API-Key` 头的接线被端到端证实。
+- **RLIMIT 注入两则**（与 §3.10 同族，真实 OS 拒绝）：`ScopedFdExhaustion` 让 `stat` 成功而 `fopen` EMFILE（哈希的「文件打不开」臂）；`ScopedFsizeLimit` + `SIG_IGN(SIGXFSZ)` 让落盘 write 中途 EFBIG（存储的「写失败」臂），配额还原后同一调用复验成功路径。
+- **媒体哈希金标准**：16 字节 `0x00..0x0f` 的文件 → `161412100e0c0a18`，钉死小端词求和的字节序口径；http 流源在本进程就被拒（`localMediaPath` 空），不会带假哈希出门。
+
+**残余缺口（11 行）逐条定性**：202-203（连接成功后 `send` 失败——回环夹具里对端已 accept，请求写不出的场景不可构造）；241-244 的非超时分支（无长度流上内核级 recv 错误——超时孪生臂已由 `stallbody` 覆盖）；566-567/579-580/592-593（哈希读文件中途失败：`file_size` 失败但 fopen 成功、头/尾块读短——需要「stat 大小与可读字节数不一致」的文件，procfs 的 size=0 不触发）；613（`temp_directory_path` 全候选失败——Linux 上 `$TMPDIR` 失效会回落 `/tmp`，本机结构上不可达）；363/415 是 §3.10 家族的 **-O0 异常清理弧**（函数闭括号，逻辑方向全走到）。均为防御臂或平台结构，不追。
+
 ### 3.5 测试基建教训：媒体 fixture 必须逐字节确定性
+
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。
 
 测试断言也不得依赖实时解码速度：sanitizer/coverage 插桩让解码慢数倍，轮询窗口要么配 `setRate` 解除墙钟节流，要么按最慢构建留足余量。对不能改的产品代码（如窗口循环里的播放没有 setRate），从进程外驱动时（XTEST 注入按键）按解码时间等待：等待窗口取"预期进度 ÷ 最低解码速度"，而不是赌正常速度。

@@ -3,6 +3,7 @@
 #include "soar/core/backend.h"
 #include "soar/core/subtitle_text.h"
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -61,27 +62,82 @@ public:
   bool fetch(const SubtitleCandidate& candidate, std::string& out) const override;
 };
 
-// External subtitle provider for remote services (OpenSubtitles, etc.).
-// findCandidates returns no candidates when the service is unreachable —
-// the UI falls back to "no external subtitles". fetch() returns false
-// when the bytes cannot be read, and the candidate is then not offered.
-// The concrete HTTP client is left to a user-provided translation of this
-// interface; the core embeds no API keys and makes no network requests.
-class ExternalSubtitleProvider : public SubtitleProvider {
-public:
-  std::vector<SubtitleCandidate> findCandidates(
-      const MediaSource& source) const override {
-    // No network in the core: a remote provider always reports empty.
-    return {};
-  }
-
-  bool fetch(const SubtitleCandidate& candidate, std::string& out) const override {
-    // Pure virtual: concrete HTTP implementation provided by the user.
-    // Returns false so the candidate is silently dropped.
-    (void)candidate;
-    (void)out;
-    return false;
-  }
+// Endpoint settings for ExternalSubtitleProvider. `endpoint` empty means
+// the provider is offline: findCandidates() returns no candidates and
+// fetch() returns false without any network activity. Only http://
+// endpoints are honored (a https:// endpoint degrades the same way — TLS
+// is deliberately out of scope for this codebase, see http_cache.h); the
+// key, when set, travels as the X-API-Key request header and is never
+// logged or embedded anywhere in the repo.
+struct HttpSubtitleConfig {
+  std::string endpoint;
+  std::string api_key;
+  std::chrono::milliseconds timeout{5000};
 };
+
+// External subtitle provider for remote services (docs/mvp.md §6 "字幕下载").
+// A plain HTTP client over a small documented protocol, fully driven by
+// configuration: an unconfigured provider (empty endpoint) never touches
+// the network and answers no candidates, and the endpoint/key arrive from
+// the embedding application — the core embeds no credentials and no
+// built-in vendor endpoints.
+//
+// Wire protocol (implemented by the configured service; tests drive it
+// with a local fixture server):
+//   search  GET {endpoint}?size={bytes}&hash={hex16}&name={stem}
+//           X-API-Key: {api_key}            (header sent when configured)
+//           200 + text body, one candidate per line, four tab-separated
+//           fields: url, language, title, extension ("srt"/"vtt"). Lines
+//           starting with '#' are comments; an empty body means no
+//           candidates. Only http:// candidate urls are offered (this
+//           client speaks no TLS, like HttpCache — see http_cache.h).
+//   fetch   GET {candidate url}; 200 + a body that detectSubtitleFormat()
+//           recognizes (SubRip or WebVTT) yields the text, anything else
+//           (non-2xx, wrong bytes, unreachable) yields false.
+//
+// The hash is the widely used sum-of-64-bit-words recipe over the first
+// and last 64 KiB plus the file size (see mediaHashHex), so a service can
+// compute it independently; the file name rides along as "name".
+//
+// Every failure mode — unconfigured, unreachable, timeout, non-2xx,
+// unparsable answer, unreadable media — degrades to no candidates or a
+// false fetch, per the SubtitleProvider contract: the media keeps
+// playing, without that subtitle.
+class ExternalSubtitleProvider : public SubtitleProvider {
+ public:
+  ExternalSubtitleProvider() = default;
+  explicit ExternalSubtitleProvider(HttpSubtitleConfig config);
+
+  // Re-configures after construction (the window reads its settings from
+  // the environment into this).
+  void configure(HttpSubtitleConfig config);
+
+  std::vector<SubtitleCandidate> findCandidates(
+      const MediaSource& source) const override;
+
+  bool fetch(const SubtitleCandidate& candidate, std::string& out) const override;
+
+ private:
+  HttpSubtitleConfig config_;
+};
+
+// Persists fetched subtitle text under <dir>/subtitles/ (or the system
+// temp directory when `dir` is empty), named after a sanitized copy of the
+// candidate title — path separators and other hostile characters become
+// underscores — with a SubRip/WebVTT extension appended when the title
+// carries none. Returns the written path, or "" when the directory cannot
+// be created or the file cannot be written. A returned path is loadable by
+// Player::loadExternalSubtitle, which is how a download joins the sidecar
+// pipeline.
+std::string storeExternalSubtitle(const std::string& dir,
+                                  const SubtitleCandidate& candidate,
+                                  const std::string& text);
+
+// The media digest the search query carries ("hash="): 16 lowercase hex
+// digits — the sum of the unsigned 64-bit little-endian words of the first
+// and last 64 KiB of the file plus its size in bytes. Shorter files
+// contribute whatever they hold (head and tail may then overlap). Returns
+// "" when the path is not a readable regular file.
+std::string mediaHashHex(const std::string& media_path);
 
 } // namespace soar

@@ -28,6 +28,7 @@
 #  include <chrono>
 #  include <cmath>
 #  include <cstdio>
+#  include <cstdlib>
 #  include <string>
 #  include <vector>
 
@@ -275,6 +276,21 @@ class PlayerHud {
     // further positionals queue behind it (mpv's multi-argument semantics).
     if (!cfg.initial_uri.empty()) playlist_.add(cfg.initial_uri);
     for (const std::string& uri : cfg.queued_uris) playlist_.add(uri);
+    // Remote subtitle download (docs/mvp.md §6): endpoint and key arrive
+    // from the environment — the core embeds no endpoint and no credential,
+    // and with nothing configured the provider never touches the network.
+    soar::HttpSubtitleConfig sub;
+    if (const char* ep = std::getenv("SOAR_SUBTITLE_ENDPOINT")) {
+      sub.endpoint = ep;
+    }
+    if (const char* key = std::getenv("SOAR_SUBTITLE_API_KEY")) {
+      sub.api_key = key;
+    }
+    if (const char* t = std::getenv("SOAR_SUBTITLE_TIMEOUT_MS")) {
+      const long ms = std::atol(t);
+      if (ms > 0) sub.timeout = std::chrono::milliseconds(ms);
+    }
+    external_.configure(std::move(sub));
   }
 
   // App-level input (docs §3). `quit` is set on the exit paths. The UI's
@@ -558,6 +574,19 @@ class PlayerHud {
     st_.toast.show(std::string(item) + " speed", now);
   }
 
+  // The remote catalog for the current media, searched at most once per
+  // uri while a menu is open (an open menu redraws every frame; the answer
+  // must not re-query the server each time). Unconfigured means the search
+  // returns empty without any network activity.
+  const std::vector<SubtitleCandidate>& remoteCandidates() {
+    if (!remote_searched_ || searched_uri_ != current_uri_) {
+      remote_searched_ = true;
+      searched_uri_ = current_uri_;
+      remote_candidates_ = external_.findCandidates(MediaSource{current_uri_, {}});
+    }
+    return remote_candidates_;
+  }
+
   // Sidecar subtitle candidates (docs/mvp.md §6): what a SubtitleProvider
   // finds next to the media. Shared by the subtitle combo and the Subtitle
   // Settings overlay; both call it only while their menu is open, because
@@ -566,11 +595,15 @@ class PlayerHud {
   // shows up in the track list like any other) and selects it.
   //
   // Already-loaded sidecars are not offered again — the track above carries
-  // them, and loading is idempotent by path anyway.
+  // them, and loading is idempotent by path anyway. When a remote endpoint
+  // is configured, its candidates follow as a "[download]" section: picking
+  // one downloads, stores under the system temp and loads the stored file
+  // through the same pipeline as a sidecar pick.
   void drawSidecarEntries(const MediaInfo& info, milliseconds now) {
     const std::vector<SubtitleCandidate> candidates =
         sidecar_.findCandidates(MediaSource{current_uri_, {}});
-    if (candidates.empty()) {
+    const std::vector<SubtitleCandidate>& remote = remoteCandidates();
+    if (candidates.empty() && remote.empty()) {
       ImGui::Separator();
       ImGui::TextDisabled("No sidecar subtitle files");
       return;
@@ -588,7 +621,7 @@ class PlayerHud {
         });
       if (!loaded) pending.push_back(&c);
     }
-    if (pending.empty()) {
+    if (pending.empty() && remote.empty()) {
       return;
     }
     ImGui::Separator();
@@ -610,6 +643,51 @@ class PlayerHud {
         st_.toast.show("Sidecar load failed", now);
       }
     }
+
+    // Remote candidates: everything already downloaded this session is
+    // filtered, mirroring the loaded-sidecar rule above.
+    bool any_remote = false;
+    for (const auto& c : remote) {
+      const bool downloaded = std::find(downloaded_titles_.begin(),
+                                        downloaded_titles_.end(), c.title) !=
+                              downloaded_titles_.end();
+      if (downloaded) {
+        continue;
+      }
+      if (!any_remote) {
+        ImGui::Separator();
+        any_remote = true;
+      }
+      std::string item = "[download] " + c.title;
+      if (!c.language.empty()) {
+        item += " (" + c.language + ")";
+      }
+      if (!ImGui::Selectable(item.c_str())) {
+        continue;
+      }
+      downloadAndLoad(c, now);
+    }
+  }
+
+  // The download path behind a "[download]" pick: fetch the text, persist
+  // it under the system temp and load it like any sidecar. Every failure
+  // degrades to a toast — the media keeps playing (SubtitleProvider
+  // contract, docs/mvp.md §6).
+  void downloadAndLoad(const SubtitleCandidate& c, milliseconds now) {
+    std::string text;
+    if (!external_.fetch(c, text)) {
+      st_.toast.show("Download failed", now);
+      return;
+    }
+    const std::string path = storeExternalSubtitle({}, c, text);
+    TrackId id = -1;
+    if (path.empty() || !player_.loadExternalSubtitle(path, id) ||
+        !player_.selectTrack(TrackType::Subtitle, id)) {
+      st_.toast.show("Download failed", now);
+      return;
+    }
+    downloaded_titles_.push_back(c.title);
+    st_.toast.show("Downloaded " + c.title, now);
   }
 
   void cycleTrack(TrackType type, milliseconds now) {
@@ -1531,6 +1609,14 @@ class PlayerHud {
   // cheap, so it lives with the HUD rather than in the backend: the directory
   // is only walked while a menu that offers sidecars is open.
   SidecarSubtitleProvider sidecar_;
+  // Remote subtitle download (§6), env-configured; empty endpoint means it
+  // stays offline. The catalog is searched once per media item and cached,
+  // and downloaded titles are remembered so the menu stops offering them.
+  ExternalSubtitleProvider external_;
+  std::string searched_uri_;
+  std::vector<SubtitleCandidate> remote_candidates_;
+  bool remote_searched_ = false;
+  std::vector<std::string> downloaded_titles_;
   State st_;
 };
 

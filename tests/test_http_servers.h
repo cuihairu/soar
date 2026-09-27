@@ -158,7 +158,7 @@ srv.serve_forever()
 // probe correctly (so the cache constructor succeeds) and sabotage every
 // later range request. TOTAL (argv[3]) is the advertised source size.
 constexpr const char* kMisbehavingServerScript = R"PY(
-import re, socket, sys
+import re, socket, sys, time
 
 MODE = sys.argv[1]
 PORT = int(sys.argv[2])
@@ -216,6 +216,13 @@ def answer(c, req):
         c.sendall(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-0/"
                   + str(TOTAL).encode() + b"\r\nContent-Length: 1\r\n\r\n")
         return  # the promised body byte never comes
+    if MODE == "stallbody":
+        # Headers without Content-Length, three body bytes, then the
+        # connection held open: the read-to-EOF path must end on its
+        # receive timeout (a clean close mid-body is the sibling arm).
+        c.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + b"1\n0")
+        time.sleep(30)
+        return
     if MODE == "probe206norange":
         c.sendall(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 1\r\n\r\nA")
         return
@@ -278,6 +285,125 @@ while True:
         pass  # the client hung up mid-answer (e.g. after the 64 KiB bail-out)
     finally:
         c.close()
+)PY";
+
+// Subtitle-catalog fixture for the ExternalSubtitleProvider tests: a local
+// stand-in for the remote search/fetch service the provider speaks to.
+//   /search  requires the query parameters the wire protocol promises
+//            (size=<digits>, hash=<16 lowercase hex>, name=<non-empty>) —
+//            a 200 answer therefore proves the client sent a well-formed
+//            query — and returns ROOT/catalog.tsv verbatim (comments,
+//            tab-separated candidate lines and all).
+//   /dl/<f>  serves ROOT/dl/<f> (root-escape and missing files are 404).
+// Modes: "catalog" (normal), "empty" (200, empty body = no candidates),
+// "status500", "status404", "stall" (accept, then sleep 40s before
+// answering — the client's short socket timeout is what must save it),
+// "nolength" (200 with no Content-Length and Connection: close — the
+// read-until-close body path), "biglen" (a Content-Length far past the
+// client's download cap, no body — the pre-read cap check), "big" (9 MiB
+// streamed with no length — the streaming cap), "shortbody" (a /dl answer
+// promising 100 bytes and delivering 3, then closing — the mid-body
+// disconnect).
+// APIKEY (argv[4], may be empty): when set, requests without the matching
+// X-API-Key header are answered 401.
+constexpr const char* kSubtitleServerScript = R"PY(
+import os, re, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+ROOT = os.path.abspath(sys.argv[1])
+MODE = sys.argv[3]
+APIKEY = sys.argv[4]
+
+class SubtitleHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *args):
+        pass
+    def deny(self, code):
+        self.send_response(code)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    def do_GET(self):
+        if APIKEY and self.headers.get("X-API-Key") != APIKEY:
+            self.deny(401)
+            return
+        url = urlparse(self.path)
+        if url.path == "/search":
+            q = parse_qs(url.query)
+            ok = (q.get("size") and re.fullmatch(r"\d+", q["size"][0]) and
+                  q.get("hash") and re.fullmatch(r"[0-9a-f]{16}", q["hash"][0]) and
+                  q.get("name") and q["name"][0])
+            if not ok:
+                self.deny(400)
+                return
+            if MODE == "stall":
+                time.sleep(40)
+            if MODE == "status500":
+                self.deny(500)
+                return
+            if MODE == "status404":
+                self.deny(404)
+                return
+            if MODE == "biglen":
+                # Advertise 9 MiB, send nothing: the client's cap check must
+                # fire before the first body byte.
+                self.send_response(200)
+                self.send_header("Content-Length", str(9 * 1024 * 1024))
+                self.end_headers()
+                return
+            data = b""
+            if MODE in ("catalog", "nolength"):
+                with open(os.path.join(ROOT, "catalog.tsv"), "rb") as f:
+                    data = f.read()
+            elif MODE == "big":
+                data = b"\0" * (9 * 1024 * 1024)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            if MODE in ("nolength", "big"):
+                # HTTP/1.1 without Content-Length: the client must read to
+                # EOF, so the connection has to actually close.
+                self.send_header("Connection", "close")
+                self.close_connection = True
+            else:
+                self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if url.path.startswith("/dl/"):
+            if MODE == "biglen":
+                self.send_response(200)
+                self.send_header("Content-Length", str(9 * 1024 * 1024))
+                self.end_headers()
+                return
+            if MODE == "shortbody":
+                # Promise 100 bytes, deliver 3, hang up: a clean close
+                # mid-body, which the client must report as a failed fetch.
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"1\n0")
+                return
+            target = os.path.normpath(os.path.join(ROOT, url.path.lstrip("/")))
+            if not target.startswith(ROOT + os.sep) or not os.path.isfile(target):
+                self.deny(404)
+                return
+            with open(target, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            if MODE == "nolength":
+                self.send_header("Connection", "close")
+                self.close_connection = True
+            else:
+                self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        self.deny(404)
+
+srv = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), SubtitleHandler)
+print("ready", flush=True)
+srv.serve_forever()
 )PY";
 
 // Runs `argv` via fork/execvp with the child's stdout plumbed into a pipe
@@ -415,6 +541,32 @@ inline RangeServer startRawServer(const std::string& mode, int port_base,
     const_cast<char*>(mode.c_str()),
     const_cast<char*>(port_str.c_str()),
     const_cast<char*>(total_str.c_str()),
+    nullptr,
+  };
+  srv.pid = startPipedServer(argv);
+  srv.base_url = "http://127.0.0.1:" + std::to_string(srv.port);
+  return srv;
+}
+
+// Forks the shared subtitle-catalog server (kSubtitleServerScript) in
+// `mode` with `api_key` as the expected X-API-Key ("" = no key check).
+// Port base 24000+: the ranges below belong to the other suites (media
+// 15k, CLI 15k/18.2k-18.5k, http_cache 18.6k-18.7k/24.56k). Same RAII
+// contract as RangeServer.
+inline RangeServer startSubtitleServer(const std::string& root_dir,
+                                       const std::string& mode,
+                                       const std::string& api_key) {
+  RangeServer srv;
+  srv.port = 24000 + (::getpid() % 200);
+  std::string port_str = std::to_string(srv.port);
+  char* const argv[] = {
+    const_cast<char*>("python3"),
+    const_cast<char*>("-c"),
+    const_cast<char*>(kSubtitleServerScript),
+    const_cast<char*>(root_dir.c_str()),
+    const_cast<char*>(port_str.c_str()),
+    const_cast<char*>(mode.c_str()),
+    const_cast<char*>(api_key.c_str()),
     nullptr,
   };
   srv.pid = startPipedServer(argv);
