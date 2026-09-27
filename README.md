@@ -30,7 +30,7 @@ Soar 是一个基于 FFmpeg + SDL2 的 C++17 开源媒体播放器：自研一�
 
 ## 当前状态
 
-项目处于 MVP（v0.1）早期阶段：核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已经在 FFmpeg + SDL2 后端上跑通，CLI 冒烟入口可用；播放中/暂停中的音频轨运行时切换也已落地（解码线程在安全点无感换轨并回跳到当前进度续播）。桌面端已有第一版可用 UI：SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC）、快捷键、媒体信息/最近打开/快捷键浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）。字幕渲染、播放列表等仍在路线图上（见下文 roadmap），欢迎按 [docs/mvp.md](docs/mvp.md) 的边界一起推进。
+项目处于 MVP（v0.1）早期阶段：核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已经在 FFmpeg + SDL2 后端上跑通，CLI 冒烟入口可用；播放中/暂停中的音频轨运行时切换也已落地（解码线程在安全点无感换轨并回跳到当前进度续播）。桌面端已有第一版可用 UI：SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC）、快捷键、媒体信息/最近打开/快捷键浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）。字幕渲染与播放列表均已落地基础版（边界与细节见下文 roadmap 及 [docs/mvp.md](docs/mvp.md)），欢迎按其边界一起推进。
 
 ## 功能特性（当前已实现）
 
@@ -115,7 +115,7 @@ cmake --preset default && cmake --build --preset default   # Debug
 ## 路线图
 
 - **v0.1（MVP，进行中）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）；
-- **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP 冒烟、字幕体验（字体/大小/同步偏移）——除播放列表的窗口集成外均已落地；
+- **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP 冒烟、字幕体验（字体/大小/同步偏移）——均已落地；
 - **v1.0**：硬解（Hardware Decoding）与 HDR、投屏（AirPlay/Chromecast/DLNA）、媒体库与刮削、插件体系。
 
 完整边界与"明确不做"清单见 [docs/mvp.md](docs/mvp.md)。
