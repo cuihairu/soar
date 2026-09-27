@@ -16,16 +16,16 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 ## 2. 当前水位与门禁
 
-| 维度 | 实测（音频输出设备选择批后，CI coverage job，见下） | 门禁（`--fail-under-*`） |
+| 维度 | 实测（字幕下载源批后，CI coverage job，见下） | 门禁（`--fail-under-*`） |
 |---|---|---|
-| 行 | 94.3%（3116/3304） | 94.1% |
-| 分支 | 83.3%（2786/3346） | 82.4% |
+| 行 | 94.4%（3929/4160） | 94.3% |
+| 分支 | 84.1%（3759/4467） | 83.2% |
 
-分文件行覆盖：`main.cpp` 98.5%（130/132）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 94.4%（812/860）、`ffmpeg_backend.cpp` 91.1%（1376/1511）、`http_cache.cpp` 99.3%（407/410）、`null_backend.cpp` 100%、`player.cpp` 100%、四个头文件 100%。
+分文件行覆盖：`main.cpp` 98.5%（133/135）、`ui_state.cpp` 100%、`ui_state.h` 100%、`player_window.cpp` 92.1%（945/1026）、`ffmpeg_backend.cpp` 91.7%（1473/1607）、`http_cache.cpp` 99.3%（407/410）、`null_backend.cpp` 100%、`player.cpp` 100%、`subtitle_provider.cpp` 97.1%（369/380）、`subtitle_text.cpp` 100%、头文件 100%。
 
-分文件分支覆盖：`main.cpp` 93.8%（120/128）、`ui_state.cpp` 96.7%（176/182）、`ui_state.h` 92.9%（13/14）、`player_window.cpp` 83.4%（807/968）、`player.cpp` 92.7%（51/55）、`ffmpeg_backend.cpp` 79.1%（1053/1332）、`null_backend.cpp` 83.3%（130/156）、`http_cache.cpp` 85.3%（436/511）。
+分文件分支覆盖：`main.cpp` 92.1%（129/140）、`ui_state.cpp` 96.7%（176/182）、`ui_state.h` 94.4%（17/18）、`player_window.cpp` 81.4%（984/1209）、`player.cpp` 93.0%（53/57）、`ffmpeg_backend.cpp` 80.0%（1144/1430）、`null_backend.cpp` 84.0%（136/162）、`http_cache.cpp` 85.3%（436/511）。
 
-这一版的数字改用 **CI coverage job 上传的 `coverage-report` 产物**（`coverage.txt` 分支表 / `coverage-lines.txt` 行表）作引用源，而不是某一次本地复现：门禁本身跑在 CI 上，只有同一台 runner、同一版 gcovr 的读数才与门禁同口径（12402ff 的那次运行，行 94.3% / 分支 83.3%，绿）。本地复现的**分母系统性偏大**（同一提交本地分支 3475 vs CI 3346、行 3330 vs 3304——CI 侧 `negative_hits` 过滤丢掉的负计数弧，本地 gcovr 7.2 没丢），本地的绝对百分比因此会低于 CI 零点几个到几个点：本地读数只适合比**相对差值**（一批改动前后），判门禁一律看 CI。§1 记录的"两棵插桩树"陷阱是本地读数最常见的失真来源。
+这一版的数字改用 **CI coverage job 上传的 `coverage-report` 产物**（`coverage.txt` 分支表 / `coverage-lines.txt` 行表）作引用源，而不是某一次本地复现：门禁本身跑在 CI 上，只有同一台 runner、同一版 gcovr 的读数才与门禁同口径（cba3879 的那次运行，行 94.4% / 分支 84.1%，绿）。本地复现的**分母系统性偏大**（同一提交本地分支 4582 vs CI 4467、行 4163 vs 4160——CI 侧 `negative_hits` 过滤丢掉的负计数弧，本地 gcovr 7.2 没丢），本地的绝对百分比因此会低于 CI 零点几个到几个点：本地读数只适合比**相对差值**（一批改动前后），判门禁一律看 CI。§1 记录的"两棵插桩树"陷阱是本地读数最常见的失真来源。
 
 ### 2.1 门禁重置的说明（必读，别当成"新代码拉低了覆盖率"）
 
@@ -149,7 +149,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 本批把 §3.10 留空的 `ExternalSubtitleProvider`（findCandidates 恒空、fetch 恒 false）实现成自含的小型阻塞 HTTP 客户端，对话一个**自定文档化行协议**（不宣称兼容 OpenSubtitles 等现有服务 API）：检索 `GET {endpoint}?size&hash&name`（key 走 `X-API-Key` 头）、200 应答每行一个 TAB 分隔候选、只收 `http://`；下载体须过 `detectSubtitleFormat` 才算成功。端点与 key 一律环境变量注入，未配置恒空候选、零网络——「不强制联网」的口径不靠自觉，靠未配置分支的早退。`mediaHashHex`（头尾各 64 KiB u64 小端词求和 + 文件大小）与 `storeExternalSubtitle`（标题净化防路径穿越）落在本文件。
 
-水位：`subtitle_provider.cpp` **行 97.1%（369/380）**、UI 侧 `player_window.cpp` 的 download 路径（`remoteCandidates` 缓存、`[download]` 段、`downloadAndLoad` 的双失败 toast 臂）由 X11 窗口用例 subsdl 走通真实链路（菜单 → fetch → store → `loadExternalSubtitle` → `selectTrack`，断言外部轨 id 的选中轨迹）。全库行 94.50%、分支 83.40%（本地 cov4 口径）。
+水位：`subtitle_provider.cpp` **行 97.1%（369/380）**、UI 侧 `player_window.cpp` 的 download 路径（`remoteCandidates` 缓存、`[download]` 段、`downloadAndLoad` 的双失败 toast 臂）由 X11 窗口用例 subsdl 走通真实链路（菜单 → fetch → store → `loadExternalSubtitle` → `selectTrack`，断言外部轨 id 的选中轨迹）。全库本地 cov4 两轮复跑 行 94.43–94.48%、分支 83.33–83.41%（差 2 行/4 分支，±1-2 行抖动带内）；CI 同提交口径 行 94.4%（3929/4160）、分支 84.1%（3759/4467），判门禁一律看 CI。
 
 协议分支全部打**本地 fixture 服务器**（`test_http_servers.h`），不打真实外网，key 不进仓库：
 
@@ -170,7 +170,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 ## 4. 结论
 
-行 94.4% 与分支 82.5%（P3c 批本地口径，与 P3b 本地持平；CI 的诚实 DNS 与无摆动轮通常再高 0.3-1 个百分点）是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性——其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，UI 的缺口见 §3.6 的六类逐条定性，http 缓存的缺口见 §3.7 的四类逐条定性，`Event` 结构冻结政策与其伴随噪声见 §3.8）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
+行 94.4–94.5% 与分支 83.3–83.4%（字幕下载源批本地 cov4 两轮口径；CI 同提交 行 94.4%/分支 84.1%，判门禁一律看 CI）是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性——其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，UI 的缺口见 §3.6 的六类逐条定性，http 缓存的缺口见 §3.7 的四类逐条定性，`Event` 结构冻结政策与其伴随噪声见 §3.8）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
 
 可测路径的三个实用模式：
 

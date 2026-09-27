@@ -32,6 +32,14 @@ target_compile_features(soar_core PUBLIC cxx_std_17)
 find_package(fmt CONFIG REQUIRED)
 target_link_libraries(soar_core PUBLIC fmt::fmt)
 
+# Winsock lives in its own import library on Windows; MSVC does not
+# auto-link it. http_cache.cpp and subtitle_provider.cpp both speak
+# sockets, so the dependency belongs to the core target (PUBLIC: the
+# test binaries link the same objects).
+if(WIN32)
+  target_link_libraries(soar_core PUBLIC ws2_32)
+endif()
+
 # FFmpeg support (optional)
 if(SOAR_ENABLE_FFMPEG)
   find_package(PkgConfig QUIET)
