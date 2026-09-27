@@ -295,7 +295,7 @@ TEST_CASE("subtitles default to off and disableSubtitles is metadata-only") {
 
   // Picking a real subtitle track (if any) is metadata-only and works
   // while stopped; disabling returns to the off state.
-  const auto& tracks = backend->mediaInfo().tracks;
+  const auto tracks = backend->mediaInfo().tracks;
   for (const auto& t : tracks) {
     if (t.type == soar::TrackType::Subtitle) {
       CHECK(backend->selectTrack(soar::TrackType::Subtitle, t.id));
@@ -1804,9 +1804,13 @@ TEST_CASE("an external subtitle id sits past the container's stream range") {
   // The format is read from the content, not the extension, so a WebVTT
   // sidecar is labelled as one even though the menu cannot tell formats
   // apart at a glance.
+  // Take the snapshot into a named object: TrackInfo pointers into the
+  // temporary returned by mediaInfo() would dangle the moment the
+  // full-expression ends (tsan/asan heap-use-after-free otherwise).
+  const auto loaded = backend->mediaInfo();
   const soar::TrackInfo* en_track = nullptr;
   const soar::TrackInfo* zh_track = nullptr;
-  for (const auto& t : backend->mediaInfo().tracks) {
+  for (const auto& t : loaded.tracks) {
     if (t.id == en) en_track = &t;
     if (t.id == zh) zh_track = &t;
   }
