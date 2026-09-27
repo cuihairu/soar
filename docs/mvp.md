@@ -86,7 +86,7 @@
 
 依赖顺序：先落地 v0.2 的字幕渲染基础（字体/大小/偏移），再接外部字幕源。
 
-- **字幕下载**：按媒体哈希/文件名从 OpenSubtitles 等公开源检索、下载、与轨道对齐；做成可插拔的 `SubtitleProvider` 接口（核心定义接口，实现可换源），失败静默降级为无字幕。
+- **字幕下载**：按媒体哈希/文件名从 OpenSubtitles 等公开源检索、下载、与轨道对齐；做成可插拔的 `SubtitleProvider` 接口（核心定义接口，实现可换源），失败静默降级为无字幕。**接口与本地 sidecar 实现已落地**：`SubtitleProvider` 只有 `findCandidates`（列候选）与 `fetch`（取文本）两个方法，`SidecarSubtitleProvider` 在媒体同目录找同名 `.srt`/`.vtt`（支持 `movie.en.srt`、`movie.en.forced.srt` 这类语言/forced 标签，大小写不敏感），SRT 与 WebVTT 的文本解析是无依赖纯函数、容错口径写在头注释里（BOM、CRLF/裸 CR、缺小时字段、1-6 位小数、WebVTT 的 NOTE/STYLE/头部块、坏块跳过继续等）。检索/下载源实现与 UI 接线（字幕菜单列出 sidecar 候选）待做。
 - **字幕文本翻译**：已有字幕轨/字幕文件时，把文本批量送 LLM/翻译 API，生成翻译字幕轨（轻量路径）。
 - **语音实时翻译**：无字幕轨媒体走 ASR（本地 whisper 类模型或云端）+ 翻译 + 字幕渲染（重量级路径，放最后）。
 

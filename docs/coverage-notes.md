@@ -133,6 +133,18 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 新增测试：`subtitle packets decode to text frames during playback`（`test_backend_media.cpp:1051`）在线播放 `subs_media.mkv`（首行 "Hello"、次行 "World"），断言提取文本包含预期词汇，同时钉死 ASS 括号剥离与逗号定位逻辑。该用例在 coverage job（`SOAR_TEST_SUBS_MEDIA`）与本地全量验证均绿。
 
+### 3.10 外部字幕批（Stage 1）：SRT/WebVTT 文本解析 + `SubtitleProvider`
+
+本批把 docs/mvp.md §6 的可插拔字幕源拆成两批落地，Stage 1 只做纯核心（无显示器、无媒体夹具、无网络，因此单开 `soar_subtitle_tests` 套件）：`subtitle_text.*`（SRT/WebVTT → `SubtitleCue` 的纯函数解析、格式探测、读文件）与 `subtitle_provider.*`（`SubtitleProvider` 接口 + `SidecarSubtitleProvider`）。Stage 2 接后端与 UI。
+
+两个新文件都跑到**行 100%**：`subtitle_text.cpp` 195/195、`subtitle_provider.cpp` 57/57，头文件 100%。驱动方式是输入域穷举而不是 happy path：
+
+- **时间戳的十个坏形态**逐个钉住：`parseTimestamp` 的每个拒绝点都有对应输入（无冒号、小时/分钟/秒/小数非数字、空字段、字段宽到溢出保护、end ≤ begin 走 2s 默认时长）。数字测试的两个比较臂都要覆盖——`'X'`/`'a'`（大于 `'9'`）与 `'-'`/空格（小于 `'0'`）；时间戳只在两端 trim，字段内部的空白会活到数字检查，这一条由 `"00:00:-1,000"` 与 `"00:00:01,0 0"` 钉住。
+- **`ifstream` 打不开的防御臂**（`readSubtitleFile` 的 `if (!in)`）用 RLIMIT 注入构造，不用 mock：先用 `fcntl(F_GETFD)` 探出本进程最低的空闲描述符号，把软 fd 上限降到它，此后任何 `open` 都会被 OS 以 EMFILE 拒绝，而 `is_regular_file()` 只 stat 不 open、仍返回真——正是这条臂存在的场景。手法与 http_cache 测试里的 RLIMIT_FSIZE 注入同族（真实 OS 拒绝，被测代码零改动），析构里无条件还原上限，退出路径不漏。Windows 无 `RLIMIT_NOFILE`，该子用例在 `_WIN32` 下跳过，由 Linux coverage job 供给这条覆盖。
+- **sidecar 匹配**钉住：无标签/带语言标签/带 `.forced`、大小写不敏感、媒体名多个点、非字幕 sidecar（`.nfo`/`.txt`）被跳过、`file://` URL 与裸路径都能匹配、远端或缺失的媒体返回空、媒体名不带目录（只给 basename）时按 CWD 找。
+
+残余缺口只有 2 条分支（`subtitle_text.cpp` 146/147 的 `} else if (!parseUnsigned(hours) || !parseUnsigned(minutes))`），是 §3.1/§3.8 家族的 **-O0 异常清理弧**：`head.substr(...)` 的两个 `std::string` 临时量各带一个 landing pad，弧的终点是临时量的析构调用。证据是四个**逻辑**方向都已走到——146 上 99 次求值（96 次继续求第二个操作数 + 3 次小时字段失败短路），147 上 96 次（92 继续 + 4 拒绝），只有清理弧 `never executed`；objdump 也确认该函数里 `parseUnsigned` 的四次真实调用（143/146/147/152 行）计数都非零，而 `never executed` 的那条 call 是重定位到清理例程的。`--exclude-throw-branches` 过滤的是 gcov 标了 `(throw)` 的弧，这几条清理弧没被标上，但同族不可覆盖，不追。
+
 ### 3.5 测试基建教训：媒体 fixture 必须逐字节确定性
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。
 

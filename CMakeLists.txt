@@ -19,6 +19,8 @@ target_sources(soar_core PRIVATE
   src/core/http_cache.cpp
   src/core/null_backend.cpp
   src/core/player.cpp
+  src/core/subtitle_provider.cpp
+  src/core/subtitle_text.cpp
 )
 
 target_include_directories(soar_core PUBLIC
