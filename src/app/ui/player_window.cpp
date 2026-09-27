@@ -72,7 +72,7 @@ const char* trackTypeName(TrackType t) {
 }
 
 // Which overlay page is open; at most one at a time (docs/ui-design.md §2).
-enum class Overlay { None, Info, Recent, Help, Subtitle };
+enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist };
 
 std::string baseName(const std::string& uri) {
   const std::size_t slash = uri.find_last_of("/\\");
@@ -271,6 +271,10 @@ class PlayerHud {
         current_uri_(cfg.initial_uri), subtitle_fonts_(loadSubtitleFonts()) {
     recent_.load();
     recordOpen(cfg.initial_uri);
+    // Playlist seeding (docs/mvp.md §2): the CLI-opened source plays first;
+    // further positionals queue behind it (mpv's multi-argument semantics).
+    if (!cfg.initial_uri.empty()) playlist_.add(cfg.initial_uri);
+    for (const std::string& uri : cfg.queued_uris) playlist_.add(uri);
   }
 
   // App-level input (docs §3). `quit` is set on the exit paths. The UI's
@@ -363,6 +367,12 @@ class PlayerHud {
             return;
           case SDLK_h:
             toggleOverlay(Overlay::Help);
+            return;
+          case SDLK_p:
+            toggleOverlay(Overlay::Playlist);
+            return;
+          case SDLK_n:  // mpv binding: next / previous queue entry
+            playlistStep(shift, now);
             return;
           // Subtitle keys (v0.2), back on since the X11 drive scripts
           // pin every coordinate they used to disturb (subsdrive presses
@@ -457,6 +467,7 @@ class PlayerHud {
     const bool hud_shown = st_.hud.visible(now, /*pointer_over_hud=*/io.WantCaptureMouse,
                                            st_.seek_dragging,
                                            st_.overlay != Overlay::None, paused);
+    maybeAdvancePlaylist(now);
     const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
     const float target = hud_shown ? 1.0f : 0.0f;
     st_.hud_alpha += (target - st_.hud_alpha) * std::min(1.0f, dt / 0.160f);
@@ -647,16 +658,67 @@ class PlayerHud {
   }
 
   // Reopen path for Recent/DnD; Player::open closes existing media first
-  // (the FFmpeg backend re-enters cleanly — verified in its open()).
+  // (the FFmpeg backend re-enters cleanly — verified in its open()). Both
+  // are user-initiated opens, so the source also joins the playlist as the
+  // new current entry (mpv semantics: a dropped/queued file plays now).
   void openSource(const std::string& uri) {
     if (player_.open(soar::MediaSource{uri, cfg_.cache_dir})) {
       recordOpen(uri);
+      playlist_.add(uri);
+      playlist_.setCurrent(playlist_.size() - 1);
       st_.loop_a_set = false;  // a fresh source starts without a pending A
       st_.toast.show("Opened " + baseName(uri), nowMs());
       player_.play();
     } else {
       st_.toast.show("Open failed: " + player_.lastError(), nowMs());
     }
+  }
+
+  // Playlist navigation (docs/mvp.md §2). Opens entry `index` from the
+  // queue without re-adding it — add() is for user-initiated opens.
+  void openPlaylistEntry(std::size_t index, milliseconds now) {
+    const std::vector<std::string> entries = playlist_.entries();
+    if (index >= entries.size()) return;
+    if (!player_.open(soar::MediaSource{entries[index], cfg_.cache_dir})) {
+      st_.toast.show("Open failed: " + player_.lastError(), now);
+      return;
+    }
+    recordOpen(entries[index]);
+    playlist_.setCurrent(index);
+    st_.loop_a_set = false;
+    st_.toast.show("Playlist " + std::to_string(index + 1) + "/" +
+                       std::to_string(entries.size()) + ": " +
+                       baseName(entries[index]),
+                   now);
+    player_.play();
+  }
+
+  void playlistStep(bool backward, milliseconds now) {
+    if (playlist_.empty()) {
+      st_.toast.show("Playlist empty", now);
+      return;
+    }
+    const std::size_t index = backward ? playlist_.prev() : playlist_.next();
+    if (index == PlaylistStore::kNone) {
+      st_.toast.show(backward ? "Start of playlist" : "End of playlist", now);
+      return;
+    }
+    openPlaylistEntry(index, now);
+  }
+
+  // Fires once per Ended: the queue's next entry opens (Loop::One replays
+  // the finished one, Loop::Off stops when the round is exhausted). The
+  // edge flag resets as soon as playback leaves Ended, so a later manual
+  // replay (space at the end) does not double-advance.
+  void maybeAdvancePlaylist(milliseconds now) {
+    if (player_.state() != PlaybackState::Ended) {
+      st_.playlist_end_handled = false;
+      return;
+    }
+    if (st_.playlist_end_handled) return;
+    st_.playlist_end_handled = true;
+    const std::size_t index = playlist_.advance();
+    if (index != PlaylistStore::kNone) openPlaylistEntry(index, now);
   }
 
   void setFullscreen(bool on) {
@@ -1119,6 +1181,7 @@ class PlayerHud {
       case Overlay::Recent: drawRecentOverlay(); return;
       case Overlay::Help: drawHelpOverlay(); return;
       case Overlay::Subtitle: drawSubtitleOverlay(); return;
+      case Overlay::Playlist: drawPlaylistOverlay(); return;
     }
   }
 
@@ -1148,6 +1211,18 @@ class PlayerHud {
           ImGui::Text("A-B Loop: %s - %s", formatClock(loop_a).c_str(),
                       formatClock(loop_b).c_str());
         }
+      }
+      if (!playlist_.empty()) {
+        const char* loop_name = playlist_.loop() == PlaylistStore::Loop::Off
+                                    ? "off"
+                                    : playlist_.loop() == PlaylistStore::Loop::All
+                                        ? "all"
+                                        : "one";
+        ImGui::Text("Playlist: %d entr%s (current %d, loop %s%s)",
+                    static_cast<int>(playlist_.size()),
+                    playlist_.size() == 1 ? "y" : "ies",
+                    static_cast<int>(playlist_.current()) + 1, loop_name,
+                    playlist_.shuffle() ? ", shuffle" : "");
       }
       const std::string err = player_.lastError();
       if (!err.empty()) {
@@ -1204,6 +1279,65 @@ class PlayerHud {
     if (!open) st_.overlay = Overlay::None;
   }
 
+  // The play queue (docs/mvp.md §2). Rows show the playing entry with a
+  // ">" marker; a row click jumps to it (the overlay stays open so the
+  // list can be stepped through), the trailing "x" removes the entry —
+  // removing the playing one only re-points the queue, playback runs on.
+  // Header buttons own the loop/shuffle toggles; no keys are spent on them
+  // (L is the A-B loop, and mpv leaves shuffle unbound too).
+  void drawPlaylistOverlay() {
+    bool open = true;
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(460, 340), ImGuiCond_Appearing);
+    if (ImGui::Begin("Playlist", &open, ImGuiWindowFlags_NoSavedSettings)) {
+      const char* loop_label = playlist_.loop() == PlaylistStore::Loop::Off
+                                   ? "Loop: off"
+                                   : playlist_.loop() == PlaylistStore::Loop::All
+                                       ? "Loop: all"
+                                       : "Loop: one";
+      if (ImGui::SmallButton(loop_label)) {
+        playlist_.cycleLoop();
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton(playlist_.shuffle() ? "Shuffle: on"
+                                                 : "Shuffle: off")) {
+        playlist_.setShuffle(!playlist_.shuffle());
+      }
+      ImGui::Separator();
+      if (playlist_.empty()) {
+        ImGui::TextDisabled("%s", "Playlist is empty — opened files queue here.");
+      }
+      // Snapshot before iterating: a pick or a remove rewrites the store's
+      // vectors, and iterating the very vectors those calls mutate leaves
+      // the loop's index dangling (the Recent overlay learned this first).
+      const std::vector<std::string> entries = playlist_.entries();
+      for (std::size_t i = 0; i < entries.size(); ++i) {
+        std::string label = i == playlist_.current() ? "> " : "   ";
+        label += baseName(entries[i]);
+        // AllowOverlap: the Selectable fills the row width and would
+        // otherwise hold the hover over the SameLine "x" button, whose
+        // clicks would never land (hover goes to the first claimant).
+        if (ImGui::Selectable(label.c_str(), i == playlist_.current(),
+                              ImGuiSelectableFlags_AllowOverlap)) {
+          openPlaylistEntry(i, nowMs());
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", entries[i].c_str());
+        ImGui::SameLine();
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::SmallButton("x")) {
+          if (playlist_.remove(i)) {
+            st_.toast.show("Removed " + baseName(entries[i]), nowMs());
+          }
+        }
+        ImGui::PopID();
+      }
+    }
+    ImGui::End();
+    if (!open) st_.overlay = Overlay::None;
+  }
+
   void drawHelpOverlay() {
     bool open = true;
     const ImGuiIO& io = ImGui::GetIO();
@@ -1230,6 +1364,8 @@ class PlayerHud {
           {"F", "Fullscreen"},
           {"I", "Media info"},
           {"R", "Recent files"},
+          {"P", "Playlist queue"},
+          {"N / Shift+N", "Queue next / previous"},
           {"H", "This help"},
           {"Esc", "Leave fullscreen / quit"},
           {"Q", "Quit"},
@@ -1376,12 +1512,19 @@ class PlayerHud {
     // so point A waits here until the L press that supplies B.
     bool loop_a_set = false;
     std::chrono::milliseconds loop_a_ms{0};
+
+    // Playlist continuation edge flag: set when an Ended frame has been
+    // serviced, cleared on the first frame that is not Ended.
+    bool playlist_end_handled = false;
   };
 
   soar::Player& player_;
   const WindowUiConfig& cfg_;
   SDL_Window* window_ = nullptr;
   RecentStore recent_;
+  // Play queue (docs/mvp.md §2): CLI positionals seed it, user opens
+  // append to it, and Ended walks it. Pure model in ui_state.h.
+  PlaylistStore playlist_;
   std::string current_uri_;
   SubtitleFonts subtitle_fonts_;
   // Enumerates sidecar subtitle files next to the media (§6). Stateless and

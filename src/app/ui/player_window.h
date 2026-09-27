@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace soar {
 class Player;
@@ -20,6 +21,9 @@ namespace soar::app {
 struct WindowUiConfig {
   std::string title = "soar";
   std::string initial_uri;     // the CLI-opened source; recorded + shown
+  // Extra CLI positionals (mpv queue semantics): appended to the playlist
+  // after initial_uri, which stays the playing entry.
+  std::vector<std::string> queued_uris;
   std::string backend_label;   // "ffmpeg" / "null", shown in the info overlay
   std::string cache_dir;       // shown in the info overlay when set
   std::string recent_path;     // RecentStore file (docs/ui-design.md §2)

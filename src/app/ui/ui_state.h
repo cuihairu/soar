@@ -151,6 +151,14 @@ class PlaylistStore {
 
   Loop loop() const { return loop_; }
   void setLoop(Loop mode) { loop_ = mode; }
+  // The overlay button gesture: off -> all -> one -> off (mpv's `l` cycle
+  // order), returning the new mode so the caller can toast it.
+  Loop cycleLoop() {
+    loop_ = loop_ == Loop::Off ? Loop::All
+          : loop_ == Loop::All ? Loop::One
+                               : Loop::Off;
+    return loop_;
+  }
   bool shuffle() const { return shuffle_; }
   // Enabling shuffle starts a fresh round (nothing counts as played yet).
   void setShuffle(bool on);

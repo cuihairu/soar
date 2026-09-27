@@ -22,7 +22,7 @@
 
 static void print_usage(const char* argv0) {
   fmt::print("Usage:\n");
-  fmt::print("  {} [--backend=ffmpeg|null] <path-or-url>\n\n", argv0);
+  fmt::print("  {} [--backend=ffmpeg|null] <path-or-url> [more-paths...]\n\n", argv0);
   fmt::print("  {} --headless [--backend=ffmpeg|null] <path-or-url>\n\n", argv0);
   fmt::print("Options:\n");
   fmt::print("  --headless    Run without GUI\n");
@@ -60,9 +60,9 @@ int main(int argc, char** argv) {
       print_usage(argv[0]);
       return 2;
     } else {
-      // This should be the URI
-      uri_index = i;
-      break;
+      // First positional is the playing source; the rest queue up
+      // (docs/mvp.md §2 playlist, mpv's multi-argument semantics).
+      if (uri_index < 0) uri_index = i;
     }
   }
 
@@ -202,6 +202,12 @@ int main(int argc, char** argv) {
   soar::app::WindowUiConfig ui_cfg;
   ui_cfg.title = "soar";
   ui_cfg.initial_uri = uri;
+  // Remaining positionals join the play queue behind `uri` (docs/mvp.md
+  // §2 playlist). Headless keeps the single-source contract.
+  for (int i = uri_index + 1; i < argc; ++i) {
+    std::string extra(argv[i]);
+    if (!extra.empty() && extra[0] != '-') ui_cfg.queued_uris.push_back(extra);
+  }
   ui_cfg.backend_label = backend_type;
   ui_cfg.cache_dir = cache_dir;
   ui_cfg.recent_path = soar::app::defaultRecentPath();
