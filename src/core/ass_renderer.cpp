@@ -182,7 +182,12 @@ bool AssRenderer::startStream() {
 bool AssRenderer::feedCodecPrivate(const char* data, std::size_t size) {
   if (!impl_ || !impl_->track || !data || size == 0) return false;
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  ass_process_codec_private(impl_->track, data, static_cast<int>(size));
+  // libass only parses these buffers, never writes them, but headers
+  // before the upstream constification (e.g. Ubuntu 24.04's 0.17.1) still
+  // type the parameter char* while 0.17.4 uses const char* — the cast
+  // satisfies both generations.
+  ass_process_codec_private(impl_->track, const_cast<char*>(data),
+                            static_cast<int>(size));
   return true;
 }
 
@@ -191,7 +196,7 @@ bool AssRenderer::feedEvent(const char* dialogue_line) {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   const int size = static_cast<int>(std::strlen(dialogue_line));
   if (size == 0) return false;
-  ass_process_data(impl_->track, dialogue_line, size);
+  ass_process_data(impl_->track, const_cast<char*>(dialogue_line), size);
   return true;
 }
 
