@@ -608,6 +608,60 @@ if mode == "subsdl":
             sys.exit(0)
     sys.exit(4)
 
+if mode == "substl":
+    # The translate pick: same slot arithmetic as "subsdl", two picks over
+    # the subtitle settings overlay's track combo. Pick 1 lands on the
+    # [download] row; activating it closes the popup, so pick 2 reopens the
+    # combo (the popup then lists the new #4 track and the [translate] row
+    # where the [download] row was) and lands on that. Pick 2 runs read ->
+    # translate -> store -> load and the selection trail then shows the
+    # second external id. Coordinates probed under SOAR_UI_BITMAP_FONT=1.
+    time.sleep(2.2)
+    focus(); key(d.keysym_to_keycode(0x20))  # space: wake the HUD, pause
+    time.sleep(0.8)
+
+    def sclick(x, y):
+        moved(x, y); time.sleep(0.15)
+        button(1); time.sleep(0.5)
+
+    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    time.sleep(0.9)
+    sclick(459, 190)   # Track combo open: popup = Off / srt / sep / [download]
+    time.sleep(1.0)
+    sclick(460, 274)   # the [download] row -> fetch + store + load (id 4)
+    time.sleep(2.0)    # room for the download round trip
+    # Activating the [download] row also closes the popup (combo open-state
+    # telemetry: the popup dies exactly at the download pick — ImGui closes
+    # a combo popup when one of its rows is activated). Reopen the same
+    # overlay combo; the popup now lists the new #4 track and, in place of
+    # the consumed [download] row, the [translate] row at its probed rect
+    # (320,288)-(616,307) (GetItemRectMin/Max under SOAR_UI_BITMAP_FONT=1).
+    sclick(459, 190)   # reopen the overlay track combo
+    time.sleep(1.0)
+    sclick(460, 297)   # the [translate] row -> translate + store + load (id 5)
+    time.sleep(3.0)    # room for the chat round trip + store + load
+    sclick(200, 400)   # bare video area: dismiss any popup, toggle nothing
+    time.sleep(0.5)
+    sclick(637, 495)   # close the settings page
+    time.sleep(0.5)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        # Same popup-wedge defense as subsdl: with a popup up, every
+        # key — q included — is swallowed by the app.
+        if moved(200, 400):
+            button(1)
+        time.sleep(0.7)
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
 if mode == "sidecar":
     # The sidecar-pick case over a private copy of the subs fixture: three
     # looks at the settings page's track combo. Every popup is closed by a
@@ -1982,6 +2036,178 @@ TEST_CASE("windowed FFmpeg run downloads and loads a remote subtitle pick") {
   if (download_on != std::string::npos) {
     CHECK(run.output.find("selected(video=0,audio=1,sub=-1)", download_on) ==
           std::string::npos);
+  }
+  std::filesystem::remove_all(scratch, ec);
+#endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run translates a loaded subtitle track") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // The [translate] row is an ImGui widget; the bare-SDL build has neither
+  // the menu nor the translator behind it.
+  MESSAGE("app built without the ImGui overlay; skipping the translate window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the translate window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the translate window test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping the translate window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the translate window test");
+    return;
+  }
+
+  // Two fixture servers: the catalog hands out the source srt (pick 1
+  // downloads and loads it), and the chat server answers the translator's
+  // numbered-line batches (pick 2). Both keys are set on both ends, so the
+  // env -> header wiring is proven for X-API-Key and Bearer alike. The chat
+  // server's requests.log records every POST, which lets the case assert
+  // the wire shape — system prompt, model, numbered batch — end to end.
+  const std::string scratch = "/tmp/soar_substl_x11_" + std::to_string(::getpid());
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  REQUIRE(std::filesystem::create_directories(scratch + "/dl", ec));
+  REQUIRE_FALSE(ec);
+  const std::string played = scratch + "/feature_film.mkv";
+  std::filesystem::copy_file(media, played,
+                             std::filesystem::copy_options::overwrite_existing, ec);
+  REQUIRE_FALSE(ec);
+  {
+    std::ofstream srt(scratch + "/dl/movie.en.srt", std::ios::binary);
+    REQUIRE(srt.good());
+    srt << "1\n00:00:00,500 --> 00:00:02,500\nHello from the catalog\n\n"
+           "2\n00:00:03,000 --> 00:00:05,000\nSecond cue\n";
+  }
+  const auto srv = test_servers::startSubtitleServer(scratch, "catalog", "substl-key");
+  REQUIRE(srv.pid > 0);
+  {
+    std::ofstream catalog(scratch + "/catalog.tsv", std::ios::binary);
+    REQUIRE(catalog.good());
+    catalog << "# size hash name\n"
+            << srv.base_url << "/dl/movie.en.srt\ten\tCatalog pickup\tsrt\n";
+  }
+  const auto chat = test_servers::startChatServer(scratch, "ok", "substl-chat-key");
+  REQUIRE(chat.pid > 0);
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the translate window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "substl", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const std::string state_home = "/tmp/soar_substl_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const ScopedEnv endpoint_env("SOAR_SUBTITLE_ENDPOINT", (srv.base_url + "/search").c_str());
+  const ScopedEnv key_env("SOAR_SUBTITLE_API_KEY", "substl-key");
+  const ScopedEnv tr_endpoint_env("SOAR_TRANSLATE_ENDPOINT", chat.base_url.c_str());
+  const ScopedEnv tr_key_env("SOAR_TRANSLATE_API_KEY", "substl-chat-key");
+  const ScopedEnv tr_model_env("SOAR_TRANSLATE_MODEL", "substl-model");
+  const ScopedEnv tr_lang_env("SOAR_TRANSLATE_LANGUAGE", "Klingon");
+  const auto run = runCli({"--backend=ffmpeg", played});
+
+  std::printf("x11 translate window test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(scratch, ec);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  CHECK(run.output.find("event: state=1") != std::string::npos);
+  // Pick 1 loads the download on id 4 (the subs fixture exposes 3 tracks
+  // but carries a font-attachment stream too, nb_streams = 4); pick 2
+  // loads the translation on id 5. The ordered trail proves menu ->
+  // download -> load -> [translate] -> batch chat -> store -> load
+  // end to end over loopback HTTP.
+  const std::size_t download_on = run.output.find("selected(video=0,audio=1,sub=4)");
+  REQUIRE(download_on != std::string::npos);
+  const std::size_t translated_on =
+      run.output.find("selected(video=0,audio=1,sub=5)", download_on);
+  CHECK(translated_on != std::string::npos);
+  // Nothing after the pick may have turned subtitles back off — a stray
+  // Off pick from a mis-aimed click would show up here.
+  if (translated_on != std::string::npos) {
+    CHECK(run.output.find("selected(video=0,audio=1,sub=-1)", translated_on) ==
+          std::string::npos);
+  }
+  // The chat server saw exactly the documented wire shape: the env-injected
+  // model and Bearer key, the target language from SOAR_TRANSLATE_LANGUAGE
+  // in the system prompt, and a numbered batch with one line per cue. (The
+  // fixture's requests.log is the test's own recording of the traffic; the
+  // product never logs the key itself.)
+  {
+    std::ifstream log(scratch + "/requests.log");
+    REQUIRE(log.good());
+    std::string line;
+    bool found = false;
+    while (std::getline(log, line)) {
+      if (line.find("substl-model") == std::string::npos) {
+        continue;
+      }
+      found = true;
+      CHECK(line.find("Bearer substl-chat-key") != std::string::npos);
+      CHECK(line.find("into Klingon") != std::string::npos);
+      CHECK(line.find("1. Hello from the catalog") != std::string::npos);
+      CHECK(line.find("2. Second cue") != std::string::npos);
+    }
+    CHECK(found);
   }
   std::filesystem::remove_all(scratch, ec);
 #endif

@@ -25,11 +25,17 @@
 
 #  include <algorithm>
 #  include <atomic>
+#  include <cctype>
 #  include <chrono>
 #  include <cmath>
 #  include <cstdio>
 #  include <cstdlib>
+#  include <filesystem>
+#  include <fstream>
+#  include <iterator>
+#  include <map>
 #  include <string>
+#  include <utility>
 #  include <vector>
 
 #  ifdef SOAR_WITH_FFMPEG
@@ -291,6 +297,31 @@ class PlayerHud {
       if (ms > 0) sub.timeout = std::chrono::milliseconds(ms);
     }
     external_.configure(std::move(sub));
+    // Subtitle text translation (docs/mvp.md §6), same env-injection
+    // contract as the download provider above: no configured endpoint and
+    // model means the menu never offers a [translate] row and nothing ever
+    // dials out. The target language is also env-configured — the window
+    // has no language picker of its own (assumption: one language per
+    // installation is enough for the entry slice).
+    soar::SubtitleTranslateConfig tr_cfg;
+    if (const char* ep = std::getenv("SOAR_TRANSLATE_ENDPOINT")) {
+      tr_cfg.endpoint = ep;
+    }
+    if (const char* key = std::getenv("SOAR_TRANSLATE_API_KEY")) {
+      tr_cfg.api_key = key;
+    }
+    if (const char* m = std::getenv("SOAR_TRANSLATE_MODEL")) {
+      tr_cfg.model = m;
+    }
+    if (const char* t = std::getenv("SOAR_TRANSLATE_TIMEOUT_MS")) {
+      const long ms = std::atol(t);
+      if (ms > 0) tr_cfg.timeout = std::chrono::milliseconds(ms);
+    }
+    if (const char* l = std::getenv("SOAR_TRANSLATE_LANGUAGE")) {
+      if (*l != '\0') target_language_ = l;
+    }
+    translate_ready_ = !tr_cfg.endpoint.empty() && !tr_cfg.model.empty();
+    translator_.configure(std::move(tr_cfg));
   }
 
   // App-level input (docs §3). `quit` is set on the exit paths. The UI's
@@ -599,11 +630,40 @@ class PlayerHud {
   // is configured, its candidates follow as a "[download]" section: picking
   // one downloads, stores under the system temp and loads the stored file
   // through the same pipeline as a sidecar pick.
+  // Loaded external tracks a "[translate]" row can work on (docs/mvp.md §6
+  // "字幕文本翻译", the window wiring): the window knows their source paths
+  // because it loaded them, each has not been translated this session, and
+  // an endpoint is configured. Embedded streams never appear here — their
+  // text has no file to read, and demuxing one out is its own slice.
+  std::vector<std::pair<const TrackInfo*, const std::string*>> translatableTracks(
+      const MediaInfo& info) const {
+    std::vector<std::pair<const TrackInfo*, const std::string*>> out;
+    if (!translate_ready_) {
+      return out;
+    }
+    for (const auto& t : info.tracks) {
+      if (t.type != TrackType::Subtitle) {
+        continue;
+      }
+      const auto path = loaded_external_paths_.find(t.title);
+      if (path == loaded_external_paths_.end()) {
+        continue;
+      }
+      if (std::find(translated_titles_.begin(), translated_titles_.end(),
+                    t.title) != translated_titles_.end()) {
+        continue;
+      }
+      out.emplace_back(&t, &path->second);
+    }
+    return out;
+  }
+
   void drawSidecarEntries(const MediaInfo& info, milliseconds now) {
     const std::vector<SubtitleCandidate> candidates =
         sidecar_.findCandidates(MediaSource{current_uri_, {}});
     const std::vector<SubtitleCandidate>& remote = remoteCandidates();
-    if (candidates.empty() && remote.empty()) {
+    const auto translatable = translatableTracks(info);
+    if (candidates.empty() && remote.empty() && translatable.empty()) {
       ImGui::Separator();
       ImGui::TextDisabled("No sidecar subtitle files");
       return;
@@ -636,6 +696,7 @@ class PlayerHud {
       TrackId id = -1;
       if (player_.loadExternalSubtitle(c->path, id) &&
           player_.selectTrack(TrackType::Subtitle, id)) {
+        loaded_external_paths_[externalTrackTitle(c->path)] = c->path;
         st_.toast.show("Loaded " + c->title, now);
       } else {
         // A missing or cue-less file is a normal outcome, so this is a
@@ -667,6 +728,80 @@ class PlayerHud {
       }
       downloadAndLoad(c, now);
     }
+
+    // The [translate] section: one row per loaded external track that has
+    // not been translated yet. Picking one sends the track's text through
+    // SubtitleTranslator and loads the result as a further external track.
+    if (!translatable.empty()) {
+      ImGui::Separator();
+    }
+    for (const auto& [track, path] : translatable) {
+      std::string item = "[translate] " + track->title + " -> " + target_language_;
+      if (!ImGui::Selectable(item.c_str())) {
+        continue;
+      }
+      translateAndLoad(track->title, *path, now);
+    }
+  }
+
+  // The translation path behind a "[translate]" pick: read the track's
+  // source file, batch-translate it, store and load the result like any
+  // sidecar. Every failure degrades to a toast — the media keeps playing
+  // and the original track is untouched (the translator is all-or-nothing,
+  // so no half-translated track can appear). Like downloadAndLoad this
+  // runs on the UI thread: the loopback fixture answers in milliseconds,
+  // and the timeout env bounds a slow endpoint.
+  void translateAndLoad(const std::string& title, const std::string& path,
+                        milliseconds now) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+      st_.toast.show("Translation failed", now);
+      return;
+    }
+    std::string text((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    std::string out;
+    if (!translator_.translate(text, target_language_, &out, nullptr)) {
+      st_.toast.show("Translation failed", now);
+      return;
+    }
+    SubtitleCandidate c;
+    // The stored name drops the source extension (storeExternalSubtitle
+    // re-appends one from c.format) and carries the target language, so
+    // the new track's menu title reads "source (Klingon)".
+    std::string stem = title;
+    const size_t dot = stem.rfind('.');
+    if (dot != std::string::npos && dot != 0) {
+      stem = stem.substr(0, dot);
+    }
+    c.title = stem + " (" + target_language_ + ")";
+    c.language = target_language_;
+    std::string lower;
+    lower.resize(path.size());
+    for (size_t i = 0; i < path.size(); ++i) {
+      lower[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(path[i])));
+    }
+    c.format = lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".vtt") == 0
+                   ? SubtitleFormat::WebVtt
+                   : SubtitleFormat::SubRip;
+    const std::string stored = storeExternalSubtitle({}, c, out);
+    TrackId id = -1;
+    if (stored.empty() || !player_.loadExternalSubtitle(stored, id) ||
+        !player_.selectTrack(TrackType::Subtitle, id)) {
+      st_.toast.show("Translation failed", now);
+      return;
+    }
+    translated_titles_.push_back(title);
+    loaded_external_paths_[externalTrackTitle(stored)] = stored;
+    st_.toast.show("Translated " + title, now);
+  }
+
+  // The title a loaded external track carries in the track list: the
+  // backend names it after the file it loaded (ffmpeg_backend's
+  // loadExternalSubtitle). Keying loaded_external_paths_ the same way
+  // makes a menu row resolvable back to its source path by title alone.
+  static std::string externalTrackTitle(const std::string& path) {
+    return std::filesystem::path(path).filename().string();
   }
 
   // The download path behind a "[download]" pick: fetch the text, persist
@@ -686,6 +821,7 @@ class PlayerHud {
       st_.toast.show("Download failed", now);
       return;
     }
+    loaded_external_paths_[externalTrackTitle(path)] = path;
     downloaded_titles_.push_back(c.title);
     st_.toast.show("Downloaded " + c.title, now);
   }
@@ -1617,6 +1753,16 @@ class PlayerHud {
   std::vector<SubtitleCandidate> remote_candidates_;
   bool remote_searched_ = false;
   std::vector<std::string> downloaded_titles_;
+  // Subtitle text translation (§6). loaded_external_paths_ carries the
+  // source path of every external track this window loaded (keyed by the
+  // track title the menu shows), so a [translate] row can read the text
+  // without the track list having to carry paths; translated_titles_
+  // keeps the menu from re-offering a track it already translated.
+  SubtitleTranslator translator_;
+  std::map<std::string, std::string> loaded_external_paths_;
+  std::vector<std::string> translated_titles_;
+  std::string target_language_ = "English";
+  bool translate_ready_ = false;
   State st_;
 };
 
