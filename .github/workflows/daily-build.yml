@@ -1,0 +1,322 @@
+name: Daily Build
+
+# 每日构建流水线：CI 构建产物分发，不是发版——绝不 git tag / gh release
+# （铁律：本仓库的产物只存在于 Actions artifact，任何改动都不得引入
+# tag 或 Release 步骤）。全仓库只保留一份"最新每日构建"：固定 artifact
+# 名 daily-build，上传前先删历史同名（upload-artifact@v4 产物不可变，
+# 同名直接传会报错）。
+#
+# 构建与测试步骤逐段对齐 ci.yml 的 build job（同样的 preset、同样的
+# 依赖清单、测试媒体只在 Linux 生成——Windows/macOS 的媒体套件在无
+# 夹具时自跳过，与 CI 口径一致），差异只有两处：构建类型用 Release
+# （每日构建产物是给人运行的，Debug 二进制没有分发价值），以及最后
+# 打包上传 artifact。
+
+on:
+  schedule:
+    # UTC 00:40 = 北京时间 08:40；错开 unidict 每日构建的 21:17 UTC，
+    # 也避开整点 runner 高峰
+    - cron: '40 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write # collect job 删除历史 daily-build artifact 需要
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x64
+          - os: macos-latest
+            name: macos-arm64
+          - os: windows-latest
+            name: windows-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Linux builds against system packages (apt) instead of vcpkg,
+      # exactly like ci.yml: system FFmpeg dev headers let us compile the
+      # FFmpeg backend for real.
+      - name: Install system packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev doctest-dev ffmpeg \
+            libavformat-dev libavcodec-dev libavutil-dev \
+            libswresample-dev libswscale-dev
+
+      # Synthetic media for the FFmpeg backend tests (same as ci.yml: the
+      # script prints KEY=VALUE lines for $GITHUB_ENV).
+      - name: Generate test media (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          bash scripts/generate_test_media.sh build-system/testmedia | tee env.txt
+          cat env.txt >> "$GITHUB_ENV"
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew update && brew install ninja
+
+      - name: Install FFmpeg dev packages (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg pkg-config
+
+      - name: Install Ninja (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja -y
+
+      # Windows: force the MSVC environment so CMake does not pick the
+      # MinGW gcc from PATH while vcpkg's x64-windows triplet builds
+      # dependencies with MSVC (mixed toolchains fail to link).
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Clone vcpkg
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
+
+      - name: Bootstrap vcpkg (Unix)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      # Release override: the presets pin Debug (what CI tests), the daily
+      # product ships what people run. Command-line cache vars win.
+      - name: Configure (Linux system packages)
+        if: runner.os == 'Linux'
+        run: cmake --preset linux-system -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (macOS/Windows)
+        if: runner.os != 'Linux'
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        shell: bash
+        run: cmake --preset default -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: cmake --build --preset linux-system
+
+      - name: Build (macOS/Windows)
+        if: runner.os != 'Linux'
+        run: cmake --build --preset default
+
+      - name: Test (Linux)
+        if: runner.os == 'Linux'
+        env:
+          SDL_AUDIODRIVER: dummy
+        run: ctest --preset linux-system --output-on-failure
+
+      - name: Test (macOS/Windows)
+        if: runner.os != 'Linux'
+        run: ctest --preset default --output-on-failure
+
+      # vcpkg's x64-windows triplet copies the dependent DLLs (SDL2,
+      # FFmpeg, ...) next to the exe (applocal deployment), so the whole
+      # runtime travels with build/*.dll.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -e
+          mkdir -p stage
+          cp build/soar.exe stage/
+          cp build/*.dll stage/ 2>/dev/null || true
+          cat > stage/PLATFORM-NOTES.txt <<'NOTES'
+          Soar 每日构建 - Windows x64
+          包含: soar.exe 及其依赖 DLL（SDL2 / FFmpeg 等，随包分发）
+
+          验证: 命令行运行不带参数的 soar.exe，应打印 Usage
+          （退出码 2 属预期——无媒体源时程序就是这样自证的）。
+
+          说明: 若 SmartScreen 拦截，点"更多信息 -> 仍要运行"
+          （每日构建未做代码签名）。
+          NOTES
+          powershell -NoProfile -Command "Compress-Archive -Path stage/* -DestinationPath soar-windows-x64.zip -Force"
+
+      # vcpkg's macOS triplet links SDL2/FFmpeg statically into the
+      # binary; system frameworks stay external as usual.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          mkdir -p stage
+          cp build/soar stage/
+          cat > stage/PLATFORM-NOTES.txt <<'NOTES'
+          Soar 每日构建 - macOS (Apple Silicon)
+          包含: soar（SDL2/FFmpeg 已静态链接进二进制）
+
+          验证: 终端运行 ./soar 不带参数，应打印 Usage
+          （退出码 2 属预期）。
+          首次运行如被 Gatekeeper 拦截: xattr -cr soar
+
+          说明: 未签名（每日构建不做代码签名）。
+          NOTES
+          # 必须先进 stage：zip . 在 workspace 根会把整个 build/ 打进包
+          cd stage
+          zip -qr ../soar-macos-arm64.zip .
+
+      # Linux binary links the apt runtime packages (libsdl2, libav*),
+      # not bundled — the notes say what to install.
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+          mkdir -p stage
+          cp build-system/soar stage/
+          cat > stage/PLATFORM-NOTES.txt <<'NOTES'
+          Soar 每日构建 - Linux x64
+          包含: soar（动态链接系统库）
+
+          运行前需装运行时库（发行版包名大致如下）:
+            SDL2 (libsdl2-2.0-0)、FFmpeg 运行时 (libavformat/libavcodec/
+            libavutil/libswresample/libswscale)、fmt
+
+          验证: 终端运行 ./soar 不带参数，应打印 Usage
+          （退出码 2 属预期）。
+          NOTES
+          # 必须先进 stage：zip . 在 workspace 根会把整个 build/ 打进包
+          cd stage
+          zip -qr ../soar-linux-x64.zip .
+
+      - name: Upload platform package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.name }}
+          path: soar-*.zip
+          retention-days: 1
+          if-no-files-found: error
+
+  # 汇总：三平台 zip + BUILD_INFO + VERIFY 打成一个固定名 artifact。
+  # 上传前先删历史同名 daily-build——v4 产物不可变，不删必报错；
+  # 删了再传即"全仓库只存在一份最新每日构建"。
+  collect:
+    name: Collect daily-build
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download platform packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          merge-multiple: true
+          path: pkgs
+
+      - name: Remove previous daily-build artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ids=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name == "daily-build") | .id')
+          if [ -n "$ids" ]; then
+            echo "$ids" | while read -r id; do
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/$id" \
+                && echo "deleted artifact $id"
+            done
+          else
+            echo "no previous daily-build artifact"
+          fi
+
+      - name: Build info and verify guide
+        run: |
+          set -e
+          VERSION=$(sed -n 's/^  VERSION \([0-9.]*\)$/\1/p' CMakeLists.txt | head -1)
+          UTC_TIME=$(date -u +'%Y-%m-%d %H:%M UTC')
+          BJ_TIME=$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M 北京时间')
+          BUILD_DATE=$(date -u +'%Y%m%d')
+          {
+            echo "Soar 每日构建 (daily-build)"
+            echo "更新时间: ${UTC_TIME} / ${BJ_TIME}"
+            echo "Commit:   ${GITHUB_SHA}"
+            echo "短 sha:   ${GITHUB_SHA::8}"
+            echo "版本:     ${VERSION}（CMake project VERSION，非 Release 版本号）"
+            echo "触发方式: ${{ github.event_name }}"
+            echo ""
+            echo "这是 CI 构建产物分发，不对应任何 Release/tag。"
+            echo ""
+            echo "平台产物:"
+            echo "  soar-windows-x64.zip  Windows 10/11 x64: soar.exe + 依赖 DLL"
+            echo "  soar-macos-arm64.zip  macOS Apple Silicon: soar（静态链接）"
+            echo "  soar-linux-x64.zip    Linux x64: soar（动态链接系统库，见包内说明）"
+          } > BUILD_INFO.txt
+          cat > VERIFY.md <<'VERIFY'
+          # 最简验证
+          每个平台 zip 内附 PLATFORM-NOTES.txt。
+
+          ## 通用冒烟（三平台一致）
+          命令行运行 soar（Windows 为 soar.exe）不带参数：
+          应打印 Usage 并以退出码 2 结束——这就是无媒体源时
+          的预期自证行为。
+
+          ## Windows
+          1. 解压 soar-windows-x64.zip（soar.exe 与 DLL 须同目录）
+          2. `soar.exe`（SmartScreen 拦截时"仍要运行"）
+          3. 正常播放: `soar.exe --backend=ffmpeg <媒体文件>`
+
+          ## macOS (Apple Silicon)
+          1. 解压 soar-macos-arm64.zip
+          2. `xattr -cr soar && ./soar`（未签名，必须先清隔离属性）
+
+          ## Linux x64
+          1. 解压 soar-linux-x64.zip
+          2. 按包内 PLATFORM-NOTES.txt 装好 SDL2/FFmpeg 运行时库
+          3. `chmod +x soar && ./soar`
+          VERIFY
+          # 打总包：三平台 zip 平铺 + 顶层说明（artifact 解开即见）
+          mv pkgs/soar-windows-x64.zip pkgs/soar-macos-arm64.zip \
+             pkgs/soar-linux-x64.zip .
+          zip -q "soar-daily-${BUILD_DATE}-${GITHUB_SHA::8}.zip" \
+            soar-windows-x64.zip soar-macos-arm64.zip \
+            soar-linux-x64.zip BUILD_INFO.txt VERIFY.md
+          # 供后续步骤引用的输出
+          echo "daily_zip=soar-daily-${BUILD_DATE}-${GITHUB_SHA::8}.zip" >> "$GITHUB_ENV"
+          echo "utc_time=${UTC_TIME}" >> "$GITHUB_ENV"
+          echo "bj_time=${BJ_TIME}" >> "$GITHUB_ENV"
+
+      - name: Upload daily-build
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-build
+          path: ${{ env.daily_zip }}
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Run summary
+        run: |
+          {
+            echo "## 每日构建产物"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 更新时间 | ${utc_time} / ${bj_time} |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| 产物 | artifact **daily-build**（唯一最新版，历史已清理） |"
+            echo "| 平台 | windows-x64（soar.exe+DLL）/ macos-arm64（静态链接）/ linux-x64（动态链接） |"
+            echo ""
+            echo "下载: 本 run 页面底部 Artifacts 区 \`daily-build\`。"
+            echo "验证方式见包内 VERIFY.md。这是 CI 构建产物分发，无 tag、无 Release。"
+          } >> "$GITHUB_STEP_SUMMARY"
