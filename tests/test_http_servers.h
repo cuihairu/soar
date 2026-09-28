@@ -9,9 +9,11 @@
 #include <string>
 
 #ifndef _WIN32
+#include <poll.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <cstdio>
 #endif
 
 namespace test_servers {
@@ -642,7 +644,26 @@ srv.serve_forever()
 // answers the probe and the test then fetches from the wrong process (404s
 // or a completely different root) — the same failure class as the RTSP
 // single-accept lesson, in multi-connection disguise.
+//
+// The handshake itself is bounded: a python that hangs before printing
+// "ready" must not wedge the whole suite until the ctest timeout — it gets
+// 30s, then a SIGKILL and a -1 (which the callers surface as a loud
+// REQUIRE failure naming the mode). Startup is announced on stderr (one
+// unbuffered line per server) so a hung run leaves a breadcrumb of exactly
+// which fixture was last being started.
 inline pid_t startPipedServer(char* const argv[]) {
+  // One line per server: argv flattened and truncated, so the inline
+  // python script (which has newlines) stays out of the log.
+  std::fprintf(stderr, "[fixture] starting");
+  for (int i = 0; argv[i] != nullptr; ++i) {
+    std::string a = argv[i];
+    for (char& ch : a) {
+      if (ch == '\n' || ch == '\r') ch = ' ';
+    }
+    if (a.size() > 48) a = a.substr(0, 45) + "...";
+    std::fprintf(stderr, " %s", a.c_str());
+  }
+  std::fprintf(stderr, "\n");
   int fds[2];
   if (::pipe(fds) != 0) return -1;
   const pid_t pid = ::fork();
@@ -661,7 +682,27 @@ inline pid_t startPipedServer(char* const argv[]) {
   ::close(fds[1]);
   std::string line;
   char c = 0;
-  while (::read(fds[0], &c, 1) == 1 && c != '\n') line += c;
+  // 30s per fixture startup: python itself needs well under a second, so
+  // anything longer means the child is wedged, not slow.
+  const int kReadyTimeoutMs = 30 * 1000;
+  for (;;) {
+    struct pollfd p {};
+    p.fd = fds[0];
+    p.events = POLLIN;
+    const int pr = ::poll(&p, 1, kReadyTimeoutMs);
+    if (pr <= 0) {
+      std::fprintf(stderr,
+                   "[fixture] startup handshake timed out after 30s\n");
+      ::kill(pid, SIGKILL);
+      ::waitpid(pid, nullptr, 0);
+      ::close(fds[0]);
+      return -1;
+    }
+    const ssize_t r = ::read(fds[0], &c, 1);
+    if (r <= 0) break;  // EOF: the child is gone (or never exec'd)
+    if (c == '\n') break;
+    line += c;
+  }
   ::close(fds[0]);
   if (line != "ready") {
     ::kill(pid, SIGTERM);

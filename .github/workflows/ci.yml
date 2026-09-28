@@ -109,7 +109,11 @@ jobs:
 
       - name: Test (macOS/Windows)
         if: runner.os != 'Linux'
-        run: ctest --preset default --output-on-failure
+        # -V streams the test process's output live instead of buffering it
+        # until the suite exits: a hung test killed at the ctest timeout
+        # leaves the doctest progress and the fixture stderr breadcrumbs in
+        # the log, instead of zero trace.
+        run: ctest --preset default -V --output-on-failure
 
   tsan:
     # ThreadSanitizer job: exercises the FFmpeg backend concurrency tests

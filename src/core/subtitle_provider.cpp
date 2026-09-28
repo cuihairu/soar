@@ -1117,7 +1117,7 @@ bool SubtitleTranslator::translate(const std::string& subtitle_text,
       "order, translations only - no notes, no originals.";
   const size_t batch = config_.batch_cues < 1 ? 1 : config_.batch_cues;
   for (size_t first = 0; first < texts.size(); first += batch) {
-    const size_t last = std::min(texts.size(), first + batch);
+    const size_t last = std::min<size_t>(texts.size(), first + batch);
     const std::vector<std::string> chunk(texts.begin() + static_cast<long>(first),
                                          texts.begin() + static_cast<long>(last));
     std::string payload =
