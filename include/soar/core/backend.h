@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "soar/core/ass_renderer.h"
+
 namespace soar {
 
 struct MediaSource {
@@ -113,6 +115,18 @@ public:
 
   virtual bool selectTrack(TrackType type, TrackId id) = 0;
   virtual bool disableSubtitles() = 0;
+
+  // ASS style renderer (docs/mvp.md §6, style-faithful playback): the
+  // backend-owned AssRenderer an embedded ASS/SSA track feeds, or nullptr
+  // when this backend has no libass support compiled in — the plain-text
+  // subtitle path keeps running either way (the same optional-capability
+  // contract as SDL2/FFmpeg/ImGui). The backend owns the renderer's
+  // lifetime; callers borrow the pointer and never free it. The backend
+  // does the feeding (CodecPrivate + Dialogue lines as the subtitle
+  // decoder emits them, flushed on rewind); the UI borrows it at
+  // frame-present time to renderAt() the current pts and upload the
+  // RGBA canvas when it changed.
+  virtual AssRenderer* assRenderer() { return nullptr; }
 
   // External subtitles (docs/mvp.md §6, Stage 2): attach a plain-text
   // subtitle file (SubRip / WebVTT) as one more subtitle track. The id

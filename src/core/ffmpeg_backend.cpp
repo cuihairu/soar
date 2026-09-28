@@ -2,6 +2,7 @@
 
 #include <fmt/format.h>
 
+#include "soar/core/ass_dialogue.h"
 #include "soar/core/http_cache.h"
 
 extern "C" {
@@ -72,6 +73,10 @@ std::string codecNameFromCodecId(AVCodecID codec_id) {
 // {...} are dropped and hard breaks (\N, \n) become spaces, so an SRT line
 // like "Hello" surfaces as plain "Hello" (the SRT/WebVTT decoders emit
 // ASS-format rects; see processSubtitleFrame).
+// The Dialogue-line reassembly (assTimestamp/assDialogueLine) lives in
+// ass_dialogue.{h,cpp} as pure functions so the tolerant-parsing arms are
+// unit-testable headlessly (docs/mvp.md §6).
+
 // The ff_ass_get_dialog decoder wraps synthesized events in brackets:
 // "[readorder,layer,style,speaker,mL,mR,mV,effect,text]" — 8 commas, 9 fields.
 std::string assDialogueText(const char* ass) {
@@ -1900,6 +1905,50 @@ bool FFmpegBackend::setupDecoders() {
     if (ret < 0) {
       return fatal(fmt::format("setupDecoders: failed to open subtitle decoder: {}", avError(ret)), /*emit_event=*/false);
     }
+
+    // Style-faithful ASS (docs/mvp.md §6): an embedded ASS/SSA track feeds
+    // libass — Matroska font attachments register first (so the script's
+    // font lookups resolve from the file's own embedded fonts), then a
+    // fresh streaming track takes the CodecPrivate (script header +
+    // styles). Dialogue lines arrive per-packet in processSubtitleFrame.
+    // Without libass (stub) or for text codecs nothing here activates and
+    // the plain-text path stays authoritative.
+    ass_feed_active_ = false;
+    if (ass_renderer_.available() &&
+        (codecpar->codec_id == AV_CODEC_ID_ASS ||
+         codecpar->codec_id == AV_CODEC_ID_SSA) &&
+        ass_renderer_.startStream()) {
+      for (unsigned i = 0; i < format_ctx_->nb_streams; ++i) {
+        const AVStream* st = format_ctx_->streams[i];
+        const AVCodecParameters* par = st ? st->codecpar : nullptr;
+        if (!par || par->codec_type != AVMEDIA_TYPE_ATTACHMENT ||
+            (par->codec_id != AV_CODEC_ID_TTF && par->codec_id != AV_CODEC_ID_OTF) ||
+            par->extradata_size <= 0 || par->extradata == nullptr) {
+          continue;
+        }
+        const AVDictionaryEntry* font_name =
+            st->metadata
+                ? av_dict_get(st->metadata, "filename", nullptr, 0)
+                : nullptr;
+        ass_renderer_.addFont(
+            font_name && font_name->value ? font_name->value : "font",
+            reinterpret_cast<const std::uint8_t*>(par->extradata),
+            static_cast<std::size_t>(par->extradata_size));
+      }
+      if (codecpar->extradata_size > 0 && codecpar->extradata != nullptr) {
+        ass_renderer_.feedCodecPrivate(
+            reinterpret_cast<const char*>(codecpar->extradata),
+            static_cast<std::size_t>(codecpar->extradata_size));
+      }
+      if (video_stream_index_ >= 0) {
+        const AVCodecParameters* vpar =
+            format_ctx_->streams[video_stream_index_]->codecpar;
+        if (vpar->width > 0 && vpar->height > 0) {
+          ass_renderer_.setFrameSize(vpar->width, vpar->height);
+        }
+      }
+      ass_feed_active_ = true;
+    }
   }
 
   return true;
@@ -1923,6 +1972,9 @@ void FFmpegBackend::cleanupDecoders() {
     avcodec_free_context(&subtitle_decoder_);
     subtitle_decoder_ = nullptr;
   }
+  // No more feeding once the decoders are gone (the renderer keeps its
+  // last track; the next open re-runs startStream in setupDecoders).
+  ass_feed_active_ = false;
 
   // Cleanup resamplers
   if (audio_resampler_) {
@@ -2154,11 +2206,21 @@ void FFmpegBackend::decodeLoop() {
           stream->time_base.num,
           stream->time_base.den
         );
-        const auto duration = std::chrono::milliseconds(
+        auto duration = std::chrono::milliseconds(
           sub.end_display_time > sub.start_display_time
               ? sub.end_display_time - sub.start_display_time
               : 0
         );
+        // The ASS decoder leaves end_display_time at 0 — the cue length
+        // rides on the packet duration (Matroska BlockDuration). Without
+        // this fallback every embedded ASS event would be zero-length and
+        // never display (libass hides an event whose end <= start).
+        if (duration.count() <= 0 && packet->duration > 0 &&
+            packet->duration != AV_NOPTS_VALUE) {
+          duration = fromAVTimestamp(packet->duration,
+                                     stream->time_base.num,
+                                     stream->time_base.den);
+        }
         processSubtitleFrame(sub, pts, duration);
       }
       avsubtitle_free(&sub);
@@ -2356,6 +2418,12 @@ void FFmpegBackend::processAudioFrame(DecodedFrame frame) {
   freeFrame(frame.frame);
 }
 
+AssRenderer* FFmpegBackend::assRenderer() {
+  // Stable for the backend's lifetime; AssRenderer locks internally, so
+  // the UI may render while the decode thread feeds.
+  return ass_renderer_.available() ? &ass_renderer_ : nullptr;
+}
+
 void FFmpegBackend::processSubtitleFrame(const AVSubtitle& sub, std::chrono::milliseconds pts, std::chrono::milliseconds duration) {
   // Subtitle frames don't wait for presentation time; they're queued
   // immediately and the UI renders them based on current position.
@@ -2379,6 +2447,15 @@ void FFmpegBackend::processSubtitleFrame(const AVSubtitle& sub, std::chrono::mil
     if (rect->type == SUBTITLE_TEXT && rect->text != nullptr) {
       piece = rect->text;
     } else if (rect->type == SUBTITLE_ASS && rect->ass != nullptr) {
+      if (ass_feed_active_) {
+        // Style-faithful path: the real ASS decoder hands back complete
+        // "Dialogue:" lines — feed verbatim and skip the plain-text
+        // queue so the subtitle is not double-rendered (the UI draws
+        // the libass canvas instead of the text overlay).
+        ass_renderer_.feedEvent(
+            assDialogueLine(rect->ass, pts, duration).c_str());
+        continue;
+      }
       piece = assDialogueText(rect->ass);
     }
     if (piece.empty()) {
@@ -2678,6 +2755,12 @@ bool FFmpegBackend::flushDecoders() {
   }
   if (subtitle_decoder_) {
     avcodec_flush_buffers(subtitle_decoder_);
+  }
+  // A seek makes the decoder rescan cues it already fed (in both
+  // directions); without the flush they would pile up as overlapping
+  // duplicates on the libass track.
+  if (ass_feed_active_) {
+    ass_renderer_.flushEvents();
   }
   return true;
 }

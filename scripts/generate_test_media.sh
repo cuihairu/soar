@@ -123,6 +123,47 @@ ffmpeg -hide_banner -loglevel error -y \
   -t 4 \
   "$media_dir/subs_ass_media.mkv"
 
+# Styled ASS fixture (docs/mvp.md §6, the libass rendering path): PlayRes
+# matches the video so glyph geometry is 1:1, the style names the attached
+# Noto Mono family (libass runs with no system font provider, so an
+# embedded ASS script can only render fonts the container itself carries),
+# and the opaque pure-red fill (&H000000FF, &HAABBGGRR) with outline and
+# shadow off makes the composited pixels assertable. Two cues cover the
+# visible window; nothing is visible after 4 s. The font attaches from the
+# repo fixture (tests/fixtures/, SIL OFL 1.1 — see
+# tests/fixtures/FONT-LICENSE.txt) so rendering stays deterministic on
+# machines without system fonts.
+cat > "$media_dir/subs_styled.ass" <<'EOF'
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 160
+PlayResY: 120
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Red,Noto Mono,24,&H000000FF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.00,Red,,0,0,0,,Hello ASS
+Dialogue: 0,0:00:02.00,0:00:04.00,Red,,0,0,0,,Styled Line
+EOF
+
+font_src="$(cd "$(dirname "$0")" && pwd)/../tests/fixtures/NotoMono-Regular.ttf"
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -f lavfi -i sine=frequency=440 \
+  -i "$media_dir/subs_styled.ass" \
+  -attach "$font_src" \
+  -map 0:v -map 1:a -map 2:s \
+  -c:v ffvhuff -c:a pcm_s16le -c:s ass \
+  -metadata:s:s:0 language=eng \
+  -metadata:s:t mimetype=application/x-truetype-font \
+  -t 4 \
+  "$media_dir/subs_styled_ass_media.mkv"
+
 # Burst cues: six cues sitting after the audio track ends. Once the last
 # audio packet is consumed the decode loop reads the subtitle packets back
 # to back (no stream left to pace against), so the subtitle FIFO (depth 4)
@@ -136,6 +177,29 @@ ffmpeg -hide_banner -loglevel error -y \
   -map 0:a -map 1:s \
   -c:a pcm_s16le -c:s srt \
   "$media_dir/subs_burst_media.mkv"
+
+# Extraction-corner cues: one cue per arm of the plain-text conversion the
+# embedded-subtitle decode feeds — the lowercase hard break, a trailing
+# backslash, trailing whitespace, and the bracket wrapper (twice: the
+# payload-level strip eats one ']'). libavcodec passes SRT text through
+# verbatim into ASS-format rects, so these characters reach the extractor
+# exactly as written. The second half covers the uppercase hard break, a
+# backslash before an ordinary letter, a Dialogue:-shaped payload (the
+# 9-comma full-event form), a comma-ish line, an all-']]' line that pops
+# away to nothing, mid-text brace groups (entered and left, and one left
+# open to end of line), and a formatting-only cue the demuxer drops.
+printf '1\n00:00:00,000 --> 00:00:00,300\nHard\\nbreak\n\n2\n00:00:00,300 --> 00:00:00,600\nTrailing backslash \\\n\n3\n00:00:00,600 --> 00:00:00,900\nPadded \n\n4\n00:00:00,900 --> 00:00:01,200\nDouble]]\n\n5\n00:00:01,200 --> 00:00:01,500\nUpper\\NCase\n\n6\n00:00:01,500 --> 00:00:01,800\nPath\\C:\\Win\n\n7\n00:00:01,800 --> 00:00:02,100\nDialogue: 0,0,Red,,0,0,0,,From SRT\n\n8\n00:00:02,100 --> 00:00:02,400\njust,four,words,here\n\n9\n00:00:02,400 --> 00:00:02,700\nEnds in brackets]]]\n\n10\n00:00:02,700 --> 00:00:03,000\nSee {b} here\n\n11\n00:00:03,000 --> 00:00:03,300\nUnclosed {brace\n\n12\n00:00:03,300 --> 00:00:03,600\n]]]\n\n13\n00:00:03,600 --> 00:00:04,000\n{\\an8}\n' \
+  > "$media_dir/subs_junk.srt"
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -f lavfi -i sine=frequency=440 \
+  -i "$media_dir/subs_junk.srt" \
+  -map 0:v -map 1:a -map 2:s \
+  -c:v ffvhuff -c:a pcm_s16le -c:s srt \
+  -metadata:s:s:0 language=eng \
+  -t 4 \
+  "$media_dir/subs_junk_media.mkv"
 
 # mov_text in MP4: the legacy decoder emits plain SUBTITLE_TEXT rects (no
 # ASS wrapper) — the text-rect branch of the subtitle extraction.
@@ -294,7 +358,9 @@ echo "SOAR_TEST_SUBS_MEDIA=$media_dir/subs_media.mkv"
 echo "SOAR_TEST_SUBS_EMPTY=$media_dir/subs_empty_media.mkv"
 echo "SOAR_TEST_SUBS_ONLY=$media_dir/subs_only.mkv"
 echo "SOAR_TEST_ASS_MEDIA=$media_dir/subs_ass_media.mkv"
+echo "SOAR_TEST_STYLED_ASS_MEDIA=$media_dir/subs_styled_ass_media.mkv"
 echo "SOAR_TEST_BURST_MEDIA=$media_dir/subs_burst_media.mkv"
+echo "SOAR_TEST_JUNK_SRT_MEDIA=$media_dir/subs_junk_media.mkv"
 echo "SOAR_TEST_MOVTEXT_MEDIA=$media_dir/subs_movtext_media.mp4"
 echo "SOAR_TEST_MULTI_RES=$media_dir/multi_res.ts"
 echo "SOAR_TEST_CORRUPT_DECODE=$media_dir/corrupt_decode.mkv"

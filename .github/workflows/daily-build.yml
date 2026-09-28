@@ -52,7 +52,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev doctest-dev ffmpeg \
             libavformat-dev libavcodec-dev libavutil-dev \
-            libswresample-dev libswscale-dev
+            libswresample-dev libswscale-dev libass-dev
 
       # Synthetic media for the FFmpeg backend tests (same as ci.yml: the
       # script prints KEY=VALUE lines for $GITHUB_ENV).
@@ -193,7 +193,7 @@ jobs:
 
           运行前需装运行时库（发行版包名大致如下）:
             SDL2 (libsdl2-2.0-0)、FFmpeg 运行时 (libavformat/libavcodec/
-            libavutil/libswresample/libswscale)、fmt
+            libavutil/libswresample/libswscale)、libass (libass9)、fmt
 
           验证: 终端运行 ./soar 不带参数，应打印 Usage
           （退出码 2 属预期）。

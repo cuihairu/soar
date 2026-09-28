@@ -1564,11 +1564,21 @@ TEST_CASE("ASS cues decode through the Dialogue parser") {
   backend->stop();
   backend->close();
 
+#ifdef SOAR_WITH_LIBASS
+  // Style-faithful build: an embedded ASS track feeds the libass renderer
+  // (backend->assRenderer()) and the plain-text queue stays empty on
+  // purpose — the same words decode but surface as glyphs, not text. The
+  // rendered pixels are asserted by the styled-fixture case below.
+  CHECK(backend->assRenderer() != nullptr);
+  CHECK(first.empty());
+  CHECK(second.empty());
+#else
   CHECK(first.find("Styled") != std::string::npos);
   CHECK(first.find("Line") != std::string::npos);
   CHECK(first.find('{') == std::string::npos);
   CHECK(first.find("\\N") == std::string::npos);
   CHECK(second.find("Second cue") != std::string::npos);
+#endif
 }
 
 TEST_CASE("mov_text cues decode as plain text rects") {
@@ -1649,9 +1659,90 @@ TEST_CASE("a cue with no visible text is never queued") {
   backend->stop();
   backend->close();
 
+#ifdef SOAR_WITH_LIBASS
+  // Style-faithful build: the whole ASS stream routes to the libass
+  // renderer — the empty markup cue included (libass tolerates it; the
+  // event just paints nothing). The plain-text queue stays empty either
+  // way, which is the contract this test guards.
+  CHECK(backend->assRenderer() != nullptr);
+  CHECK(pulled.empty());
+#else
   REQUIRE(pulled.size() == 1);
   CHECK(pulled[0].find("Visible") != std::string::npos);
   CHECK(pulled[0].find('{') == std::string::npos);
+#endif
+}
+
+TEST_CASE("embedded ASS renders style-faithfully through libass") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_STYLED_ASS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_STYLED_ASS_MEDIA not set; skipping styled ASS test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  auto* ass = backend->assRenderer();
+#ifndef SOAR_WITH_LIBASS
+  // No libass in this build: the documented null renderer, and the
+  // plain-text path keeps running (covered by the cases above).
+  CHECK(ass == nullptr);
+  MESSAGE("libass not compiled in; skipping styled ASS rendering");
+  return;
+#else
+  REQUIRE(ass != nullptr);
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // The first cue is visible from t=0 (it spans 0-2 s): poll until the
+  // decode thread has fed libass and the composite comes back non-empty.
+  soar::AssFrame f;
+  bool rendered = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline && !rendered) {
+    rendered = ass->renderAt(ffmpeg->position().count(), &f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(rendered);
+  CHECK(f.width == 160);
+  CHECK(f.height == 120);
+
+  // The script's only style is an opaque pure-red fill (&H000000FF in the
+  // &HAABBGGRR file convention) with outline and shadow off, and the
+  // canvas is straight-alpha RGBA — so every composited pixel must be
+  // exactly red with per-pixel coverage as its alpha. A channel swap or a
+  // premultiplied alpha leaks through here as a non-red channel.
+  std::size_t visible = 0;
+  bool all_red = true;
+  for (std::size_t i = 0; i + 3 < f.rgba.size(); i += 4) {
+    if (f.rgba[i + 3] == 0) continue;
+    ++visible;
+    if (f.rgba[i] != 255 || f.rgba[i + 1] != 0 || f.rgba[i + 2] != 0) {
+      all_red = false;
+    }
+  }
+  CHECK(visible > 50);
+  CHECK(all_red);
+
+  // Double-render suppression: a styled track never queues plain text.
+  soar::DecodedSubtitleFrame sf;
+  CHECK_FALSE(ffmpeg->tryGetSubtitleFrame(sf));
+
+  // Seek past the last cue (it ends at 4 s): the flush on seek drops the
+  // fed events, and the canvas must report the loss exactly once.
+  REQUIRE(backend->seek(std::chrono::milliseconds(4500)));
+  bool vanished = false;
+  const auto vanish_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < vanish_deadline && !vanished) {
+    vanished = !ass->renderAt(ffmpeg->position().count(), &f) && f.changed;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(vanished);
+  CHECK(f.rgba.empty());
+
+  backend->stop();
+  backend->close();
+#endif
 }
 
 TEST_CASE("a burst of adjacent cues overflows the subtitle FIFO in order") {
@@ -1755,6 +1846,59 @@ TEST_CASE("a sidecar file loads as a subtitle track and plays") {
   CHECK(frames[0].duration == 1000ms);
   CHECK(frames[1].pts == 1000ms);
   CHECK(frames[1].duration == 1000ms);
+}
+
+TEST_CASE("extraction corners: hard breaks, trailing junk, bracket wrapper") {
+  // The embedded-subtitle decode feeds ASS-format rects into the
+  // plain-text extraction. One cue per conversion corner: the lowercase
+  // hard break, a trailing backslash, trailing whitespace, and the
+  // bracket wrapper (twice: the payload-level strip eats one ']'). The
+  // rest: the uppercase hard break, a backslash before an ordinary
+  // letter (kept as-is), a Dialogue:-shaped payload (the 9-comma
+  // full-event form), a comma-ish line, brackets that pop away to
+  // nothing, mid-text brace groups (one closed, one left open), and a
+  // formatting-only cue the demuxer itself drops.
+  // libavcodec passes SRT text through verbatim, so the fixture's
+  // characters reach the extractor exactly as written — that lossiness
+  // is the documented plain-text contract, not a regression. What the
+  // demuxer drops or the extractor empties never surfaces as a frame,
+  // so the tail assertions are contentual rather than positional.
+  std::string media;
+  if (!envMedia("SOAR_TEST_JUNK_SRT_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_JUNK_SRT_MEDIA not set; skipping the extraction-corner test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, 2));
+
+  REQUIRE(backend->play());
+  // Thirteen cues decode; two never surface (the formatting-only cue the
+  // demuxer drops, and the all-brackets cue extraction empties), so
+  // eleven frames arrive.
+  const auto frames = pullSubtitleFrames(
+    static_cast<soar::FFmpegBackend*>(backend.get()), 11, std::chrono::seconds(30));
+  backend->stop();
+  backend->close();
+
+  // The first seven cues survive intact, in order; later cues may be
+  // dropped by the demuxer (formatting-only) or emptied by extraction.
+  REQUIRE(frames.size() >= 7);
+  CHECK(frames[0].text == "Hard break");            // \n -> space
+  CHECK(frames[1].text == "Trailing backslash");    // trailing '\' -> space, trimmed
+  CHECK(frames[2].text == "Padded");                // trailing space trimmed
+  CHECK(frames[3].text == "Double");                // ']' wrapper stripped twice over
+  CHECK(frames[4].text == "Upper Case");            // \N -> space, either case
+  CHECK(frames[5].text.find("Path") == 0);          // '\C' etc. keep the backslash
+  CHECK(frames[6].text.find("From SRT") != std::string::npos);  // full-event form
+  CHECK(contains(frames, "just,four,words"));
+  CHECK(contains(frames, "Ends in brackets"));      // trailing ']]' pops clean
+  // '{b}' strips out whole; doctest wants the || outside the CHECK.
+  const bool brace_group_gone = contains(frames, "See  here") ||
+                                contains(frames, "See here");
+  CHECK(brace_group_gone);
+  CHECK(contains(frames, "Unclosed"));
 }
 
 TEST_CASE("an external subtitle id sits past the container's stream range") {

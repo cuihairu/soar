@@ -11,11 +11,13 @@ option(SOAR_BUILD_TESTS "Build the unit tests" ON)
 option(SOAR_ENABLE_SDL2 "Enable SDL2 window/event loop in the app (if available)" ON)
 option(SOAR_ENABLE_FFMPEG "Enable FFmpeg backend (if available)" ON)
 option(SOAR_ENABLE_IMGUI "Enable the Dear ImGui player UI overlay (fetched at configure time)" ON)
+option(SOAR_ENABLE_LIBASS "Enable libass ASS/SSA subtitle rendering (if available)" ON)
 
 add_library(soar_core)
 add_library(soar::core ALIAS soar_core)
 
 target_sources(soar_core PRIVATE
+  src/core/ass_dialogue.cpp
   src/core/http_cache.cpp
   src/core/null_backend.cpp
   src/core/player.cpp
@@ -64,6 +66,40 @@ if(SOAR_ENABLE_FFMPEG)
     message(STATUS "FFmpeg backend enabled")
   else()
     message(STATUS "FFmpeg not found; building without FFmpeg backend")
+  endif()
+endif()
+
+# ASS subtitle rendering (docs/mvp.md §6, style-faithful playback).
+# Optional capability, same probe-and-degrade contract as FFmpeg above:
+# libass via system pkg-config (Linux CI/apt) or the vcpkg port
+# (mac/win); neither found (or the option is OFF) → SOAR_WITH_LIBASS
+# stays undefined and the wrapper compiles to its inert stub branch
+# while the plain-text subtitle path keeps running. The wrapper TU is
+# unconditionally part of the target — the FFmpegBackend references
+# AssRenderer regardless, so the symbols must exist in every
+# configuration. The library itself never enters the gcovr filter set;
+# only the wrapper carries coverage.
+target_sources(soar_core PRIVATE src/core/ass_renderer.cpp)
+if(SOAR_ENABLE_LIBASS)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(ASS IMPORTED_TARGET libass)
+  endif()
+  if(NOT ASS_FOUND)
+    find_package(unofficial-libass CONFIG QUIET)
+    if(TARGET unofficial::libass::libass)
+      set(ASS_FOUND TRUE)
+      set(ASS_LINK unofficial::libass::libass)
+    endif()
+  else()
+    set(ASS_LINK PkgConfig::ASS)
+  endif()
+  if(ASS_FOUND)
+    target_compile_definitions(soar_core PUBLIC SOAR_WITH_LIBASS=1)
+    target_link_libraries(soar_core PUBLIC ${ASS_LINK})
+    message(STATUS "libass subtitle rendering enabled")
+  else()
+    message(STATUS "libass not found; ASS scripts render as plain text. (Install via apt: libass-dev; via vcpkg: libass)")
   endif()
 endif()
 

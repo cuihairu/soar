@@ -1,0 +1,19 @@
+NotoMono-Regular.ttf
+--------------------
+
+Source: Google Noto Fonts (Monospace family), downloaded from the Debian
+package fonts-noto-core (/usr/share/fonts/truetype/noto/).
+
+Copyright 2007 Google Inc. All Rights Reserved.
+
+Licensed under the SIL Open Font License, Version 1.1 (OFL-1.1):
+https://openfontlicense.org — the license text is at
+https://github.com/notofonts/notofonts.github.io/blob/main/fonts/LICENSE.
+
+Why this file is checked in: the ASS renderer tests (test_ass_renderer.cpp)
+need glyph rendering to be deterministic on every machine — libass is
+configured with ASS_FONTPROVIDER_NONE (no fontconfig, no system font
+enumeration) and resolves its glyphs from this exact font, so CI runners
+without any fonts installed render the same pixels as a desktop.
+
+The font is a test fixture only; nothing ships it to end users.

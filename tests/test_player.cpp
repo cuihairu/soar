@@ -201,6 +201,8 @@ TEST_CASE("A-B loop arms, queries and clears through the facade") {
   std::chrono::milliseconds a{0}, b{0};
   CHECK_FALSE(fx.player.setLoopAB(2000ms, 1000ms));
   CHECK_FALSE(fx.player.setLoopAB(-1ms, 1000ms));
+  // The 10-minute fixture media bounds B: one tick past it must reject too.
+  CHECK_FALSE(fx.player.setLoopAB(0ms, 601000ms));
   CHECK_FALSE(fx.player.loopAB(a, b));
   CHECK_FALSE(fx.player.lastError().empty());
 
@@ -390,6 +392,16 @@ TEST_CASE("backend without a sink drops events safely") {
   CHECK(backend->stop());
   backend->close();
   CHECK(backend->state() == soar::PlaybackState::Stopped);
+}
+
+TEST_CASE("null backend exposes no ASS renderer") {
+  // The IBackend default: backends without style-faithful ASS support
+  // report no renderer, and the UI hides the overlay path entirely.
+  auto backend = soar::makeNullBackend();
+  CHECK(backend->assRenderer() == nullptr);
+  // The Player facade forwards through whatever backend it holds.
+  soar::Player player{soar::makeNullBackend()};
+  CHECK(player.assRenderer() == nullptr);
 }
 
 TEST_CASE("seeking a non-seekable source fails") {

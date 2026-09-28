@@ -857,6 +857,33 @@ if mode == "audiodrive":
             sys.exit(0)
     sys.exit(4)
 
+if mode == "assdrive":
+    # Real-backend window run over the styled ASS fixture, rendered through
+    # the libass overlay. No HUD driving: the point is the video-present
+    # path, so the tour is just a fullscreen round-trip — the destination
+    # rectangle changes, the overlay texture is recreated for the new
+    # geometry, and Escape back restores it — followed by the standard
+    # escape storm. The fixture's two cues span its whole 4s, so overlay
+    # work happens in both window sizes.
+    time.sleep(2.0)
+    focus()
+    key(d.keysym_to_keycode(0x66))  # f: fullscreen (recreate at the new size)
+    time.sleep(1.6)
+    key(d.keysym_to_keycode(0x66))  # f: back to windowed (recreate again)
+    time.sleep(0.8)
+    ek = d.keysym_to_keycode(0xFF1B)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        try:
+            focus()
+            key(ek)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
 if mode == "stall":
     # The window's buffering indicator is the one HUD element driven by a
     # backend event rather than by input: the UI polls the atomic that
@@ -2460,6 +2487,105 @@ TEST_CASE("windowed FFmpeg run cycles a dual-audio fixture with no subtitles") {
   // and leave the selection where it was.
   CHECK(run.output.find("event: error=") == std::string::npos);
 #endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run paints embedded ASS through the libass overlay") {
+  // The overlay block in the video-present path (AssRenderer frame size
+  // handshake, renderAt per frame, overlay texture create/update/blend)
+  // only runs when a real window presents frames AND the media's ASS
+  // track was claimed by libass — a combination no headless suite
+  // reaches. One quiet window run over the styled fixture is the smoke:
+  // its two cues span the whole 4s media with no gap, so every presented
+  // frame carries overlay work. The injector's fullscreen round-trip
+  // changes the destination rectangle, which recreates the overlay
+  // texture at the new geometry; the end-of-media vanish exercises the
+  // overlay teardown, and an escape storm exits the run — the point is
+  // the render loop, not input handling.
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the ASS overlay window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the ASS overlay window test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_STYLED_ASS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_STYLED_ASS_MEDIA not set; skipping the ASS overlay window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the ASS overlay window test");
+    return;
+  }
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    // A screen larger than the window: the fullscreen round-trip must
+    // change the destination rectangle, or the overlay texture would
+    // never see a size change to recreate at.
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the ASS overlay window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "assdrive", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const auto run = runCli({"--backend=ffmpeg", media});
+
+  std::printf("x11 ASS overlay window test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    return;
+  }
+  CHECK(run.exit_code == 0);
+  // The backend opened and reached playing: the decode thread fed the
+  // styled track and the present loop had live frames to blend over.
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  // No failed open, no decoder error: libass claiming the track must not
+  // disturb the plain decode path.
+  CHECK(run.output.find("event: error=") == std::string::npos);
 #endif
 #endif
 }

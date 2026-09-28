@@ -39,6 +39,10 @@ public:
   bool disableSubtitles();
   bool loadExternalSubtitle(const std::string& path, TrackId& out_id);
 
+  // Style-faithful ASS rendering (see IBackend for the contract): null
+  // when no backend is attached or the build has no libass.
+  AssRenderer* assRenderer();
+
   bool setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b);
   bool clearLoopAB();
   bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const;

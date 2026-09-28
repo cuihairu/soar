@@ -4,6 +4,7 @@
   "dependencies": [
     "doctest",
     "fmt",
+    "libass",
     "sdl2"
   ]
 }

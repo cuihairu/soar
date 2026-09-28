@@ -92,6 +92,12 @@ public:
   bool disableSubtitles() override;
   bool loadExternalSubtitle(const std::string& path, TrackId& out_id) override;
 
+  // Style-faithful ASS rendering (docs/mvp.md §6): non-null when the build
+  // links libass; the embedded ASS/SSA track selected at open feeds it and
+  // the UI renders it at frame-present time (the plain-text overlay stays
+  // authoritative whenever this is null).
+  AssRenderer* assRenderer() override;
+
   bool setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b) override;
   bool clearLoopAB() override;
   bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const override;
@@ -277,6 +283,14 @@ private:
   AVCodecContext* video_decoder_{nullptr};
   AVCodecContext* audio_decoder_{nullptr};
   AVCodecContext* subtitle_decoder_{nullptr};
+
+  // Embedded ASS/SSA style renderer (docs/mvp.md §6). Always constructed:
+  // without libass it is the inert stub (available() false). Feeding is
+  // live only while ass_feed_active_ — set up in setupDecoders for an
+  // ASS/SSA subtitle stream, cleared in cleanupDecoders; both run off the
+  // decode thread, so the flag needs no lock (AssRenderer itself locks).
+  AssRenderer ass_renderer_;
+  bool ass_feed_active_{false};
 
   // Disk-cache AVIO state; non-null only while a cached http:// source is
   // open (openContext builds it, closeContext tears it down).

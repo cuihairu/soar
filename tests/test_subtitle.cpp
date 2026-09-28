@@ -381,6 +381,21 @@ TEST_CASE("parse_timestamp_forms") {
     CHECK(cues[0].begin == 1000ms);
     CHECK(cues[0].end == 2000ms);
   }
+  SUBCASE("non-numeric hour or minute field rejects the line") {
+    CHECK(parseSubtitleText("xx:00:01,000 --> 00:00:02,000\nbad hours\n").empty());
+    CHECK(parseSubtitleText("00:xx:01,000 --> 00:00:02,000\nbad minutes\n").empty());
+  }
+  SUBCASE("empty hour or minute field rejects the line") {
+    // A doubled or leading colon leaves the hour/minute field blank; the
+    // field parser must refuse it rather than silently reading zero.
+    CHECK(parseSubtitleText(":00:01,000 --> 00:00:02,000\nno hours\n").empty());
+    CHECK(parseSubtitleText("00::01,000 --> 00:00:02,000\nno minutes\n").empty());
+  }
+  SUBCASE("an oversized minute field rejects the line") {
+    // parseUnsigned bails before its accumulator can overflow; the guard
+    // lives on the minute field of a full timestamp too.
+    CHECK(parseSubtitleText("00:99999999:01,000 --> 00:00:02,000\nwide minutes\n").empty());
+  }
   SUBCASE("hours accumulate") {
     const std::vector<SubtitleCue> cues =
         parseSubtitleText("01:02:03,004 --> 01:02:04,005\ndeep\n");

@@ -57,6 +57,25 @@ target_link_libraries(soar_subtitle_tests PRIVATE soar::core doctest::doctest)
 
 add_test(NAME soar_subtitle_tests COMMAND soar_subtitle_tests)
 
+# ASS renderer unit tests (docs/mvp.md §6, style-faithful ASS/SSA): the
+# libass wrapper, its straight-alpha compositor, and the streaming feed
+# for embedded tracks. Pure logic over in-memory scripts + the checked-in
+# fixture font — no display, no media fixture, no network. Builds as an
+# empty shell without SOAR_WITH_LIBASS so the test always exists.
+add_executable(soar_ass_tests
+  test_ass_renderer.cpp
+)
+
+target_compile_features(soar_ass_tests PRIVATE cxx_std_17)
+target_link_libraries(soar_ass_tests PRIVATE soar::core doctest::doctest)
+# libass runs with ASS_FONTPROVIDER_NONE and resolves glyphs from this
+# file (or bytes registered via addFont), so rendering is deterministic
+# on any machine. See tests/fixtures/FONT-LICENSE.txt.
+target_compile_definitions(soar_ass_tests PRIVATE
+  SOAR_TEST_FONT_FILE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/NotoMono-Regular.ttf")
+
+add_test(NAME soar_ass_tests COMMAND soar_ass_tests)
+
 # Pure UI logic unit tests (docs/ui-design.md §5.3): auto-hide state
 # machine, recent store, toast, time formatting. No display needed.
 add_executable(soar_ui_tests
@@ -105,7 +124,7 @@ if(TARGET soar)
 # job until its two-digit-minute timeout. CTest kills the test at the
 # 10-minute mark instead, so one wedged case costs minutes, not the job.
 set_tests_properties(soar_core_tests soar_backend_tests soar_ui_tests
-  soar_subtitle_tests PROPERTIES TIMEOUT 600)
+  soar_subtitle_tests soar_ass_tests PROPERTIES TIMEOUT 600)
 # soar_cli_tests needs its own, bigger budget. Under coverage
 # instrumentation (--coverage -O0 -g) the scripted window cases crawl: the
 # subtitle-settings tour alone takes ~10 min on a quiet CI runner (noted in

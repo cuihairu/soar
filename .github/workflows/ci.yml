@@ -32,7 +32,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev doctest-dev ffmpeg \
             libavformat-dev libavcodec-dev libavutil-dev \
-            libswresample-dev libswscale-dev
+            libswresample-dev libswscale-dev libass-dev
 
       # Synthetic media for the FFmpeg backend tests (fast lavfi
       # synthesis: dual audio, audio-only, subtitle+attachment, subtitle
@@ -131,7 +131,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev doctest-dev ffmpeg \
             libavformat-dev libavcodec-dev libavutil-dev \
-            libswresample-dev libswscale-dev
+            libswresample-dev libswscale-dev libass-dev
 
       - name: Generate test media
         run: |
@@ -177,7 +177,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev doctest-dev ffmpeg \
             libavformat-dev libavcodec-dev libavutil-dev \
-            libswresample-dev libswscale-dev \
+            libswresample-dev libswscale-dev libass-dev \
             xvfb python3-xlib
 
       - name: Generate test media
@@ -214,7 +214,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev doctest-dev ffmpeg \
             libavformat-dev libavcodec-dev libavutil-dev \
-            libswresample-dev libswscale-dev
+            libswresample-dev libswscale-dev libass-dev
 
       - name: Generate test media
         run: |
@@ -255,7 +255,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build gcovr libsdl2-dev libfmt-dev doctest-dev ffmpeg \
             libavformat-dev libavcodec-dev libavutil-dev \
-            libswresample-dev libswscale-dev \
+            libswresample-dev libswscale-dev libass-dev \
             xvfb python3-xlib
 
       - name: Generate test media

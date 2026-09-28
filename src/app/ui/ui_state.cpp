@@ -87,7 +87,6 @@ void RecentStore::load() {
     std::size_t start = line.find_first_not_of(' ');
     if (start == std::string::npos) continue;
     line = line.substr(start);
-    if (line.empty()) continue;
     // Deduplicate while loading: a hand-edited file may repeat entries and
     // the UI must not show one source twice.
     if (std::find(entries_.begin(), entries_.end(), line) == entries_.end()) {
@@ -247,12 +246,11 @@ std::size_t PlaylistStore::advance() {
     played_.assign(entries_.size(), false);
     // Loop::All opens the next round: the finished entry is un-marked
     // again, but it stays out of this pick so the transition into a new
-    // round is not a back-to-back repeat. A single-entry list falls
-    // through to the replay below.
+    // round is not a back-to-back repeat. A single-entry list leaves the
+    // finished entry as the only candidate, so the pick replays it.
     for (std::size_t i = 0; i < entries_.size(); ++i) {
       if (i != current_) candidates.push_back(i);
     }
-    if (candidates.empty()) return current_;
   }
   return candidates[static_cast<std::size_t>(draw() % candidates.size())];
 }

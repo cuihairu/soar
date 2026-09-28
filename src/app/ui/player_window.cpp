@@ -107,9 +107,16 @@ SDL_Rect letterboxRect(SDL_Renderer* renderer, SDL_Texture* texture) {
 }
 
 // Brings `texture` in sync with `frame` (recreating on resolution change)
-// and blits it letterboxed. Returns false when no frame was ready.
+// and blits it letterboxed. When `ass` is non-null and libass is compiled
+// in, its canvas is rendered at `ass_pts_ms` — sized to the letterbox rect
+// (the idempotent setFrameSize makes the per-frame call cheap) — and
+// blended over the video: the style-faithful ASS path (docs/mvp.md §6).
+// The overlay texture lives in *ass_texture (recreated on size change,
+// re-uploaded only when the canvas reports changed). Returns false when
+// no frame was ready.
 bool presentVideoFrame(SDL_Renderer* renderer, SDL_Texture** texture,
-                       const void* frame_ptr) {
+                       const void* frame_ptr, SDL_Texture** ass_texture,
+                       soar::AssRenderer* ass, std::int64_t ass_pts_ms) {
   if (frame_ptr == nullptr) return false;
 #ifdef SOAR_WITH_FFMPEG
   const auto& frame =
@@ -136,10 +143,46 @@ bool presentVideoFrame(SDL_Renderer* renderer, SDL_Texture** texture,
   }
   const SDL_Rect dst = letterboxRect(renderer, *texture);
   SDL_RenderCopy(renderer, *texture, nullptr, &dst);
+
+  if (ass != nullptr && ass->available() && ass_texture != nullptr) {
+    ass->setFrameSize(dst.w, dst.h);
+    soar::AssFrame f;
+    if (ass->renderAt(ass_pts_ms, &f) && !f.rgba.empty()) {
+      int aw = 0;
+      int ah = 0;
+      if (!*ass_texture ||
+          SDL_QueryTexture(*ass_texture, nullptr, nullptr, &aw, &ah) != 0 ||
+          aw != f.width || ah != f.height) {
+        if (*ass_texture) SDL_DestroyTexture(*ass_texture);
+        // The canvas is RGBA byte order: R in the first byte, which on a
+        // little-endian renderer is SDL's ABGR8888 packing.
+        *ass_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
+                                         SDL_TEXTUREACCESS_STREAMING,
+                                         f.width, f.height);
+        if (*ass_texture) {
+          SDL_SetTextureBlendMode(*ass_texture, SDL_BLENDMODE_BLEND);
+        }
+      }
+      if (*ass_texture && f.changed) {
+        SDL_UpdateTexture(*ass_texture, nullptr, f.rgba.data(),
+                          static_cast<int>(f.width) * 4);
+      }
+      if (*ass_texture) {
+        // changed=false still copies: the texture holds the previous
+        // render's pixels, which are the correct overlay.
+        SDL_RenderCopy(renderer, *ass_texture, nullptr, &dst);
+      }
+    }
+    // Nothing visible at this pts: nothing is copied and the video shows
+    // through — the overlay texture is simply left stale.
+  }
   return true;
 #else
   (void)renderer;
   (void)texture;
+  (void)ass_texture;
+  (void)ass;
+  (void)ass_pts_ms;
   return false;
 #endif
 }
@@ -1799,6 +1842,7 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
   }
 
   SDL_Texture* texture = nullptr;
+  SDL_Texture* ass_texture = nullptr;  // ASS overlay (docs/mvp.md §6)
   bool video_active = false;
 #ifdef SOAR_WITH_FFMPEG
   soar::DecodedVideoFrame video_frame{};
@@ -1846,7 +1890,10 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
       SDL_RenderClear(renderer);
 #ifdef SOAR_WITH_FFMPEG
       presentVideoFrame(renderer, &texture,
-                        cfg.ffmpeg && video_active ? &video_frame : nullptr);
+                        cfg.ffmpeg && video_active ? &video_frame : nullptr,
+                        &ass_texture,
+                        cfg.ffmpeg ? cfg.ffmpeg->assRenderer() : nullptr,
+                        cfg.ffmpeg ? cfg.ffmpeg->position().count() : 0);
 #endif
       ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
       SDL_RenderPresent(renderer);
@@ -1874,7 +1921,10 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
     SDL_RenderClear(renderer);
 #ifdef SOAR_WITH_FFMPEG
     if (presentVideoFrame(renderer, &texture,
-                          cfg.ffmpeg && video_active ? &video_frame : nullptr)) {
+                          cfg.ffmpeg && video_active ? &video_frame : nullptr,
+                          &ass_texture,
+                          cfg.ffmpeg ? cfg.ffmpeg->assRenderer() : nullptr,
+                          cfg.ffmpeg ? cfg.ffmpeg->position().count() : 0)) {
       SDL_RenderPresent(renderer);
     }
 #endif
@@ -1883,6 +1933,7 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
 #endif  // SOAR_WITH_IMGUI
 
   if (texture) SDL_DestroyTexture(texture);
+  if (ass_texture) SDL_DestroyTexture(ass_texture);
   SDL_DestroyRenderer(renderer);
   SDL_DestroyWindow(window);
   SDL_Quit();
