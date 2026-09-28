@@ -406,6 +406,234 @@ print("ready", flush=True)
 srv.serve_forever()
 )PY";
 
+// An OpenAI-compatible chat-completions fixture for the SubtitleTranslator
+// tests. Every POST is recorded to <root>/requests.log as one tab-separated
+// line — path, Content-Type, Authorization, body — so a test can assert the
+// exact request shape the client produced; the body is a single line (the
+// client's JSON writer escapes newlines), which is what makes the log
+// line-oriented.
+// MODE (argv[3]):
+//   "ok" (default) answers the documented shape: it strips the leading
+//       "N." numbering from each user-message line and replies with
+//       numbered "[tr] <text>" lines — a deterministic round trip the test
+//       can predict. The response is JSON with ensure_ascii=False (raw
+//       UTF-8 in "content").
+//   "asciiesc" answers the same content but serialized with
+//       ensure_ascii=True, so non-ASCII comes back as \uXXXX escapes
+//       (including surrogate pairs and a lone surrogate) — the client's
+//       escape decoder must reconstruct the same text.
+//   "status500" / "badjson" (an HTML body) / "nocontent" (choices[0] has
+//       a message but no content) / "emptychoices" (choices: []) /
+//       "shortlines" (the last numbered line is dropped) / "badnum" (the
+//       lines lose their numbering) / "badsep" (a number with no
+//       separator) / "onlydigits" (a bare number) / "status100" (an
+//       informational status, which is not a final answer) exercise the
+//       client's answer checks.
+//   "sepvar" answers with the other documented separators — "1)" and
+//       "2:" — a successful round trip the test can predict.
+//   "shortbody" promises 100 bytes, delivers 3 and hangs up (the mid-body
+//       disconnect); "stall" accepts and sleeps 40s before answering (the
+//       socket timeout must end the wait).
+//   Hand-built-body modes (json.dumps would re-escape the backslashes
+//       these exist to put on the wire): "hexmix" (tab after the numbering
+//       separator, uppercase hex, a 3-byte code point), "escmix" (the full
+//       \/ \b \f \r \t simple-escape vocabulary), "neglen" (a negative
+//       Content-Length: read to EOF instead), "contentnum" (content is a
+//       JSON number, not a string), "badhex" (\u then non-hex),
+//       "badescape" (\q — an undefined escape), "shortu" (\u truncated by
+//       the end of the body), "trailbs" (a lone trailing backslash),
+//       "unterm" (a string literal that never closes), "garbage" (not
+//       HTTP at all — no status line).
+// APIKEY (argv[4], may be empty): when set, requests whose Authorization
+// header is not exactly "Bearer <key>" are answered 401 — after being
+// recorded, so a test can see what leaked out.
+constexpr const char* kChatServerScript = R"PY(
+import json, os, re, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ROOT = os.path.abspath(sys.argv[1])
+MODE = sys.argv[3]
+APIKEY = sys.argv[4]
+NUM = re.compile(r"^\s*\d+[.)]:?\s*")
+
+class ChatHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *args):
+        pass
+    def deny(self, code):
+        self.send_response(code)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(n).decode("utf-8", "replace")
+        with open(os.path.join(ROOT, "requests.log"), "a", encoding="utf-8") as f:
+            f.write("\t".join([self.path, self.headers.get("Content-Type", ""),
+                               self.headers.get("Authorization", ""), body]) + "\n")
+        if APIKEY and self.headers.get("Authorization") != "Bearer " + APIKEY:
+            self.deny(401)
+            return
+        if MODE == "stall":
+            time.sleep(40)
+        if MODE == "status500":
+            self.deny(500)
+            return
+        if MODE == "status100":
+            # An informational status is not a final answer: only 2xx is.
+            self.send_response(100)
+            self.end_headers()
+            return
+        if MODE == "biglen":
+            # Advertise a 9 MiB reply, send nothing: the client's cap check
+            # must fire before the first body byte.
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(9 * 1024 * 1024))
+            self.end_headers()
+            return
+        if MODE == "garbage":
+            # Not HTTP at all: the first token carries no space, so there
+            # is no status line to parse.
+            self.wfile.write(b"NOT-HTTP-AT-ALL\r\n\r\n")
+            self.close_connection = True
+            return
+        # Hand-built reply bodies: json.dumps would re-escape the
+        # backslashes, and these modes exist precisely to put single-
+        # backslash escape sequences on the wire for the client's JSON
+        # string reader to chew on.
+        raw = None
+        if MODE == "hexmix":
+            # Tab directly after the numbering separator, uppercase hex,
+            # and a 3-byte code point — the reply parser and the escape
+            # decoder must take all three.
+            raw = b'{"choices":[{"message":{"content":"1.\\t\\u0041\\u00E9\\u4F60"}}]}'
+        elif MODE == "escmix":
+            # The full simple-escape vocabulary: \/ \b \f \r \t.
+            raw = b'{"choices":[{"message":{"content":"1. a\\/b\\bc\\fc\\rd\\te"}}]}'
+        elif MODE == "neglen":
+            # A negative Content-Length is not a length: the client must
+            # fall back to reading to EOF (and succeed).
+            raw = b'{"choices":[{"message":{"content":"1. [tr] Solo"}}]}'
+        elif MODE == "contentnum":
+            # "content" that is not a JSON string at all.
+            raw = b'{"choices":[{"message":{"content":123}}]}'
+        elif MODE == "badhex":
+            # \u followed by non-hex digits.
+            raw = b'{"choices":[{"message":{"content":"1. x\\uZZZZ"}}]}'
+        elif MODE == "badescape":
+            # An escape the JSON vocabulary does not define.
+            raw = b'{"choices":[{"message":{"content":"1. x\\qy"}}]}'
+        elif MODE == "shortu":
+            # The \u escape truncated by the end of the body: hex4 runs
+            # off the string.
+            raw = b'{"choices":[{"message":{"content":"1. x\\u00'
+        elif MODE == "trailbs":
+            # A lone trailing backslash where an escape should be.
+            raw = b'{"choices":[{"message":{"content":"1. x\\'
+        elif MODE == "unterm":
+            # A string literal that never closes.
+            raw = b'{"choices":[{"message":{"content":"1. x'
+        if raw is not None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            if MODE == "neglen":
+                self.send_header("Content-Length", "-1")
+                self.send_header("Connection", "close")
+                self.close_connection = True
+            else:
+                self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        if MODE == "nolength":
+            # A 200 with no Content-Length and Connection: close — the
+            # read-until-EOF body path.
+            data = json.dumps({"choices": [{"message": {"role": "assistant",
+                                                        "content": "1. [tr] Solo"}}]},
+                              ensure_ascii=True).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Connection", "close")
+            self.close_connection = True
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if MODE == "shortbody":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b"{\"a")
+            return
+        if MODE == "badjson":
+            data = b"<html>oops</html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        try:
+            req = json.loads(body)
+            text = req["messages"][-1]["content"]
+            model = req.get("model", "")
+        except Exception:
+            self.deny(400)
+            return
+        lines = [NUM.sub("", l.strip()) for l in text.split("\n")]
+        lines = [l for l in lines if l]
+        if MODE == "shortlines" and lines:
+            lines = lines[:-1]
+        if MODE == "badnum":
+            # Both ways a numbered reply can lose its shape: a line with
+            # no number at all, and a number with no separator.
+            content = "not numbered at all\n1x also not a separator"
+        elif MODE == "badsep":
+            # A number with no separator after it: the reply looks
+            # numbered until the character where "." / ")" / ":" belongs.
+            content = "1x also not a separator"
+        elif MODE == "onlydigits":
+            # Leading whitespace, then a bare number with nothing after
+            # it: digits where a separator should be.
+            content = "  12"
+        elif MODE == "sepvar":
+            # The documented reply accepts three separators: "12.",
+            # "12)" and "12:".
+            content = "1) [tr] Alpha\n2: [tr] Beta"
+        elif MODE == "lonesur":
+            # A canned single-line reply carrying a high surrogate followed
+            # by a non-surrogate \uXXXX escape, and a lone low surrogate:
+            # the client must decode both as U+FFFD without producing
+            # invalid UTF-8.
+            content = "1. [tr] A\ud800éB\udfffC"
+        else:
+            content = "\n".join("%d. [tr] %s" % (i + 1, l) for i, l in enumerate(lines))
+        if MODE == "nocontent":
+            payload = {"choices": [{"index": 0, "finish_reason": "stop",
+                                    "message": {"role": "assistant"}}]}
+        elif MODE == "emptychoices":
+            payload = {"choices": []}
+        else:
+            payload = {"id": "chatcmpl-test", "object": "chat.completion",
+                       "model": model,
+                       "choices": [{"index": 0, "finish_reason": "stop",
+                                    "message": {"role": "assistant",
+                                                "content": content}}],
+                       "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                                 "total_tokens": 2}}
+        ascii_safe = MODE in ("asciiesc", "lonesur")
+        data = json.dumps(payload, ensure_ascii=ascii_safe).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+srv = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), ChatHandler)
+print("ready", flush=True)
+srv.serve_forever()
+)PY";
+
 // Runs `argv` via fork/execvp with the child's stdout plumbed into a pipe
 // and waits for its "ready" line (EOF = the server never came up, e.g. the
 // port was taken). Returns the child pid, or -1 on any failure; the caller
@@ -563,6 +791,31 @@ inline RangeServer startSubtitleServer(const std::string& root_dir,
     const_cast<char*>("python3"),
     const_cast<char*>("-c"),
     const_cast<char*>(kSubtitleServerScript),
+    const_cast<char*>(root_dir.c_str()),
+    const_cast<char*>(port_str.c_str()),
+    const_cast<char*>(mode.c_str()),
+    const_cast<char*>(api_key.c_str()),
+    nullptr,
+  };
+  srv.pid = startPipedServer(argv);
+  srv.base_url = "http://127.0.0.1:" + std::to_string(srv.port);
+  return srv;
+}
+
+// Forks the chat-completions fixture server (kChatServerScript) in `mode`
+// with `api_key` as the expected Bearer credential ("" = no key check).
+// Port base 27000+: clear of the 24000s the catalog server uses — the two
+// may live in the same test process. Same RAII contract as RangeServer.
+inline RangeServer startChatServer(const std::string& root_dir,
+                                   const std::string& mode,
+                                   const std::string& api_key) {
+  RangeServer srv;
+  srv.port = 27000 + (::getpid() % 200);
+  std::string port_str = std::to_string(srv.port);
+  char* const argv[] = {
+    const_cast<char*>("python3"),
+    const_cast<char*>("-c"),
+    const_cast<char*>(kChatServerScript),
     const_cast<char*>(root_dir.c_str()),
     const_cast<char*>(port_str.c_str()),
     const_cast<char*>(mode.c_str()),

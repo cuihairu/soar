@@ -44,11 +44,14 @@ using soar::storeExternalSubtitle;
 using soar::SubtitleCandidate;
 using soar::SubtitleCue;
 using soar::SubtitleFormat;
+using soar::SubtitleTranslateConfig;
+using soar::SubtitleTranslator;
 
 #ifndef _WIN32
 // POSIX-only fixtures: these symbols live inside the shared header's
 // #ifndef _WIN32 block, so the using-declarations must be gated too.
 using test_servers::RangeServer;
+using test_servers::startChatServer;
 using test_servers::startRawServer;
 using test_servers::startSubtitleServer;
 #endif
@@ -1578,6 +1581,754 @@ TEST_CASE("unwritable_store_targets_fail_cleanly") {
     cand.title = std::string(300, 'a') + ".srt";
     CHECK(storeExternalSubtitle(tmp.path, cand, kText).empty());
   }
+}
+
+// ---------------------------------------------------------------------------
+// SubtitleTranslator (docs/mvp.md §6 字幕文本翻译): the OpenAI-compatible
+// batch path, driven end-to-end against the local chat fixture server
+// (startChatServer, port base 27000). Every failure case asserts a reason
+// and an untouched output — the all-or-nothing contract.
+// ---------------------------------------------------------------------------
+
+#ifndef _WIN32
+// One recorded request from the fixture server's requests.log: path,
+// Content-Type, Authorization, body (the client's JSON is a single line,
+// which is what makes the log line-oriented).
+struct ChatRequest {
+  std::string path;
+  std::string content_type;
+  std::string authorization;
+  std::string body;
+};
+
+std::vector<ChatRequest> readChatRequests(const TempDir& root) {
+  std::vector<ChatRequest> out;
+  std::ifstream in(root.file("requests.log"), std::ios::binary);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty()) continue;
+    const size_t p1 = line.find('\t');
+    const size_t p2 = line.find('\t', p1 + 1);
+    const size_t p3 = line.find('\t', p2 + 1);
+    if (p1 == std::string::npos || p2 == std::string::npos ||
+        p3 == std::string::npos) {
+      continue;
+    }
+    ChatRequest r;
+    r.path = line.substr(0, p1);
+    r.content_type = line.substr(p1 + 1, p2 - p1 - 1);
+    r.authorization = line.substr(p2 + 1, p3 - p2 - 1);
+    r.body = line.substr(p3 + 1);
+    out.push_back(std::move(r));
+  }
+  return out;
+}
+#endif  // !_WIN32
+
+TEST_CASE("translate_request_shape_and_srt_round_trip") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "ok", "sekret-key");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.api_key = "sekret-key";
+  cfg.model = "test-model";
+  cfg.timeout = 5000ms;
+  tr.configure(cfg);
+
+  const std::string kIn =
+      "1\n00:00:01,000 --> 00:00:02,000\nHello there.\n\n"
+      "2\n00:00:03,500 --> 00:00:04,250\nSecond cue line\n\n";
+  std::string out, err;
+  REQUIRE(tr.translate(kIn, "Japanese", &out, &err));
+  CHECK(err.empty());
+
+  // The request: an OpenAI chat-completions POST with the Bearer key, the
+  // model, a system message naming the language, and the cues as numbered
+  // lines (a literal backslash-n between them — the JSON string escape).
+  const std::vector<ChatRequest> reqs = readChatRequests(root);
+  REQUIRE(reqs.size() == 1);
+  CHECK(reqs[0].path == "/v1/chat/completions");
+  CHECK(reqs[0].content_type == "application/json");
+  CHECK(reqs[0].authorization == "Bearer sekret-key");
+  CHECK(reqs[0].body.find("\"model\":\"test-model\"") != std::string::npos);
+  CHECK(reqs[0].body.find("\"temperature\":0") != std::string::npos);
+  CHECK(reqs[0].body.find("\"role\":\"system\"") != std::string::npos);
+  CHECK(reqs[0].body.find("into Japanese") != std::string::npos);
+  CHECK(reqs[0].body.find("1. Hello there.") != std::string::npos);
+  CHECK(reqs[0].body.find("\\n2. Second cue line") != std::string::npos);
+
+  // The reply maps back one line per cue: same count, same timings, same
+  // SubRip shape (detectable and parseable — i.e. loadable like any
+  // sidecar).
+  CHECK(detectSubtitleFormat(out) == SubtitleFormat::SubRip);
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+  REQUIRE(cues.size() == 2);
+  CHECK(cues[0].text == "[tr] Hello there.");
+  CHECK(cues[1].text == "[tr] Second cue line");
+  CHECK(cues[0].begin == 1000ms);
+  CHECK(cues[0].end == 2000ms);
+  CHECK(cues[1].begin == 3500ms);
+  CHECK(cues[1].end == 4250ms);
+  CHECK(out.find("00:00:01,000 --> 00:00:02,000") != std::string::npos);
+  CHECK(out.find("1\n") == 0);  // SubRip numbering follows the file position
+
+  SUBCASE("the translation stores and loads like any sidecar") {
+    SubtitleCandidate cand;
+    cand.path = "unit.srt";
+    cand.title = "movie.zh.srt";
+    cand.format = SubtitleFormat::SubRip;
+    const std::string stored = storeExternalSubtitle(root.path, cand, out);
+    REQUIRE(!stored.empty());
+    std::string round;
+    REQUIRE(readSubtitleFile(stored, round));
+    const std::vector<SubtitleCue> rc = parseSubtitleText(round, SubtitleFormat::SubRip);
+    REQUIRE(rc.size() == 2);
+    CHECK(rc[1].text == "[tr] Second cue line");
+  }
+#endif
+}
+
+TEST_CASE("translate_vtt_round_trip_keeps_the_format") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "ok", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  tr.configure(cfg);
+
+  const std::string kIn =
+      "WEBVTT\n\n00:01.000 --> 00:02.000\nFirst\n\n"
+      "00:03.000 --> 00:04.000\nSecond\n\n";
+  std::string out, err;
+  REQUIRE(tr.translate(kIn, "German", &out, &err));
+  // No key configured: no Authorization header must have traveled.
+  const std::vector<ChatRequest> reqs = readChatRequests(root);
+  REQUIRE(reqs.size() == 1);
+  CHECK(reqs[0].authorization.empty());
+
+  CHECK(detectSubtitleFormat(out) == SubtitleFormat::WebVtt);
+  CHECK(out.rfind("WEBVTT\n", 0) == 0);
+  CHECK(out.find("00:00:01.000 --> 00:00:02.000") != std::string::npos);
+  CHECK(out.find(',') == std::string::npos);  // no SubRip commas in a VTT
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::WebVtt);
+  REQUIRE(cues.size() == 2);
+  CHECK(cues[0].text == "[tr] First");
+  CHECK(cues[1].text == "[tr] Second");
+#endif
+}
+
+TEST_CASE("translate_batches_cues_and_renumbers_each_request") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "ok", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  cfg.batch_cues = 2;  // 3 cues -> two requests, the second renumbered
+  tr.configure(cfg);
+
+  const std::string kIn =
+      "1\n00:00:01,000 --> 00:00:02,000\nFirst cue\n\n"
+      "2\n00:00:02,000 --> 00:00:03,000\nSecond cue\n\n"
+      "3\n00:00:03,000 --> 00:00:04,000\nThird cue\n\n";
+  std::string out, err;
+  REQUIRE(tr.translate(kIn, "French", &out, &err));
+
+  const std::vector<ChatRequest> reqs = readChatRequests(root);
+  REQUIRE(reqs.size() == 2);
+  CHECK(reqs[0].body.find("1. First cue") != std::string::npos);
+  CHECK(reqs[0].body.find("\\n2. Second cue") != std::string::npos);
+  CHECK(reqs[1].body.find("\"1. Third cue\"") != std::string::npos);
+  CHECK(reqs[1].body.find("\"3.") == std::string::npos);  // numbering restarts
+
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+  REQUIRE(cues.size() == 3);
+  CHECK(cues[0].text == "[tr] First cue");
+  CHECK(cues[1].text == "[tr] Second cue");
+  CHECK(cues[2].text == "[tr] Third cue");
+#endif
+}
+
+TEST_CASE("translate_collapses_a_multiline_cue_to_one_wire_line") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "ok", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  tr.configure(cfg);
+
+  const std::string kIn =
+      "1\n00:00:01,000 --> 00:00:02,000\none\ntwo  spaces\n\n";
+  std::string out, err;
+  REQUIRE(tr.translate(kIn, "Spanish", &out, &err));
+
+  const std::vector<ChatRequest> reqs = readChatRequests(root);
+  REQUIRE(reqs.size() == 1);
+  CHECK(reqs[0].body.find("1. one two spaces") != std::string::npos);
+
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+  REQUIRE(cues.size() == 1);
+  CHECK(cues[0].text == "[tr] one two spaces");
+#endif
+}
+
+TEST_CASE("translate_degrades_with_a_reason_on_every_failure") {
+  // The all-or-nothing contract: whatever breaks, the answer is false, a
+  // reason, and an untouched output. (The translate call is its own
+  // statement: argument evaluation order would make reading err/out
+  // inside the same call a race on fresh locals.)
+  const std::string kIn = "1\n00:00:01,000 --> 00:00:02,000\nHello.\n\n";
+  const auto fails = [](bool ok, const std::string& err, const std::string& out) {
+    CHECK_FALSE(ok);
+    CHECK(!err.empty());
+    CHECK(out.empty());
+  };
+
+  SUBCASE("unconfigured endpoint never dials") {
+    SubtitleTranslator tr;  // default config: everything empty
+    std::string out, err;
+    const bool ok = tr.translate(kIn, "Japanese", &out, &err);
+    fails(ok, err, out);
+  }
+  SUBCASE("an empty model is unconfigured too") {
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = "http://127.0.0.1:1/v1";  // nothing listens; must not dial
+    tr.configure(cfg);
+    std::string out, err;
+    const bool ok = tr.translate(kIn, "Japanese", &out, &err);
+    fails(ok, err, out);
+    CHECK(err.find("not configured") != std::string::npos);
+  }
+  SUBCASE("https endpoints degrade (no TLS client here)") {
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = "https://example.invalid/v1";
+    cfg.model = "test-model";
+    tr.configure(cfg);
+    std::string out, err;
+    const bool ok = tr.translate(kIn, "Japanese", &out, &err);
+    fails(ok, err, out);
+    CHECK(err.find("http://") != std::string::npos);
+  }
+  SUBCASE("no target language is refused before any dial") {
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = "http://127.0.0.1:1/v1";
+    cfg.model = "test-model";
+    tr.configure(cfg);
+    std::string out, err;
+    const bool ok = tr.translate(kIn, "", &out, &err);
+    fails(ok, err, out);
+  }
+  SUBCASE("input without timestamps is not a subtitle") {
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = "http://127.0.0.1:1/v1";  // must be refused pre-dial
+    cfg.model = "test-model";
+    tr.configure(cfg);
+    std::string out, err;
+    const bool ok =
+        tr.translate("plain prose with no cues at all", "Japanese", &out, &err);
+    fails(ok, err, out);
+    CHECK(err.find("not SubRip or WebVTT") != std::string::npos);
+  }
+  SUBCASE("a format-happy but cue-less input fails too") {
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = "http://127.0.0.1:1/v1";
+    cfg.model = "test-model";
+    tr.configure(cfg);
+    std::string out, err;
+    const bool ok = tr.translate("WEBVTT\n\n", "Japanese", &out, &err);
+    fails(ok, err, out);
+    CHECK(err.find("no cues") != std::string::npos);
+  }
+  SUBCASE("an endpoint with no host is not a usable url") {
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = "http://";  // scheme only: parse must refuse pre-dial
+    cfg.model = "test-model";
+    tr.configure(cfg);
+    std::string out, err;
+    const bool ok = tr.translate(kIn, "Japanese", &out, &err);
+    fails(ok, err, out);
+    CHECK(err.find("not a usable http:// url") != std::string::npos);
+  }
+
+#ifdef _WIN32
+  MESSAGE("POSIX-only fixture cases; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  const TempDir root;  // the fixture servers record their requests here
+  const auto server = [&root](const std::string& mode,
+                              const std::string& key = "") {
+    return startChatServer(root.path, mode, key);
+  };
+  const auto cfg_for = [](const RangeServer& s) {
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = s.base_url + "/v1";
+    cfg.model = "test-model";
+    cfg.timeout = 5000ms;
+    return cfg;
+  };
+
+  SUBCASE("an unreachable endpoint is a false, not a throw") {
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = "http://127.0.0.1:1/v1";  // port 1: nothing listens
+    cfg.model = "test-model";
+    cfg.timeout = 2000ms;
+    tr.configure(cfg);
+    std::string out, err;
+    const bool ok = tr.translate(kIn, "Japanese", &out, &err);
+    fails(ok, err, out);
+  }
+
+  const std::string modes[] = {
+      "status500", "badjson",  "nocontent", "emptychoices", "shortlines",
+      "badnum",    "biglen",   "garbage",   "contentnum",   "badhex",
+      "badescape", "shortu",   "trailbs",   "unterm",       "badsep",
+      "onlydigits", "status100"};
+  for (const std::string& mode : modes) {
+    SUBCASE(mode.c_str()) {
+      const RangeServer srv = server(mode);
+      REQUIRE(srv.pid >= 0);
+      SubtitleTranslator tr;
+      tr.configure(cfg_for(srv));
+      std::string out, err;
+      const bool ok = tr.translate(kIn, "Japanese", &out, &err);
+      fails(ok, err, out);
+    }
+  }
+
+  SUBCASE("a wrong key is a 401 and a failed translation") {
+    const RangeServer srv = server("ok", "sekret-key");
+    REQUIRE(srv.pid >= 0);
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg = cfg_for(srv);
+    cfg.api_key = "wrong-key";
+    tr.configure(cfg);
+    std::string out, err;
+    const bool ok = tr.translate(kIn, "Japanese", &out, &err);
+    fails(ok, err, out);
+  }
+
+  SUBCASE("a clean close mid-body is a failed translation") {
+    const RangeServer srv = server("shortbody");
+    REQUIRE(srv.pid >= 0);
+    SubtitleTranslator tr;
+    tr.configure(cfg_for(srv));
+    std::string out, err;
+    const bool ok = tr.translate(kIn, "Japanese", &out, &err);
+    fails(ok, err, out);
+    CHECK(err.find("mid-body") != std::string::npos);
+  }
+
+  SUBCASE("a stalling endpoint is cut off by the timeout") {
+    const RangeServer srv = server("stall");
+    REQUIRE(srv.pid >= 0);
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg = cfg_for(srv);
+    cfg.timeout = 300ms;  // the socket timeout ends the wait, not patience
+    tr.configure(cfg);
+    std::string out, err;
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok = tr.translate(kIn, "Japanese", &out, &err);
+    fails(ok, err, out);
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10));
+  }
+#endif
+}
+
+TEST_CASE("translate_survives_json_escapes_in_both_directions") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  // Outgoing: a quote and a backslash in a cue must reach the server
+  // escaped; UTF-8 rides raw. Incoming: the fixture answers with
+  // ensure_ascii=True, so CJK and emoji come back as \uXXXX (surrogate
+  // pairs included) and the decoder must rebuild the same text.
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "asciiesc", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  tr.configure(cfg);
+
+  const std::string kQuote = "Say \"hi\" \\ ok";
+  const std::string kCjk = "\xE5\xAD\x97\xE5\xB9\x95";  // 字幕
+  const std::string kEmoji = "hi \xF0\x9F\x98\x80";     // hi 😀
+  const std::string kIn =
+      "1\n00:00:01,000 --> 00:00:02,000\n" + kQuote + "\n\n"
+      "2\n00:00:02,000 --> 00:00:03,000\n" + kCjk + "\n\n"
+      "3\n00:00:03,000 --> 00:00:04,000\n" + kEmoji + "\n\n";
+  std::string out, err;
+  REQUIRE(tr.translate(kIn, "Japanese", &out, &err));
+
+  const std::vector<ChatRequest> reqs = readChatRequests(root);
+  REQUIRE(reqs.size() == 1);
+  // \" and \\ on the wire where the cue said "hi" \
+  CHECK(reqs[0].body.find("Say \\\"hi\\\" \\\\ ok") != std::string::npos);
+  CHECK(reqs[0].body.find(kCjk) != std::string::npos);  // raw UTF-8 out
+
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+  REQUIRE(cues.size() == 3);
+  CHECK(cues[0].text == "[tr] " + kQuote);
+  CHECK(cues[1].text == "[tr] " + kCjk);
+  CHECK(cues[2].text == "[tr] " + kEmoji);
+#endif
+}
+
+TEST_CASE("translate_decodes_lone_surrogates_as_replacement_characters") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  // A lone surrogate (never valid UTF-8, but a hostile or broken endpoint
+  // can still emit one) must come back as U+FFFD, not as invalid UTF-8 of
+  // a surrogate value.
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "lonesur", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  tr.configure(cfg);
+
+  const std::string kIn = "1\n00:00:01,000 --> 00:00:02,000\nHello.\n\n";
+  std::string out, err;
+  REQUIRE(tr.translate(kIn, "Japanese", &out, &err));
+
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+  REQUIRE(cues.size() == 1);
+  CHECK(cues[0].text ==
+        "[tr] A\xEF\xBF\xBD" "\xC3\xA9" "B\xEF\xBF\xBD" "C");
+#endif
+}
+
+TEST_CASE("translate_reply_without_content_length_is_read_to_eof") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  // A 200 with no Content-Length and Connection: close: the body is
+  // whatever arrives before the close — still a perfectly good
+  // translation, same as the download provider's read-until-EOF path.
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "nolength", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  tr.configure(cfg);
+
+  std::string out, err;
+  const std::string kIn = "1\n00:00:01,000 --> 00:00:02,000\nSolo.\n\n";
+  REQUIRE(tr.translate(kIn, "Italian", &out, &err));
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+  REQUIRE(cues.size() == 1);
+  CHECK(cues[0].text == "[tr] Solo");
+#endif
+}
+
+TEST_CASE("translate_decodes_the_full_json_escape_vocabulary") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  // The fixture's hand-built bodies put single-backslash escape sequences
+  // on the wire (json.dumps would re-escape them). The client's string
+  // reader must reconstruct the exact text behind each one — and the
+  // reply parser must take a tab where it usually sees a space.
+  const std::string kIn = "1\n00:00:01,000 --> 00:00:02,000\nSolo.\n\n";
+
+  SUBCASE("uppercase hex, a tab after the number, and a 3-byte code point") {
+    const TempDir root;
+    const RangeServer srv = startChatServer(root.path, "hexmix", "");
+    REQUIRE(srv.pid >= 0);
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = srv.base_url + "/v1";
+    cfg.model = "test-model";
+    tr.configure(cfg);
+    std::string out, err;
+    REQUIRE(tr.translate(kIn, "Japanese", &out, &err));
+    const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "A\xC3\xA9\xE4\xBD\xA0");
+  }
+
+  SUBCASE("every simple escape decodes to its control byte") {
+    const TempDir root;
+    const RangeServer srv = startChatServer(root.path, "escmix", "");
+    REQUIRE(srv.pid >= 0);
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = srv.base_url + "/v1";
+    cfg.model = "test-model";
+    tr.configure(cfg);
+    std::string out, err;
+    REQUIRE(tr.translate(kIn, "Japanese", &out, &err));
+    // Asserted on the serialized file, not a re-parse: the parser reads a
+    // bare CR as a line break, and this text deliberately carries one.
+    // The fixture line is "1. a\/b\bc\fc\rd\te" — escape letters and
+    // content letters interleave, so the decode reads a/b, backspace, c,
+    // form feed, c, carriage return, d, tab, e.
+    CHECK(out.find("\na/b\bc" "\x0c" "c\rd\te\n\n") != std::string::npos);
+  }
+
+  SUBCASE("a negative Content-Length reads to EOF and succeeds") {
+    const TempDir root;
+    const RangeServer srv = startChatServer(root.path, "neglen", "");
+    REQUIRE(srv.pid >= 0);
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = srv.base_url + "/v1";
+    cfg.model = "test-model";
+    tr.configure(cfg);
+    std::string out, err;
+    REQUIRE(tr.translate(kIn, "Italian", &out, &err));
+    const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "[tr] Solo");
+  }
+#endif
+}
+
+TEST_CASE("translate_escapes_control_bytes_into_the_json_body") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  // The wire writer's side of the vocabulary: a model name and cue text
+  // carrying bytes the JSON grammar cannot ship raw (quote, tab, CR, a
+  // C0 control) must reach the endpoint escaped — and a cue with a
+  // control byte survives the round trip byte for byte.
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "ok", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "mo\"dle\t\r";
+  tr.configure(cfg);
+
+  const std::string kIn =
+      "1\n00:00:01,000 --> 00:00:02,000\nHi \x01there.\n\n";
+  std::string out, err;
+  REQUIRE(tr.translate(kIn, "Japanese", &out, &err));
+
+  const std::vector<ChatRequest> reqs = readChatRequests(root);
+  REQUIRE(reqs.size() == 1);
+  CHECK(reqs[0].body.find("\"model\":\"mo\\\"dle\\t\\r\"") != std::string::npos);
+  CHECK(reqs[0].body.find("Hi \\u0001there.") != std::string::npos);
+
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+  REQUIRE(cues.size() == 1);
+  CHECK(cues[0].text == "[tr] Hi \x01there.");
+#endif
+}
+
+TEST_CASE("translate_tolerates_null_out_and_err") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  // Callers that only care whether it worked may pass nullptrs; both
+  // answers (and the refusal of an unconfigured translator) must come
+  // back without a write through the null.
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "ok", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  tr.configure(cfg);
+
+  const std::string kIn = "1\n00:00:01,000 --> 00:00:02,000\nSolo.\n\n";
+  REQUIRE(tr.translate(kIn, "Italian", nullptr, nullptr));
+
+  SubtitleTranslator unconfigured;
+  CHECK_FALSE(unconfigured.translate(kIn, "Italian", nullptr, nullptr));
+#endif
+}
+
+TEST_CASE("translate_accepts_every_documented_reply_separator") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  // The header pins the contract: a reply line is "12.", "12)" or "12:"
+  // — endpoints pick their own punctuation, and all three must map back.
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "sepvar", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  tr.configure(cfg);
+
+  const std::string kIn =
+      "1\n00:00:01,000 --> 00:00:02,000\nFirst.\n\n"
+      "2\n00:00:03,000 --> 00:00:04,000\nSecond.\n\n";
+  std::string out, err;
+  REQUIRE(tr.translate(kIn, "Japanese", &out, &err));
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+  REQUIRE(cues.size() == 2);
+  CHECK(cues[0].text == "[tr] Alpha");
+  CHECK(cues[1].text == "[tr] Beta");
+  CHECK(cues[0].begin == 1000ms);
+  CHECK(cues[1].end == 4000ms);
+#endif
+}
+
+TEST_CASE("translate_endpoint_forms_and_batch_guard") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "ok", "");
+  REQUIRE(srv.pid >= 0);
+  const std::string kIn = "1\n00:00:01,000 --> 00:00:02,000\nSolo.\n\n";
+
+  SUBCASE("a trailing slash on the endpoint") {
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = srv.base_url + "/v1/";
+    cfg.model = "test-model";
+    tr.configure(cfg);
+    std::string out, err;
+    REQUIRE(tr.translate(kIn, "Italian", &out, &err));
+    const std::vector<ChatRequest> reqs = readChatRequests(root);
+    REQUIRE(reqs.size() == 1);
+    CHECK(reqs[0].path == "/v1/chat/completions");
+  }
+
+  SUBCASE("an endpoint that already spells the full path") {
+    SubtitleTranslator tr;
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = srv.base_url + "/chat/completions";
+    cfg.model = "test-model";
+    tr.configure(cfg);
+    std::string out, err;
+    REQUIRE(tr.translate(kIn, "Italian", &out, &err));
+    const std::vector<ChatRequest> reqs = readChatRequests(root);
+    REQUIRE(reqs.size() == 1);
+    CHECK(reqs[0].path == "/chat/completions");
+  }
+
+  SUBCASE("batch_cues below 1 is treated as 1") {
+    // The inline-constructor form, and the guard that keeps a zero batch
+    // from becoming an endless loop: three cues, three requests.
+    SubtitleTranslateConfig cfg;
+    cfg.endpoint = srv.base_url + "/v1";
+    cfg.model = "test-model";
+    cfg.batch_cues = 0;
+    const SubtitleTranslator tr{cfg};
+    std::string out, err;
+    const std::string kThree =
+        "1\n00:00:01,000 --> 00:00:02,000\nA\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nB\n\n"
+        "3\n00:00:03,000 --> 00:00:04,000\nC\n\n";
+    REQUIRE(tr.translate(kThree, "Italian", &out, &err));
+    CHECK(readChatRequests(root).size() == 3);
+  }
+#endif
 }
 
 } // namespace
