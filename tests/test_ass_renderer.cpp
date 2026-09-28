@@ -338,12 +338,14 @@ TEST_CASE("argument guards and preconditions") {
   CHECK(no_size.rgba.empty());
 }
 
-TEST_CASE("fully transparent glyphs composite nothing but still change") {
-  // {\alpha&HFF&} is ASS for "fully transparent": libass still emits the
-  // glyph images, but every pixel's source alpha is 255 in libass's
-  // inverted convention, so the compositor's alpha-inversion guard must
-  // skip them all. The frame is reported changed (there ARE images) yet
-  // not a single visible pixel may appear.
+TEST_CASE("fully transparent glyphs composite nothing in either libass generation") {
+  // {\alpha&HFF&} is ASS for "fully transparent". libass through 0.17.4
+  // still emits the glyph images (every pixel's source alpha is 255 in
+  // libass's inverted convention, so the compositor's alpha-inversion
+  // guard must skip them all) and reports the frame changed; libass
+  // 0.17.5 skips fully transparent bitmaps outright, so the render comes
+  // back imageless instead. Either way not a single visible pixel may
+  // appear, and the geometry must stay the configured canvas.
   AssRenderer r;
   REQUIRE(r.available());
   const std::string doc = makeAssDoc(
@@ -353,10 +355,17 @@ TEST_CASE("fully transparent glyphs composite nothing but still change") {
   r.setDefaultFont(SOAR_TEST_FONT_FILE);
   r.setFrameSize(160, 120);
   AssFrame f;
-  CHECK(r.renderAt(500, &f));
-  CHECK(f.changed);
-  CHECK(countVisible(f) == 0);
-  CHECK(f.rgba.size() == static_cast<std::size_t>(160) * 120 * 4);
+  const bool emitted = r.renderAt(500, &f);
+  if (emitted) {
+    // Pre-0.17.5: images exist, all fully transparent.
+    CHECK(f.changed);
+    CHECK(countVisible(f) == 0);
+    CHECK(f.rgba.size() == static_cast<std::size_t>(160) * 120 * 4);
+  } else {
+    // 0.17.5+: transparent bitmaps are skipped before they reach us.
+    CHECK_FALSE(f.changed);  // canvas was empty, so nothing vanished
+    CHECK(f.rgba.empty());
+  }
 }
 
 TEST_CASE("overlapping events composite onto each other") {
