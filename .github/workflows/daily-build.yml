@@ -124,9 +124,13 @@ jobs:
           SDL_AUDIODRIVER: dummy
         run: ctest --preset linux-system --output-on-failure
 
+      # -V for the same reason ci.yml sets it: ctest buffers a suite's
+      # output until it exits, and doctest's own buffer dies with the
+      # process, so a suite killed at the timeout would otherwise leave
+      # no trace of which test case it died in.
       - name: Test (macOS/Windows)
         if: runner.os != 'Linux'
-        run: ctest --preset default --output-on-failure
+        run: ctest --preset default -V --output-on-failure
 
       # vcpkg's x64-windows triplet copies the dependent DLLs (SDL2,
       # FFmpeg, ...) next to the exe (applocal deployment), so the whole
