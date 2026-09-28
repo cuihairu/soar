@@ -2,6 +2,20 @@
 // readiness handshake. Used by the media backend tests (HLS over http,
 // network stall) and the disk-cache tests. POSIX-only: every user gates
 // on _WIN32 and a python3 availability check before forking.
+//
+// Fixtures built on http.server must use the LocalServer class below, not
+// HTTPServer/ThreadingHTTPServer directly: the stock server_bind() calls
+// socket.getfqdn() on the address it just bound, a reverse DNS lookup of
+// 127.0.0.1. That answers instantly on the Linux runner but stalls for
+// the resolver's own ~30s timeout on the macOS runner — per fixture, on
+// every start, before the readiness handshake even begins. It is what
+// made soar_http_cache_tests take 423s there (7s on Linux) and pushed
+// soar_subtitle_tests past its 600s budget: ~13 fixtures x 30s. Nothing
+// in these fixtures ever reads server_name/server_port (no CGI, no
+// absolute-URL redirects), so the local subclass binds straight through
+// to TCPServer and fills both attributes from the bound address. The
+// scripts that hand-roll their own socket.bind() need no subclass and
+// were never affected.
 
 #ifndef SOAR_TEST_HTTP_SERVERS_H_
 #define SOAR_TEST_HTTP_SERVERS_H_
@@ -24,7 +38,7 @@ namespace test_servers {
 // harness reads it over a pipe (see startPipedServer), so a stale server
 // from an earlier run can never fake readiness.
 constexpr const char* kRangeServerScript = R"PY(
-import os, re, socket, sys
+import os, re, socket, socketserver, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.abspath(sys.argv[1])
@@ -76,10 +90,16 @@ class RangeHandler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
                 remaining -= len(chunk)
 
-class V6RangeServer(ThreadingHTTPServer):
+class LocalServer(ThreadingHTTPServer):  # skips getfqdn, see file header
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+class V6RangeServer(LocalServer):
     address_family = socket.AF_INET6
 
-srv = (V6RangeServer if V6 else ThreadingHTTPServer)(
+srv = (V6RangeServer if V6 else LocalServer)(
     ("::1" if V6 else "127.0.0.1", int(sys.argv[2])), RangeHandler)
 print("ready", flush=True)
 srv.serve_forever()
@@ -88,7 +108,7 @@ srv.serve_forever()
 // Plain 200-only python http.server (no Range support): the negative
 // fixture for "cache rejects range-less servers". Same pipe handshake.
 constexpr const char* kPlainServerScript = R"PY(
-import os, sys
+import os, socketserver, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.abspath(sys.argv[1])
@@ -111,7 +131,13 @@ class PlainHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-srv = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), PlainHandler)
+class LocalServer(ThreadingHTTPServer):  # skips getfqdn, see file header
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+srv = LocalServer(("127.0.0.1", int(sys.argv[2])), PlainHandler)
 print("ready", flush=True)
 srv.serve_forever()
 )PY";
@@ -126,7 +152,7 @@ srv.serve_forever()
 // event contract) and the CLI suite (the window's buffering indicator).
 // Announces "ready" on stdout once bound, like the range server.
 constexpr const char* kThrottledServerScript = R"PY(
-import sys, time
+import socketserver, sys, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 with open(sys.argv[1], "rb") as f:
@@ -147,7 +173,13 @@ class ThrottledHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-srv = HTTPServer(("127.0.0.1", int(sys.argv[2])), ThrottledHandler)
+class LocalServer(HTTPServer):  # skips getfqdn, see file header
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+srv = LocalServer(("127.0.0.1", int(sys.argv[2])), ThrottledHandler)
 print("ready", flush=True)
 srv.serve_forever()
 )PY";
@@ -309,7 +341,7 @@ while True:
 // APIKEY (argv[4], may be empty): when set, requests without the matching
 // X-API-Key header are answered 401.
 constexpr const char* kSubtitleServerScript = R"PY(
-import os, re, sys, time
+import os, re, socketserver, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -403,7 +435,13 @@ class SubtitleHandler(BaseHTTPRequestHandler):
             return
         self.deny(404)
 
-srv = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), SubtitleHandler)
+class LocalServer(ThreadingHTTPServer):  # skips getfqdn, see file header
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+srv = LocalServer(("127.0.0.1", int(sys.argv[2])), SubtitleHandler)
 print("ready", flush=True)
 srv.serve_forever()
 )PY";
@@ -450,7 +488,7 @@ srv.serve_forever()
 // header is not exactly "Bearer <key>" are answered 401 — after being
 // recorded, so a test can see what leaked out.
 constexpr const char* kChatServerScript = R"PY(
-import json, os, re, sys, time
+import json, os, re, socketserver, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.abspath(sys.argv[1])
@@ -631,7 +669,13 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-srv = ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), ChatHandler)
+class LocalServer(ThreadingHTTPServer):  # skips getfqdn, see file header
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+srv = LocalServer(("127.0.0.1", int(sys.argv[2])), ChatHandler)
 print("ready", flush=True)
 srv.serve_forever()
 )PY";
