@@ -1212,11 +1212,12 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
       external_last_pos_ = std::chrono::milliseconds(0);
     }
 
-    // One ASS renderer serves both ASS sources and follows the last
-    // selected ASS source (docs/mvp.md §6, external documents): selecting
-    // an external document retires the embedded stream's feed, selecting
-    // the embedded stream again rebuilds it from the CodecPrivate stashed
-    // at open time, and any non-ASS selection releases a held document.
+    // One ASS renderer serves every canvas-drawn subtitle source and
+    // follows the last selected subtitle source (docs/mvp.md §6, external
+    // documents and batch 1c's synthesized text sidecars): selecting an
+    // external track retires the embedded stream's feed, selecting the
+    // embedded stream again rebuilds it from the CodecPrivate stashed at
+    // open time, and any embedded text selection releases a held document.
     // Two short critical sections gather the inputs; the renderer calls
     // run outside every backend lock (AssRenderer locks itself, and the
     // decode thread may be feeding or rendering concurrently).
@@ -1259,9 +1260,15 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
 
     if (slot_is_document && renderer_live) {
       // External document, style-faithful: one load replaces the whole
-      // track; the canvas follows the playhead from here on. The feed
-      // flag drops first so a packet decoding concurrently cannot append
-      // an embedded event into the freshly loaded document track; the
+      // track; the canvas follows the playhead from here on. The document
+      // is whatever loadExternalSubtitle put in the slot — an .ass/.ssa
+      // sidecar's own script, or an SRT/WebVTT sidecar's default-styled
+      // resynthesis (batch 1c: the style is ours, the glyphs are
+      // libass's). The queue's plain-text copy of the same cues stays the
+      // UI's to suppress (subtitleDocumentActive()); the pump itself is
+      // not gated, so pulls still serve it in both builds. The feed flag
+      // drops first so a packet decoding concurrently cannot append an
+      // embedded event into the freshly loaded document track; the
       // document flag then closes the plain-text gate. Between the two
       // stores an event can degrade to one transient plain-text frame —
       // bounded by its own duration, versus an event landing after
@@ -1438,10 +1445,10 @@ bool FFmpegBackend::disableSubtitles() {
     external_cue_pos_ = 0;
   }
   // "Off" also releases the renderer's document track (docs/mvp.md §6,
-  // external documents): the empty-track swap quiets the canvas, and the
-  // decode thread's drop-gate clears with the flag. The embedded feed's
-  // metadata-only selection semantics are untouched — only content batch
-  // 1b introduced is released here.
+  // external documents and synthesized text sidecars): the empty-track
+  // swap quiets the canvas, and the decode thread's drop-gate clears with
+  // the flag. The embedded feed's metadata-only selection semantics are
+  // untouched — only external content (batches 1b/1c) is released here.
   if (ass_document_active_.load(std::memory_order_relaxed)) {
     ass_renderer_.startStream();
     ass_document_active_ = false;
@@ -1480,6 +1487,18 @@ bool FFmpegBackend::loadExternalSubtitle(const std::string& path, TrackId& out_i
   std::vector<SubtitleCue> cues;
   std::string document;
   const char* codec = "subrip";
+  int video_w = 0, video_h = 0;
+  {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (format_ctx_) {
+      if (video_stream_index_ >= 0 && format_ctx_->streams[video_stream_index_] &&
+          format_ctx_->streams[video_stream_index_]->codecpar) {
+        const AVCodecParameters* vpar = format_ctx_->streams[video_stream_index_]->codecpar;
+        video_w = vpar->width;
+        video_h = vpar->height;
+      }
+    }
+  }
   if (format == SubtitleFormat::Ass) {
     // An .ass/.ssa sidecar is a complete script, not a cue list. The
     // Dialogue extraction still gates the load — a file without a single
@@ -1497,12 +1516,24 @@ bool FFmpegBackend::loadExternalSubtitle(const std::string& path, TrackId& out_i
       document = std::move(text);
       cues.clear();
     }
-  } else {
+  } else if (format == SubtitleFormat::SubRip || format == SubtitleFormat::WebVtt) {
+    // SRT/WebVTT sidecars are plain-text cue lists. When libass is available
+    // they are resynthesized as a default-styled ASS document so the canvas
+    // renders them with libass's glyphs and default style (batch 1c). The
+    // plain-text copy stays in `cues` for the no-libass degrade and for
+    // frame-count bookkeeping in the pump.
     cues = parseSubtitleText(text);
     if (cues.empty()) {
-      return fail("loadExternalSubtitle: no cues in '" + path + "'", /*emit_event=*/false);
+      return fail("loadExternalSubtitle: no cues in '" + path + "',", /*emit_event=*/false);
     }
     codec = format == SubtitleFormat::WebVtt ? "webvtt" : "subrip";
+    if (ass_renderer_.available()) {
+      document = synthesizeAssDocument(cues, video_w, video_h);
+    }
+  } else {
+    // Unknown format — keep the existing behaviour (should not happen after
+    // detectSubtitleFormat covers .srt/.vtt/.ass/.ssa).
+    return fail("loadExternalSubtitle: no cues in '" + path + "',", /*emit_event=*/false);
   }
 
   TrackId id = -1;

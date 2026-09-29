@@ -111,12 +111,15 @@ SDL_Rect letterboxRect(SDL_Renderer* renderer, SDL_Texture* texture) {
 // in, its canvas is rendered at `ass_pts_ms` — sized to the letterbox rect
 // (the idempotent setFrameSize makes the per-frame call cheap) — and
 // blended over the video: the style-faithful ASS path (docs/mvp.md §6).
-// The overlay texture lives in *ass_texture (recreated on size change,
-// re-uploaded only when the canvas reports changed). Returns false when
-// no frame was ready.
+// `ass_pts_ms` already carries the subtitle sync offset and `subs_visible`
+// is the V-toggle state, so canvas subtitles obey both exactly like the
+// plain-text ones. The overlay texture lives in *ass_texture (recreated on
+// size change, re-uploaded only when the canvas reports changed). Returns
+// false when no frame was ready.
 bool presentVideoFrame(SDL_Renderer* renderer, SDL_Texture** texture,
                        const void* frame_ptr, SDL_Texture** ass_texture,
-                       soar::AssRenderer* ass, std::int64_t ass_pts_ms) {
+                       soar::AssRenderer* ass, std::int64_t ass_pts_ms,
+                       bool subs_visible) {
   if (frame_ptr == nullptr) return false;
 #ifdef SOAR_WITH_FFMPEG
   const auto& frame =
@@ -144,7 +147,8 @@ bool presentVideoFrame(SDL_Renderer* renderer, SDL_Texture** texture,
   const SDL_Rect dst = letterboxRect(renderer, *texture);
   SDL_RenderCopy(renderer, *texture, nullptr, &dst);
 
-  if (ass != nullptr && ass->available() && ass_texture != nullptr) {
+  if (subs_visible && ass != nullptr && ass->available() &&
+      ass_texture != nullptr) {
     ass->setFrameSize(dst.w, dst.h);
     soar::AssFrame f;
     if (ass->renderAt(ass_pts_ms, &f) && !f.rgba.empty()) {
@@ -183,6 +187,7 @@ bool presentVideoFrame(SDL_Renderer* renderer, SDL_Texture** texture,
   (void)ass_texture;
   (void)ass;
   (void)ass_pts_ms;
+  (void)subs_visible;
   return false;
 #endif
 }
@@ -1333,6 +1338,18 @@ class PlayerHud {
       st_.subtitle_visible = cfg_.subtitle_visible->load(std::memory_order_relaxed);
     }
 
+    // Canvas mode (batch 1c): the libass overlay holds the selected
+    // subtitle — an ASS document or a synthesized text sidecar — so
+    // drawing the queue's plain-text copy on top would render every line
+    // twice. Returning here also parks the sidecar pump (this window is
+    // its only driver in production) and leaves embedded text frames to
+    // age out of the FIFO undrawn; the queue itself is untouched.
+#ifdef SOAR_WITH_FFMPEG
+    if (cfg_.ffmpeg && cfg_.ffmpeg->subtitleDocumentActive()) {
+      return;
+    }
+#endif
+
     // Poll for new subtitle frame. The dereference needs the full backend
     // type, which only exists in FFmpeg builds (the header keeps the class
     // opaque so the window compiles without the libav* dev packages).
@@ -1924,11 +1941,23 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
       SDL_SetRenderDrawColor(renderer, 10, 11, 14, 255);  // theme background
       SDL_RenderClear(renderer);
 #ifdef SOAR_WITH_FFMPEG
+      // Canvas subtitles obey the same sync offset and V-toggle the
+      // plain-text ones do (batch 1c): both live in the config atomics.
+      const std::int64_t sub_offset_ms =
+          cfg.subtitle_offset_ms
+              ? cfg.subtitle_offset_ms->load(std::memory_order_relaxed)
+              : 0;
       presentVideoFrame(renderer, &texture,
                         cfg.ffmpeg && video_active ? &video_frame : nullptr,
                         &ass_texture,
                         cfg.ffmpeg ? cfg.ffmpeg->assRenderer() : nullptr,
-                        cfg.ffmpeg ? cfg.ffmpeg->position().count() : 0);
+                        cfg.ffmpeg
+                            ? cfg.ffmpeg->position().count() + sub_offset_ms
+                            : 0,
+                        cfg.subtitle_visible
+                            ? cfg.subtitle_visible->load(
+                                  std::memory_order_relaxed)
+                            : true);
 #endif
       ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
       SDL_RenderPresent(renderer);
@@ -1959,7 +1988,17 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
                           cfg.ffmpeg && video_active ? &video_frame : nullptr,
                           &ass_texture,
                           cfg.ffmpeg ? cfg.ffmpeg->assRenderer() : nullptr,
-                          cfg.ffmpeg ? cfg.ffmpeg->position().count() : 0)) {
+                          cfg.ffmpeg
+                              ? cfg.ffmpeg->position().count() +
+                                    (cfg.subtitle_offset_ms
+                                         ? cfg.subtitle_offset_ms->load(
+                                               std::memory_order_relaxed)
+                                         : 0)
+                              : 0,
+                          cfg.subtitle_visible
+                              ? cfg.subtitle_visible->load(
+                                    std::memory_order_relaxed)
+                              : true)) {
       SDL_RenderPresent(renderer);
     }
 #endif

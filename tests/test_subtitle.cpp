@@ -34,6 +34,7 @@
 using namespace std::chrono_literals;
 using soar::assDocumentCues;
 using soar::detectSubtitleFormat;
+using soar::synthesizeAssDocument;
 using soar::ExternalSubtitleProvider;
 using soar::HttpSubtitleConfig;
 using soar::kDefaultCueDuration;
@@ -847,6 +848,58 @@ TEST_CASE("ass_document_cues_empty_inputs") {
   CHECK(assDocumentCues("").empty());
   CHECK(assDocumentCues("[Script Info]\nonly a header\n").empty());
   CHECK(assDocumentCues("1\n00:00:01,000 --> 00:00:02,000\nsrt\n").empty());
+}
+
+TEST_CASE("synthesize_ass_document_shapes_a_default_script") {
+  // The batch 1c wrap: plain cues in, one loadable ASS script out. The
+  // strongest available oracle is the extractor itself — a round trip
+  // through assDocumentCues must give the cues back with timing intact
+  // and the line break respelled both ways (\N on the wire, '\n' parsed).
+  std::vector<soar::SubtitleCue> cues;
+  cues.push_back({0ms, 1500ms, "first line\nsecond line"});
+  cues.push_back({2000ms, 4000ms, "later, with commas"});
+
+  const std::string doc = synthesizeAssDocument(cues, 320, 240);
+  CHECK(doc.find("[Script Info]") != std::string::npos);
+  CHECK(doc.find("PlayResX: 320") != std::string::npos);
+  CHECK(doc.find("PlayResY: 240") != std::string::npos);
+  CHECK(doc.find("[Events]") != std::string::npos);
+  // White primary with a black outline, bottom-center aligned: the
+  // default style is the product's, not the cue file's.
+  CHECK(doc.find("&H00FFFFFF") != std::string::npos);
+  CHECK(doc.find("Alignment, MarginL") != std::string::npos);
+  CHECK(doc.find("first line\\Nsecond line") != std::string::npos);
+
+  const std::vector<SubtitleCue> back = assDocumentCues(doc);
+  REQUIRE(back.size() == 2);
+  CHECK(back[0].begin == 0ms);
+  CHECK(back[0].end == 1500ms);
+  CHECK(back[0].text == "first line\nsecond line");
+  CHECK(back[1].begin == 2000ms);
+  CHECK(back[1].end == 4000ms);
+  // Field ten keeps its commas: only the first eight split.
+  CHECK(back[1].text == "later, with commas");
+}
+
+TEST_CASE("synthesize_ass_document_falls_back_and_defaults") {
+  // Unsizable video: ASS's own 384x288 play resolution.
+  const std::string doc = synthesizeAssDocument({{100ms, 900ms, "x"}}, 0, 0);
+  CHECK(doc.find("PlayResX: 384") != std::string::npos);
+  CHECK(doc.find("PlayResY: 288") != std::string::npos);
+  // A usable end passes through verbatim; an inverted one keeps the
+  // parser-wide 2 s default.
+  CHECK(doc.find("Dialogue: 0,0:00:00.10,0:00:00.90,Default") !=
+        std::string::npos);
+  const std::string inverted =
+      synthesizeAssDocument({{1000ms, 500ms, "y"}}, 160, 120);
+  CHECK(inverted.find("Dialogue: 0,0:00:01.00,0:00:03.00,Default") !=
+        std::string::npos);
+  // The font size tracks the play resolution: the classic 288p reads 20,
+  // the 160x120 fixture stays inside the readable band.
+  CHECK(synthesizeAssDocument({{0ms, 500ms, "z"}}, 384, 288)
+            .find("Style: Default,Default,20,") != std::string::npos);
+  CHECK(synthesizeAssDocument({{0ms, 500ms, "z"}}, 160, 120)
+            .find("Style: Default,Default,12,") != std::string::npos);
 }
 
 // =========================================================================

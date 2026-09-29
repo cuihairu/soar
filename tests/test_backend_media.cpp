@@ -1772,6 +1772,16 @@ bool isAllRed(const soar::AssFrame& f) {
   return any;
 }
 
+// The synthesized document's own style is white-on-outline, so the pixel
+// oracle for it is "the canvas has visible glyphs at all" — the color is
+// the product's default, not the fixture's.
+bool hasVisible(const soar::AssFrame& f) {
+  for (std::size_t i = 3; i < f.rgba.size(); i += 4) {
+    if (f.rgba[i] != 0) return true;
+  }
+  return false;
+}
+
 // The external document every case in this group loads: 160x120 PlayRes,
 // one "Green" style over the same fixture face the ass unit tests use,
 // and two cues covering the whole 6 s fixture so the polls have slack on
@@ -1980,6 +1990,60 @@ TEST_CASE("selecting the embedded ASS stream back restores the libass feed") {
   backend->close();
 }
 
+TEST_CASE("a text sidecar takes the canvas over an embedded ASS stream") {
+  // The batch-1b known boundary — an embedded ASS stream and a text
+  // sidecar drawing at once — closes for libass builds in batch 1c:
+  // selecting the SRT sidecar redirects the renderer to a synthesized
+  // document and the document-mode gate drops the embedded events, so
+  // the canvas stops being the fixture's red and shows the synthesized
+  // default style instead. (The sidecar's queue frames keep flowing —
+  // the no-double-draw gate is the UI's subtitleDocumentActive() skip; a
+  // no-libass build has no canvas and keeps the documented overlay.)
+  std::string media;
+  if (!envMedia("SOAR_TEST_STYLED_ASS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_STYLED_ASS_MEDIA not set; skipping overlay test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  // One cue spanning the whole fixture: whichever position the red
+  // baseline ends at, the synthesized line is on screen there.
+  dir.write("movie.srt",
+            "1\n00:00:00,000 --> 00:00:06,000\nplain text wins\n\n");
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  auto* ass = backend->assRenderer();
+  REQUIRE(ass != nullptr);
+  ass->setDefaultFont(SOAR_TEST_FONT_FILE);
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  REQUIRE(backend->play());
+
+  soar::AssFrame f;
+  bool red = false;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline && !red) {
+    red = ass->renderAt(ffmpeg->position().count(), &f) && isAllRed(f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(red);
+
+  soar::TrackId id = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("movie.srt"), id));
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, id));
+  bool plain = false;
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline && !plain) {
+    plain = ass->renderAt(ffmpeg->position().count(), &f) && hasVisible(f) &&
+            !isAllRed(f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(plain);
+  backend->stop();
+  backend->close();
+}
+
 TEST_CASE("disabling subtitles releases a held ASS document") {
   std::string media;
   if (!envMedia("SOAR_TEST_STYLED_ASS_MEDIA", media)) {
@@ -2127,6 +2191,9 @@ TEST_CASE("a sidecar file loads as a subtitle track and plays") {
   CHECK(frames[1].text.find("Sidecar Two") != std::string::npos);
   // ...and timed from the file, not from the decode clock: the UI shows a
   // frame for `duration` starting at `pts`, so both have to be the file's.
+  // (In a libass build these queue frames are the same lines the canvas
+  // draws — batch 1c; the plain-text window stays quiet there, and this
+  // pull is what still exercises the pump both builds share.)
   CHECK(frames[0].pts == 0ms);
   CHECK(frames[0].duration == 1000ms);
   CHECK(frames[1].pts == 1000ms);

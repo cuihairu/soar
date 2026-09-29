@@ -203,4 +203,60 @@ std::vector<SubtitleCue> assDocumentCues(const std::string& content) {
   return cues;
 }
 
+std::string synthesizeAssDocument(const std::vector<SubtitleCue>& cues,
+                                  int play_res_x, int play_res_y) {
+  // libass's own default play resolution when the caller cannot size the
+  // video (the classic v4.00+ script size).
+  const int w = play_res_x > 0 ? play_res_x : 384;
+  const int h = play_res_y > 0 ? play_res_y : 288;
+  // One fourteenth of the frame height, clamped to a readable band: 288p
+  // gets the classic 20 px, 1080p gets 77, and the 160x120 test fixture
+  // still gets visible glyphs.
+  const int font_size = h / 14 < 12 ? 12 : (h / 14 > 96 ? 96 : h / 14);
+  const int margin_v = h / 10 < 8 ? 8 : h / 10;
+  std::string doc = fmt::format(
+      "[Script Info]\n"
+      "ScriptType: v4.00+\n"
+      "PlayResX: {}\n"
+      "PlayResY: {}\n"
+      "WrapStyle: 0\n"
+      "ScaledBorderAndShadow: yes\n"
+      "\n"
+      "[V4+ Styles]\n"
+      "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+      "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+      "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+      "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+      // The family name matches nothing registered (fonts resolve from
+      // attachments and AssRenderer's default font), so the default font
+      // the UI installs always wins — same fallback a real script gets.
+      "Style: Default,Default,{},&H00FFFFFF,&H00FFFFFF,&H00000000,"
+      "&H7F000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,{},1\n"
+      "\n"
+      "[Events]\n"
+      "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+      "Effect, Text\n",
+      w, h, font_size, margin_v);
+  for (const SubtitleCue& cue : cues) {
+    // A literal newline would end the Dialogue line early; \N is the ASS
+    // hard break, the same respell assDialogueLine applies to payloads.
+    std::string text;
+    text.reserve(cue.text.size());
+    for (const char c : cue.text) {
+      if (c == '\n') {
+        text += "\\N";
+      } else {
+        text.push_back(c);
+      }
+    }
+    // Parsed cues already carry the 2 s default for inverted ranges; the
+    // max is the same defensive line, for hand-built cue lists.
+    const auto end =
+        cue.end > cue.begin ? cue.end : cue.begin + kDefaultCueDuration;
+    doc += fmt::format("Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
+                       assTimestamp(cue.begin), assTimestamp(end), text);
+  }
+  return doc;
+}
+
 } // namespace soar

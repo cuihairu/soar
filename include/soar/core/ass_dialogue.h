@@ -60,4 +60,23 @@ std::string assDialogueLine(const char* ass, std::chrono::milliseconds pts,
 // parseSubtitleText. Nothing throws.
 std::vector<SubtitleCue> assDocumentCues(const std::string& content);
 
+// Wraps plain cues in a default-styled ASS script: what an external
+// SRT/WebVTT sidecar is rendered through when the build has libass
+// (docs/mvp.md §6, batch 1c) — one synthesized document per selected
+// sidecar, loaded exactly like a hand-authored one, so the canvas (and
+// nothing else) draws the text. The style is ours by design: white with a
+// black outline, bottom-center, font size scaled to the play resolution
+// (the classic 20 px at 288p, 77 px at 1080p); glyph rendering itself is
+// libass's, including its default-font fallback when the script's family
+// resolves to nothing. PlayRes falls back to ASS's own 384x288 when the
+// caller cannot size the video.
+//
+// Cue text keeps its bytes except line breaks, which respell as the \N
+// hard break so one Dialogue line stays one cue; braces would read as
+// override blocks to libass — the same lens assDocumentCues applies in
+// reverse, and a rare thing in timed text. A cue with a missing or
+// inverted End keeps the parser's 2 s default, matching every other path.
+std::string synthesizeAssDocument(const std::vector<SubtitleCue>& cues,
+                                  int play_res_x, int play_res_y);
+
 } // namespace soar

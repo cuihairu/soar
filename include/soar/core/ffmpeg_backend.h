@@ -98,6 +98,14 @@ public:
   // authoritative whenever this is null).
   AssRenderer* assRenderer() override;
 
+  // True while the libass canvas holds a whole document (an external
+  // .ass/.ssa script or a synthesized text-sidecar one, batch 1c): the
+  // plain-text drawing path must stay quiet for the same selection or
+  // every line would render twice. Always false without libass.
+  bool subtitleDocumentActive() const {
+    return ass_document_active_.load(std::memory_order_relaxed);
+  }
+
   bool setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b) override;
   bool clearLoopAB() override;
   bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const override;
@@ -292,10 +300,12 @@ private:
 
   // Embedded ASS/SSA style renderer (docs/mvp.md §6). Always constructed:
   // without libass it is the inert stub (available() false). One renderer
-  // serves both ASS sources — an embedded stream (fed event lines from the
-  // decoder) and an external sidecar document (loadDocument) — so it
-  // follows "the last selected ASS source": setupDecoders arms the
-  // embedded feed, selectTrack redirects it to a document track and back.
+  // serves every subtitle source the canvas can draw — an embedded stream
+  // (fed event lines from the decoder), an external sidecar document
+  // (loadDocument), and an external text sidecar, resynthesized into a
+  // default-styled document at load time (batch 1c) — so it follows
+  // "the last selected subtitle source": setupDecoders arms the embedded
+  // feed, selectTrack redirects it to a document track and back.
   // ass_feed_active_ is written from the UI thread (selectTrack,
   // setupDecoders/cleanupDecoders during open/close) and read on the
   // decode thread (processSubtitleFrame), hence the atomic; AssRenderer
@@ -305,9 +315,13 @@ private:
   // decode_mutex_, which setupDecoders already holds). ass_document_active_
   // records that the renderer currently holds a document track: the
   // decode thread drops the embedded stream's events while it stands (a
-  // plain-text echo under the document would draw every line twice), so
-  // it is an atomic like ass_feed_active_ — written by selectTrack,
-  // re-baselined by every open/close.
+  // plain-text echo under the document would draw every line twice), and
+  // the UI skips its plain-text drawing for as long as it stands (the
+  // canvas owns the selected subtitle — synthesized text sidecars
+  // included — and the queue's copies of the same lines must not draw a
+  // second time; subtitleDocumentActive() is that query). Atomic like
+  // ass_feed_active_, written by selectTrack, re-baselined by every
+  // open/close.
   AssRenderer ass_renderer_;
   std::atomic<bool> ass_feed_active_{false};
   std::string ass_codec_private_;

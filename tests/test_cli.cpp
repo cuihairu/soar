@@ -860,13 +860,18 @@ if mode == "audiodrive":
 if mode == "assdrive":
     # Real-backend window run over the styled ASS fixture, rendered through
     # the libass overlay. No HUD driving: the point is the video-present
-    # path, so the tour is just a fullscreen round-trip — the destination
-    # rectangle changes, the overlay texture is recreated for the new
-    # geometry, and Escape back restores it — followed by the standard
-    # escape storm. The fixture's two cues span its whole 4s, so overlay
-    # work happens in both window sizes.
+    # path, so the tour is a V round-trip (batch 1c: the toggle gates the
+    # canvas overlay off and on, both arms of the blend check) and a
+    # fullscreen round-trip — the destination rectangle changes, the
+    # overlay texture is recreated for the new geometry, and Escape back
+    # restores it — followed by the standard escape storm. The fixture's
+    # two cues span its whole 4s, so overlay work happens throughout.
     time.sleep(2.0)
     focus()
+    key(d.keysym_to_keycode(0x76))  # v: canvas off (toggle hides subtitles)
+    time.sleep(0.4)
+    key(d.keysym_to_keycode(0x76))  # v: canvas back on
+    time.sleep(0.4)
     key(d.keysym_to_keycode(0x66))  # f: fullscreen (recreate at the new size)
     time.sleep(1.6)
     key(d.keysym_to_keycode(0x66))  # f: back to windowed (recreate again)
