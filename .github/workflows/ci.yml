@@ -292,20 +292,25 @@ jobs:
           # The decode threads make gcov's branch counters go negative
           # (GCC bug 68080), which gcovr refuses to parse. Ignore those
           # branch lines; the line data itself is intact.
-          # The fail-under gates lock in the reached levels (95.30% line /
-          # 84.46% branch on the local cov3 full run after the batch-1c
-          # synthesized text-sidecar documents — synthesizeAssDocument's
-          # default style is ours, the glyphs are libass's — raised both
-          # metrics over batch 1b's 95.0%/84.3%; the standing CI-vs-local
-          # relationship is near-identical line denominators with CI's
-          # branch % reading ~0.5 higher, so thresholds below the local
-          # numbers clear both; the levels behind earlier thresholds are
-          # chronicled in docs/coverage-notes.md §2/§2.1 and §3.7-§3.14).
-          # Thresholds sit below min(local, CI) with slack larger than the
-          # measured jitter band (2 lines / 4 branches), so a regression
-          # fails here instead of slipping in silently — and so the local
-          # cov-tree reproduction stays green too (its branch denominator
-          # runs larger than CI's negative-hit-filtered one).
+          # The fail-under gates lock in the reached levels after the
+          # batch-1c synthesized text-sidecar documents (the default
+          # style is ours, the glyphs are libass's), which raised both
+          # metrics over batch 1b's 95.0%/84.3%: local cov3 full run
+          # 95.30% line / 84.46% branch, this CI job's same-commit run
+          # 94.96% line (4809/5066) / 84.73% branch (4777/5637) — the
+          # standing relationship is near-identical line denominators
+          # with CI ~21 covered lines lower and its branch % ~0.5 higher
+          # (negative-hit-filtered denominator). Thresholds must sit
+          # below min(local, CI) with slack larger than the measured
+          # jitter band (2 lines / 4 branches): 94.8 line leaves ~6.4
+          # lines over CI and ~25 over local; 84.2 branch leaves ~31
+          # branches over CI and ~20 over local. The 94.9 first pick
+          # cleared this run by only 1.4 CI lines — inside the jitter
+          # band — and was stepped down to 94.8 for exactly that reason.
+          # A regression fails here instead of slipping in silently, and
+          # the local cov-tree reproduction stays green too. The levels
+          # behind earlier thresholds are chronicled in
+          # docs/coverage-notes.md §2/§2.1 and §3.7-§3.14.
           # Two text reports because gcovr's txt output shows one metric
           # at a time: the branch table carries the gate, the line table
           # lands in the artifact for gap analysis. A 100%-line file can
@@ -315,7 +320,7 @@ jobs:
             --txt coverage.txt --txt-metric branch \
             --exclude-throw-branches \
             --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
-            --fail-under-line 94.9 --fail-under-branch 84.2 \
+            --fail-under-line 94.8 --fail-under-branch 84.2 \
             --print-summary > gcovr-summary.txt
           cat gcovr-summary.txt
           gcovr --root . --filter src --filter include \
