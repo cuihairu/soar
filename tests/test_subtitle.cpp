@@ -11,6 +11,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include "soar/core/ass_dialogue.h"
 #include "soar/core/subtitle_provider.h"
 #include "soar/core/subtitle_text.h"
 
@@ -31,6 +32,7 @@
 #endif
 
 using namespace std::chrono_literals;
+using soar::assDocumentCues;
 using soar::detectSubtitleFormat;
 using soar::ExternalSubtitleProvider;
 using soar::HttpSubtitleConfig;
@@ -222,19 +224,39 @@ void writeCatalog(const TempDir& root, int port) {
              "1\n00:00:01,000 --> 00:00:02,500\nhello from the network\n");
   root.write("dl/movie.zh.vtt",
              "WEBVTT\n\n00:00:01.000 --> 00:00:02.500\n\xE5\xAD\x97\xE5\xB9\x95 from the network\n");
+  root.write("dl/movie.ass",
+             "[Script Info]\n"
+             "ScriptType: v4.00+\n"
+             "\n"
+             "[Events]\n"
+             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, "
+             "MarginV, Effect, Text\n"
+             "Dialogue: 0,0:00:01.00,0:00:02.50,Default,,0,0,0,,"
+             "styled from the network\n");
+  root.write("dl/movie.ssa",
+             "[Script Info]\n"
+             "ScriptType: v4.00\n"
+             "\n"
+             "[Events]\n"
+             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, "
+             "MarginV, Effect, Text\n"
+             "Dialogue: 0,0:00:01.00,0:00:02.50,Default,,0,0,0,,"
+             "ssa alias from the network\n");
   root.write("catalog.tsv",
              "# url<TAB>lang<TAB>title<TAB>ext, one candidate per line\n"
              "\n"
              "not a candidate line\n"
              "https://mirror.example.invalid/movie.es.srt\tes\tHTTPS is skipped\tsrt\n"
-             "http://127.0.0.1:1/movie.ass\tja\tASS needs a decoder\tass\n"
+             "http://127.0.0.1:1/movie.sup\tja\tBitmap subs are skipped\tsup\n"
              + base + "/dl/movie.en.srt\ten\tMovie EN (downloaded)\tsrt\n"
              + base + "/dl/movie.zh.vtt\tzh-Hans\tMovie ZH VTT\tvtt\n"
              + base + "/dl/movie.en.srt\tund\t\tvtt\n"
              + base + "/dl/movie.en.srt\ten-GB\tUK SRT\tSRT\n"
              + base + "/dl/movie.en.srt\tfr\tSubRip alias\tsubrip\n"
              + base + "/dl/movie.en.srt\tde\tFive fields\tvtt\tignored-extra\n"
-             + base + "/dl/movie.en.srt\tpt\tBr VTT\tWEBVTT\n");
+             + base + "/dl/movie.en.srt\tpt\tBr VTT\tWEBVTT\n"
+             + base + "/dl/movie.ass\tja\tStyled ASS\tass\n"
+             + base + "/dl/movie.ssa\tko\tStyled SSA\tssa\n");
 }
 #endif
 
@@ -253,9 +275,13 @@ TEST_CASE("subtitle_format_from_path") {
     CHECK(soar::subtitleFormatFromPath("movie.webvtt") == SubtitleFormat::WebVtt);
     CHECK(soar::subtitleFormatFromPath("Movie.VTT") == SubtitleFormat::WebVtt);
   }
+  SUBCASE("ass/ssa") {
+    CHECK(soar::subtitleFormatFromPath("/v/movie.ass") == SubtitleFormat::Ass);
+    CHECK(soar::subtitleFormatFromPath("movie.ssa") == SubtitleFormat::Ass);
+    CHECK(soar::subtitleFormatFromPath("MOVIE.ASS") == SubtitleFormat::Ass);
+  }
   SUBCASE("unsupported") {
-    // Bitmap / styled formats need a decoder, not this parser.
-    CHECK(soar::subtitleFormatFromPath("movie.ass") == SubtitleFormat::Unknown);
+    // Bitmap formats need a decoder, not this parser.
     CHECK(soar::subtitleFormatFromPath("movie.sup") == SubtitleFormat::Unknown);
     CHECK(soar::subtitleFormatFromPath("movie") == SubtitleFormat::Unknown);
     CHECK(soar::subtitleFormatFromPath("") == SubtitleFormat::Unknown);
@@ -287,6 +313,22 @@ TEST_CASE("detect_subtitle_format") {
     // The first "-->" line is not a timestamp; the second one is.
     CHECK(detectSubtitleFormat("x --> y\n00:00:03,000 --> 00:00:04,000\n") ==
           SubtitleFormat::SubRip);
+  }
+  SUBCASE("ass markers") {
+    // Either the script header section or an event line announces ASS.
+    CHECK(detectSubtitleFormat("[Script Info]\nScriptType: v4.00+\n") ==
+          SubtitleFormat::Ass);
+    CHECK(detectSubtitleFormat(
+              "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,hi\n") ==
+          SubtitleFormat::Ass);
+    // A quoted marker inside cue *text* does not win: the timed arrow
+    // line comes first and its separator decides.
+    CHECK(detectSubtitleFormat(
+              "1\n00:00:01,000 --> 00:00:02,000\nDialogue: not a script\n") ==
+          SubtitleFormat::SubRip);
+    // A marker line without either ASS marker form still falls through
+    // to the arrow scan.
+    CHECK(detectSubtitleFormat("[Events]\n") == SubtitleFormat::Unknown);
   }
   SUBCASE("nothing to go on") {
     CHECK(detectSubtitleFormat("just prose\n\nno timestamps here\n") ==
@@ -669,6 +711,145 @@ TEST_CASE("read_subtitle_file") {
 }
 
 // =========================================================================
+// assDocumentCues — external .ass/.ssa extraction (docs/mvp.md §6, batch 1b)
+// =========================================================================
+
+TEST_CASE("ass_document_cues_basic") {
+  const std::string doc =
+      "[Script Info]\n"
+      "ScriptType: v4.00+\n"
+      "PlayResX: 640\n"
+      "PlayResY: 480\n"
+      "\n"
+      "[V4+ Styles]\n"
+      "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+      "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+      "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+      "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+      "Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H7F000000,"
+      "0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n"
+      "\n"
+      "[Events]\n"
+      "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+      "Effect, Text\n"
+      "Dialogue: 0,0:00:01.00,0:00:03.50,Default,,0,0,0,,Hello\n"
+      "Dialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,second line\n";
+
+  const std::vector<SubtitleCue> cues = assDocumentCues(doc);
+  REQUIRE(cues.size() == 2);
+  CHECK(cues[0].begin == 1000ms);
+  CHECK(cues[0].end == 3500ms);
+  CHECK(cues[0].text == "Hello");
+  CHECK(cues[1].begin == 4000ms);
+  CHECK(cues[1].text == "second line");
+}
+
+TEST_CASE("ass_document_cues_text_transforms") {
+  // Text is field ten: the commas inside it do not split fields. Override
+  // blocks are directives, not content; \N/\n are hard breaks; \h is a
+  // hard space; unknown backslash sequences pass through untouched.
+  const std::string doc =
+      "[Events]\n"
+      "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,a, b, and c\n"
+      "Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,{\\pos(320,50)}placed{\\i1}lean{\\i0}\n"
+      "Dialogue: 0,0:00:05.00,0:00:06.00,Default,,0,0,0,,top\\Nbottom\\nside\\hjoint\n"
+      "Dialogue: 0,0:00:07.00,0:00:08.00,Default,,0,0,0,,kept\\q2 tail\n"
+      "Dialogue: 0,0:00:09.00,0:00:10.00,Default,,0,0,0,,dies here {never closed\n";
+
+  const std::vector<SubtitleCue> cues = assDocumentCues(doc);
+  REQUIRE(cues.size() == 5);
+  CHECK(cues[0].text == "a, b, and c");
+  CHECK(cues[1].text == "placedlean");
+  CHECK(cues[2].text == "top\nbottom\nside joint");
+  CHECK(cues[3].text == "kept\\q2 tail");
+  // An unclosed '{' drops the rest of the line, matching how the embedded
+  // rect extraction treats a broken directive; what a cue has left over is
+  // kept only when it is not blank.
+  CHECK(cues[4].text == "dies here");
+}
+
+TEST_CASE("ass_document_cues_tolerates_broken_lines") {
+  const std::string doc =
+      "; a comment\n"
+      "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+      "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,fine\n"
+      "Dialogue: 0,0:00:02.00,Default\n"                       // 1 comma: junk
+      "Dialogue: 0,0:0:03.00,0:00:04.00,D,,0,0,0,,bad minutes\n"  // bad timestamp
+      "Dialogue: 0,0:00:05.00,0:00:04.00,D,,0,0,0,,inverted\n"     // end <= begin
+      "Dialogue: 0,0:00:06.00,0:00:07.00,D,,0,0,0,,{\\k30}\n"      // empty text
+      "Dialogue: 0,0:00:08.00,0:00:09.00,D,,0,0,0,,  \n";          // blank text
+
+  const std::vector<SubtitleCue> cues = assDocumentCues(doc);
+  REQUIRE(cues.size() == 2);
+  CHECK(cues[0].text == "fine");
+  // An inverted range gets the same default display time the plain-text
+  // parser grants.
+  CHECK(cues[1].text == "inverted");
+  CHECK(cues[1].begin == 5000ms);
+  CHECK(cues[1].end == cues[1].begin + kDefaultCueDuration);
+}
+
+TEST_CASE("ass_document_cues_crlf_and_hour_widths") {
+  const std::string doc =
+      "[Script Info]\r\n"
+      "Dialogue: 0,1:00:00.50,1:00:02.25,D,,0,0,0,,one hour in\r\n"
+      "Dialogue: 0,10:00:00.00,10:00:01.00,D,,0,0,0,,wide hours\r\n";
+
+  const std::vector<SubtitleCue> cues = assDocumentCues(doc);
+  REQUIRE(cues.size() == 2);
+  CHECK(cues[0].begin == 3600500ms);
+  CHECK(cues[0].end == 3602250ms);
+  CHECK(cues[0].text == "one hour in");
+  CHECK(cues[1].begin == 36000000ms);
+  CHECK(cues[1].text == "wide hours");
+}
+
+TEST_CASE("ass_document_cues_timestamp_and_field_edges") {
+  // Every tolerant-timestamp branch and Dialogue-field edge has a pinned
+  // shape: the malformed lines are dropped whole, the merely unusual ones
+  // (tabs, a one-digit fraction, a trailing backslash) still cue.
+  const std::string doc =
+      "Dialogue: 0,\t0:00:01.00,0:00:02.00,D,,0,0,0,,tab start\n"
+      "Dialogue: 0,0:00:03.00,0:00:04.00 \t,D,,0,0,0,,tab end\n"
+      "Dialogue: 0,0:00:05.00,0:00:06.5,D,,0,0,0,,one digit frac\n"
+      "Dialogue:\t0,0:00:07.00,0:00:08.00,D,,0,0,0,,tab after colon\n"
+      "Dialogue:\n"
+      "Dialogue: 0,0:00:11.00,0:00:12.00,D,,0,0,0,,back\\\n"
+      "Dialogue: 0,0:00:13.00,0:00:14.00,D,,0,0,0,,cr\r\r\n"
+      "Dialogue: 0,   ,0:00:02.00,D,,0,0,0,,blank start\n"
+      "Dialogue: 0,5,0:00:02.00,D,,0,0,0,,no colon\n"
+      "Dialogue: 0,1:00,0:00:02.00,D,,0,0,0,,one colon\n"
+      "Dialogue: 0,1:00:01,0:00:02.00,D,,0,0,0,,no dot\n"
+      "Dialogue: 0,:00:01.00,0:00:02.00,D,,0,0,0,,empty hour\n"
+      "Dialogue: 0,0:00:01.00,1:00:1.00,D,,0,0,0,,narrow second\n"
+      "Dialogue: 0,0:00:01.00,1:00:01.,D,,0,0,0,,no frac\n"
+      "Dialogue: 0,0:00:01.00,1:00:01.0000,D,,0,0,0,,four frac digits\n"
+      "Dialogue: 0,x:00:01.00,0:00:02.00,D,,0,0,0,,digit check\n"
+      "Dialogue: 0,1:0/:01.00,0:00:02.00,D,,0,0,0,,low digit check\n"
+      "Dialogue: 0,1:99:01.00,0:00:02.00,D,,0,0,0,,minute 99\n"
+      "Dialogue: 0,1:00:99.00,0:00:02.00,D,,0,0,0,,second 99\n";
+
+  const std::vector<SubtitleCue> cues = assDocumentCues(doc);
+  REQUIRE(cues.size() == 6);
+  CHECK(cues[0].begin == 1000ms);
+  CHECK(cues[0].end == 2000ms);
+  CHECK(cues[0].text == "tab start");
+  CHECK(cues[1].text == "tab end");
+  CHECK(cues[2].end == 6500ms);  // ".5" scales up to 50cs
+  CHECK(cues[2].text == "one digit frac");
+  CHECK(cues[3].begin == 7000ms);
+  CHECK(cues[3].text == "tab after colon");
+  CHECK(cues[4].text == "back\\");  // a lone trailing backslash is content
+  CHECK(cues[5].text == "cr");      // trailing CR runs inside the text pop
+}
+
+TEST_CASE("ass_document_cues_empty_inputs") {
+  CHECK(assDocumentCues("").empty());
+  CHECK(assDocumentCues("[Script Info]\nonly a header\n").empty());
+  CHECK(assDocumentCues("1\n00:00:01,000 --> 00:00:02,000\nsrt\n").empty());
+}
+
+// =========================================================================
 // SidecarSubtitleProvider
 // =========================================================================
 
@@ -722,7 +903,7 @@ TEST_CASE("sidecar_skips_what_is_not_a_text_sidecar") {
   const TempDir tmp;
   tmp.write("movie.mkv", "x");
   tmp.write("movie.mp4", "another video");
-  tmp.write("movie.ass", "styled subs this parser does not read");
+  tmp.write("movie.sup", "bitmap subs need a decoder, not a parser");
   tmp.write("movie.srt.bak", "not a subtitle extension");
   tmp.write("moviey.srt", "a different movie whose name merely starts the same");
   tmp.write("other.srt", "unrelated");
@@ -731,6 +912,31 @@ TEST_CASE("sidecar_skips_what_is_not_a_text_sidecar") {
 
   const SidecarSubtitleProvider provider;
   CHECK(provider.findCandidates(MediaSource{tmp.file("movie.mkv"), {}}).empty());
+}
+
+TEST_CASE("sidecar_offers_ass_and_ssa") {
+  const TempDir tmp;
+  tmp.write("movie.mkv", "x");
+  tmp.write("movie.ass", "[Script Info]\nDialogue: 0,0:00:01.00,0:00:02.00,D,,0,0,0,,hi\n");
+  tmp.write("movie.ssa", "[Script Info]\nDialogue: 0,0:00:01.00,0:00:02.00,D,,0,0,0,,ho\n");
+  tmp.write("movie.ja.ass", "[Script Info]\nDialogue: 0,0:00:01.00,0:00:02.00,D,,0,0,0,,ko\n");
+
+  const SidecarSubtitleProvider provider;
+  const std::vector<SubtitleCandidate> c =
+      provider.findCandidates(MediaSource{tmp.file("movie.mkv"), {}});
+  // Untagged first (movie.ass before movie.ssa by name), then the tagged one.
+  CHECK(titlesOf(c) == (std::vector<std::string>{"movie.ass", "movie.ssa",
+                                                 "movie.ja.ass"}));
+  REQUIRE(c.size() == 3);
+  CHECK(c[0].format == SubtitleFormat::Ass);
+  CHECK(c[0].language.empty());
+  CHECK(c[2].language == "ja");
+  CHECK(c[2].format == SubtitleFormat::Ass);
+  // The bytes a sidecar hands out detect as the format its extension
+  // promised, so loadExternalSubtitle sees a consistent candidate.
+  std::string text;
+  REQUIRE(provider.fetch(c[0], text));
+  CHECK(detectSubtitleFormat(text) == SubtitleFormat::Ass);
 }
 
 TEST_CASE("sidecar_media_with_several_dots_in_its_name") {
@@ -960,6 +1166,11 @@ TEST_CASE("store_external_subtitle") {
     const std::string vtt = storeExternalSubtitle(tmp.path, cand, "WEBVTT\n");
     REQUIRE(!vtt.empty());
     CHECK(std::filesystem::path(vtt).filename() == "movie_zh.vtt");
+
+    cand.format = SubtitleFormat::Ass;
+    const std::string ass = storeExternalSubtitle(tmp.path, cand, "[Script Info]\n");
+    REQUIRE(!ass.empty());
+    CHECK(std::filesystem::path(ass).filename() == "movie_zh.ass");
   }
 
   SUBCASE("a directory that cannot be created yields empty") {
@@ -1019,7 +1230,7 @@ TEST_CASE("search_finds_candidates_and_fetch_downloads_one") {
   // well formed — anything else is a 400).
   const std::vector<SubtitleCandidate> c =
       provider.findCandidates(MediaSource{root.file("movie.mkv"), {}});
-  REQUIRE(c.size() == 7);  // junk, https and .ass catalog lines are skipped
+  REQUIRE(c.size() == 9);  // junk, https and bitmap-format lines are skipped
   CHECK(c[0].path == srv.base_url + "/dl/movie.en.srt");
   CHECK(c[0].language == "en");
   CHECK(c[0].title == "Movie EN (downloaded)");
@@ -1040,6 +1251,10 @@ TEST_CASE("search_finds_candidates_and_fetch_downloads_one") {
   CHECK(c[5].title == "Five fields");
   CHECK(c[6].title == "Br VTT");
   CHECK(c[6].format == SubtitleFormat::WebVtt);
+  CHECK(c[7].title == "Styled ASS");
+  CHECK(c[7].format == SubtitleFormat::Ass);
+  CHECK(c[8].title == "Styled SSA");
+  CHECK(c[8].format == SubtitleFormat::Ass);  // .ssa shares the ASS mapping
 
   SUBCASE("fetch returns text the core parser accepts") {
     std::string out;
@@ -1047,6 +1262,15 @@ TEST_CASE("search_finds_candidates_and_fetch_downloads_one") {
     const std::vector<SubtitleCue> cues = parseSubtitleText(out, c[0].format);
     REQUIRE(cues.size() == 1);
     CHECK(cues[0].text == "hello from the network");
+  }
+
+  SUBCASE("a downloaded ASS document detects as Ass") {
+    std::string out;
+    REQUIRE(provider.fetch(c[7], out));
+    CHECK(detectSubtitleFormat(out) == SubtitleFormat::Ass);
+    const std::vector<SubtitleCue> cues = assDocumentCues(out);
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "styled from the network");
   }
 
   SUBCASE("a download joins the sidecar pipeline via the store") {
@@ -1067,7 +1291,7 @@ TEST_CASE("search_finds_candidates_and_fetch_downloads_one") {
     HttpSubtitleConfig cfg2 = cfg;
     cfg2.endpoint = srv.base_url + "/search?src=unit";
     p2.configure(cfg2);
-    CHECK(p2.findCandidates(MediaSource{root.file("movie.mkv"), {}}).size() == 7);
+    CHECK(p2.findCandidates(MediaSource{root.file("movie.mkv"), {}}).size() == 9);
   }
 #endif
 }
@@ -1479,7 +1703,7 @@ TEST_CASE("answers_without_content_length_are_read_to_eof") {
   provider.configure(cfg);
   const std::vector<SubtitleCandidate> c =
       provider.findCandidates(MediaSource{root.file("movie.mkv"), {}});
-  REQUIRE(c.size() == 7);
+  REQUIRE(c.size() == 9);
 
   std::string out;
   REQUIRE(provider.fetch(c[0], out));

@@ -391,6 +391,8 @@ std::vector<SubtitleCandidate> parseCandidateLines(const std::string& body) {
       format = SubtitleFormat::SubRip;
     } else if (ext == "vtt" || ext == "webvtt") {
       format = SubtitleFormat::WebVtt;
+    } else if (ext == "ass" || ext == "ssa") {
+      format = SubtitleFormat::Ass;
     } else {
       continue;  // only formats the core parser reads are offered
     }
@@ -457,7 +459,7 @@ std::vector<SubtitleCandidate> SidecarSubtitleProvider::findCandidates(
     const std::size_t dot = lower.rfind('.');
     const SubtitleFormat format = subtitleFormatFromPath(name);
     if (format == SubtitleFormat::Unknown) {
-      continue;  // .ass / bitmap subs need a decoder, not this parser
+      continue;  // bitmap subs (PGS, VobSub) need a decoder, not a parser
     }
 
     SubtitleCandidate cand;
@@ -633,7 +635,9 @@ std::string storeExternalSubtitle(const std::string& dir,
   }
   const size_t dot = name.rfind('.');
   if (dot == std::string::npos || dot == 0) {
-    name += candidate.format == SubtitleFormat::WebVtt ? ".vtt" : ".srt";
+    name += candidate.format == SubtitleFormat::WebVtt ? ".vtt"
+            : candidate.format == SubtitleFormat::Ass  ? ".ass"
+                                                       : ".srt";
   }
 
   const std::filesystem::path file = target / name;

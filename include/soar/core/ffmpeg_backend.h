@@ -179,6 +179,12 @@ private:
   struct ExternalSubtitle {
     std::string path;
     std::vector<SubtitleCue> cues;
+    // Whole ASS/SSA document, when the sidecar is one (empty otherwise).
+    // With libass the document renders style-faithfully through
+    // AssRenderer::loadDocument once its track is selected; `cues` still
+    // carries the plain-text extraction for the no-libass degrade and for
+    // frame-count bookkeeping.
+    std::string document;
   };
   mutable std::mutex external_mutex_;
   std::vector<ExternalSubtitle> external_subtitles_;
@@ -285,12 +291,27 @@ private:
   AVCodecContext* subtitle_decoder_{nullptr};
 
   // Embedded ASS/SSA style renderer (docs/mvp.md §6). Always constructed:
-  // without libass it is the inert stub (available() false). Feeding is
-  // live only while ass_feed_active_ — set up in setupDecoders for an
-  // ASS/SSA subtitle stream, cleared in cleanupDecoders; both run off the
-  // decode thread, so the flag needs no lock (AssRenderer itself locks).
+  // without libass it is the inert stub (available() false). One renderer
+  // serves both ASS sources — an embedded stream (fed event lines from the
+  // decoder) and an external sidecar document (loadDocument) — so it
+  // follows "the last selected ASS source": setupDecoders arms the
+  // embedded feed, selectTrack redirects it to a document track and back.
+  // ass_feed_active_ is written from the UI thread (selectTrack,
+  // setupDecoders/cleanupDecoders during open/close) and read on the
+  // decode thread (processSubtitleFrame), hence the atomic; AssRenderer
+  // itself locks. ass_codec_private_ is the embedded stream's codec
+  // private blob stashed at open time so re-selecting the embedded track
+  // after a document can re-arm the feed without re-demuxing (read under
+  // decode_mutex_, which setupDecoders already holds). ass_document_active_
+  // records that the renderer currently holds a document track: the
+  // decode thread drops the embedded stream's events while it stands (a
+  // plain-text echo under the document would draw every line twice), so
+  // it is an atomic like ass_feed_active_ — written by selectTrack,
+  // re-baselined by every open/close.
   AssRenderer ass_renderer_;
-  bool ass_feed_active_{false};
+  std::atomic<bool> ass_feed_active_{false};
+  std::string ass_codec_private_;
+  std::atomic<bool> ass_document_active_{false};
 
   // Disk-cache AVIO state; non-null only while a cached http:// source is
   // open (openContext builds it, closeContext tears it down).

@@ -1745,6 +1745,288 @@ TEST_CASE("embedded ASS renders style-faithfully through libass") {
 #endif
 }
 
+// Pure green in the &HAABBGGRR file convention — a color the fixture's
+// embedded red script never produces, so pixel assertions below can only
+// come from the external document.
+bool isAllGreen(const soar::AssFrame& f) {
+  bool any = false;
+  for (std::size_t i = 0; i + 3 < f.rgba.size(); i += 4) {
+    if (f.rgba[i + 3] == 0) continue;
+    any = true;
+    if (f.rgba[i + 0] != 0 || f.rgba[i + 1] != 255 || f.rgba[i + 2] != 0) {
+      return false;
+    }
+  }
+  return any;
+}
+
+bool isAllRed(const soar::AssFrame& f) {
+  bool any = false;
+  for (std::size_t i = 0; i + 3 < f.rgba.size(); i += 4) {
+    if (f.rgba[i + 3] == 0) continue;
+    any = true;
+    if (f.rgba[i + 0] != 255 || f.rgba[i + 1] != 0 || f.rgba[i + 2] != 0) {
+      return false;
+    }
+  }
+  return any;
+}
+
+// The external document every case in this group loads: 160x120 PlayRes,
+// one "Green" style over the same fixture face the ass unit tests use,
+// and two cues covering the whole 6 s fixture so the polls have slack on
+// a slow machine.
+const char* kExternalDocCues =
+    "Dialogue: 0,0:00:00.00,0:00:03.00,Green,,0,0,0,,Doc One\n"
+    "Dialogue: 0,0:00:03.00,0:00:06.00,Green,,0,0,0,,Doc Two\n";
+
+std::string makeExternalDoc() {
+  return
+      "[Script Info]\n"
+      "; soar external-document test script\n"
+      "ScriptType: v4.00+\n"
+      "PlayResX: 160\n"
+      "PlayResY: 120\n"
+      "WrapStyle: 0\n"
+      "ScaledBorderAndShadow: yes\n"
+      "\n"
+      "[V4+ Styles]\n"
+      "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+      "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+      "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+      "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+      "Style: Green,Noto Mono,24,&H0000FF00,&H00FFFFFF,&H00000000,&H00000000,"
+      "0,0,0,0,100,100,0,0,1,0,0,2,10,10,10,1\n"
+      "\n"
+      "[Events]\n"
+      "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+      "Effect, Text\n" + std::string(kExternalDocCues);
+}
+
+TEST_CASE("an external .ass document loads as a track and renders per build") {
+  // A media without any embedded subtitle stream (same 160x120 video the
+  // styled fixture carries): every frame or pixel below can only have
+  // come from the external document, in both builds.
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping external document test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  dir.write("movie.ass", makeExternalDoc());
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  auto* ass = backend->assRenderer();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  // A document sidecar is a first-class track shaped like any other: the
+  // codec names the format, the title is the file name.
+  soar::TrackId id = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("movie.ass"), id));
+  const soar::TrackInfo* ext = nullptr;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.id == id) ext = &t;
+  }
+  REQUIRE(ext != nullptr);
+  CHECK(ext->type == soar::TrackType::Subtitle);
+  CHECK(ext->codec == "ass");
+  CHECK(ext->title == "movie.ass");
+
+  // Opt-in like every track: loading does not mean showing.
+  CHECK(backend->mediaInfo().selected_subtitle == -1);
+  CHECK(backend->selectTrack(soar::TrackType::Subtitle, id));
+  CHECK(backend->mediaInfo().selected_subtitle == id);
+
+  REQUIRE(backend->play());
+#ifndef SOAR_WITH_LIBASS
+  // No libass: the renderer is the documented null and the Dialogue
+  // extraction became the track — the plain-text pump serves the cues.
+  CHECK(ass == nullptr);
+  const auto frames = pullSubtitleFrames(ffmpeg, 2, std::chrono::seconds(30));
+  REQUIRE(frames.size() >= 2);
+  CHECK(frames[0].text.find("Doc One") != std::string::npos);
+  CHECK(frames[1].text.find("Doc Two") != std::string::npos);
+#else
+  // Document mode: the pump stays idle — the embedded stream's events are
+  // deselected and the extraction is only a load gate, so a plain-text
+  // frame here would mean the document gets drawn twice.
+  REQUIRE(ass != nullptr);
+  ass->setDefaultFont(SOAR_TEST_FONT_FILE);
+  CHECK(pullSubtitleFrames(ffmpeg, 1, std::chrono::milliseconds(400)).empty());
+
+  // The canvas follows the playhead in the document's own style.
+  soar::AssFrame f;
+  bool rendered = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline && !rendered) {
+    rendered = ass->renderAt(ffmpeg->position().count(), &f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(rendered);
+  CHECK(f.width == 160);
+  CHECK(f.height == 120);
+  CHECK(isAllGreen(f));
+  soar::DecodedSubtitleFrame sf;
+  CHECK_FALSE(ffmpeg->tryGetSubtitleFrame(sf));
+#endif
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("an external .ass file without dialogue lines is refused") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping empty document test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  // A well-formed script header with no [Events] record extracts to no
+  // cue at all — loading it would promise a track that can never show
+  // anything, so the load fails instead.
+  dir.write("empty.ass",
+            "[Script Info]\n"
+            "ScriptType: v4.00+\n"
+            "PlayResX: 160\n"
+            "PlayResY: 120\n");
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  soar::TrackId id = -1;
+  CHECK_FALSE(backend->loadExternalSubtitle(dir.file("empty.ass"), id));
+  CHECK(id == -1);
+  CHECK(backend->mediaInfo().tracks.size() == 3);  // video + dual audio only
+  backend->close();
+}
+
+#ifdef SOAR_WITH_LIBASS
+
+TEST_CASE("selecting the embedded ASS stream back restores the libass feed") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_STYLED_ASS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_STYLED_ASS_MEDIA not set; skipping feed restore test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  dir.write("movie.ass", makeExternalDoc());
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  auto* ass = backend->assRenderer();
+  REQUIRE(ass != nullptr);
+  ass->setDefaultFont(SOAR_TEST_FONT_FILE);
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  REQUIRE(backend->play());
+
+  // Baseline: the embedded script renders its red (batch 1a behavior, the
+  // document has not been loaded yet).
+  soar::AssFrame f;
+  bool red = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline && !red) {
+    red = ass->renderAt(ffmpeg->position().count(), &f) && isAllRed(f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(red);
+
+  // Detour through the document: the canvas turns green.
+  soar::TrackId doc_id = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("movie.ass"), doc_id));
+  CHECK(backend->selectTrack(soar::TrackType::Subtitle, doc_id));
+  bool green = false;
+  const auto green_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < green_deadline && !green) {
+    green = ass->renderAt(ffmpeg->position().count(), &f) && isAllGreen(f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(green);
+
+  // Back to the embedded stream: its id sits below every external id.
+  soar::TrackId embedded_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle &&
+        (embedded_id < 0 || t.id < embedded_id)) {
+      embedded_id = t.id;
+    }
+  }
+  REQUIRE(embedded_id >= 0);
+  CHECK(backend->selectTrack(soar::TrackType::Subtitle, embedded_id));
+
+  // Events resume from the decoder's read position, so the seek to the
+  // top is what makes cue one deterministic: it flushes the feed and the
+  // decoder rescans from the first packet. Retry the seek if the poll
+  // overshoots the cue's two-second window on a loaded machine.
+  red = false;
+  for (int attempt = 0; attempt < 5 && !red; ++attempt) {
+    REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+    const auto red_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < red_deadline && !red) {
+      red = ass->renderAt(ffmpeg->position().count(), &f) && isAllRed(f);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  CHECK(red);
+
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("disabling subtitles releases a held ASS document") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_STYLED_ASS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_STYLED_ASS_MEDIA not set; skipping document disable test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  dir.write("movie.ass", makeExternalDoc());
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  auto* ass = backend->assRenderer();
+  REQUIRE(ass != nullptr);
+  ass->setDefaultFont(SOAR_TEST_FONT_FILE);
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  soar::TrackId id = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("movie.ass"), id));
+  CHECK(backend->selectTrack(soar::TrackType::Subtitle, id));
+  REQUIRE(backend->play());
+
+  soar::AssFrame f;
+  bool green = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline && !green) {
+    green = ass->renderAt(ffmpeg->position().count(), &f) && isAllGreen(f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(green);
+
+  // "Off" must not leave the document on the canvas — the empty-track
+  // swap reports exactly one clearing render.
+  CHECK(backend->disableSubtitles());
+  bool vanished = false;
+  const auto vanish_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < vanish_deadline && !vanished) {
+    vanished = !ass->renderAt(ffmpeg->position().count(), &f) && f.changed;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(vanished);
+  CHECK(f.rgba.empty());
+
+  backend->stop();
+  backend->close();
+}
+
+#endif  // SOAR_WITH_LIBASS
+
 TEST_CASE("a burst of adjacent cues overflows the subtitle FIFO in order") {
   std::string media;
   if (!envMedia("SOAR_TEST_BURST_MEDIA", media)) {

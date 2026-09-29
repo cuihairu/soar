@@ -187,6 +187,29 @@ bool presentVideoFrame(SDL_Renderer* renderer, SDL_Texture** texture,
 #endif
 }
 
+// System font candidates, in order: Linux Noto/DejaVu, macOS, Windows.
+// Shared by the ImGui overlay fonts and the libass default font (both
+// compilations of this TU — with and without ImGui — reach the latter).
+std::vector<std::string> fontCandidates() {
+  return {
+      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+      "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/System/Library/Fonts/PingFang.ttc",
+      "/System/Library/Fonts/Helvetica.ttc",
+      "C:\\Windows\\Fonts\\msyh.ttc",
+      "C:\\Windows\\Fonts\\segoeui.ttf",
+  };
+}
+
+bool fileExists(const std::string& path) {
+  if (FILE* f = std::fopen(path.c_str(), "rb")) {
+    std::fclose(f);
+    return true;
+  }
+  return false;
+}
+
 #ifdef SOAR_WITH_IMGUI
 
 // Theme tokens (docs/ui-design.md §4): one dark palette, no scattered
@@ -254,25 +277,15 @@ static SubtitleFonts loadSubtitleFonts() {
         fonts.size_32 = fonts.size_36 = fonts.size_48 = io.Fonts->Fonts[0];
     return fonts;
   }
-  const char* candidates[] = {
-      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-      "/System/Library/Fonts/PingFang.ttc",
-      "/System/Library/Fonts/Helvetica.ttc",
-      "C:\\Windows\\Fonts\\msyh.ttc",
-      "C:\\Windows\\Fonts\\segoeui.ttf",
-  };
-  for (const char* path : candidates) {
-    if (FILE* f = std::fopen(path, "rb")) {
-      std::fclose(f);
-      fonts.size_16 = io.Fonts->AddFontFromFileTTF(path, 16.0f);
-      fonts.size_20 = io.Fonts->AddFontFromFileTTF(path, 20.0f);
-      fonts.size_24 = io.Fonts->AddFontFromFileTTF(path, 24.0f);
-      fonts.size_28 = io.Fonts->AddFontFromFileTTF(path, 28.0f);
-      fonts.size_32 = io.Fonts->AddFontFromFileTTF(path, 32.0f);
-      fonts.size_36 = io.Fonts->AddFontFromFileTTF(path, 36.0f);
-      fonts.size_48 = io.Fonts->AddFontFromFileTTF(path, 48.0f);
+  for (const std::string& path : fontCandidates()) {
+    if (fileExists(path)) {
+      fonts.size_16 = io.Fonts->AddFontFromFileTTF(path.c_str(), 16.0f);
+      fonts.size_20 = io.Fonts->AddFontFromFileTTF(path.c_str(), 20.0f);
+      fonts.size_24 = io.Fonts->AddFontFromFileTTF(path.c_str(), 24.0f);
+      fonts.size_28 = io.Fonts->AddFontFromFileTTF(path.c_str(), 28.0f);
+      fonts.size_32 = io.Fonts->AddFontFromFileTTF(path.c_str(), 32.0f);
+      fonts.size_36 = io.Fonts->AddFontFromFileTTF(path.c_str(), 36.0f);
+      fonts.size_48 = io.Fonts->AddFontFromFileTTF(path.c_str(), 48.0f);
       if (fonts.size_24) return fonts;  // At least the default size loaded
     }
   }
@@ -294,19 +307,9 @@ void loadOverlayFont() {
     io.Fonts->AddFontDefault();
     return;
   }
-  const char* candidates[] = {
-      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-      "/System/Library/Fonts/PingFang.ttc",
-      "/System/Library/Fonts/Helvetica.ttc",
-      "C:\\Windows\\Fonts\\msyh.ttc",
-      "C:\\Windows\\Fonts\\segoeui.ttf",
-  };
-  for (const char* path : candidates) {
-    if (FILE* f = std::fopen(path, "rb")) {
-      std::fclose(f);
-      if (io.Fonts->AddFontFromFileTTF(path, 16.0f) != nullptr) return;
+  for (const std::string& path : fontCandidates()) {
+    if (fileExists(path)) {
+      if (io.Fonts->AddFontFromFileTTF(path.c_str(), 16.0f) != nullptr) return;
     }
   }
   io.Fonts->AddFontDefault();
@@ -690,6 +693,11 @@ class PlayerHud {
       }
       const auto path = loaded_external_paths_.find(t.title);
       if (path == loaded_external_paths_.end()) {
+        continue;
+      }
+      // ASS/SSA documents are not translator input (the batch path speaks
+      // numbered SubRip/WebVTT cues), so no row that can only fail.
+      if (subtitleFormatFromPath(path->second) == SubtitleFormat::Ass) {
         continue;
       }
       if (std::find(translated_titles_.begin(), translated_titles_.end(),
@@ -1811,6 +1819,26 @@ class PlayerHud {
 
 #endif  // SOAR_WITH_IMGUI
 
+// runPlayerWindow sits outside the unnamed namespace; the default-font
+// wiring for external ASS documents stays file-local through this shim.
+void applyAssDefaultFont(soar::FFmpegBackend* ffmpeg) {
+#ifdef SOAR_WITH_FFMPEG
+  if (ffmpeg == nullptr) {
+    return;
+  }
+  if (soar::AssRenderer* ass = ffmpeg->assRenderer()) {
+    for (const std::string& path : fontCandidates()) {
+      if (fileExists(path)) {
+        ass->setDefaultFont(path);
+        break;
+      }
+    }
+  }
+#else
+  (void)ffmpeg;
+#endif
+}
+
 }  // namespace
 #endif  // SOAR_WITH_SDL2
 
@@ -1846,6 +1874,13 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
   bool video_active = false;
 #ifdef SOAR_WITH_FFMPEG
   soar::DecodedVideoFrame video_frame{};
+  // External .ass documents have no container to carry font attachments:
+  // without a fallback font file libass's glyph lookup misses for every
+  // family that was never addFont'ed and the document renders nothing.
+  // Same candidates as the UI fonts; best-effort — a renderer left
+  // without a default still shows documents whose families resolve from
+  // registered fonts or attachments.
+  applyAssDefaultFont(cfg.ffmpeg);
 #endif
 
 #ifdef SOAR_WITH_IMGUI

@@ -13,8 +13,11 @@
 // through the real pipeline they only ever see the shapes the installed
 // decoder happens to emit, which is exactly what a test cannot control.
 
+#include "soar/core/subtitle_text.h"
+
 #include <chrono>
 #include <string>
+#include <vector>
 
 namespace soar {
 
@@ -37,5 +40,24 @@ std::string assTimestamp(std::chrono::milliseconds ms);
 // returned as-is rather than mangled.
 std::string assDialogueLine(const char* ass, std::chrono::milliseconds pts,
                             std::chrono::milliseconds duration);
+
+// Extracts plain timed cues from a complete ASS document (external
+// .ass/.ssa sidecars): every "Dialogue:" line becomes a SubtitleCue with
+// the timing from its Start/End fields and its text stripped of override
+// blocks ({\pos(...)}, {\i1}, ...) — the same rule the plain-text pipeline
+// follows, since those braces are directives, not content. \N and \n hard
+// breaks become '\n' and \h becomes a space, so the cue reads like the
+// same line would in SubRip; other backslash sequences pass through.
+//
+// This is the no-libass degrade for external documents (with libass the
+// document goes to AssRenderer::loadDocument whole and this is unused) and
+// the headless-testable parsing arm for both modes' file validation.
+//
+// Tolerant, like every parser here: lines that are not 10-field Dialogue
+// records, fields whose timestamps do not parse, and cues whose text ends
+// up empty are skipped; a cue whose End is missing-or-before-its-Start is
+// kept with the default 2 s display time (kDefaultCueDuration), matching
+// parseSubtitleText. Nothing throws.
+std::vector<SubtitleCue> assDocumentCues(const std::string& content);
 
 } // namespace soar

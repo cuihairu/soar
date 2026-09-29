@@ -45,10 +45,12 @@ public:
 };
 
 // Local sidecar files sitting next to the media. For /videos/movie.mkv it
-// offers movie.srt, movie.en.srt, movie.zh-Hans.vtt, ... — the naming
-// players have always agreed on. Only the plain-text formats the core
-// parser reads are offered (.srt / .vtt / .webvtt); bitmap subtitles
-// (PGS, VobSub) need a decoder and are skipped.
+// offers movie.srt, movie.en.srt, movie.zh-Hans.vtt, movie.ass, ... — the
+// naming players have always agreed on. Text sidecars the core can use are
+// offered (.srt / .vtt / .webvtt / .ass / .ssa); bitmap subtitles (PGS,
+// VobSub) need a decoder and are skipped. An ASS/SSA sidecar loads as a
+// style-faithful document when the build has libass, and as plain-text
+// cues otherwise.
 //
 // Matching is case-insensitive, an untagged file (movie.srt) sorts ahead of
 // tagged ones, and the rest is ordered by name so the menu does not shuffle
@@ -87,13 +89,14 @@ struct HttpSubtitleConfig {
 //   search  GET {endpoint}?size={bytes}&hash={hex16}&name={stem}
 //           X-API-Key: {api_key}            (header sent when configured)
 //           200 + text body, one candidate per line, four tab-separated
-//           fields: url, language, title, extension ("srt"/"vtt"). Lines
-//           starting with '#' are comments; an empty body means no
-//           candidates. Only http:// candidate urls are offered (this
-//           client speaks no TLS, like HttpCache — see http_cache.h).
+//           fields: url, language, title, extension ("srt"/"vtt"/"ass"/
+//           "ssa"). Lines starting with '#' are comments; an empty body
+//           means no candidates. Only http:// candidate urls are offered
+//           (this client speaks no TLS, like HttpCache — see
+//           http_cache.h).
 //   fetch   GET {candidate url}; 200 + a body that detectSubtitleFormat()
-//           recognizes (SubRip or WebVTT) yields the text, anything else
-//           (non-2xx, wrong bytes, unreachable) yields false.
+//           recognizes (SubRip, WebVTT or ASS) yields the text, anything
+//           else (non-2xx, wrong bytes, unreachable) yields false.
 //
 // The hash is the widely used sum-of-64-bit-words recipe over the first
 // and last 64 KiB plus the file size (see mediaHashHex), so a service can

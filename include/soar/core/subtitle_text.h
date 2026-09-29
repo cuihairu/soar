@@ -16,24 +16,29 @@ struct SubtitleCue {
   std::string text;
 };
 
-// Plain-text subtitle container formats. Bitmap ones (PGS, VobSub, dvdsub)
-// are deliberately absent: they need a decoder, not a parser, and the
-// sidecar provider never offers them.
+// Subtitle container formats. SubRip/WebVtt are plain text; Ass is a full
+// ASS/SSA script document (rendered style-faithfully through libass when
+// the build has it, extracted to plain cues otherwise). Bitmap ones (PGS,
+// VobSub, dvdsub) are deliberately absent: they need a decoder, not a
+// parser, and the sidecar provider never offers them.
 enum class SubtitleFormat {
   Unknown,
   SubRip,
-  WebVtt
+  WebVtt,
+  Ass
 };
 
 // Format implied by a file extension, case-insensitively: ".srt" -> SubRip,
-// ".vtt"/".webvtt" -> WebVtt, anything else (including no extension) ->
-// Unknown.
+// ".vtt"/".webvtt" -> WebVtt, ".ass"/".ssa" -> Ass, anything else (including
+// no extension) -> Unknown.
 SubtitleFormat subtitleFormatFromPath(const std::string& path);
 
-// Format implied by the content: a "WEBVTT" first line decides it, else the
-// first parseable "-->" block does — the fraction separator is the tell,
-// since SubRip writes "00:00:01,000" and WebVTT "00:00:01.000". Unknown
-// when the text is empty or carries no timestamp at all.
+// Format implied by the content: a "WEBVTT" first line decides it, else
+// whichever marker shows up first — a "Dialogue:" line or a "[Script Info]"
+// section header decides Ass, the first parseable "-->" block decides
+// SubRip vs WebVtt by the fraction separator, since SubRip writes
+// "00:00:01,000" and WebVTT "00:00:01.000". Unknown when the text is empty
+// or carries none of the markers.
 SubtitleFormat detectSubtitleFormat(const std::string& content);
 
 // Parse SubRip or WebVTT text into cues, in file order.

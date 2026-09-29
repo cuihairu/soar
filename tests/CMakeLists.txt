@@ -30,6 +30,11 @@ add_executable(soar_backend_media_tests
 
 target_compile_features(soar_backend_media_tests PRIVATE cxx_std_17)
 target_link_libraries(soar_backend_media_tests PRIVATE soar::core doctest::doctest)
+# Same fixture font the ass unit tests use: external ASS documents have no
+# container attachments, so the renderer needs the checked-in face for
+# deterministic glyph resolution (ASS_FONTPROVIDER_NONE).
+target_compile_definitions(soar_backend_media_tests PRIVATE
+  SOAR_TEST_FONT_FILE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/NotoMono-Regular.ttf")
 
 add_test(NAME soar_backend_media_tests COMMAND soar_backend_media_tests)
 

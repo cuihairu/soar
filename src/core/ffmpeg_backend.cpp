@@ -1211,6 +1211,93 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
       external_cue_pos_ = 0;
       external_last_pos_ = std::chrono::milliseconds(0);
     }
+
+    // One ASS renderer serves both ASS sources and follows the last
+    // selected ASS source (docs/mvp.md §6, external documents): selecting
+    // an external document retires the embedded stream's feed, selecting
+    // the embedded stream again rebuilds it from the CodecPrivate stashed
+    // at open time, and any non-ASS selection releases a held document.
+    // Two short critical sections gather the inputs; the renderer calls
+    // run outside every backend lock (AssRenderer locks itself, and the
+    // decode thread may be feeding or rendering concurrently).
+    const bool renderer_live = ass_renderer_.available();
+    bool slot_is_document = false;
+    std::string document;
+    {
+      std::lock_guard<std::mutex> lock(external_mutex_);
+      if (external_slot >= 0) {
+        const ExternalSubtitle& ext =
+            external_subtitles_[static_cast<std::size_t>(external_slot)];
+        slot_is_document = !ext.document.empty();
+        document = ext.document;
+      }
+    }
+    int video_w = 0;
+    int video_h = 0;
+    bool embedded_ass = false;
+    std::string codec_private;
+    {
+      std::lock_guard<std::mutex> lock(decode_mutex_);
+      if (format_ctx_) {
+        if (video_stream_index_ >= 0 && format_ctx_->streams[video_stream_index_] &&
+            format_ctx_->streams[video_stream_index_]->codecpar) {
+          const AVCodecParameters* vpar =
+              format_ctx_->streams[video_stream_index_]->codecpar;
+          video_w = vpar->width;
+          video_h = vpar->height;
+        }
+        if (external_slot < 0 && id >= 0 &&
+            id < static_cast<TrackId>(format_ctx_->nb_streams) &&
+            format_ctx_->streams[id] && format_ctx_->streams[id]->codecpar) {
+          const AVCodecParameters* par = format_ctx_->streams[id]->codecpar;
+          embedded_ass = par->codec_id == AV_CODEC_ID_ASS ||
+                         par->codec_id == AV_CODEC_ID_SSA;
+        }
+        codec_private = ass_codec_private_;
+      }
+    }
+
+    if (slot_is_document && renderer_live) {
+      // External document, style-faithful: one load replaces the whole
+      // track; the canvas follows the playhead from here on. The feed
+      // flag drops first so a packet decoding concurrently cannot append
+      // an embedded event into the freshly loaded document track; the
+      // document flag then closes the plain-text gate. Between the two
+      // stores an event can degrade to one transient plain-text frame —
+      // bounded by its own duration, versus an event landing after
+      // loadDocument, which would persist on the canvas.
+      ass_feed_active_ = false;
+      ass_renderer_.loadDocument(document.data(), document.size());
+      if (video_w > 0 && video_h > 0) {
+        ass_renderer_.setFrameSize(video_w, video_h);
+      }
+      ass_document_active_ = true;
+    } else if (external_slot < 0 && embedded_ass && renderer_live) {
+      // Back to the embedded stream. Events resume from wherever the
+      // decoder's read position is: cues between the open's start and
+      // this point stay hidden until a seek backwards makes the decoder
+      // rescan them (flushEvents then drops the stale copies). No
+      // automatic rescan here — batch 1b documents that boundary.
+      if (ass_renderer_.startStream()) {
+        if (!codec_private.empty()) {
+          ass_renderer_.feedCodecPrivate(codec_private.data(),
+                                         codec_private.size());
+        }
+        if (video_w > 0 && video_h > 0) {
+          ass_renderer_.setFrameSize(video_w, video_h);
+        }
+        ass_feed_active_ = true;
+      }
+      ass_document_active_ = false;
+    } else if (ass_document_active_.load(std::memory_order_relaxed)) {
+      // A text selection while a document is on screen: swap in an empty
+      // track so the canvas goes quiet and the plain-text path takes
+      // over. (A stub build never held a document, so this arm is
+      // unreachable there.)
+      ass_renderer_.startStream();
+      ass_document_active_ = false;
+    }
+
     {
       std::lock_guard<std::mutex> lock(info_mutex_);
       media_info_.selected_subtitle = id;
@@ -1350,6 +1437,15 @@ bool FFmpegBackend::disableSubtitles() {
     active_external_ = -1;
     external_cue_pos_ = 0;
   }
+  // "Off" also releases the renderer's document track (docs/mvp.md §6,
+  // external documents): the empty-track swap quiets the canvas, and the
+  // decode thread's drop-gate clears with the flag. The embedded feed's
+  // metadata-only selection semantics are untouched — only content batch
+  // 1b introduced is released here.
+  if (ass_document_active_.load(std::memory_order_relaxed)) {
+    ass_renderer_.startStream();
+    ass_document_active_ = false;
+  }
   emit(Event{EventType::MediaInfoChanged});
   return true;
 }
@@ -1376,16 +1472,38 @@ bool FFmpegBackend::loadExternalSubtitle(const std::string& path, TrackId& out_i
   if (!readSubtitleFile(path, text)) {
     return fail("loadExternalSubtitle: cannot read '" + path + "'", /*emit_event=*/false);
   }
-  const std::vector<SubtitleCue> cues = parseSubtitleText(text);
-  if (cues.empty()) {
-    return fail("loadExternalSubtitle: no cues in '" + path + "'", /*emit_event=*/false);
-  }
 
   // Named the way the embedded tracks are ("subrip", "mov_text"), so the
   // menu reads the same for both. A sidecar's language tag lives in its
   // file name and is left to the provider; the title below carries it.
-  const char* codec = detectSubtitleFormat(text) == SubtitleFormat::WebVtt ? "webvtt"
-                                                                         : "subrip";
+  const SubtitleFormat format = detectSubtitleFormat(text);
+  std::vector<SubtitleCue> cues;
+  std::string document;
+  const char* codec = "subrip";
+  if (format == SubtitleFormat::Ass) {
+    // An .ass/.ssa sidecar is a complete script, not a cue list. The
+    // Dialogue extraction still gates the load — a file without a single
+    // usable event line is not a subtitle — and doubles as the no-libass
+    // track itself. With libass the document loads whole in selectTrack
+    // (styles faithful), and `cues` is dropped: the pump must stay idle
+    // or the UI would draw every line twice, once as plain text and once
+    // on the libass canvas.
+    cues = assDocumentCues(text);
+    if (cues.empty()) {
+      return fail("loadExternalSubtitle: no cues in '" + path + "'", /*emit_event=*/false);
+    }
+    codec = "ass";
+    if (ass_renderer_.available()) {
+      document = std::move(text);
+      cues.clear();
+    }
+  } else {
+    cues = parseSubtitleText(text);
+    if (cues.empty()) {
+      return fail("loadExternalSubtitle: no cues in '" + path + "'", /*emit_event=*/false);
+    }
+    codec = format == SubtitleFormat::WebVtt ? "webvtt" : "subrip";
+  }
 
   TrackId id = -1;
   {
@@ -1403,9 +1521,10 @@ bool FFmpegBackend::loadExternalSubtitle(const std::string& path, TrackId& out_i
     // never collide with an embedded one.
     id = static_cast<TrackId>(nb_streams + static_cast<int>(slot));
     if (slot == external_subtitles_.size()) {
-      external_subtitles_.push_back(ExternalSubtitle{path, {}});
+      external_subtitles_.push_back(ExternalSubtitle{path, {}, {}});
     }
     external_subtitles_[slot].cues = cues;
+    external_subtitles_[slot].document = document;
   }
 
   {
@@ -1914,10 +2033,13 @@ bool FFmpegBackend::setupDecoders() {
     // Without libass (stub) or for text codecs nothing here activates and
     // the plain-text path stays authoritative.
     ass_feed_active_ = false;
-    if (ass_renderer_.available() &&
-        (codecpar->codec_id == AV_CODEC_ID_ASS ||
-         codecpar->codec_id == AV_CODEC_ID_SSA) &&
-        ass_renderer_.startStream()) {
+    ass_document_active_ = false;
+    ass_codec_private_.clear();
+    if (ass_renderer_.available()) {
+      // Attachments register for the whole open, not just the embedded
+      // feed: addFont fills the library, which survives track swaps, and
+      // an external .ass document selected later may name the same
+      // families its file embeds.
       for (unsigned i = 0; i < format_ctx_->nb_streams; ++i) {
         const AVStream* st = format_ctx_->streams[i];
         const AVCodecParameters* par = st ? st->codecpar : nullptr;
@@ -1935,19 +2057,29 @@ bool FFmpegBackend::setupDecoders() {
             reinterpret_cast<const std::uint8_t*>(par->extradata),
             static_cast<std::size_t>(par->extradata_size));
       }
-      if (codecpar->extradata_size > 0 && codecpar->extradata != nullptr) {
-        ass_renderer_.feedCodecPrivate(
-            reinterpret_cast<const char*>(codecpar->extradata),
-            static_cast<std::size_t>(codecpar->extradata_size));
-      }
-      if (video_stream_index_ >= 0) {
-        const AVCodecParameters* vpar =
-            format_ctx_->streams[video_stream_index_]->codecpar;
-        if (vpar->width > 0 && vpar->height > 0) {
-          ass_renderer_.setFrameSize(vpar->width, vpar->height);
+      if (codecpar->codec_id == AV_CODEC_ID_ASS ||
+          codecpar->codec_id == AV_CODEC_ID_SSA) {
+        if (ass_renderer_.startStream()) {
+          if (codecpar->extradata_size > 0 && codecpar->extradata != nullptr) {
+            ass_renderer_.feedCodecPrivate(
+                reinterpret_cast<const char*>(codecpar->extradata),
+                static_cast<std::size_t>(codecpar->extradata_size));
+            // Stash the header so selectTrack can re-arm this feed after
+            // a detour through an external document, without re-demuxing.
+            ass_codec_private_.assign(
+                reinterpret_cast<const char*>(codecpar->extradata),
+                static_cast<std::size_t>(codecpar->extradata_size));
+          }
+          if (video_stream_index_ >= 0) {
+            const AVCodecParameters* vpar =
+                format_ctx_->streams[video_stream_index_]->codecpar;
+            if (vpar->width > 0 && vpar->height > 0) {
+              ass_renderer_.setFrameSize(vpar->width, vpar->height);
+            }
+          }
+          ass_feed_active_ = true;
         }
       }
-      ass_feed_active_ = true;
     }
   }
 
@@ -1973,8 +2105,12 @@ void FFmpegBackend::cleanupDecoders() {
     subtitle_decoder_ = nullptr;
   }
   // No more feeding once the decoders are gone (the renderer keeps its
-  // last track; the next open re-runs startStream in setupDecoders).
+  // last track; the next open re-runs startStream in setupDecoders). The
+  // CodecPrivate stash and document flag belong to the closed media too —
+  // both are rebuilt by the next open.
   ass_feed_active_ = false;
+  ass_document_active_ = false;
+  ass_codec_private_.clear();
 
   // Cleanup resamplers
   if (audio_resampler_) {
@@ -2447,7 +2583,14 @@ void FFmpegBackend::processSubtitleFrame(const AVSubtitle& sub, std::chrono::mil
     if (rect->type == SUBTITLE_TEXT && rect->text != nullptr) {
       piece = rect->text;
     } else if (rect->type == SUBTITLE_ASS && rect->ass != nullptr) {
-      if (ass_feed_active_) {
+      if (ass_document_active_.load(std::memory_order_relaxed)) {
+        // The renderer is showing an external document: the embedded
+        // stream's events are deselected, not degraded — drop them, or
+        // the document gets a plain-text echo of the stream drawn on
+        // top of it.
+        continue;
+      }
+      if (ass_feed_active_.load(std::memory_order_relaxed)) {
         // Style-faithful path: the real ASS decoder hands back complete
         // "Dialogue:" lines — feed verbatim and skip the plain-text
         // queue so the subtitle is not double-rendered (the UI draws

@@ -189,6 +189,9 @@ SubtitleFormat subtitleFormatFromPath(const std::string& path) {
   if (ext == ".vtt" || ext == ".webvtt") {
     return SubtitleFormat::WebVtt;
   }
+  if (ext == ".ass" || ext == ".ssa") {
+    return SubtitleFormat::Ass;
+  }
   return SubtitleFormat::Unknown;
 }
 
@@ -206,6 +209,13 @@ SubtitleFormat detectSubtitleFormat(const std::string& content) {
     break;
   }
   for (const std::string& line : splitLines(content)) {
+    // ASS documents announce themselves with a script header section or
+    // event lines; either marker wins as soon as it shows up. A timed
+    // "-->" block always precedes a cue's text, so an SRT/VTT file whose
+    // cue *text* quotes "Dialogue:" still resolves by its timestamps.
+    if (line.rfind("[Script Info]", 0) == 0 || line.rfind("Dialogue:", 0) == 0) {
+      return SubtitleFormat::Ass;
+    }
     const std::size_t arrow = line.find("-->");
     if (arrow == std::string::npos) {
       continue;
