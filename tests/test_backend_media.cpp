@@ -1823,11 +1823,14 @@ TEST_CASE("an external .ass document loads as a track and renders per build") {
   REQUIRE(backend->open(soar::MediaSource{local}));
 
   // A document sidecar is a first-class track shaped like any other: the
-  // codec names the format, the title is the file name.
+  // codec names the format, the title is the file name. The track list is
+  // copied out first — a pointer into the mediaInfo() temporary would
+  // dangle the moment the expression ends (ASAN/TSAN catch exactly that).
   soar::TrackId id = -1;
   REQUIRE(backend->loadExternalSubtitle(dir.file("movie.ass"), id));
+  const auto tracks = backend->mediaInfo().tracks;
   const soar::TrackInfo* ext = nullptr;
-  for (const auto& t : backend->mediaInfo().tracks) {
+  for (const auto& t : tracks) {
     if (t.id == id) ext = &t;
   }
   REQUIRE(ext != nullptr);
