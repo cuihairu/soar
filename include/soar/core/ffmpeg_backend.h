@@ -226,6 +226,22 @@ private:
   bool audioTrackPending();
   void applyPendingAudioTrack();
 
+  // Runtime subtitle track switching, same handoff shape as the audio one
+  // minus the resume seek: subtitle cues stream from the decoder's read
+  // position (the batch-1b no-rescan boundary), so installing the new
+  // decoder and stream index is all the switch does.
+  bool subtitleTrackPending();
+  void applyPendingSubtitleTrack();
+  // Builds a decoder for an arbitrary embedded subtitle stream (the
+  // non-default selection selectTrack() supports). Caller holds
+  // decode_mutex_ and reports the error.
+  AVCodecContext* buildSubtitleDecoder(TrackId id, std::string& error);
+
+  // After a track switch joined a leftover decode thread, playback is not
+  // running anymore even if the caller's state snapshot raced ahead of
+  // the wind-down: normalize the state to Stopped and report it once.
+  void reportStoppedPlayback();
+
   // A-B loop wrap (decode thread only): once the play clock reaches the
   // armed B point, seek back to A and rebase the clock. Returns true when
   // a wrap happened. atEof skips the elapsed>=B check — at end-of-stream
@@ -305,14 +321,16 @@ private:
   // (loadDocument), and an external text sidecar, resynthesized into a
   // default-styled document at load time (batch 1c) — so it follows
   // "the last selected subtitle source": setupDecoders arms the embedded
-  // feed, selectTrack redirects it to a document track and back.
+  // ASS feed, selectTrack redirects it to a document track and back and
+  // arms it for any embedded text stream selected (the selected-track
+  // selection-semantics batch). An embedded stream's header is read from
+  // its codecpar when the feed arms — the ASS/SSA CodecPrivate for style
+  // scripts, a synthesized default header (synthesizeAssDocument with no
+  // cues) for text streams.
   // ass_feed_active_ is written from the UI thread (selectTrack,
   // setupDecoders/cleanupDecoders during open/close) and read on the
   // decode thread (processSubtitleFrame), hence the atomic; AssRenderer
-  // itself locks. ass_codec_private_ is the embedded stream's codec
-  // private blob stashed at open time so re-selecting the embedded track
-  // after a document can re-arm the feed without re-demuxing (read under
-  // decode_mutex_, which setupDecoders already holds). ass_document_active_
+  // itself locks. ass_document_active_
   // records that the renderer currently holds a document track: the
   // decode thread drops the embedded stream's events while it stands (a
   // plain-text echo under the document would draw every line twice), and
@@ -324,8 +342,16 @@ private:
   // open/close.
   AssRenderer ass_renderer_;
   std::atomic<bool> ass_feed_active_{false};
-  std::string ass_codec_private_;
   std::atomic<bool> ass_document_active_{false};
+
+  // Subtitle selection is decode semantics, not metadata (the selection-
+  // semantics batch closing the batch-1b/1c overlay): this gate decides
+  // whether decodeLoop processes subtitle packets at all. True from open
+  // (the default subtitle stream decodes and feeds the plain-text queue —
+  // the documented open behavior tests rely on), false while a sidecar is
+  // selected or subtitles are off, true again for a selected embedded
+  // stream. UI thread writes, decode thread reads, hence atomic.
+  std::atomic<bool> subtitle_decode_active_{false};
 
   // Disk-cache AVIO state; non-null only while a cached http:// source is
   // open (openContext builds it, closeContext tears it down).
@@ -411,6 +437,12 @@ private:
   mutable std::mutex pending_audio_mutex_;
   AVCodecContext* pending_audio_decoder_{nullptr};
   int pending_audio_track_{-1};
+
+  // Pending subtitle track switch (guarded by pending_subtitle_mutex_),
+  // same handoff contract as the audio one: the slot owns the decoder.
+  mutable std::mutex pending_subtitle_mutex_;
+  AVCodecContext* pending_subtitle_decoder_{nullptr};
+  int pending_subtitle_track_{-1};
 };
 
 /**

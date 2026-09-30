@@ -259,4 +259,23 @@ std::string synthesizeAssDocument(const std::vector<SubtitleCue>& cues,
   return doc;
 }
 
+std::string assDialogueLineFromText(const std::string& text,
+                                    std::chrono::milliseconds start,
+                                    std::chrono::milliseconds end) {
+  // Same respell as the document synthesizer: a literal newline would end
+  // the Dialogue line early, so line breaks become the \N hard break and
+  // every other byte passes through untouched.
+  std::string spelled;
+  spelled.reserve(text.size());
+  for (const char c : text) {
+    if (c == '\n') {
+      spelled += "\\N";
+    } else {
+      spelled.push_back(c);
+    }
+  }
+  return fmt::format("Dialogue: 0,{},{},Default,,0,0,0,,{}",
+                     assTimestamp(start), assTimestamp(end), spelled);
+}
+
 } // namespace soar

@@ -582,6 +582,15 @@ void FFmpegBackend::close() {
       }
       pending_audio_track_ = -1;
     }
+    // Same for a subtitle-track switch.
+    {
+      std::lock_guard<std::mutex> plock(pending_subtitle_mutex_);
+      if (pending_subtitle_decoder_) {
+        avcodec_free_context(&pending_subtitle_decoder_);
+        pending_subtitle_decoder_ = nullptr;
+      }
+      pending_subtitle_track_ = -1;
+    }
 
     cleanupDecoders();
     closeContext();
@@ -1214,13 +1223,16 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
 
     // One ASS renderer serves every canvas-drawn subtitle source and
     // follows the last selected subtitle source (docs/mvp.md §6, external
-    // documents and batch 1c's synthesized text sidecars): selecting an
-    // external track retires the embedded stream's feed, selecting the
-    // embedded stream again rebuilds it from the CodecPrivate stashed at
-    // open time, and any embedded text selection releases a held document.
-    // Two short critical sections gather the inputs; the renderer calls
-    // run outside every backend lock (AssRenderer locks itself, and the
-    // decode thread may be feeding or rendering concurrently).
+    // documents, batch 1c's synthesized text sidecars, and this batch's
+    // selected embedded text streams). Selection is decode semantics too:
+    // a sidecar selection closes the embedded decode gate — the
+    // batch-1b/1c overlay closes in every build, not just where a canvas
+    // can take over — and an embedded selection opens the gate on the
+    // selected stream, switching its decoder in when it is not the one
+    // open built. Two short critical sections gather the inputs; the
+    // renderer calls run outside every backend lock (AssRenderer locks
+    // itself, and the decode thread may be feeding or rendering
+    // concurrently).
     const bool renderer_live = ass_renderer_.available();
     bool slot_is_document = false;
     std::string document;
@@ -1253,56 +1265,173 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
           const AVCodecParameters* par = format_ctx_->streams[id]->codecpar;
           embedded_ass = par->codec_id == AV_CODEC_ID_ASS ||
                          par->codec_id == AV_CODEC_ID_SSA;
+          // The stream's own header, for re-arming the feed below. The
+          // codecpar stays valid for as long as the media is open, so the
+          // default stream's CodecPrivate — what open fed its feed with —
+          // is read here again instead of being stashed at open time.
+          if (embedded_ass && par->extradata_size > 0 && par->extradata != nullptr) {
+            codec_private.assign(reinterpret_cast<const char*>(par->extradata),
+                                 static_cast<std::size_t>(par->extradata_size));
+          }
         }
-        codec_private = ass_codec_private_;
       }
     }
 
-    if (slot_is_document && renderer_live) {
-      // External document, style-faithful: one load replaces the whole
-      // track; the canvas follows the playhead from here on. The document
-      // is whatever loadExternalSubtitle put in the slot — an .ass/.ssa
-      // sidecar's own script, or an SRT/WebVTT sidecar's default-styled
-      // resynthesis (batch 1c: the style is ours, the glyphs are
-      // libass's). The queue's plain-text copy of the same cues stays the
-      // UI's to suppress (subtitleDocumentActive()); the pump itself is
-      // not gated, so pulls still serve it in both builds. The feed flag
-      // drops first so a packet decoding concurrently cannot append an
-      // embedded event into the freshly loaded document track; the
-      // document flag then closes the plain-text gate. Between the two
-      // stores an event can degrade to one transient plain-text frame —
-      // bounded by its own duration, versus an event landing after
-      // loadDocument, which would persist on the canvas.
-      ass_feed_active_ = false;
-      ass_renderer_.loadDocument(document.data(), document.size());
-      if (video_w > 0 && video_h > 0) {
-        ass_renderer_.setFrameSize(video_w, video_h);
+    if (external_slot >= 0) {
+      // The embedded stream is deselected: subtitle packets stop being
+      // processed and whatever the stream already queued is dropped, so
+      // from this selection on the sidecar is the only thing arriving in
+      // the queue (and on screen) in every build. A packet decoding
+      // concurrently with this block can land one final frame; the gate
+      // makes it the last.
+      subtitle_decode_active_ = false;
+      {
+        std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
+        std::queue<DecodedSubtitleFrame> empty;
+        subtitle_frames_.swap(empty);
       }
-      ass_document_active_ = true;
-    } else if (external_slot < 0 && embedded_ass && renderer_live) {
-      // Back to the embedded stream. Events resume from wherever the
-      // decoder's read position is: cues between the open's start and
-      // this point stay hidden until a seek backwards makes the decoder
-      // rescan them (flushEvents then drops the stale copies). No
-      // automatic rescan here — batch 1b documents that boundary.
-      if (ass_renderer_.startStream()) {
-        if (!codec_private.empty()) {
-          ass_renderer_.feedCodecPrivate(codec_private.data(),
-                                         codec_private.size());
+      if (renderer_live) {
+        // External document, style-faithful: one load replaces the whole
+        // track; the canvas follows the playhead from here on. The document
+        // is whatever loadExternalSubtitle put in the slot — an .ass/.ssa
+        // sidecar's own script, or an SRT/WebVTT sidecar's default-styled
+        // resynthesis (batch 1c: the style is ours, the glyphs are
+        // libass's). The queue's plain-text copy of the same cues stays the
+        // UI's to suppress (subtitleDocumentActive()); the pump itself is
+        // not gated, so pulls still serve it in both builds. The feed flag
+        // drops first so a packet decoding concurrently cannot append an
+        // embedded event into the freshly loaded document track; the
+        // document flag then closes the plain-text gate. Between the two
+        // stores an event can degrade to one transient plain-text frame —
+        // bounded by its own duration, versus an event landing after
+        // loadDocument, which would persist on the canvas.
+        if (slot_is_document) {
+          ass_feed_active_ = false;
+          ass_renderer_.loadDocument(document.data(), document.size());
+          if (video_w > 0 && video_h > 0) {
+            ass_renderer_.setFrameSize(video_w, video_h);
+          }
+          ass_document_active_ = true;
         }
-        if (video_w > 0 && video_h > 0) {
-          ass_renderer_.setFrameSize(video_w, video_h);
-        }
-        ass_feed_active_ = true;
+        // A sidecar without a document needs no renderer work here: in a
+        // libass build every loadable sidecar carries one (synthesized at
+        // load for text formats, batch 1c), and the no-libass build never
+        // armed the renderer in the first place. Whatever the previous
+        // selection left standing is the next selection's release to do.
       }
-      ass_document_active_ = false;
-    } else if (ass_document_active_.load(std::memory_order_relaxed)) {
-      // A text selection while a document is on screen: swap in an empty
-      // track so the canvas goes quiet and the plain-text path takes
-      // over. (A stub build never held a document, so this arm is
-      // unreachable there.)
-      ass_renderer_.startStream();
-      ass_document_active_ = false;
+    } else {
+      // An embedded subtitle stream: the decode gate opens on it. When it
+      // is not the stream open built a decoder for, a fresh decoder is
+      // handed over first — the audio switch's contract, so on failure
+      // the old decoder stays and the selection fails without touching
+      // anything.
+      if (id != subtitle_stream_index_) {
+        AVCodecContext* new_decoder = nullptr;
+        std::string build_error;
+        {
+          std::lock_guard<std::mutex> lock(decode_mutex_);
+          new_decoder = buildSubtitleDecoder(id, build_error);
+        }
+        if (new_decoder == nullptr) {
+          return fail(std::move(build_error));
+        }
+
+        // Hand the decoder over. While a decode thread is running it owns
+        // subtitle_decoder_, so it must install the new one itself at a
+        // packet boundary; otherwise (Stopped / thread already exited) we
+        // can swap it in directly under decode_mutex_.
+        bool handed_to_decode_thread = false;
+        bool thread_stopped = false;
+        {
+          std::lock_guard<std::mutex> lock(decode_mutex_);
+          const bool decode_thread_running =
+              decode_thread_.joinable() &&
+              (state == PlaybackState::Playing || state == PlaybackState::Paused);
+
+          if (decode_thread_running) {
+            std::lock_guard<std::mutex> plock(pending_subtitle_mutex_);
+            if (pending_subtitle_decoder_) {
+              // The decode loop never saw the previous pending switch
+              // (rapid re-switch overwrites the slot); the slot owns the
+              // context, so free it here or it leaks.
+              avcodec_free_context(&pending_subtitle_decoder_);
+            }
+            pending_subtitle_decoder_ = new_decoder;
+            pending_subtitle_track_ = id;
+            handed_to_decode_thread = true;
+            // Keep the gate closed until the swap lands on the decode
+            // thread: with it open, one old-stream packet could still
+            // decode into the freshly armed renderer.
+            subtitle_decode_active_ = false;
+          } else {
+            // No live decode thread owns subtitle_decoder_, but a leftover
+            // one (Ended/Error, or a Stopped-state thread still waiting)
+            // must be joined so the swap below is properly ordered.
+            if (decode_thread_.joinable()) {
+              should_stop_decoding_ = true;
+              decode_cv_.notify_all();
+              decode_thread_.join();
+              should_stop_decoding_ = false;
+              thread_stopped = true;
+            }
+            avcodec_free_context(&subtitle_decoder_);
+            subtitle_decoder_ = new_decoder;
+            subtitle_stream_index_ = id;
+            subtitle_decode_active_ = true;
+          }
+        }
+
+        if (thread_stopped) {
+          reportStoppedPlayback();
+        }
+        if (handed_to_decode_thread) {
+          // Wake the decode loop: it applies the pending switch while
+          // paused too, and the gate reopens there with the swap.
+          decode_cv_.notify_all();
+        }
+      } else {
+        // Re-selecting the stream open already built: no decoder work,
+        // just reopen the gate.
+        subtitle_decode_active_ = true;
+      }
+
+      // Plain-text frames of this same stream queued before the selection
+      // are stale the moment the canvas takes over: drop them so the
+      // switch is not wearing both faces for one cue's duration.
+      {
+        std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
+        std::queue<DecodedSubtitleFrame> empty;
+        subtitle_frames_.swap(empty);
+      }
+
+      if (renderer_live) {
+        // The canvas follows the selection onto the selected stream. An
+        // ASS/SSA stream re-arms with its own CodecPrivate (script header
+        // + styles); a text stream arms with the synthesized default
+        // header — batch 1c's contract, now for embedded text tracks too:
+        // the default style is ours, the glyphs are libass's, and
+        // mov_text's plain rects are rebuilt into Dialogue lines per
+        // frame in processSubtitleFrame. Events resume from wherever the
+        // decoder's read position is: cues between the open's start and
+        // this point stay hidden until a seek backwards makes the decoder
+        // rescan them (flushEvents then drops the stale copies). No
+        // automatic rescan here — the batch-1b boundary, unchanged.
+        if (ass_renderer_.startStream()) {
+          if (!codec_private.empty()) {
+            ass_renderer_.feedCodecPrivate(codec_private.data(),
+                                           codec_private.size());
+          } else {
+            const std::string header =
+                synthesizeAssDocument({}, video_w, video_h);
+            ass_renderer_.feedCodecPrivate(header.data(), header.size());
+          }
+          if (video_w > 0 && video_h > 0) {
+            ass_renderer_.setFrameSize(video_w, video_h);
+          }
+          ass_feed_active_ = true;
+        }
+        ass_document_active_ = false;
+      }
     }
 
     {
@@ -1401,17 +1530,7 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
   if (thread_stopped) {
     // Joining the decode thread means playback is not running anymore,
     // even if the state snapshot raced ahead of the wind-down.
-    bool notify = false;
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      if (playback_state_ != PlaybackState::Stopped) {
-        playback_state_ = PlaybackState::Stopped;
-        notify = true;
-      }
-    }
-    if (notify) {
-      emit(Event{EventType::StateChanged});
-    }
+    reportStoppedPlayback();
   }
 
   if (handed_to_decode_thread) {
@@ -1444,12 +1563,24 @@ bool FFmpegBackend::disableSubtitles() {
     active_external_ = -1;
     external_cue_pos_ = 0;
   }
-  // "Off" also releases the renderer's document track (docs/mvp.md §6,
-  // external documents and synthesized text sidecars): the empty-track
-  // swap quiets the canvas, and the decode thread's drop-gate clears with
-  // the flag. The embedded feed's metadata-only selection semantics are
-  // untouched — only external content (batches 1b/1c) is released here.
-  if (ass_document_active_.load(std::memory_order_relaxed)) {
+  // "Off" is decode semantics now, not metadata: the embedded stream's
+  // packets stop being processed and the frames it already queued are
+  // dropped, so the cue on screen disappears at once instead of wearing
+  // out its own duration (a packet decoding concurrently with this block
+  // can land one final frame; the gate makes it the last).
+  subtitle_decode_active_ = false;
+  {
+    std::lock_guard<std::mutex> lock(subtitle_frame_mutex_);
+    std::queue<DecodedSubtitleFrame> empty;
+    subtitle_frames_.swap(empty);
+  }
+  // The renderer follows: a held document (docs/mvp.md §6, external
+  // documents and synthesized text sidecars) or an armed embedded feed is
+  // released with an empty-track swap so the canvas goes quiet too.
+  if (ass_feed_active_.load(std::memory_order_relaxed)) {
+    ass_renderer_.startStream();
+    ass_feed_active_ = false;
+  } else if (ass_document_active_.load(std::memory_order_relaxed)) {
     ass_renderer_.startStream();
     ass_document_active_ = false;
   }
@@ -2056,6 +2187,12 @@ bool FFmpegBackend::setupDecoders() {
       return fatal(fmt::format("setupDecoders: failed to open subtitle decoder: {}", avError(ret)), /*emit_event=*/false);
     }
 
+    // The default subtitle stream decodes from open: selection semantics
+    // (selectTrack/disableSubtitles) only gate it afterwards, never here —
+    // the plain-text queue is the open-state surface, so "subtitles are
+    // on" stays true before any selection is made.
+    subtitle_decode_active_ = true;
+
     // Style-faithful ASS (docs/mvp.md §6): an embedded ASS/SSA track feeds
     // libass — Matroska font attachments register first (so the script's
     // font lookups resolve from the file's own embedded fonts), then a
@@ -2065,7 +2202,6 @@ bool FFmpegBackend::setupDecoders() {
     // the plain-text path stays authoritative.
     ass_feed_active_ = false;
     ass_document_active_ = false;
-    ass_codec_private_.clear();
     if (ass_renderer_.available()) {
       // Attachments register for the whole open, not just the embedded
       // feed: addFont fills the library, which survives track swaps, and
@@ -2093,11 +2229,6 @@ bool FFmpegBackend::setupDecoders() {
         if (ass_renderer_.startStream()) {
           if (codecpar->extradata_size > 0 && codecpar->extradata != nullptr) {
             ass_renderer_.feedCodecPrivate(
-                reinterpret_cast<const char*>(codecpar->extradata),
-                static_cast<std::size_t>(codecpar->extradata_size));
-            // Stash the header so selectTrack can re-arm this feed after
-            // a detour through an external document, without re-demuxing.
-            ass_codec_private_.assign(
                 reinterpret_cast<const char*>(codecpar->extradata),
                 static_cast<std::size_t>(codecpar->extradata_size));
           }
@@ -2137,11 +2268,11 @@ void FFmpegBackend::cleanupDecoders() {
   }
   // No more feeding once the decoders are gone (the renderer keeps its
   // last track; the next open re-runs startStream in setupDecoders). The
-  // CodecPrivate stash and document flag belong to the closed media too —
+  // document flag and decode gate belong to the closed media too —
   // both are rebuilt by the next open.
   ass_feed_active_ = false;
   ass_document_active_ = false;
-  ass_codec_private_.clear();
+  subtitle_decode_active_ = false;
 
   // Cleanup resamplers
   if (audio_resampler_) {
@@ -2187,7 +2318,8 @@ void FFmpegBackend::decodeLoop() {
         return should_stop_decoding_ ||
                playback_state_ == PlaybackState::Playing ||
                seek_requested_.load() ||
-               audioTrackPending();
+               audioTrackPending() ||
+               subtitleTrackPending();
       });
     }
 
@@ -2199,6 +2331,16 @@ void FFmpegBackend::decodeLoop() {
     // the final say about the resume position.
     if (audioTrackPending()) {
       applyPendingAudioTrack();
+      if (should_stop_decoding_) {
+        break;
+      }
+      continue;
+    }
+
+    // Then a pending subtitle switch, ahead of a seek for the same
+    // reason: the seek that follows rescans cues onto the new stream.
+    if (subtitleTrackPending()) {
+      applyPendingSubtitleTrack();
       if (should_stop_decoding_) {
         break;
       }
@@ -2348,7 +2490,13 @@ void FFmpegBackend::decodeLoop() {
         queueAudioFrame(frame, pts);
         av_frame_unref(frame);
       }
-    } else if (packet->stream_index == subtitle_stream_index_) {
+    } else if (packet->stream_index == subtitle_stream_index_ &&
+               subtitle_decode_active_.load(std::memory_order_relaxed)) {
+      // The gate is the selection (selectTrack/disableSubtitles): with a
+      // sidecar selected or subtitles off, the embedded stream's packets
+      // pass by undecoded — the overlay that batch 1b/1c could only close
+      // on the canvas side closes at the source in every build.
+      //
       // Subtitle decoders do not go through avcodec_send_packet/
       // avcodec_receive_frame: the generic decode path asserts on non-A/V
       // codec types (FFmpeg 8 decode.c av_assert0(0), found by the SRT
@@ -2612,6 +2760,16 @@ void FFmpegBackend::processSubtitleFrame(const AVSubtitle& sub, std::chrono::mil
     }
     std::string piece;
     if (rect->type == SUBTITLE_TEXT && rect->text != nullptr) {
+      if (ass_document_active_.load(std::memory_order_relaxed)) {
+        // The same drop-gate as the ASS rects below: a document owns the
+        // canvas, and a plain-text echo of this stream under it would
+        // draw every line twice.
+        continue;
+      }
+      // Plain rects join the frame's text; whether that text feeds the
+      // canvas (one synthesized Dialogue event per frame, below) or
+      // queues for the UI path is a per-frame decision, not a per-rect
+      // one — a decoder may hand back one rect per line.
       piece = rect->text;
     } else if (rect->type == SUBTITLE_ASS && rect->ass != nullptr) {
       if (ass_document_active_.load(std::memory_order_relaxed)) {
@@ -2642,6 +2800,17 @@ void FFmpegBackend::processSubtitleFrame(const AVSubtitle& sub, std::chrono::mil
   }
 
   if (!text.empty()) {
+    if (ass_feed_active_.load(std::memory_order_relaxed)) {
+      // A selected text stream renders on the canvas (embedded text
+      // tracks joining batch 1c's contract): the frame's joined lines
+      // become one Dialogue event against the synthesized default
+      // header. The plain-text queue is skipped so the subtitle is not
+      // double-rendered — ASS rects in feed mode already fed themselves
+      // in the loop above, so this arm only ever sees text-rect frames.
+      ass_renderer_.feedEvent(
+          assDialogueLineFromText(text, pts, pts + duration).c_str());
+      return;
+    }
     queueSubtitleFrame(text, pts, duration);
   }
 }
@@ -3045,6 +3214,91 @@ void FFmpegBackend::applyPendingAudioTrack() {
     media_info_.selected_audio = new_track;
   }
   emit(Event{EventType::MediaInfoChanged});
+}
+
+bool FFmpegBackend::subtitleTrackPending() {
+  std::lock_guard<std::mutex> lock(pending_subtitle_mutex_);
+  return pending_subtitle_track_ >= 0;
+}
+
+void FFmpegBackend::applyPendingSubtitleTrack() {
+  AVCodecContext* new_decoder = nullptr;
+  int new_track = -1;
+  {
+    std::lock_guard<std::mutex> lock(pending_subtitle_mutex_);
+    if (pending_subtitle_track_ < 0) {
+      return;
+    }
+    new_decoder = pending_subtitle_decoder_;
+    new_track = pending_subtitle_track_;
+    pending_subtitle_decoder_ = nullptr;
+    pending_subtitle_track_ = -1;
+  }
+
+  if (!new_decoder) {
+    return;
+  }
+
+  // No resume seek, unlike the audio switch: subtitle cues stream from
+  // the decoder's read position and the playhead does not depend on them.
+  // This runs on the decode thread, which never takes decode_mutex_
+  // (close() joins while holding it), so the members swap lock-free by
+  // the same design as applyPendingAudioTrack.
+  avcodec_free_context(&subtitle_decoder_);
+  subtitle_decoder_ = new_decoder;
+  subtitle_stream_index_ = new_track;
+  // The gate selectTrack kept closed so no old-stream packet could decode
+  // into the freshly armed renderer reopens with the swap.
+  subtitle_decode_active_.store(true, std::memory_order_relaxed);
+}
+
+AVCodecContext* FFmpegBackend::buildSubtitleDecoder(TrackId id, std::string& error) {
+  // Caller holds decode_mutex_ (selectTrack); the caller reports the
+  // error, and on any failure here the old decoder stays put.
+  if (id < 0 || id >= static_cast<TrackId>(format_ctx_->nb_streams) ||
+      !format_ctx_->streams[id] || !format_ctx_->streams[id]->codecpar ||
+      format_ctx_->streams[id]->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
+    error = "selectTrack: unknown subtitle track id";
+    return nullptr;
+  }
+  const AVCodecParameters* codecpar = format_ctx_->streams[id]->codecpar;
+  const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
+  if (!codec) {
+    error = "selectTrack: subtitle codec not found";
+    return nullptr;
+  }
+  AVCodecContext* decoder = avcodec_alloc_context3(codec);
+  if (!decoder) {
+    error = "selectTrack: failed to allocate subtitle decoder context";
+    return nullptr;
+  }
+  int ret = avcodec_parameters_to_context(decoder, codecpar);
+  if (ret < 0) {
+    avcodec_free_context(&decoder);
+    error = fmt::format("selectTrack: failed to copy subtitle params: {}", avError(ret));
+    return nullptr;
+  }
+  ret = avcodec_open2(decoder, codec, nullptr);
+  if (ret < 0) {
+    avcodec_free_context(&decoder);
+    error = fmt::format("selectTrack: failed to open subtitle decoder: {}", avError(ret));
+    return nullptr;
+  }
+  return decoder;
+}
+
+void FFmpegBackend::reportStoppedPlayback() {
+  bool notify = false;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (playback_state_ != PlaybackState::Stopped) {
+      playback_state_ = PlaybackState::Stopped;
+      notify = true;
+    }
+  }
+  if (notify) {
+    emit(Event{EventType::StateChanged});
+  }
 }
 
 //=============================================================================

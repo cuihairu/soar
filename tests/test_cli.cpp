@@ -221,6 +221,31 @@ def button(btn):
         return False
 
 
+def holdclick(btn, hold=0.35):
+    # A press/release pair only becomes an ImGui click when a frame
+    # boundary falls strictly between the two events: both halves pumped
+    # inside one frame net out to "mouse up", and ImGui never sees the
+    # press at all. (The app's own SDL handlers see every event either
+    # way, which is why the OSC toggle fires while a combo pick does
+    # not.) A back-to-back XTEST pair is a few milliseconds apart, so
+    # under the -O0 coverage build's long frames most clicks vanish that
+    # way — measured there, 2 of 11 combo opens landed with button(),
+    # every one landed with a hold well over a frame time.
+    global win
+    win = find_window()
+    if win is None:
+        return False
+    try:
+        xtest.fake_input(d, X.ButtonPress, btn)
+        d.sync()
+        time.sleep(hold)
+        xtest.fake_input(d, X.ButtonRelease, btn)
+        d.sync()
+        return True
+    except Exception:
+        return False
+
+
 def moved(x, y):
     # python-xlib: warp_pointer(x, y, ...) — dest is relative to the
     # window; no source-rectangle filtering needed.
@@ -456,9 +481,18 @@ if mode == "subsdrive":
         key(d.keysym_to_keycode(keysym))
         time.sleep(0.4)
 
+    # Hold-clicks instead of the other modes' button() (0.15/0.5 spacing):
+    # this tour runs against the -O0 coverage build, whose frame time can
+    # exceed the few milliseconds between a back-to-back press and release
+    # — the pair is then pumped inside a single frame, nets out to "mouse
+    # up", and ImGui never registers the click at all (see holdclick).
+    # When the lost click is a combo pick, the popup stays open and owns
+    # the keyboard (the popup-guard mechanism the quit loop's dismissal
+    # works around); a hold crosses at least one frame boundary, so every
+    # click below lands.
     def sclick(x, y):
-        moved(x, y); time.sleep(0.15)
-        button(1); time.sleep(0.5)
+        moved(x, y); time.sleep(0.25)
+        holdclick(1); time.sleep(0.9)
 
     sclick(637, 495)   # Sub button: open the Subtitle Settings page
     sclick(360, 232)   # font size slider: jump to the small end
@@ -486,14 +520,31 @@ if mode == "subsdrive":
     # stream selected, and a row that already is the selection
     # short-circuits); the pair after it is the pair that matters, since
     # "Off" only acts while something is selected.
+    # Row centers measured against the live popup: the Off row spans
+    # y 412-431 and the single stream row y 438-457 (SOAR_UI_BITMAP_FONT=1).
+    # The coordinates this tour used before (443/468) never sat on a row —
+    # 443 is the separator band under "Off" and 468 the padding below the
+    # last row — so every "pick" was a silent miss even when the click
+    # itself landed.
     sclick(569, 495)   # subtitle combo open (Off + the stream, flips up)
-    sclick(591, 468)   # the track row, already selected: no-op arm
+    sclick(591, 448)   # the track row, already selected: no-op arm
     sclick(569, 495)   # reopen; "Off" has something to act on now ...
-    sclick(591, 443)   # ... (disableSubtitles from the OSC)
+    sclick(591, 423)   # ... (disableSubtitles from the OSC)
     sclick(569, 495)   # reopen; nothing is selected, so "Off" ...
-    sclick(591, 443)   # ... is the no-op arm again
+    sclick(591, 423)   # ... is the no-op arm again
     sclick(569, 495)   # reopen ...
-    sclick(591, 468)   # ... and re-select the track row
+    sclick(591, 448)   # ... and re-select the track row
+    # Popup dismissal before the key phase (same defense as the quit loop
+    # below): under -O0 coverage instrumentation a back-to-back click pair
+    # can vanish inside one frame (see holdclick), a missed pick leaves
+    # the combo open, and a combo popup owns the keyboard — every key from
+    # here on (C, I, H, M, L, q) would be swallowed by the app's popup
+    # guard. One hold-click on the bare video area closes whatever is
+    # open; it only toggles the OSC, and the > 500 ms release spacing
+    # keeps it from reading as the double-click fullscreen toggle.
+    if moved(200, 400):
+        holdclick(1)
+    time.sleep(0.7)
     # Key phase over the same tracks: C cycles off -> on -> off around
     # the single stream, A wraps a one-stream audio list straight back
     # onto itself, and I opens Media Info -- the one place the whole
@@ -521,27 +572,44 @@ if mode == "subsdrive":
     time.sleep(0.8)
     focus(); key(d.keysym_to_keycode(0x69))  # ... and close it
     time.sleep(0.3)
+    # Second dismissal, then resume playback: the space at the top of the
+    # tour froze the clock, and cycleLoopAB's B press compares against
+    # point A through the live position -- with a frozen clock every B
+    # press is A == B and only the invalid-window toast arm runs. The
+    # three presses below need the clock moving: A, then B a second later
+    # (a real A < B window arms the loop), then the armed press clears it.
+    if moved(200, 400):
+        holdclick(1)
+    time.sleep(0.7)
+    focus(); key(d.keysym_to_keycode(0x20))  # space: resume
+    time.sleep(1.2)
     # A-B loop UI (L key): cycle arm-A -> arm-B -> clear. This exercises
     # PlayerHud::cycleLoopAB, the HUD loop display, and the backend's
     # setLoopAB/clearLoopAB/loopAB path on the real FFmpeg backend.
     focus(); key(d.keysym_to_keycode(0x6C))  # L: set point A
-    time.sleep(0.5)
+    time.sleep(1.0)
     focus(); key(d.keysym_to_keycode(0x6C))  # L: set point B
-    time.sleep(0.5)
+    time.sleep(1.0)
+    # While the loop is armed, Media Info spells out the A - B window —
+    # the overlay's loop row only renders in that state.
+    focus(); key(d.keysym_to_keycode(0x69))
+    time.sleep(0.8)
+    focus(); key(d.keysym_to_keycode(0x69))
+    time.sleep(0.3)
     focus(); key(d.keysym_to_keycode(0x6C))  # L: clear the loop
     time.sleep(0.5)
 
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
-        # A combo popup left open by a lagged click pair owns the keyboard —
+        # A combo popup left open by a lost click owns the keyboard —
         # the app's popup guard swallows q/Escape while it is up (the wedge
-        # that hung the coverage CI runs mid-tour). A single click on the
-        # bare video area dismisses any popup first; it only toggles the
-        # OSC, and the > 500 ms spacing keeps two loop clicks from ever
-        # reading as the double-click fullscreen toggle.
+        # that hung the coverage CI runs mid-tour). A single hold-click on
+        # the bare video area dismisses any popup first; it only toggles
+        # the OSC, and the > 500 ms release spacing keeps two loop clicks
+        # from ever reading as the double-click fullscreen toggle.
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()

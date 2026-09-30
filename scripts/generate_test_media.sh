@@ -164,6 +164,48 @@ ffmpeg -hide_banner -loglevel error -y \
   -t 4 \
   "$media_dir/subs_styled_ass_media.mkv"
 
+# Two embedded subtitle streams: a default-flagged subrip track (Alpha
+# cues, plain text) plus a styled ASS one (a single red cue spanning the
+# whole fixture, same style as subs_styled above). The subtitle
+# selection-semantics tests ride this: selecting the non-default stream
+# must switch the subtitle decoder mid-play, and the red full-frame cue
+# makes "which stream is on the canvas" pixel-testable without OCR. The
+# default disposition is pinned explicitly so the plain stream is the one
+# open builds its decoder for, on every ffmpeg version.
+printf '1\n00:00:00,000 --> 00:00:02,000\nAlpha One\n\n2\n00:00:02,000 --> 00:00:04,000\nAlpha Two\n\n' \
+  > "$media_dir/subs_dual_a.srt"
+cat > "$media_dir/subs_dual_b.ass" <<'EOF'
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 160
+PlayResY: 120
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Red,Noto Mono,24,&H000000FF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:04.00,Red,,0,0,0,,Red Blanket
+EOF
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -f lavfi -i sine=frequency=440 \
+  -i "$media_dir/subs_dual_a.srt" \
+  -i "$media_dir/subs_dual_b.ass" \
+  -attach "$font_src" \
+  -map 0:v -map 1:a -map 2:s -map 3:s \
+  -c:v ffvhuff -c:a pcm_s16le -c:s:0 srt -c:s:1 ass \
+  -disposition:s:0 default -disposition:s:1 0 \
+  -metadata:s:s:0 language=eng \
+  -metadata:s:s:1 language=fre \
+  -metadata:s:t mimetype=application/x-truetype-font \
+  -t 4 \
+  "$media_dir/subs_dual_media.mkv"
+
 # Burst cues: six cues sitting after the audio track ends. Once the last
 # audio packet is consumed the decode loop reads the subtitle packets back
 # to back (no stream left to pace against), so the subtitle FIFO (depth 4)
@@ -359,6 +401,7 @@ echo "SOAR_TEST_SUBS_EMPTY=$media_dir/subs_empty_media.mkv"
 echo "SOAR_TEST_SUBS_ONLY=$media_dir/subs_only.mkv"
 echo "SOAR_TEST_ASS_MEDIA=$media_dir/subs_ass_media.mkv"
 echo "SOAR_TEST_STYLED_ASS_MEDIA=$media_dir/subs_styled_ass_media.mkv"
+echo "SOAR_TEST_SUBS_DUAL=$media_dir/subs_dual_media.mkv"
 echo "SOAR_TEST_BURST_MEDIA=$media_dir/subs_burst_media.mkv"
 echo "SOAR_TEST_JUNK_SRT_MEDIA=$media_dir/subs_junk_media.mkv"
 echo "SOAR_TEST_MOVTEXT_MEDIA=$media_dir/subs_movtext_media.mp4"

@@ -60,6 +60,21 @@ std::string assDialogueLine(const char* ass, std::chrono::milliseconds pts,
 // parseSubtitleText. Nothing throws.
 std::vector<SubtitleCue> assDocumentCues(const std::string& content);
 
+// Rebuilds a "Dialogue:" line for a plain-text cue the decoder handed back
+// without any ASS wrapper — the raw SUBTITLE_TEXT rect shape. Not every
+// text decoder produces that shape: FFmpeg 8's mov_text wraps its cues in
+// ASS rects (measured — the verbatim-ass feed arm serves those on the
+// canvas), so this serves the decoders/versions that do emit raw text.
+// The event goes onto a streaming track armed with
+// a synthesized default header (synthesizeAssDocument with no cues), whose
+// "Default" style this line names; libass falls back to style 0 when the
+// name does not resolve, so the line renders either way. Text bytes are
+// kept except line breaks, which respell as \N exactly like
+// synthesizeAssDocument's cue wrapping.
+std::string assDialogueLineFromText(const std::string& text,
+                                    std::chrono::milliseconds start,
+                                    std::chrono::milliseconds end);
+
 // Wraps plain cues in a default-styled ASS script: what an external
 // SRT/WebVTT sidecar is rendered through when the build has libass
 // (docs/mvp.md §6, batch 1c) — one synthesized document per selected

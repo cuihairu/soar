@@ -32,6 +32,7 @@
 #endif
 
 using namespace std::chrono_literals;
+using soar::assDialogueLineFromText;
 using soar::assDocumentCues;
 using soar::detectSubtitleFormat;
 using soar::synthesizeAssDocument;
@@ -900,6 +901,31 @@ TEST_CASE("synthesize_ass_document_falls_back_and_defaults") {
             .find("Style: Default,Default,20,") != std::string::npos);
   CHECK(synthesizeAssDocument({{0ms, 500ms, "z"}}, 160, 120)
             .find("Style: Default,Default,12,") != std::string::npos);
+}
+
+TEST_CASE("ass_dialogue_line_from_text_rebuilds_an_event") {
+  // The mov_text path: a plain-text rect plus packet timing become one
+  // Dialogue event against the synthesized default header. The strongest
+  // oracle is the same round trip the synthesizer gets — parse the line
+  // back out of a document and the cue must survive intact.
+  const std::string line =
+      assDialogueLineFromText("first\nsecond, with commas", 1500ms, 4000ms);
+  CHECK(line ==
+        "Dialogue: 0,0:00:01.50,0:00:04.00,Default,,0,0,0,,"
+        "first\\Nsecond, with commas");
+
+  // Bytes survive except the line break, and commas stay in field ten.
+  const std::string doc = synthesizeAssDocument({}, 160, 120) + line + "\n";
+  const std::vector<SubtitleCue> back = assDocumentCues(doc);
+  REQUIRE(back.size() == 1);
+  CHECK(back[0].begin == 1500ms);
+  CHECK(back[0].end == 4000ms);
+  CHECK(back[0].text == "first\nsecond, with commas");
+
+  // Empty text is the caller's to drop (processSubtitleFrame does); the
+  // rebuild itself stays shape-correct for whatever it is given.
+  CHECK(assDialogueLineFromText("", 0ms, 500ms) ==
+        "Dialogue: 0,0:00:00.00,0:00:00.50,Default,,0,0,0,,");
 }
 
 // =========================================================================

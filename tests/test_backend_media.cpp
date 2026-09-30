@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -281,7 +282,7 @@ TEST_CASE("media lifecycle drives events, position and seek") {
   CHECK(backend->position() == 0ms);
 }
 
-TEST_CASE("subtitles default to off and disableSubtitles is metadata-only") {
+TEST_CASE("subtitle selection state and disableSubtitles work while stopped") {
   std::string media;
   if (!mediaAvailable(media)) {
     MESSAGE("SOAR_TEST_MEDIA not set; skipping subtitle metadata test");
@@ -293,8 +294,11 @@ TEST_CASE("subtitles default to off and disableSubtitles is metadata-only") {
 
   CHECK(backend->mediaInfo().selected_subtitle == -1);
 
-  // Picking a real subtitle track (if any) is metadata-only and works
-  // while stopped; disabling returns to the off state.
+  // This fixture has no subtitle streams, so this stays the stopped-
+  // state API surface: picking a real subtitle track (if a fixture ever
+  // grows one) and disabling return to the off state. The decode-side
+  // semantics of both — the gate selectTrack/disableSubtitles drive —
+  // are covered by the dedicated selection cases.
   const auto tracks = backend->mediaInfo().tracks;
   for (const auto& t : tracks) {
     if (t.type == soar::TrackType::Subtitle) {
@@ -1997,8 +2001,10 @@ TEST_CASE("a text sidecar takes the canvas over an embedded ASS stream") {
   // document and the document-mode gate drops the embedded events, so
   // the canvas stops being the fixture's red and shows the synthesized
   // default style instead. (The sidecar's queue frames keep flowing —
-  // the no-double-draw gate is the UI's subtitleDocumentActive() skip; a
-  // no-libass build has no canvas and keeps the documented overlay.)
+  // the no-double-draw gate is the UI's subtitleDocumentActive() skip. A
+  // no-libass build has no canvas; since the selection-semantics batch
+  // the embedded decode gate closes at the source there too — the
+  // sidecar-selection case in this suite pins it through the queue.)
   std::string media;
   if (!envMedia("SOAR_TEST_STYLED_ASS_MEDIA", media)) {
     MESSAGE("SOAR_TEST_STYLED_ASS_MEDIA not set; skipping overlay test");
@@ -2105,19 +2111,29 @@ TEST_CASE("a burst of adjacent cues overflows the subtitle FIFO in order") {
   REQUIRE(backend->open(soar::MediaSource{media}));
   REQUIRE(backend->play());
 
-  // Six cues inside the first half second of an audio-only file: the
-  // decode thread queues them faster than any consumer polls, so the
-  // depth-4 FIFO drops the oldest and the consumer still sees the
-  // survivors in cue order.
+  // Six cues inside the first half second of an audio-only file. The
+  // contract under test is the depth-4 cap itself: with nothing
+  // draining the FIFO while the decode thread queues the burst, the
+  // cap drops the two oldest cues and the survivors surface in cue
+  // order. Racing the producer instead (polling while it queues) makes
+  // the drop load-dependent — a lightly loaded run drains each frame
+  // as it lands and all six survive (observed in a local coverage
+  // run), a loaded one sees the drop — so wait for the decode thread
+  // to reach EOF (Ended) before pulling anything. queueSubtitleFrame
+  // drops oldest without ever blocking, so a full queue cannot stall
+  // the producer during the wait.
+  const auto ended_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (backend->state() != soar::PlaybackState::Ended &&
+         std::chrono::steady_clock::now() < ended_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(backend->state() == soar::PlaybackState::Ended);
+
   std::vector<std::string> pulled;
   auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
-  while (std::chrono::steady_clock::now() < deadline) {
-    soar::DecodedSubtitleFrame frame;
-    while (ffmpeg->tryGetSubtitleFrame(frame)) {
-      pulled.push_back(frame.text);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  soar::DecodedSubtitleFrame frame;
+  while (ffmpeg->tryGetSubtitleFrame(frame)) {
+    pulled.push_back(frame.text);
   }
 
   backend->stop();
@@ -2223,8 +2239,11 @@ TEST_CASE("extraction corners: hard breaks, trailing junk, bracket wrapper") {
 
   auto backend = soar::makeFFmpegBackend();
   REQUIRE(backend->open(soar::MediaSource{media}));
-  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, 2));
-
+  // No selection: the stream is the media's default subtitle stream, and
+  // the open state keeps decoding it into the plain-text queue. (The
+  // selection would redirect the frames onto the canvas in a libass
+  // build — that semantics has its own cases; this one watches the
+  // extractor.)
   REQUIRE(backend->play());
   // Thirteen cues decode; two never surface (the formatting-only cue the
   // demuxer drops, and the all-brackets cue extraction empties), so
@@ -2645,6 +2664,510 @@ TEST_CASE("disabling subtitles stops the sidecar") {
   CHECK(frames.empty());
 }
 
+TEST_CASE("selecting an embedded subtitle track switches the decoder and the surface") {
+  // The selection-semantics batch: "selecting" an embedded subtitle
+  // stream is decode semantics, not metadata. The dual fixture carries a
+  // default subrip stream (Alpha cues) and a second styled ASS stream
+  // (one red cue across the whole fixture), so which stream is decoded
+  // is observable in both directions — the queue's plain text and the
+  // canvas's pixels — and a non-default selection must build a decoder
+  // for that stream mid-play, exactly like the audio switch.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_DUAL", media)) {
+    MESSAGE("SOAR_TEST_SUBS_DUAL not set; skipping subtitle selection test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+#ifdef SOAR_WITH_LIBASS
+  auto* ass = backend->assRenderer();
+  REQUIRE(ass != nullptr);
+  ass->setDefaultFont(SOAR_TEST_FONT_FILE);
+#endif
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  soar::TrackId text_id = -1;
+  soar::TrackId ass_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type != soar::TrackType::Subtitle) continue;
+    if (t.codec == "ass" || t.codec == "ssa") {
+      ass_id = t.id;
+    } else {
+      text_id = t.id;
+    }
+  }
+  REQUIRE(text_id >= 0);
+  REQUIRE(ass_id >= 0);
+  REQUIRE(ass_id != text_id);
+
+  REQUIRE(backend->play());
+#ifdef SOAR_WITH_LIBASS
+  // Open state unchanged: the default subrip stream feeds the plain-text
+  // queue and the canvas is empty — that is the baseline the switch
+  // below has to change.
+  const auto plain = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(plain, "Alpha"));
+
+  // Switch to the styled stream: decoder built mid-play, feed re-armed
+  // on that stream's own CodecPrivate, queue flushed. A seek back to the
+  // top makes the red cue deterministic — events resume from the read
+  // position, the batch-1b no-rescan boundary.
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, ass_id));
+  CHECK(backend->mediaInfo().selected_subtitle == ass_id);
+
+  soar::AssFrame f;
+  bool red = false;
+  for (int attempt = 0; attempt < 5 && !red; ++attempt) {
+    REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline && !red) {
+      red = ass->renderAt(ffmpeg->position().count(), &f) && isAllRed(f);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  REQUIRE(red);
+
+  // While the canvas holds the selection the queue serves nothing: the
+  // subrip stream's packets are skipped by the decode gate, so the two
+  // sources cannot mix on screen.
+  CHECK(pullSubtitleFrames(ffmpeg, 1, std::chrono::milliseconds(600)).empty());
+
+  // "Off" clears both surfaces at once: the canvas drops the red and the
+  // queue stays silent through the cues still ahead in both streams.
+  REQUIRE(backend->disableSubtitles());
+  bool vanished = false;
+  const auto vanish_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (std::chrono::steady_clock::now() < vanish_deadline && !vanished) {
+    vanished = !ass->renderAt(ffmpeg->position().count(), &f) && f.changed;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(vanished);
+  CHECK(f.rgba.empty());
+  CHECK(pullSubtitleFrames(ffmpeg, 1, std::chrono::milliseconds(600)).empty());
+
+  // Back onto the plain stream: an embedded text track is a canvas
+  // source once it is the selection — its subrip (ASS-rect) cues render
+  // through the synthesized default style.
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, text_id));
+  bool glyphs = false;
+  for (int attempt = 0; attempt < 5 && !glyphs; ++attempt) {
+    REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline && !glyphs) {
+      glyphs = ass->renderAt(ffmpeg->position().count(), &f) && hasVisible(f) &&
+               !isAllRed(f);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  REQUIRE(glyphs);
+  CHECK(pullSubtitleFrames(ffmpeg, 1, std::chrono::milliseconds(600)).empty());
+
+  // A selection from Stopped swaps the decoder in directly (no decode
+  // thread to hand it to) — the last selection left the text stream
+  // installed, so this is a genuine switch, and the replay poll proves
+  // the swapped-in decoder actually decodes.
+  REQUIRE(backend->stop());
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, ass_id));
+  REQUIRE(backend->play());
+  red = false;
+  for (int attempt = 0; attempt < 5 && !red; ++attempt) {
+    REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline && !red) {
+      red = ass->renderAt(ffmpeg->position().count(), &f) && isAllRed(f);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  REQUIRE(red);
+#else
+  // No canvas in this build; the selection is still decode semantics —
+  // the queue's text says which stream is being decoded, and switching
+  // back says the original decoder returned.
+  const auto alpha = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(alpha, "Alpha"));
+
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, ass_id));
+  REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+  const auto blanket = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(blanket, "Red Blanket"));
+
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, text_id));
+  REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+  const auto again = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(again, "Alpha"));
+
+  // From Stopped the swap is direct (no decode thread running); the
+  // replay poll proves the swapped-in decoder decodes.
+  REQUIRE(backend->stop());
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, ass_id));
+  REQUIRE(backend->play());
+  REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+  const auto replay = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(replay, "Red Blanket"));
+#endif
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("a subtitle selection after natural EOF joins the dead decode thread") {
+  // The third owner of subtitle_decoder_: when the decode thread has run
+  // out of data at EOF it is no longer running but still joinable, and a
+  // selection arriving then must join it before swapping the decoder in
+  // directly (no pending handover — there is nobody to hand it to), the
+  // audio-switch twin's contract. The Ended -> Stopped flip the join
+  // causes is part of the observable surface.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_DUAL", media)) {
+    MESSAGE("SOAR_TEST_SUBS_DUAL not set; skipping post-EOF subtitle selection test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+#ifdef SOAR_WITH_LIBASS
+  auto* ass = backend->assRenderer();
+  REQUIRE(ass != nullptr);
+  ass->setDefaultFont(SOAR_TEST_FONT_FILE);
+#endif
+  REQUIRE(backend->open(soar::MediaSource{media}));
+
+  soar::TrackId ass_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle &&
+        (t.codec == "ass" || t.codec == "ssa")) {
+      ass_id = t.id;
+    }
+  }
+  REQUIRE(ass_id >= 0);
+
+  REQUIRE(backend->play());
+  bool ended = false;
+  for (int i = 0; i < 120 && !ended; ++i) {
+    ended = backend->state() == soar::PlaybackState::Ended;
+    if (!ended) {
+      std::this_thread::sleep_for(100ms);
+    }
+  }
+  REQUIRE(ended);
+
+  // The direct swap (vs the pending handover of the playing case above)
+  // and the Stopped report the join produces.
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, ass_id));
+  CHECK(backend->mediaInfo().selected_subtitle == ass_id);
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  CHECK(backend->lastError().empty());
+
+  // The swapped-in decoder actually decodes: replay from the top (events
+  // resume from the read position, so the seek makes cue one
+  // deterministic — the batch-1b boundary, same retry shape as above).
+  REQUIRE(backend->play());
+#ifdef SOAR_WITH_LIBASS
+  soar::AssFrame f;
+  bool red = false;
+  for (int attempt = 0; attempt < 5 && !red; ++attempt) {
+    REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline && !red) {
+      red = ass->renderAt(ffmpeg->position().count(), &f) && isAllRed(f);
+      std::this_thread::sleep_for(20ms);
+    }
+  }
+  REQUIRE(red);
+#else
+  REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+  const auto replay = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(replay, "Red Blanket"));
+#endif
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("a subtitle selection while paused hands over on the parked thread") {
+  // The paused arm of the running-thread check: under Paused the decode
+  // thread is parked on the condition variable, and the selection must
+  // still reach it — the pending slot plus the notify wake the parked
+  // loop (its wait predicate counts a pending subtitle switch), which
+  // applies the swap without leaving the paused state. The audio switch
+  // has the same paused twin; this pins the subtitle side of that arm.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_DUAL", media)) {
+    MESSAGE("SOAR_TEST_SUBS_DUAL not set; skipping paused subtitle selection test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+
+  soar::TrackId ass_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle &&
+        (t.codec == "ass" || t.codec == "ssa")) {
+      ass_id = t.id;
+    }
+  }
+  REQUIRE(ass_id >= 0);
+
+  REQUIRE(backend->play());
+  bool started = false;
+  for (int i = 0; i < 200 && !started; ++i) {
+    started = backend->position() > 0ms;
+    if (!started) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  REQUIRE(started);
+
+  REQUIRE(backend->pause());
+  const auto frozen = backend->position();
+
+  // The selection lands while paused: the parked decode thread consumes
+  // the pending handover and reopens the decode gate, all without
+  // disturbing the clock.
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, ass_id));
+  CHECK(backend->mediaInfo().selected_subtitle == ass_id);
+  CHECK(backend->state() == soar::PlaybackState::Paused);
+  CHECK(backend->lastError().empty());
+  std::this_thread::sleep_for(100ms);
+  CHECK(backend->position() == frozen);
+
+  // And playback resumes from where it was, onto the switched stream.
+  REQUIRE(backend->play());
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("a selected mov_text stream renders on the canvas") {
+  // The last plain-text-only source joins the canvas. Which rect arm
+  // serves it depends on the decoder's rect shape, and that varies by
+  // FFmpeg version: locally (FFmpeg 8) mov_text wraps its cues in ASS
+  // rects, so the verbatim-ass feed arm carries the canvas and the
+  // raw-text rebuild arm stays quiet; the assertions are therefore
+  // shape-agnostic. Selecting the embedded stream re-arms the feed with
+  // a synthesized default header either way (mov_text is not an ASS/SSA
+  // codec, so there is no CodecPrivate to feed). The libass build proves
+  // the canvas (glyphs after selection) and that the queue stays empty —
+  // no double render; the stub build proves the selection still governs
+  // decoding through the queue. Selecting the embedded track from under
+  // a held document also exercises the document release.
+  std::string media;
+  if (!envMedia("SOAR_TEST_MOVTEXT_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MOVTEXT_MEDIA not set; skipping mov_text selection test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mp4");
+  REQUIRE_FALSE(local.empty());
+  dir.write("movie.srt",
+            "1\n00:00:00,000 --> 00:00:06,000\nSidecar Detour\n\n");
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  soar::TrackId embedded_id = -1;
+#ifdef SOAR_WITH_LIBASS
+  auto* ass = backend->assRenderer();
+  REQUIRE(ass != nullptr);
+  ass->setDefaultFont(SOAR_TEST_FONT_FILE);
+#endif
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle &&
+        (embedded_id < 0 || t.id < embedded_id)) {
+      embedded_id = t.id;
+    }
+  }
+  REQUIRE(embedded_id >= 0);
+
+  // Unselected open state: the embedded text stream decodes to the
+  // plain-text queue, unchanged by this batch.
+  REQUIRE(backend->play());
+  const auto hello = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(hello, "Hello"));
+
+#ifdef SOAR_WITH_LIBASS
+  // Detour through a document, then select the embedded text stream: the
+  // document must be released and the canvas must take the stream.
+  soar::TrackId ext = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("movie.srt"), ext));
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, ext));
+  CHECK(ffmpeg->subtitleDocumentActive());
+
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, embedded_id));
+  CHECK_FALSE(ffmpeg->subtitleDocumentActive());
+
+  soar::AssFrame f;
+  bool glyphs = false;
+  for (int attempt = 0; attempt < 5 && !glyphs; ++attempt) {
+    REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline && !glyphs) {
+      glyphs = ass->renderAt(ffmpeg->position().count(), &f) && hasVisible(f);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  REQUIRE(glyphs);
+  // The feed owns the frames now; the plain-text queue stays empty.
+  CHECK(pullSubtitleFrames(ffmpeg, 1, std::chrono::milliseconds(600)).empty());
+#else
+  // No canvas: selecting the same stream re-opens the queue path through
+  // it (gate on, no decoder switch needed — it is the stream open built).
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, embedded_id));
+  REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+  const auto again = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(again, "Hello"));
+#endif
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("selecting a sidecar closes the embedded decode gate") {
+  // The batch-1b/1c overlay — an embedded stream and a selected sidecar
+  // both reaching the screen — closes at the source now: selecting any
+  // sidecar stops the embedded packets, so its words never reach the
+  // queue again. No canvas is needed for the fix to hold, so the same
+  // assertion pins both builds (the libass build already hid the mix
+  // behind subtitleDocumentActive; the queue is the deeper proof).
+  std::string media;
+  if (!envMedia("SOAR_TEST_MOVTEXT_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MOVTEXT_MEDIA not set; skipping gate test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mp4");
+  REQUIRE_FALSE(local.empty());
+  dir.write("movie.srt",
+            "1\n00:00:00,000 --> 00:00:06,000\nOverlay Wins\n\n");
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  // Baseline: the embedded mov_text stream decodes while unselected —
+  // its words arrive without any selection.
+  REQUIRE(backend->play());
+  const auto embedded = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(embedded, "Hello"));
+
+  soar::TrackId ext = -1;
+  REQUIRE(backend->loadExternalSubtitle(dir.file("movie.srt"), ext));
+  REQUIRE(backend->selectTrack(soar::TrackType::Subtitle, ext));
+
+  // The sidecar's own cues pump through; the embedded stream's words are
+  // gone from the queue in both directions — the current cue was flushed
+  // and the ones still ahead can no longer arrive.
+  const auto mixed = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  CHECK(contains(mixed, "Overlay Wins"));
+  CHECK_FALSE(contains(mixed, "Hello"));
+  CHECK_FALSE(contains(mixed, "World"));
+  CHECK_FALSE(contains(mixed, "Two"));
+  CHECK_FALSE(contains(mixed, "Lines"));
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("disabling subtitles silences the embedded stream at once") {
+  // "Off" is decode semantics now, not metadata: the embedded stream's
+  // packets stop being processed and the frames it already queued are
+  // dropped, so the cue on screen disappears at the moment of the switch
+  // instead of wearing out its own duration.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping embedded disable test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  REQUIRE(backend->play());
+  const auto frames = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(frames, "Hello"));
+
+  REQUIRE(backend->disableSubtitles());
+  // Nothing further arrives: neither the cue that was current at the
+  // switch (flushed) nor World/Two Lines still ahead in the stream
+  // (gated off at the decoder).
+  CHECK(pullSubtitleFrames(ffmpeg, 1, std::chrono::milliseconds(1500)).empty());
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("switching to a broken non-default subtitle stream fails cleanly") {
+  // The §4 pattern: open builds a decoder for the default subtitle
+  // stream only, so a container whose second subtitle track carries an
+  // unknown CodecID still opens. The damage surfaces at selection time —
+  // a failed switch that leaves the default stream decoding.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_DUAL", media)) {
+    MESSAGE("SOAR_TEST_SUBS_DUAL not set; skipping broken subtitle switch test");
+    return;
+  }
+  ScratchDir dir;
+  // Same-length CodecID patch on a copy: S_TEXT/ASS -> S_TEXT/XXX. The
+  // EBML sizes stay valid and the demuxer maps the unknown id to
+  // AV_CODEC_ID_NONE, which is exactly the "no decoder for this track"
+  // selection-time failure.
+  std::string bytes;
+  {
+    std::ifstream in(media, std::ios::binary);
+    REQUIRE(in);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    bytes = ss.str();
+  }
+  const std::size_t codec_id = bytes.find("S_TEXT/ASS");
+  REQUIRE(codec_id != std::string::npos);
+  bytes.replace(codec_id, 10, "S_TEXT/XXX");
+  dir.write("broken.mkv", bytes);
+  const std::string local = dir.file("broken.mkv");
+  REQUIRE_FALSE(local.empty());
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  // The default subrip stream is healthy; the other subtitle track is
+  // the broken one. Track codecs carry the decoder's registered name —
+  // libavcodec calls the SubRip decoder "srt" (ffprobe's "subrip" is the
+  // codec descriptor's name) — and the patched stream reports the
+  // unknown-codec placeholder instead of "ass".
+  soar::TrackId text_id = -1;
+  soar::TrackId broken_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type != soar::TrackType::Subtitle) continue;
+    if (t.codec == "srt") {
+      text_id = t.id;
+    } else {
+      broken_id = t.id;
+    }
+  }
+  REQUIRE(text_id >= 0);
+  REQUIRE(broken_id >= 0);
+
+  REQUIRE(backend->play());
+  const auto alpha = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(alpha, "Alpha"));
+
+  CHECK_FALSE(backend->selectTrack(soar::TrackType::Subtitle, broken_id));
+  CHECK(backend->lastError().find("subtitle") != std::string::npos);
+  CHECK(backend->mediaInfo().selected_subtitle == -1);
+
+  // The failed switch changed nothing: the default stream still decodes.
+  REQUIRE(backend->seek(std::chrono::milliseconds(0)));
+  const auto again = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
+  REQUIRE(contains(again, "Alpha"));
+  backend->stop();
+  backend->close();
+}
+
 TEST_CASE("a container with no audio or video streams fails to open") {
   std::string subs_only;
   if (!envMedia("SOAR_TEST_SUBS_ONLY", subs_only)) {
@@ -2960,21 +3483,31 @@ TEST_CASE("a mid-stream resolution change rebuilds the video converter") {
   // including the second rebuild, which frees the destination frame
   // allocated for segment one - instead of stalling or handing out
   // stale-size frames. The 420p middle segment also covers the
-  // pass-through path between the two rebuilds. The polling window is
-  // generous because the sanitized builds decode several times slower
-  // than real time; the third segment ends the wait early elsewhere.
+  // pass-through path between the two rebuilds.
+  //
+  // tryGetVideoFrame is a latest-frame-wins mailbox, by design: the UI
+  // renders at its own cadence and only wants the newest frame, and a
+  // frame the consumer does not sample before the next promotion is
+  // gone. At rate 8 the promotion ceiling is 8x25fps = 200fps, so the
+  // consumer must sample well above that pace or whole segments can
+  // vanish between polls — a 10ms one-sample poll (observed losing
+  // segments one and two entirely in a loaded local -j8 coverage run)
+  // samples at most 100fps even when perfectly scheduled. Poll every
+  // 1ms (~1000fps, a 5x margin over the ceiling) and keep the ~15s
+  // wall window for sanitized builds that decode slower than real
+  // time; the third segment ends the wait early elsewhere.
   auto* ff = static_cast<soar::FFmpegBackend*>(backend.get());
   soar::DecodedVideoFrame frame;
   bool saw_first = false;
   bool saw_second = false;
   bool saw_third = false;
-  for (int i = 0; i < 1500 && !saw_third; ++i) {
+  for (int i = 0; i < 15000 && !saw_third; ++i) {
     if (ff->tryGetVideoFrame(frame)) {
       saw_first = saw_first || frame.width == 160;
       saw_second = saw_second || (frame.width == 320 && frame.height == 240);
       saw_third = frame.width == 480 && frame.height == 360;
     }
-    std::this_thread::sleep_for(10ms);
+    std::this_thread::sleep_for(1ms);
   }
   CHECK(saw_first);
   CHECK(saw_second);
