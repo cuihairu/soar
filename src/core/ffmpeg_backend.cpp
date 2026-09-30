@@ -1373,6 +1373,21 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
               decode_thread_.join();
               should_stop_decoding_ = false;
               thread_stopped = true;
+              // stop() parity for the Stopped state this join produces:
+              // rewind the demuxer as well. play() keys its replay
+              // rewind on Ended/Error, and the join path has just left
+              // the demuxer at whatever offset the reaped thread died on
+              // (EOF, after the post-EOF selection twin). Without the
+              // rewind, a play() from that Stopped state resumes reading
+              // at the old offset and the fresh decode thread can hit EOF
+              // and exit before the caller's first seek is latched — the
+              // EOF break drops a seek that lands in that window, and
+              // later ones latch for the dead-but-joinable thread (the
+              // Playing/Paused check in seek() cannot tell), so playback
+              // never revives (tsan runs 36740091819 and 36748233502,
+              // REQUIRE(red) in the post-EOF subtitle selection twin).
+              (void)seekToTimestamp(std::chrono::milliseconds(0),
+                                    /*emit_event=*/false);
             }
             avcodec_free_context(&subtitle_decoder_);
             subtitle_decoder_ = new_decoder;
@@ -1517,6 +1532,13 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
         decode_thread_.join();
         should_stop_decoding_ = false;
         thread_stopped = true;
+        // stop() parity, same as the subtitle join above: the Stopped
+        // state this leaves must come with a demuxer rewound to the
+        // start, or a play() from it (no Ended-keyed replay rewind)
+        // resumes at the dead thread's offset and can EOF straight
+        // into the dead-but-joinable seek-latch void.
+        (void)seekToTimestamp(std::chrono::milliseconds(0),
+                              /*emit_event=*/false);
       }
       avcodec_free_context(&audio_decoder_);
       audio_decoder_ = new_decoder;
