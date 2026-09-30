@@ -156,7 +156,11 @@ jobs:
           # 35852616817: pa_mutex_lock vs pa_xmalloc). The dummy driver
           # keeps every SDLAudio code path exercised without libpulse.
           SDL_AUDIODRIVER: dummy
-        run: ctest --preset linux-system --output-on-failure
+        # -V streams doctest progress live: run 36740091819 hung this
+        # suite past the ctest timeout in BOTH sanitizer jobs, and the
+        # buffered doctest stdout was lost to the kill — only unbuffered
+        # ffmpeg/libass stderr survived, which cannot name the test.
+        run: ctest --preset linux-system -V --output-on-failure
 
   no-imgui:
     # The player UI overlay is an optional capability: the CMake probe
@@ -235,7 +239,10 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1
           SDL_AUDIODRIVER: dummy
-        run: ctest --preset linux-system --output-on-failure
+        # -V for the same reason as the tsan job: run 36740091819's asan
+        # media suite froze with only renderer-init stderr and no test
+        # names, because the buffered stdout died with the process.
+        run: ctest --preset linux-system -V --output-on-failure
 
   coverage:
     # Line-coverage job: builds with GCC --coverage and reports src/ +
