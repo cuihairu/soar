@@ -468,14 +468,25 @@ bool TorrentStream::start(const Params& params) {
   // A magnet starts without the metadata (info dictionary); the swarm has
   // to deliver it before any file geometry exists. A .torrent carries it
   // locally, so torrent_file() is valid right after add and this wait is a
-  // no-op there.
+  // no-op there. The wait happens before playback can open (the bridge has
+  // no Content-Length until the metadata lands), so on_progress ticks here
+  // are the caller's only view of this phase — ~2 Hz, peers discovery.
   const auto meta_deadline = std::chrono::steady_clock::now() +
                              std::chrono::milliseconds(kMetadataWaitMs);
+  auto last_meta_cb = std::chrono::steady_clock::now() - std::chrono::milliseconds(500);
   while (impl->th.torrent_file() == nullptr) {
     if (std::chrono::steady_clock::now() >= meta_deadline) {
       last_error_ = "torrent: timed out waiting for metadata (peers seen: " +
                     std::to_string(impl->th.status().num_peers) + ")";
       return false;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (params.on_progress && now - last_meta_cb >= std::chrono::milliseconds(500)) {
+      last_meta_cb = now;
+      TorrentStatus s;
+      s.peers = impl->th.status().num_peers;
+      s.metadata = false;
+      params.on_progress(s);
     }
     sleepMs(kPollMs);
   }

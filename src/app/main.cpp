@@ -125,6 +125,13 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  // Download chip mirrors (P3c events; the torrent monitor thread for P2P
+  // sources, docs/mvp.md §5 P4). Declared before torrent_stream so the
+  // monitor's on_progress callback — which runs until stop() — captures
+  // live objects. total == 0 means no active download; the chip hides at
+  // bytes == total.
+  std::atomic<std::uint64_t> download_bytes{0};
+  std::atomic<std::uint64_t> download_total{0};
   // P2P sources (docs/mvp.md §5 P4): a `.torrent` positional or a magnet:
   // URI is streamed by the local-http bridge in src/p2p; the player sees an
   // ordinary 127.0.0.1 URL with Range support and no backend learns about
@@ -154,10 +161,16 @@ int main(int argc, char** argv) {
       tp.store_dir = torrent_store;
       tp.file_index = torrent_index;
       tp.peers = torrent_peers;
-      tp.on_progress = [](const soar::p2p::TorrentStatus& s) {
+      // Also drives the window download chip (same atomics the P3c event
+      // callback writes); during the pre-open metadata wait start() calls
+      // it too, which surfaces the wait as terminal ticks.
+      tp.on_progress = [&download_bytes, &download_total](
+                           const soar::p2p::TorrentStatus& s) {
         fmt::print(stderr, "torrent: {:.1f}/{:.1f} MiB peers={}{}\n",
                    s.downloaded / 1048576.0, s.total / 1048576.0, s.peers,
                    s.metadata ? "" : " (metadata pending)");
+        download_bytes.store(s.downloaded, std::memory_order_relaxed);
+        download_total.store(s.total, std::memory_order_relaxed);
       };
       if (!torrent_stream.start(tp)) {
         fmt::print(stderr, "{}\n", torrent_stream.lastError());
@@ -173,10 +186,6 @@ int main(int argc, char** argv) {
   // Mirrors the BufferingStarted/Ended event pair for the window UI's
   // buffering chip (backend threads set it; the window loop polls it).
   std::atomic<bool> buffering{false};
-  // Mirrors the DownloadProgress payload for the download chip (P3c):
-  // total == 0 means no active download; the chip hides at bytes == total.
-  std::atomic<std::uint64_t> download_bytes{0};
-  std::atomic<std::uint64_t> download_total{0};
   // Subtitle rendering configuration (v0.2 basics)
   std::atomic<float> subtitle_font_size{24.0f};
   std::atomic<int> subtitle_offset_ms{0};
