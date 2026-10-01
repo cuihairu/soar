@@ -299,27 +299,30 @@ jobs:
           # The decode threads make gcov's branch counters go negative
           # (GCC bug 68080), which gcovr refuses to parse. Ignore those
           # branch lines; the line data itself is intact.
-          # The fail-under gates lock in the reached levels after the
-          # embedded-track selection-semantics batch (decode gate +
-          # non-default-stream handoff + mov_text/subrip onto the canvas;
-          # the selection semantics are ours, the glyphs are libass's):
-          # local cov3 full run 95.25% line (4956/5203) / 84.62% branch
-          # (4969/5872), local slack over the gates ~23 lines / ~24
-          # branches. The batch-1c same-commit readings were local
-          # 95.30%/84.46% vs this job 94.96% line (4809/5066) / 84.73%
-          # branch (4777/5637): near-identical line denominators with CI
-          # ~21 covered lines lower (a single observation; whether it
-          # repeats is what this batch's run shows — CI reads prevail)
-          # and its branch % ~0.5 higher (negative-hit-filtered
-          # denominator). If that gap repeats, the CI line margin sits at
-          # the edge of the 1-2 line jitter band — a red line gate here
-          # is read as "add coverage, not lower the gate". Thresholds
-          # must sit below min(local, CI) with slack larger than the
-          # measured jitter band (2 lines / 4 branches). A regression
-          # fails here instead of slipping in silently, and the local
-          # cov-tree reproduction stays green too. The levels behind
-          # earlier thresholds are chronicled in
-          # docs/coverage-notes.md §2/§2.1 and §3.7-§3.15.
+          # The fail-under gates lock in the levels set by the gate-raise
+          # evaluation that followed the coverage-boost batch (three
+          # declared ffmpeg arms; docs/coverage-notes.md §3.16): this
+          # job's coverage-report artifact on the same source reads 95.43%
+          # line (4965/5203) and 85.55% branch (4921/5752; the previous
+          # run of identical src read 4927/5752 — same-code branch
+          # counters wobble ~6 between runs), and the local cov3 full run
+          # under the system gcovr 7.2 (PATH=/usr/bin:$PATH; CI apt ships
+          # 7.0, same 7.x family) reads 95.50% line (4966/5200) / 84.99%
+          # branch (4995/5877). Slack over these gates: CI ~22 lines /
+          # ~54 branches, local ~26 lines / ~23 branches — far above the
+          # measured jitter band (2 lines / 4 branches), and the line
+          # side still clears a recurrence of the one-off ~21-line
+          # CI-vs-local gap seen in batch 1c, which is exactly why the
+          # candidate one step higher (line 95.1, CI slack ~16 lines) was
+          # rejected. A red gate here is read as "add coverage, not lower
+          # the gate". Thresholds sit below min(local, CI) with slack
+          # larger than the jitter band; reproduce locally with the
+          # system gcovr — a hermes-PATH gcovr 8.6 aggregates headers
+          # differently (~+5 line / ~-3 branch denominators on the same
+          # gcda) and yields a misleading reading. This pair is the only
+          # numeric gate in the workflows (no test-count threshold
+          # exists). Levels behind earlier thresholds are chronicled in
+          # docs/coverage-notes.md §2/§2.1 and §3.7-§3.16.
           # Two text reports because gcovr's txt output shows one metric
           # at a time: the branch table carries the gate, the line table
           # lands in the artifact for gap analysis. A 100%-line file can
@@ -329,7 +332,7 @@ jobs:
             --txt coverage.txt --txt-metric branch \
             --exclude-throw-branches \
             --gcov-ignore-parse-errors negative_hits.warn_once_per_file \
-            --fail-under-line 94.8 --fail-under-branch 84.2 \
+            --fail-under-line 95.0 --fail-under-branch 84.6 \
             --print-summary > gcovr-summary.txt
           cat gcovr-summary.txt
           gcovr --root . --filter src --filter include \
