@@ -144,6 +144,9 @@ int main(int argc, char** argv) {
   // bridge's HTTP connection) is torn down first.
   soar::p2p::TorrentStream torrent_stream;
   std::string uri(argv[uri_index]);
+  // True when the stream was started with startAsync() for the window (the
+  // bridge is opened by the window's pending-torrent poll, not here).
+  bool torrent_async = false;
   {
     const std::string lower_uri = lower_copy(uri);
     const bool is_magnet = lower_uri.rfind("magnet:", 0) == 0;
@@ -203,17 +206,34 @@ int main(int argc, char** argv) {
           if (files.size() > shown) fmt::print(stderr, "  ...\n");
         }
       };
-      if (!torrent_stream.start(tp)) {
-        fmt::print(stderr, "{}\n", torrent_stream.lastError());
-        return 1;
+      // P4b-4: in window mode the torrent starts asynchronously — the
+      // window opens right away and its pending-torrent poll opens the
+      // bridge once the metadata lands (poster shows the wait). Headless
+      // and --torrent-list keep start()'s synchronous contract.
+#ifdef SOAR_WITH_SDL2
+      const bool window_mode = !headless;
+#else
+      const bool window_mode = false;
+#endif
+      if (window_mode && !torrent_list) {
+        if (!torrent_stream.startAsync(tp)) {
+          fmt::print(stderr, "{}\n", torrent_stream.lastError());
+          return 1;
+        }
+        torrent_async = true;
+      } else {
+        if (!torrent_stream.start(tp)) {
+          fmt::print(stderr, "{}\n", torrent_stream.lastError());
+          return 1;
+        }
+        if (torrent_list) {
+          // Metadata acquired, table printed; exit without opening a player.
+          return 0;
+        }
+        fmt::print(stderr, "torrent: {} ({} bytes) -> {}\n", torrent_stream.fileName(),
+                   torrent_stream.fileSize(), torrent_stream.playbackUrl());
+        uri = torrent_stream.playbackUrl();
       }
-      if (torrent_list) {
-        // Metadata acquired, table printed; exit without opening a player.
-        return 0;
-      }
-      fmt::print(stderr, "torrent: {} ({} bytes) -> {}\n", torrent_stream.fileName(),
-                 torrent_stream.fileSize(), torrent_stream.playbackUrl());
-      uri = torrent_stream.playbackUrl();
     }
   }
 
@@ -269,27 +289,32 @@ int main(int argc, char** argv) {
     }
   });
 
-  if (!player.open(soar::MediaSource{uri, cache_dir})) {
-    fmt::print(stderr, "Failed to open source: {}\n", uri);
-    fmt::print(stderr, "Error: {}\n", player.lastError());
-    return 1;
-  }
-  player.play();
+  // Async torrent sources open from the window once the metadata lands;
+  // everything here (open, play, media info print) runs for the sources
+  // that were already openable at this point.
+  if (!torrent_async) {
+    if (!player.open(soar::MediaSource{uri, cache_dir})) {
+      fmt::print(stderr, "Failed to open source: {}\n", uri);
+      fmt::print(stderr, "Error: {}\n", player.lastError());
+      return 1;
+    }
+    player.play();
 
-  const auto info = player.mediaInfo();
-  fmt::print(stderr, "\n=== Media Info ===\n");
-  fmt::print(stderr, "Duration: {}s\n", info.duration.count() / 1000.0);
-  fmt::print(stderr, "Seekable: {}\n", info.seekable ? "yes" : "no");
-  fmt::print(stderr, "Tracks: {}\n", info.tracks.size());
-  for (const auto& track : info.tracks) {
-    fmt::print(stderr, "  [{}] {} - {} ({})\n",
-      static_cast<int>(track.type),
-      track.id,
-      track.codec,
-      track.title
-    );
+    const auto info = player.mediaInfo();
+    fmt::print(stderr, "\n=== Media Info ===\n");
+    fmt::print(stderr, "Duration: {}s\n", info.duration.count() / 1000.0);
+    fmt::print(stderr, "Seekable: {}\n", info.seekable ? "yes" : "no");
+    fmt::print(stderr, "Tracks: {}\n", info.tracks.size());
+    for (const auto& track : info.tracks) {
+      fmt::print(stderr, "  [{}] {} - {} ({})\n",
+        static_cast<int>(track.type),
+        track.id,
+        track.codec,
+        track.title
+      );
+    }
+    fmt::print(stderr, "\n");
   }
-  fmt::print(stderr, "\n");
 
   if (headless) {
     (void)player.seek(std::chrono::seconds(1));
@@ -326,6 +351,10 @@ int main(int argc, char** argv) {
   // P2P sources: show the streamed file's name instead of the bridge URL
   // (empty for ordinary sources — the window falls back to the URI).
   ui_cfg.source_label = torrent_stream.fileName();
+  // P4b-4 async P2P source: the window polls the stream and opens the
+  // bridge URL itself once Serving lands (poster shows the wait; Failed is
+  // a toast). Null for ordinary and synchronous sources.
+  ui_cfg.torrent = torrent_async ? &torrent_stream : nullptr;
 #  ifdef SOAR_WITH_FFMPEG
   ui_cfg.ffmpeg = ffmpeg_backend;
 #  endif

@@ -83,6 +83,8 @@
 
 **P4b-3 多文件种子选择 ✅**:`TorrentFile` 结构（P4a 预留）+ `on_files` 回调（元数据就绪即触发，磁力等待后/本地 torrent 立即）把完整文件表送 CLI 与窗口。CLI：`--torrent-list` 仅打印表并退出（magnet 先等元数据，.torrent 秒出）；播放时 multi-file 自动列表到 stderr（`--torrent-index=N` 计数可见），越界报错自带截断表（最多 32 条）直接给定可选项；`seed_torrent --file=<dir>` 支持目录建种（单命令生成 multi-file torrent）。窗口：`WindowUiConfig::source_label` 接 `torrent_stream.fileName()`，OSC/标题栏显**文件名**而非桥 URL（原 UX 缺口一并补齐）。走查：.torrent + `--torrent-index=1` 选中 file2.bin 播放绿、magnet + `--torrent-peer` + `--torrent-index=2` 选中 file3.bin 播放绿、越界 5→3 files 显式报错带表、磁力 `--torrent-list` 等元数据后打印 3 条表并退出；受影响最小测试面（cli/http_cache）绿。DHT 公网寻 peer 与真实 tracker announce 未在本地 swarm 验证（机制上走 libtorrent 内建路径）。
 
+**P4b-4 异步 open ✅**：`TorrentStream::startAsync()` 将「解析→建会话→监听 socket」的快路径留在调用线程（返回即拿到 `playbackUrl()`），把元数据等待、文件选择、服务线程孵化移到 worker 线程。窗口层 `runPlayerWindow` 每帧轮询 `phase()`：`Connecting` 显示海报/Toast（"Fetching metadata…"），`Serving` 自动 `player.open(playbackUrl())` 并把窗口标题改为 `soar - <文件名>`，`Failed` toast 首行错误（含 bounded 文件表）不挂死。`stop()` 先置 `stopped` 再 join worker，保证 60s 元数据超时不会阻塞退出。同步入口 `start()` = `prepare()+runTail()` 行为保持 `--torrent-list`/headless 契约。走查：.torrent 与 magnet 均在窗口模式下自动完成元数据等待→开播、海报显文件名、标题栏 `soar - bunny.mp4`、下载进度 chip 同步推进、ESC 干净退出；受影响最小测试面（cli/http_cache）绿。
+
 架构约定：**核心抽象不动**——网络能力是后端实现细节，唯一的核心层变更是 P1 的事件模型扩展；P3 起的缓存/下载层做成独立组件，`IBackend` 之上可组合，不绑死 FFmpeg。
 
 ## 6. 字幕生态（下载与 AI 翻译）

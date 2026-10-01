@@ -15,16 +15,27 @@
 // never touch the network.
 //
 // The class owns its threads (session internals, a status monitor, one
-// acceptor, one detached thread per HTTP connection). All methods are safe
-// to call from the thread that called start().
+// acceptor, one detached thread per HTTP connection, the startAsync worker).
+// All methods are safe to call from the thread that called start() (or
+// startAsync()); with startAsync the worker publishes its result through
+// phase(), so a polling UI thread reads only that atomic plus the members
+// guaranteed final at the published phase.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
 
 namespace soar::p2p {
+
+// Lifecycle of an async start (startAsync): Connecting covers the metadata
+// wait (a magnet's info dictionary arriving over the swarm), Serving means
+// the bridge accepts connections and playbackUrl()/fileName() are final.
+// Stores use release, loads acquire, so observing a phase guarantees every
+// write that precedes it.
+enum class TorrentPhase { Idle, Connecting, Serving, Failed };
 
 struct TorrentFile {
   int index;
@@ -55,10 +66,12 @@ class TorrentStream {
     std::vector<std::string> peers;
     // Invoked from an internal thread at most ~1 Hz with the latest status.
     std::function<void(const TorrentStatus&)> on_progress;
-    // Invoked exactly once from start() once the metadata is available,
-    // before the file selection is applied: the full file table of the
-    // torrent (multi-file listing, --torrent-index picking). A magnet pays
-    // the metadata wait before this fires; a .torrent fires immediately.
+    // Invoked exactly once during a start once the metadata is available
+    // (on the calling thread for start(), on the startAsync worker
+    // otherwise), before the file selection is applied: the full file table
+    // of the torrent (multi-file listing, --torrent-index picking). A magnet
+    // pays the metadata wait before this fires; a .torrent fires
+    // immediately.
     std::function<void(const std::vector<TorrentFile>&)> on_files;
   };
 
@@ -72,6 +85,16 @@ class TorrentStream {
   // cannot listen, metadata never arrives).
   bool start(const Params& params);
 
+  // Async start: the fast synchronous part (parse, session, swarm contact,
+  // the local listen socket) runs on the calling thread, the metadata wait
+  // and file setup on a worker thread. Returns false immediately on
+  // synchronous failure — same errors, same contract as start(); otherwise
+  // the caller polls phase(): Connecting while the metadata is in flight,
+  // then Serving (playbackUrl()/fileName() usable, as after start()) or
+  // Failed (lastError() set). stop() from any phase cancels cleanly and
+  // returns the stream to Idle.
+  bool startAsync(const Params& params);
+
   // Stops accepting and tearing down the session; pending reads fail.
   // Called by the destructor; idempotent.
   void stop();
@@ -84,11 +107,16 @@ class TorrentStream {
 
   TorrentStatus status() const;
 
+  // Current lifecycle phase (Idle until startAsync, back to Idle after
+  // stop()). The one cross-thread channel a startAsync caller polls.
+  TorrentPhase phase() const { return phase_.load(std::memory_order_acquire); }
+
   const std::string& lastError() const { return last_error_; }
 
  private:
   struct Impl;
   Impl* impl_ = nullptr;
+  std::atomic<TorrentPhase> phase_{TorrentPhase::Idle};
   std::string playback_url_;
   std::string file_name_;
   std::string last_error_;

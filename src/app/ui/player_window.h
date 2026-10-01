@@ -16,6 +16,10 @@ class Player;
 class FFmpegBackend;  // opaque here; only player_window.cpp dereferences it
 }
 
+namespace soar::p2p {
+class TorrentStream;  // opaque here; only player_window.cpp polls it
+}
+
 namespace soar::app {
 
 struct WindowUiConfig {
@@ -31,6 +35,12 @@ struct WindowUiConfig {
   // window title (P2P: the streamed file's name instead of the bridge URL).
   // Empty = derive from the URI as before.
   std::string source_label;
+  // Async P2P source (docs/mvp.md §5 P4b-4): non-null when the torrent was
+  // started with startAsync() and the window must poll phase() — it opens
+  // the bridge URL itself on Serving and toasts the error on Failed.
+  // Null for ordinary and synchronous sources; the caller owns the stream,
+  // which outlives the window.
+  soar::p2p::TorrentStream* torrent = nullptr;
   // Video frames come from the FFmpeg backend (null when it is not in use).
   soar::FFmpegBackend* ffmpeg = nullptr;
   // Set by the Player event callback (backend thread) on

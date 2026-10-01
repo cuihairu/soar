@@ -23,6 +23,8 @@
 #ifdef SOAR_WITH_SDL2
 #  include <SDL.h>
 
+#  include "torrent_stream.h"
+
 #  include <algorithm>
 #  include <atomic>
 #  include <cctype>
@@ -327,12 +329,22 @@ class PlayerHud {
   PlayerHud(soar::Player& player, const WindowUiConfig& cfg, SDL_Window* window)
       : player_(player), cfg_(cfg), window_(window), recent_(cfg.recent_path),
         current_uri_(cfg.initial_uri), source_label_(cfg.source_label),
+        torrent_(cfg.torrent), torrent_pending_(cfg.torrent != nullptr),
         subtitle_fonts_(loadSubtitleFonts()) {
     recent_.load();
-    recordOpen(cfg.initial_uri);
-    // Playlist seeding (docs/mvp.md §2): the CLI-opened source plays first;
-    // further positionals queue behind it (mpv's multi-argument semantics).
-    if (!cfg.initial_uri.empty()) playlist_.add(cfg.initial_uri);
+    if (cfg.torrent == nullptr) {
+      recordOpen(cfg.initial_uri);
+      // Playlist seeding (docs/mvp.md §2): the CLI-opened source plays
+      // first; further positionals queue behind it (mpv's multi-argument
+      // semantics).
+      if (!cfg.initial_uri.empty()) playlist_.add(cfg.initial_uri);
+    } else {
+      // Async P2P source (P4b-4): the magnet/.torrent URI is not openable
+      // by the player until the metadata lands — handlePendingTorrent
+      // records and queues the bridge URL instead. The raw URI never joins
+      // Recent or the playlist, so nothing unopenable lingers in either.
+      current_uri_.clear();
+    }
     for (const std::string& uri : cfg.queued_uris) playlist_.add(uri);
     // Remote subtitle download (docs/mvp.md §6): endpoint and key arrive
     // from the environment — the core embeds no endpoint and no credential,
@@ -552,9 +564,56 @@ class PlayerHud {
     }
   }
 
+  // P4b-4 async torrent open: while the stream is Connecting the poster
+  // (below) shows the wait; on Serving the window opens the bridge URL —
+  // the same path a synchronous open would have taken, now from the UI
+  // thread — and on Failed the error becomes a toast (first line only:
+  // lastError can carry a bounded file table). The raw magnet/.torrent URI
+  // never opens here; only the bridge URL does.
+  void handlePendingTorrent(milliseconds now) {
+    if (!torrent_pending_) return;
+    switch (torrent_->phase()) {
+      case soar::p2p::TorrentPhase::Connecting:
+        return;
+      case soar::p2p::TorrentPhase::Serving: {
+        torrent_pending_ = false;
+        const std::string uri = torrent_->playbackUrl();
+        source_label_ = torrent_->fileName();
+        fmt::print(stderr, "torrent: {} ({} bytes) -> {}\n", source_label_,
+                   torrent_->fileSize(), uri);
+        if (player_.open(soar::MediaSource{uri, cfg_.cache_dir})) {
+          if (!source_label_.empty()) {
+            SDL_SetWindowTitle(window_, (cfg_.title + " - " + source_label_).c_str());
+          }
+          recordOpen(uri);
+          playlist_.add(uri);
+          playlist_.setCurrent(playlist_.size() - 1);
+          st_.loop_a_set = false;
+          st_.toast.show("Opened " + displayName(uri), now);
+          player_.play();
+        } else {
+          st_.toast.show("Open failed: " + player_.lastError(), now);
+        }
+        break;
+      }
+      case soar::p2p::TorrentPhase::Failed: {
+        torrent_pending_ = false;
+        std::string err = torrent_->lastError();
+        const size_t nl = err.find('\n');
+        if (nl != std::string::npos) err.resize(nl);
+        fmt::print(stderr, "{}\n", torrent_->lastError());
+        st_.toast.show("Open failed: " + err, now);
+        break;
+      }
+      case soar::p2p::TorrentPhase::Idle:
+        break;  // not started (or already stopped): nothing pending anymore
+    }
+  }
+
   // Per frame: animate the HUD alpha, then emit the UI draws. Must be
   // called between ImGui::NewFrame and ImGui::Render.
   void drawUi(milliseconds now, bool video_active) {
+    handlePendingTorrent(now);
     const ImGuiIO& io = ImGui::GetIO();
     // A minimized window reports a zero-sized drawable, and every OSC
     // dimension below is derived from it (bar_w would go negative). Skip
@@ -1302,7 +1361,16 @@ class PlayerHud {
                          ImGuiWindowFlags_NoBackground |
                          ImGuiWindowFlags_NoInputs)) {
       ImGui::TextUnformatted(displayName(current_uri_).c_str());
-      ImGui::TextDisabled("%s", stateName(player_.state()));
+      if (torrent_pending_ && torrent_->phase() ==
+              soar::p2p::TorrentPhase::Connecting) {
+        // Async P2P source not yet serving: the wait itself is the state.
+        char line[64];
+        std::snprintf(line, sizeof(line), "connecting to swarm - %d peers",
+                      torrent_->status().peers);
+        ImGui::TextDisabled("%s", line);
+      } else {
+        ImGui::TextDisabled("%s", stateName(player_.state()));
+      }
       ImGui::Spacing();
       ImGui::TextDisabled("%s", "Drop a file here - R recent - H shortcuts");
     }
@@ -1819,6 +1887,10 @@ class PlayerHud {
   PlaylistStore playlist_;
   std::string current_uri_;
   std::string source_label_;  // display-only override (P2P bridge sources)
+  // Async P2P (P4b-4): when WindowUiConfig::torrent is non-null, the HUD
+  // polls phase() each frame and opens the bridge URL on Serving.
+  soar::p2p::TorrentStream* torrent_ = nullptr;
+  bool torrent_pending_ = false;
   SubtitleFonts subtitle_fonts_;
   // Enumerates sidecar subtitle files next to the media (§6). Stateless and
   // cheap, so it lives with the HUD rather than in the backend: the directory

@@ -318,6 +318,25 @@ void handleConn(std::shared_ptr<ConnCtx> ctx, int fd) {
   sockClose(fd);
 }
 
+// Shared entry validation for start()/startAsync(). Returns false with
+// *err set.
+bool validateStart(bool already_started, const TorrentStream::Params& params,
+                   std::string* err) {
+  if (already_started) {
+    *err = "torrent: already started";
+    return false;
+  }
+  if (params.torrent_path.empty() && params.magnet_uri.empty()) {
+    *err = "torrent: no .torrent path or magnet URI given";
+    return false;
+  }
+  if (params.store_dir.empty()) {
+    *err = "torrent: no store dir given";
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 struct TorrentStream::Impl {
@@ -330,8 +349,18 @@ struct TorrentStream::Impl {
   int piece_len = 0;
 
   int listen_fd = -1;
+  std::thread worker;  // startAsync: runs runTail(); start() runs it inline
   std::thread accept_thread;
   std::thread monitor_thread;
+
+  // start() = prepare() + runTail(), both on the calling thread. startAsync
+  // keeps the synchronous half on the caller — by the time it returns, the
+  // listen socket exists and playback_url_ is final, so stop() can always
+  // reach every thread the object created and no state creation races the
+  // teardown — and moves the slow half (metadata wait, file selection,
+  // thread spawn) onto worker.
+  bool prepare(const Params& p, TorrentStream* owner, std::string* err);
+  bool runTail(TorrentStream* owner, std::string* err);
   // shared_ptr: connection threads outlive stop() and must not dereference
   // a deleted Impl to learn about shutdown.
   std::shared_ptr<std::atomic<bool>> stopped = std::make_shared<std::atomic<bool>>(false);
@@ -392,41 +421,31 @@ struct TorrentStream::Impl {
 
 TorrentStream::~TorrentStream() { stop(); }
 
-bool TorrentStream::start(const Params& params) {
-  if (impl_ != nullptr) {
-    last_error_ = "torrent: already started";
-    return false;
-  }
-  const bool is_magnet = !params.magnet_uri.empty();
-  if (params.torrent_path.empty() && !is_magnet) {
-    last_error_ = "torrent: no .torrent path or magnet URI given";
-    return false;
-  }
-  if (params.store_dir.empty()) {
-    last_error_ = "torrent: no store dir given";
-    return false;
-  }
-
-  auto impl = std::make_unique<Impl>();
-  impl->params = params;
+// The synchronous half of both starts: parse (magnet vs .torrent), session,
+// add_torrent, direct peers, the local listen socket. Everything here fails
+// fast; on success owner->playback_url_ is final and the Impl owns a listen
+// socket — after this point stop() can reach every thread the object ever
+// creates, from any thread. Returns false with *err set.
+bool TorrentStream::Impl::prepare(const Params& p, TorrentStream* owner, std::string* err) {
+  params = p;
 
   lt::add_torrent_params atp;
-  if (is_magnet) {
+  if (!p.magnet_uri.empty()) {
     // libtorrent accepts btih as 40-hex or 32-base32 and fills trackers
     // (tr=), the display name (dn=), in-magnet peers (x.pe=) and DHT nodes
     // (dht=). The session's default bootstrap nodes make the hash alone
     // enough to find peers on the public DHT.
     lt::error_code ec;
-    lt::parse_magnet_uri(params.magnet_uri, atp, ec);
+    lt::parse_magnet_uri(p.magnet_uri, atp, ec);
     if (ec) {
-      last_error_ = "torrent: cannot parse magnet URI: " + ec.message();
+      *err = "torrent: cannot parse magnet URI: " + ec.message();
       return false;
     }
   } else {
     try {
-      atp = lt::load_torrent_file(params.torrent_path);
+      atp = lt::load_torrent_file(p.torrent_path);
     } catch (const std::exception& e) {
-      last_error_ = std::string("torrent: cannot parse ") + params.torrent_path + ": " + e.what();
+      *err = std::string("torrent: cannot parse ") + p.torrent_path + ": " + e.what();
       return false;
     }
   }
@@ -435,68 +454,108 @@ bool TorrentStream::start(const Params& params) {
   sp.set_str(lt::settings_pack::listen_interfaces, "0.0.0.0:6881,[::]:6881");
   lt::session_params sparams;
   sparams.settings = std::move(sp);
-  impl->session = std::make_shared<lt::session>(sparams);
+  session = std::make_shared<lt::session>(sparams);
 
-  atp.save_path = params.store_dir;
+  atp.save_path = p.store_dir;
   // Sequential download feeds linear playback from piece 0 on; reads ahead
   // of the front (an mp4 moov near the tail, seeks) turn into per-piece
   // deadlines inside waitForPiece().
   atp.flags |= lt::torrent_flags::sequential_download;
   try {
-    impl->th = impl->session->add_torrent(atp);
+    th = session->add_torrent(atp);
   } catch (const std::exception& e) {
-    last_error_ = std::string("torrent: cannot start download: ") + e.what();
+    *err = std::string("torrent: cannot start download: ") + e.what();
     return false;
   }
 
-  for (const std::string& peer : params.peers) {
+  for (const std::string& peer : p.peers) {
     const size_t colon = peer.rfind(':');
     if (colon == std::string::npos || colon == 0 || colon + 1 >= peer.size()) {
-      last_error_ = "torrent: bad peer (want host:port): " + peer;
+      *err = "torrent: bad peer (want host:port): " + peer;
       return false;
     }
     const std::string host = peer.substr(0, colon);
     const int port = std::atoi(peer.c_str() + colon + 1);
     if (port <= 0 || port > 65535) {
-      last_error_ = "torrent: bad peer port in " + peer;
+      *err = "torrent: bad peer port in " + peer;
       return false;
     }
     try {
       const lt::address addr = lt::make_address(host);
-      impl->th.connect_peer(lt::tcp::endpoint(addr, static_cast<unsigned short>(port)));
+      th.connect_peer(lt::tcp::endpoint(addr, static_cast<unsigned short>(port)));
     } catch (const std::exception& e) {
-      last_error_ = "torrent: bad peer " + host + ": " + e.what();
+      *err = "torrent: bad peer " + host + ": " + e.what();
       return false;
     }
   }
 
+  sockInit();
+
+  const int lfd = static_cast<int>(socket(AF_INET, SOCK_STREAM, 0));
+  if (lfd < 0) {
+    *err = "torrent: cannot create listen socket (errno " +
+           std::to_string(lastNetError()) + ")";
+    return false;
+  }
+  int one = 1;
+  setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR,
+             reinterpret_cast<const char*>(&one), sizeof(one));
+  sockaddr_in bind_addr{};
+  bind_addr.sin_family = AF_INET;
+  bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // never exposed off-host
+  bind_addr.sin_port = 0;  // any free port; the URL carries the chosen one
+  if (bind(lfd, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) != 0 ||
+      listen(lfd, kListenBacklog) != 0) {
+    *err = "torrent: cannot listen on 127.0.0.1 (errno " +
+           std::to_string(lastNetError()) + ")";
+    sockClose(lfd);
+    return false;
+  }
+  sockaddr_in bound{};
+  socklen_t blen = sizeof(bound);
+  getsockname(lfd, reinterpret_cast<sockaddr*>(&bound), &blen);
+  owner->playback_url_ = "http://127.0.0.1:" + std::to_string(ntohs(bound.sin_port)) + "/";
+  listen_fd = lfd;
+  return true;
+}
+
+// The slow half of both starts: the metadata wait (a no-op for a .torrent,
+// whose info dictionary ships with it), on_files, the file selection and
+// geometry, then the serving threads. Runs on the caller's thread under
+// start(), on worker under startAsync(). Returns false with *err set; when
+// it fails because stop() already ran, the stopped flag is set and stop()'s
+// final phase store — not this method — tells the story.
+bool TorrentStream::Impl::runTail(TorrentStream* owner, std::string* err) {
   // A magnet starts without the metadata (info dictionary); the swarm has
-  // to deliver it before any file geometry exists. A .torrent carries it
-  // locally, so torrent_file() is valid right after add and this wait is a
-  // no-op there. The wait happens before playback can open (the bridge has
-  // no Content-Length until the metadata lands), so on_progress ticks here
-  // are the caller's only view of this phase — ~2 Hz, peers discovery.
+  // to deliver it before any file geometry exists. The wait happens before
+  // playback can open (the bridge has no Content-Length until the metadata
+  // lands), so on_progress ticks here are the caller's only view of this
+  // phase — ~2 Hz, peers discovery.
   const auto meta_deadline = std::chrono::steady_clock::now() +
                              std::chrono::milliseconds(kMetadataWaitMs);
   auto last_meta_cb = std::chrono::steady_clock::now() - std::chrono::milliseconds(500);
-  while (impl->th.torrent_file() == nullptr) {
+  while (th.torrent_file() == nullptr) {
+    // startAsync: stop() may cancel this wait from the UI thread. It stores
+    // stopped before joining this thread, so the wait exits instead of
+    // sitting out the whole timeout behind the join.
+    if (stopped->load(std::memory_order_relaxed)) return false;
     if (std::chrono::steady_clock::now() >= meta_deadline) {
-      last_error_ = "torrent: timed out waiting for metadata (peers seen: " +
-                    std::to_string(impl->th.status().num_peers) + ")";
+      *err = "torrent: timed out waiting for metadata (peers seen: " +
+             std::to_string(th.status().num_peers) + ")";
       return false;
     }
     const auto now = std::chrono::steady_clock::now();
     if (params.on_progress && now - last_meta_cb >= std::chrono::milliseconds(500)) {
       last_meta_cb = now;
       TorrentStatus s;
-      s.peers = impl->th.status().num_peers;
+      s.peers = th.status().num_peers;
       s.metadata = false;
       params.on_progress(s);
     }
     sleepMs(kPollMs);
   }
 
-  const std::shared_ptr<const lt::torrent_info> ti = impl->th.torrent_file();
+  const std::shared_ptr<const lt::torrent_info> ti = th.torrent_file();
   const lt::file_storage& fs = ti->files();
   const int num_files = fs.num_files();
   if (params.on_files) {
@@ -512,8 +571,8 @@ bool TorrentStream::start(const Params& params) {
   int index = params.file_index;
   if (num_files == 1) index = 0;
   if (index < 0 || index >= num_files) {
-    last_error_ = "torrent: file index " + std::to_string(index) + " out of range (torrent has " +
-                  std::to_string(num_files) + " files)";
+    *err = "torrent: file index " + std::to_string(index) + " out of range (torrent has " +
+           std::to_string(num_files) + " files)";
     // The table is the actual picker affordance: show what exists so the
     // error alone tells the caller what to pick. Skip it when on_files
     // already delivered the table — otherwise the CLI prints it twice.
@@ -522,57 +581,61 @@ bool TorrentStream::start(const Params& params) {
       const int shown = std::min(num_files, 32);
       for (int i = 0; i < shown; ++i) {
         const lt::file_index_t fi{i};
-        last_error_ += "\n  [" + std::to_string(i) + "] " +
-                       std::to_string(fs.file_size(fi)) + "  " +
-                       std::string(fs.file_path(fi, ""));
+        *err += "\n  [" + std::to_string(i) + "] " +
+                std::to_string(fs.file_size(fi)) + "  " +
+                std::string(fs.file_path(fi, ""));
       }
-      if (num_files > shown) last_error_ += "\n  ...";
+      if (num_files > shown) *err += "\n  ...";
     }
     return false;
   }
   const lt::file_index_t fi{index};
-  impl->file_base = static_cast<std::uint64_t>(fs.file_offset(fi));
-  impl->file_size = static_cast<std::uint64_t>(fs.file_size(fi));
-  impl->piece_len = ti->piece_length();
-  if (impl->file_size == 0 || impl->piece_len == 0) {
-    last_error_ = "torrent: file is empty";
+  file_base = static_cast<std::uint64_t>(fs.file_offset(fi));
+  file_size = static_cast<std::uint64_t>(fs.file_size(fi));
+  piece_len = ti->piece_length();
+  if (file_size == 0 || piece_len == 0) {
+    *err = "torrent: file is empty";
     return false;
   }
-  impl->file_path = params.store_dir + "/" + fs.file_path(fi, "");
-  file_name_ = std::string(fs.file_name(fi));
-  file_size_ = impl->file_size;
+  file_path = params.store_dir + "/" + fs.file_path(fi, "");
+  owner->file_name_ = std::string(fs.file_name(fi));
+  owner->file_size_ = file_size;
 
-  sockInit();
+  accept_thread = std::thread([this] { acceptLoop(); });
+  monitor_thread = std::thread([this] { monitorLoop(); });
+  return true;
+}
 
-  const int listen_fd = static_cast<int>(socket(AF_INET, SOCK_STREAM, 0));
-  if (listen_fd < 0) {
-    last_error_ = "torrent: cannot create listen socket (errno " +
-                  std::to_string(lastNetError()) + ")";
-    return false;
-  }
-  int one = 1;
-  setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR,
-             reinterpret_cast<const char*>(&one), sizeof(one));
-  sockaddr_in bind_addr{};
-  bind_addr.sin_family = AF_INET;
-  bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // never exposed off-host
-  bind_addr.sin_port = 0;  // any free port; the URL carries the chosen one
-  if (bind(listen_fd, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) != 0 ||
-      listen(listen_fd, kListenBacklog) != 0) {
-    last_error_ = "torrent: cannot listen on 127.0.0.1 (errno " +
-                  std::to_string(lastNetError()) + ")";
-    sockClose(listen_fd);
-    return false;
-  }
-  sockaddr_in bound{};
-  socklen_t blen = sizeof(bound);
-  getsockname(listen_fd, reinterpret_cast<sockaddr*>(&bound), &blen);
-  playback_url_ = "http://127.0.0.1:" + std::to_string(ntohs(bound.sin_port)) + "/";
-
-  impl->listen_fd = listen_fd;
-  impl->accept_thread = std::thread([impl = impl.get()] { impl->acceptLoop(); });
-  impl->monitor_thread = std::thread([impl = impl.get()] { impl->monitorLoop(); });
+bool TorrentStream::start(const Params& params) {
+  if (!validateStart(impl_ != nullptr, params, &last_error_)) return false;
+  auto impl = std::make_unique<Impl>();
+  if (!impl->prepare(params, this, &last_error_)) return false;
   impl_ = impl.release();
+  if (!impl_->runTail(this, &last_error_)) {
+    stop();  // unwinds the session and the listen socket prepare() created
+    return false;
+  }
+  phase_.store(TorrentPhase::Serving, std::memory_order_release);
+  return true;
+}
+
+bool TorrentStream::startAsync(const Params& params) {
+  if (!validateStart(impl_ != nullptr, params, &last_error_)) return false;
+  auto impl = std::make_unique<Impl>();
+  if (!impl->prepare(params, this, &last_error_)) return false;
+  impl_ = impl.release();
+  // Published only once impl_ owns the prepared Impl: a stop() from any
+  // thread after this point joins the worker before tearing anything down.
+  phase_.store(TorrentPhase::Connecting, std::memory_order_release);
+  impl_->worker = std::thread([impl = impl_, this] {
+    if (impl->runTail(this, &last_error_)) {
+      phase_.store(TorrentPhase::Serving, std::memory_order_release);
+    } else if (!impl->stopped->load(std::memory_order_relaxed)) {
+      // A real failure (metadata timeout, bad index). stop() during the
+      // wait leaves the final word to stop()'s Idle store instead.
+      phase_.store(TorrentPhase::Failed, std::memory_order_release);
+    }
+  });
   return true;
 }
 
@@ -580,7 +643,11 @@ void TorrentStream::stop() {
   if (impl_ == nullptr) return;
   std::unique_ptr<Impl> impl(impl_);
   impl_ = nullptr;
+  // Stored before the joins: the startAsync worker's metadata wait (and
+  // every connection loop) polls this and bails, so stop() never blocks
+  // behind a 60s timeout.
   impl->stopped->store(true, std::memory_order_relaxed);
+  if (impl->worker.joinable()) impl->worker.join();
   if (impl->listen_fd >= 0) {
     sockShutdown(impl->listen_fd);
     sockClose(impl->listen_fd);
@@ -591,6 +658,7 @@ void TorrentStream::stop() {
   // Connection threads hold their own copies (ConnCtx::session); libtorrent
   // dies when the last of them is done with it.
   impl->session.reset();
+  phase_.store(TorrentPhase::Idle, std::memory_order_release);
 }
 
 TorrentStatus TorrentStream::status() const {
