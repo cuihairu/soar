@@ -158,6 +158,30 @@ bool contains(const std::vector<soar::DecodedSubtitleFrame>& frames,
 
 } // namespace
 
+TEST_CASE("audio device enumeration cold-starts the SDL audio subsystem") {
+  // Registered first in this TU so it runs before any media open has
+  // touched SDL audio: SDL_INIT_AUDIO is still down and enumeration
+  // itself brings the subsystem up. Every later caller in this process
+  // (the device menu, the audio tests below) finds it already warm.
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  CHECK(backend->currentAudioOutputDevice().empty());
+  const auto devices = backend->audioOutputDevices();
+  // The dummy driver reports one device; a runner without any audio
+  // stack may report none — never assert the count, only that whatever
+  // is listed is selectable and sticks.
+  for (const auto& name : devices) {
+    INFO("device: ", name);
+    CHECK(backend->selectAudioOutputDevice(name));
+    CHECK(backend->currentAudioOutputDevice() == name);
+  }
+  CHECK(backend->selectAudioOutputDevice(""));
+  CHECK(backend->currentAudioOutputDevice().empty());
+  CHECK(sink.errors.load() == 0);
+}
+
 TEST_CASE("unopened backend: control surface semantics") {
   // sink declared first: it must outlive the backend, whose destructor
   // still emits close events.
@@ -1978,6 +2002,35 @@ TEST_CASE("an external .ass file without dialogue lines is refused") {
   backend->close();
 }
 
+TEST_CASE("an SRT sidecar whose only cue carries no payload is refused") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping payload-less sidecar test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  // detectSubtitleFormat only needs a parseable head timestamp to
+  // declare SubRip — it never looks at payload lines — while the parser
+  // drops a timestamp pair carrying no text. The two rules together make
+  // a detectable file that parses to zero cues, and the load must refuse
+  // it instead of registering a track that can never show anything.
+  dir.write("nopayload.srt",
+            "1\n"
+            "00:00:01,000 --> 00:00:02,000\n");
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  const std::size_t before = backend->mediaInfo().tracks.size();
+  soar::TrackId id = -1;
+  CHECK_FALSE(backend->loadExternalSubtitle(dir.file("nopayload.srt"), id));
+  CHECK(id == -1);
+  CHECK(backend->lastError().find("no cues") != std::string::npos);
+  CHECK(backend->mediaInfo().tracks.size() == before);
+  backend->close();
+}
+
 #ifdef SOAR_WITH_LIBASS
 
 TEST_CASE("selecting the embedded ASS stream back restores the libass feed") {
@@ -3223,6 +3276,70 @@ TEST_CASE("switching to a broken non-default subtitle stream fails cleanly") {
   const auto again = pullSubtitleFrames(ffmpeg, 1, std::chrono::seconds(30));
   REQUIRE(contains(again, "Alpha"));
   backend->stop();
+  backend->close();
+}
+
+TEST_CASE("a container whose default subtitle stream has no decoder fails to open") {
+  // The §4 pattern inverted: open builds a decoder for the default
+  // subtitle stream, so patching *that* stream's CodecID surfaces at
+  // open time — the complement of the select-time failure above, where
+  // only the non-default track was broken.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_DUAL", media)) {
+    MESSAGE("SOAR_TEST_SUBS_DUAL not set; skipping broken default subtitle test");
+    return;
+  }
+  ScratchDir dir;
+  std::string bytes;
+  {
+    std::ifstream in(media, std::ios::binary);
+    REQUIRE(in);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    bytes = ss.str();
+  }
+  // Same-length CodecID patch on the default subrip stream:
+  // S_TEXT/UTF8 -> S_TEXT/QQQQ (both 11 bytes, so every EBML size in the
+  // header stays valid). The demuxer maps the unknown id to
+  // AV_CODEC_ID_NONE and decoder setup has no decoder for it, so open
+  // fails loudly instead of handing out a playable-looking MediaInfo.
+  const std::size_t codec_id = bytes.find("S_TEXT/UTF8");
+  REQUIRE(codec_id != std::string::npos);
+  bytes.replace(codec_id, 11, "S_TEXT/QQQQ");
+  dir.write("broken_default.mkv", bytes);
+  const std::string local = dir.file("broken_default.mkv");
+  REQUIRE_FALSE(local.empty());
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  CHECK_FALSE(backend->open(soar::MediaSource{local}));
+  CHECK(backend->lastError().find("subtitle codec not found") != std::string::npos);
+  CHECK(backend->state() == soar::PlaybackState::Error);
+  CHECK(sink.errors.load() >= 1);
+
+  // The backend recovers and opens the healthy media afterwards.
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  backend->close();
+}
+
+TEST_CASE("a local source with a cache_dir ignores the cache") {
+  // backend.h contract: MediaSource::cache_dir arms the disk cache only
+  // for http:// URLs and is ignored for local paths. Open a local file
+  // with a fresh cache dir set: the direct path must be taken, so no
+  // HttpCache is constructed and the directory stays untouched.
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping local cache_dir test");
+    return;
+  }
+  ScratchDir dir;
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media, dir.path}));
+  CHECK(backend->state() == soar::PlaybackState::Stopped);
+  CHECK(std::filesystem::is_empty(dir.path));
   backend->close();
 }
 
