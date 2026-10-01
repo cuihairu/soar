@@ -16,15 +16,26 @@
 //
 // The class owns its threads (session internals, a status monitor, one
 // acceptor, one detached thread per HTTP connection). All methods are safe
-// to call from the thread that called start().
+// to call from the thread that called start(); with startAsync() the
+// progress/files callbacks arrive on the worker instead, and playbackUrl()
+// /fileName()/fileSize()/lastError() are meant to be read only after
+// phase() reports Serving/Failed (their publication is ordered by it).
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
 
 namespace soar::p2p {
+
+// Lifecycle of an async start (startAsync): Connecting while the swarm
+// delivers the metadata and the file geometry is being applied, then
+// Serving once the bridge listens; any failure lands in Failed with
+// lastError(). A synchronous start() jumps straight from Idle to Serving
+// (or Failed) before it returns.
+enum class TorrentPhase { Idle, Connecting, Serving, Failed };
 
 struct TorrentFile {
   int index;
@@ -72,6 +83,16 @@ class TorrentStream {
   // cannot listen, metadata never arrives).
   bool start(const Params& params);
 
+  // Same contract as start(), except everything after the torrent is added
+  // to the session (metadata wait for magnets, file selection, spawning the
+  // bridge threads) runs on an internal worker: the call returns
+  // immediately with phase() == Connecting, and the outcome is observed
+  // through phase()/lastError(). playbackUrl() is meaningless until
+  // Serving. stop() cancels the wait cleanly (phase back to Idle).
+  bool startAsync(const Params& params);
+
+  TorrentPhase phase() const { return phase_.load(std::memory_order_acquire); }
+
   // Stops accepting and tearing down the session; pending reads fail.
   // Called by the destructor; idempotent.
   void stop();
@@ -92,6 +113,7 @@ class TorrentStream {
   std::string playback_url_;
   std::string file_name_;
   std::string last_error_;
+  std::atomic<TorrentPhase> phase_{TorrentPhase::Idle};
   std::uint64_t file_size_ = 0;
 };
 
