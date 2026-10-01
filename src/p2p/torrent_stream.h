@@ -55,6 +55,11 @@ class TorrentStream {
     std::vector<std::string> peers;
     // Invoked from an internal thread at most ~1 Hz with the latest status.
     std::function<void(const TorrentStatus&)> on_progress;
+    // Invoked exactly once from start() once the metadata is available,
+    // before the file selection is applied: the full file table of the
+    // torrent (multi-file listing, --torrent-index picking). A magnet pays
+    // the metadata wait before this fires; a .torrent fires immediately.
+    std::function<void(const std::vector<TorrentFile>&)> on_files;
   };
 
   TorrentStream() = default;

@@ -326,7 +326,8 @@ class PlayerHud {
  public:
   PlayerHud(soar::Player& player, const WindowUiConfig& cfg, SDL_Window* window)
       : player_(player), cfg_(cfg), window_(window), recent_(cfg.recent_path),
-        current_uri_(cfg.initial_uri), subtitle_fonts_(loadSubtitleFonts()) {
+        current_uri_(cfg.initial_uri), source_label_(cfg.source_label),
+        subtitle_fonts_(loadSubtitleFonts()) {
     recent_.load();
     recordOpen(cfg.initial_uri);
     // Playlist seeding (docs/mvp.md §2): the CLI-opened source plays first;
@@ -583,6 +584,15 @@ class PlayerHud {
     if (uri.empty()) return;
     current_uri_ = uri;
     if (recent_.add(uri)) recent_.save();
+  }
+
+  // Source name as displayed (poster, toasts, playlist): P2P sources stream
+  // from a 127.0.0.1 bridge whose URL reads badly, so cfg_.source_label —
+  // the streamed torrent file's name — replaces it for the current entry;
+  // everything else keeps the plain base name.
+  std::string displayName(const std::string& uri) const {
+    return (!source_label_.empty() && uri == current_uri_) ? source_label_
+                                                           : baseName(uri);
   }
 
  private:
@@ -937,7 +947,7 @@ class PlayerHud {
       playlist_.add(uri);
       playlist_.setCurrent(playlist_.size() - 1);
       st_.loop_a_set = false;  // a fresh source starts without a pending A
-      st_.toast.show("Opened " + baseName(uri), nowMs());
+      st_.toast.show("Opened " + displayName(uri), nowMs());
       player_.play();
     } else {
       st_.toast.show("Open failed: " + player_.lastError(), nowMs());
@@ -958,7 +968,7 @@ class PlayerHud {
     st_.loop_a_set = false;
     st_.toast.show("Playlist " + std::to_string(index + 1) + "/" +
                        std::to_string(entries.size()) + ": " +
-                       baseName(entries[index]),
+                       displayName(entries[index]),
                    now);
     player_.play();
   }
@@ -1291,7 +1301,7 @@ class PlayerHud {
                          ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoBackground |
                          ImGuiWindowFlags_NoInputs)) {
-      ImGui::TextUnformatted(baseName(current_uri_).c_str());
+      ImGui::TextUnformatted(displayName(current_uri_).c_str());
       ImGui::TextDisabled("%s", stateName(player_.state()));
       ImGui::Spacing();
       ImGui::TextDisabled("%s", "Drop a file here - R recent - H shortcuts");
@@ -1550,7 +1560,7 @@ class PlayerHud {
       // reference dangling.
       const std::vector<std::string> entries = recent_.entries();
       for (const std::string& uri : entries) {
-        if (ImGui::Selectable(baseName(uri).c_str())) {
+        if (ImGui::Selectable(displayName(uri).c_str())) {
           openSource(uri);
           st_.overlay = Overlay::None;
         }
@@ -1597,7 +1607,7 @@ class PlayerHud {
       const std::vector<std::string> entries = playlist_.entries();
       for (std::size_t i = 0; i < entries.size(); ++i) {
         std::string label = i == playlist_.current() ? "> " : "   ";
-        label += baseName(entries[i]);
+        label += displayName(entries[i]);
         // AllowOverlap: the Selectable fills the row width and would
         // otherwise hold the hover over the SameLine "x" button, whose
         // clicks would never land (hover goes to the first claimant).
@@ -1610,7 +1620,7 @@ class PlayerHud {
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::SmallButton("x")) {
           if (playlist_.remove(i)) {
-            st_.toast.show("Removed " + baseName(entries[i]), nowMs());
+            st_.toast.show("Removed " + displayName(entries[i]), nowMs());
           }
         }
         ImGui::PopID();
@@ -1808,6 +1818,7 @@ class PlayerHud {
   // append to it, and Ended walks it. Pure model in ui_state.h.
   PlaylistStore playlist_;
   std::string current_uri_;
+  std::string source_label_;  // display-only override (P2P bridge sources)
   SubtitleFonts subtitle_fonts_;
   // Enumerates sidecar subtitle files next to the media (§6). Stateless and
   // cheap, so it lives with the HUD rather than in the backend: the directory
@@ -1869,8 +1880,12 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
     fmt::print(stderr, "SDL_Init failed: {}\n", SDL_GetError());
     return 1;
   }
+  // P2P sources name the window after the streamed file, not the bridge URL
+  // (docs/mvp.md §5 P4b-3); ordinary sources keep the bare title.
+  std::string window_title = cfg.title;
+  if (!cfg.source_label.empty()) window_title += " - " + cfg.source_label;
   SDL_Window* window = SDL_CreateWindow(
-      cfg.title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 960, 540,
+      window_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 960, 540,
       SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
   if (!window) {
     fmt::print(stderr, "SDL_CreateWindow failed: {}\n", SDL_GetError());

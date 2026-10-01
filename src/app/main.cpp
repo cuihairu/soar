@@ -35,6 +35,8 @@ static void print_usage(const char* argv0) {
   fmt::print("  --torrent-store=  Where torrent data lands (default: <tmp>/soar-torrent)\n");
   fmt::print("  --torrent-peer=   Seed endpoint host:port to connect to directly (repeatable)\n");
   fmt::print("  --torrent-index=  Which file of a multi-file torrent to stream (default 0)\n");
+  fmt::print("  --torrent-list    Print the torrent's file table and exit (magnet:\n");
+  fmt::print("                    contacts the swarm for metadata first)\n");
   fmt::print("Sources: local paths, http(s)://, .torrent files and magnet: URIs\n");
   fmt::print("(served over a local-http bridge, docs/mvp.md §5 P4).\n");
 #ifdef SOAR_WITH_FFMPEG
@@ -63,6 +65,7 @@ int main(int argc, char** argv) {
   std::string torrent_store;
   std::vector<std::string> torrent_peers;
   int torrent_index = 0;
+  bool torrent_list = false;
   int uri_index = -1;
 
   // Parse arguments
@@ -80,6 +83,8 @@ int main(int argc, char** argv) {
       torrent_peers.push_back(arg.substr(15));
     } else if (arg.rfind("--torrent-index=", 0) == 0) {
       torrent_index = std::atoi(arg.c_str() + 16);
+    } else if (arg == "--torrent-list") {
+      torrent_list = true;
     } else if (arg.rfind('-', 0) == 0) {
       fmt::print(stderr, "Unknown option: {}\n", arg);
       print_usage(argv[0]);
@@ -172,9 +177,34 @@ int main(int argc, char** argv) {
         download_bytes.store(s.downloaded, std::memory_order_relaxed);
         download_total.store(s.total, std::memory_order_relaxed);
       };
+      // Multi-file listing (docs/mvp.md §5 P4b-3): fires once from start()
+      // with the metadata just arrived, before the file selection is
+      // applied. During playback the table goes to stderr so --torrent-index
+      // counts are visible; with --torrent-list it is the whole output and
+      // goes to stdout.
+      tp.on_files = [&torrent_list](
+                        const std::vector<soar::p2p::TorrentFile>& files) {
+        if (!torrent_list && files.size() <= 1) return;
+        if (torrent_list) {
+          fmt::print("torrent: {} files\n", files.size());
+          for (const auto& f : files) {
+            fmt::print("  [{}] {:>14}  {}\n", f.index, f.size, f.path);
+          }
+        } else {
+          fmt::print(stderr, "torrent: {} files (pick with --torrent-index=N)\n",
+                     files.size());
+          for (const auto& f : files) {
+            fmt::print(stderr, "  [{}] {}  {}\n", f.index, f.size, f.path);
+          }
+        }
+      };
       if (!torrent_stream.start(tp)) {
         fmt::print(stderr, "{}\n", torrent_stream.lastError());
         return 1;
+      }
+      if (torrent_list) {
+        // Metadata acquired, table printed; exit without opening a player.
+        return 0;
       }
       fmt::print(stderr, "torrent: {} ({} bytes) -> {}\n", torrent_stream.fileName(),
                  torrent_stream.fileSize(), torrent_stream.playbackUrl());
@@ -288,6 +318,9 @@ int main(int argc, char** argv) {
   ui_cfg.backend_label = backend_type;
   ui_cfg.cache_dir = cache_dir;
   ui_cfg.recent_path = soar::app::defaultRecentPath();
+  // P2P sources: show the streamed file's name instead of the bridge URL
+  // (empty for ordinary sources — the window falls back to the URI).
+  ui_cfg.source_label = torrent_stream.fileName();
 #  ifdef SOAR_WITH_FFMPEG
   ui_cfg.ffmpeg = ffmpeg_backend;
 #  endif

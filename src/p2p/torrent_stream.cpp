@@ -185,7 +185,12 @@ bool streamRange(const ConnCtx& ctx, int fd, std::uint64_t begin, std::uint64_t 
     for (int p = piece0; p <= piece1; ++p) {
       if (!waitForPiece(ctx, p)) return false;
     }
-    if (preadFile(ctx.file_path, ctx.file_base + pos, buf, want) != want) return false;
+    // `pos` is relative to the served file, and the store keeps each
+    // torrent entry as its own file — read at the file-relative offset.
+    // file_base maps onto pieces only; adding it here too reads past EOF
+    // for every entry after the first (first walk-caught on a multi-file
+    // torrent, where the single-file case's file_base == 0 hid it).
+    if (preadFile(ctx.file_path, pos, buf, want) != want) return false;
     if (!sendAll(fd, reinterpret_cast<const char*>(buf), want)) return false;
     pos += want;
   }
@@ -494,11 +499,31 @@ bool TorrentStream::start(const Params& params) {
   const std::shared_ptr<const lt::torrent_info> ti = impl->th.torrent_file();
   const lt::file_storage& fs = ti->files();
   const int num_files = fs.num_files();
+  if (params.on_files) {
+    std::vector<TorrentFile> files;
+    files.reserve(static_cast<size_t>(num_files));
+    for (int i = 0; i < num_files; ++i) {
+      const lt::file_index_t fi{i};
+      files.push_back({i, std::string(fs.file_path(fi, "")),
+                       static_cast<std::uint64_t>(fs.file_size(fi))});
+    }
+    params.on_files(files);
+  }
   int index = params.file_index;
   if (num_files == 1) index = 0;
   if (index < 0 || index >= num_files) {
     last_error_ = "torrent: file index " + std::to_string(index) + " out of range (torrent has " +
                   std::to_string(num_files) + " files)";
+    // The table is the actual picker affordance: show what exists (bounded
+    // so a pathological torrent cannot produce an endless error line).
+    int shown = std::min(num_files, 32);
+    for (int i = 0; i < shown; ++i) {
+      const lt::file_index_t fi{i};
+      last_error_ += "\n  [" + std::to_string(i) + "] " +
+                     std::to_string(fs.file_size(fi)) + "  " +
+                     std::string(fs.file_path(fi, ""));
+    }
+    if (num_files > shown) last_error_ += "\n  ...";
     return false;
   }
   const lt::file_index_t fi{index};

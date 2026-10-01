@@ -1,10 +1,13 @@
 // seed_torrent: minimal seeder for the P2P walkthrough (docs/mvp.md §5 P4).
-// Creates a v1 .torrent from a local file, then seeds it on a fixed port so
-// `soar --torrent-peer=127.0.0.1:<port>` can pull from it without any
-// external tracker. Dev tool only — not shipped, not used by tests.
+// Creates a v1 .torrent from a local file or directory (multi-file), then
+// seeds it on a fixed port so `soar --torrent-peer=127.0.0.1:<port>` can
+// pull from it without any external tracker. Dev tool only — not shipped,
+// not used by tests.
 //
 // Usage:
 //   seed_torrent --file=<path> --out=<file.torrent> [--port=6881] [--rate-kb=N]
+// --file takes a regular file or a directory (directory => multi-file
+// torrent rooted at the directory's base name).
 // --rate-kb caps the upload rate (bytes/s = N*1024), simulating a slow peer
 // so the stream-while-downloading behavior is observable at all.
 
@@ -54,8 +57,8 @@ int main(int argc, char** argv) {
 
   lt::file_storage fs;
   lt::add_files(fs, file);
-  if (fs.num_files() != 1) {
-    std::fprintf(stderr, "seed_torrent: --file must be a regular file\n");
+  if (fs.num_files() < 1) {
+    std::fprintf(stderr, "seed_torrent: --file has no seedable content\n");
     return 1;
   }
   // v1_only keeps the walkthrough deterministic across libtorrent versions

@@ -27,6 +27,10 @@ struct WindowUiConfig {
   std::string backend_label;   // "ffmpeg" / "null", shown in the info overlay
   std::string cache_dir;       // shown in the info overlay when set
   std::string recent_path;     // RecentStore file (docs/ui-design.md §2)
+  // Display-only override for the source name shown in the poster and the
+  // window title (P2P: the streamed file's name instead of the bridge URL).
+  // Empty = derive from the URI as before.
+  std::string source_label;
   // Video frames come from the FFmpeg backend (null when it is not in use).
   soar::FFmpegBackend* ffmpeg = nullptr;
   // Set by the Player event callback (backend thread) on
