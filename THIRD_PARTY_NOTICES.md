@@ -11,13 +11,17 @@ Distributions that bundle third-party components must comply with the licenses o
 
 ## Bundled components
 
-> Fill in when you start bundling dependencies.
-
-- Name:
-  - Source:
-  - License:
-  - Copyright:
-  - Notes:
+- libtorrent (rasterbar)
+  - Source: https://github.com/arvidn/libtorrent (tag `v2.0.15`,
+    commit `1eb18faeae156d8dbbab42935c082f8b81f50989`)
+  - License: BSD 3-Clause (the full text travels with the vendored tree at
+    `third_party/libtorrent/COPYING` and must be included in any
+    distribution of the binary)
+  - Copyright: Copyright (c) 2003-2020, Arvid Norberg
+  - Notes: Vendored (pruned tree, one guarded `add_subdirectory`; see
+    `third_party/libtorrent/VENDOR.md`) and statically linked. It is the
+    BitTorrent download kernel behind the P2P http bridge in `src/p2p/`
+    (docs/mvp.md §5 P4); no upstream executable is built or shipped.
 
 ### Build-time fetched (not vendored in this repository)
 

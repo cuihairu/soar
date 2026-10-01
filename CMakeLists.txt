@@ -103,6 +103,32 @@ if(SOAR_ENABLE_LIBASS)
   endif()
 endif()
 
+# P2P streaming bridge (docs/mvp.md §5 P4): the vendored libtorrent is the
+# download kernel only; soar's TorrentStream (src/p2p) presents the chosen
+# file as a plain local-http URL with Range support, so the player opens it
+# through the normal path and no backend learns about torrents. The vendored
+# tree is pinned to upstream v2.0.15 — see third_party/libtorrent/VENDOR.md.
+# Options must be set before add_subdirectory: feature_option() calls
+# option(), and a normal variable shadows the cache entry in this scope.
+set(BUILD_SHARED_LIBS OFF)
+set(static_runtime OFF)
+set(encryption OFF)  # bundled SHA-1/SHA-256; drops OpenSSL (VENDOR.md)
+set(gnutls OFF)
+set(dht ON)          # upstream defaults, spelled out for review
+set(streaming ON)    # piece deadlines — required for stream-on-demand
+set(logging ON)
+set(deprecated-functions OFF)
+set(build_tests OFF)
+set(build_examples OFF)
+set(build_tools OFF)
+set(python-bindings OFF)
+add_subdirectory(third_party/libtorrent)
+
+add_library(soar_p2p STATIC src/p2p/torrent_stream.cpp)
+target_include_directories(soar_p2p PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/p2p)
+target_compile_features(soar_p2p PUBLIC cxx_std_17)
+target_link_libraries(soar_p2p PUBLIC torrent-rasterbar)
+
 # Pure UI logic (auto-hide state machine, recent store, toast, time format:
 # docs/ui-design.md §5.3) — no SDL/ImGui dependency, shared by the app and
 # the unit-test suite.
@@ -116,7 +142,14 @@ if(SOAR_BUILD_APP)
     src/app/ui/player_window.cpp
   )
   target_compile_features(soar PRIVATE cxx_std_17)
-  target_link_libraries(soar PRIVATE soar::core soar_app_ui)
+  target_link_libraries(soar PRIVATE soar::core soar_app_ui soar_p2p)
+
+  # Dev tool for the P2P walkthrough (docs/mvp.md §5 P4): seeds a local
+  # swarm from a file so the TorrentStream path can be exercised without
+  # external trackers. Not referenced by tests; not shipped.
+  add_executable(seed_torrent tools/seed_torrent.cpp)
+  target_compile_features(seed_torrent PRIVATE cxx_std_17)
+  target_link_libraries(seed_torrent PRIVATE torrent-rasterbar)
 
   if(SOAR_ENABLE_SDL2)
     # 2.0.18 is the floor: the ImGui sdlrenderer2 backend needs 2.0.17

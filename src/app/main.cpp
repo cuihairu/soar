@@ -13,12 +13,16 @@
 #  include "ui/ui_state.h"
 #endif
 
+#include "torrent_stream.h"
+
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 static void print_usage(const char* argv0) {
   fmt::print("Usage:\n");
@@ -28,11 +32,23 @@ static void print_usage(const char* argv0) {
   fmt::print("  --headless    Run without GUI\n");
   fmt::print("  --backend=    Select backend (ffmpeg, null)\n");
   fmt::print("  --cache-dir=  Cache http:// downloads here for offline replay\n");
+  fmt::print("  --torrent-store=  Where torrent data lands (default: <tmp>/soar-torrent)\n");
+  fmt::print("  --torrent-peer=   Seed endpoint host:port to connect to directly (repeatable)\n");
+  fmt::print("  --torrent-index=  Which file of a multi-file torrent to stream (default 0)\n");
+  fmt::print("Sources: local paths, http(s)://, .torrent files (served over a\n");
+  fmt::print("local-http bridge, docs/mvp.md §5 P4).\n");
 #ifdef SOAR_WITH_FFMPEG
   fmt::print("\nFFmpeg backend is available.\n");
 #else
   fmt::print("\nFFmpeg backend not available (compiled without FFmpeg support).\n");
 #endif
+}
+
+static std::string lower_copy(std::string s) {
+  for (char& c : s) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  return s;
 }
 
 int main(int argc, char** argv) {
@@ -44,6 +60,9 @@ int main(int argc, char** argv) {
   bool headless = false;
   std::string backend_type = "null";  // default to null backend
   std::string cache_dir;
+  std::string torrent_store;
+  std::vector<std::string> torrent_peers;
+  int torrent_index = 0;
   int uri_index = -1;
 
   // Parse arguments
@@ -55,6 +74,12 @@ int main(int argc, char** argv) {
       backend_type = arg.substr(10);  // after "--backend="
     } else if (arg.rfind("--cache-dir=", 0) == 0) {
       cache_dir = arg.substr(12);  // after "--cache-dir="
+    } else if (arg.rfind("--torrent-store=", 0) == 0) {
+      torrent_store = arg.substr(16);
+    } else if (arg.rfind("--torrent-peer=", 0) == 0) {
+      torrent_peers.push_back(arg.substr(15));
+    } else if (arg.rfind("--torrent-index=", 0) == 0) {
+      torrent_index = std::atoi(arg.c_str() + 16);
     } else if (arg.rfind('-', 0) == 0) {
       fmt::print(stderr, "Unknown option: {}\n", arg);
       print_usage(argv[0]);
@@ -98,6 +123,48 @@ int main(int argc, char** argv) {
 #endif
     fmt::print(stderr, "\n");
     return 2;
+  }
+
+  // P2P sources (docs/mvp.md §5 P4): a `.torrent` positional is streamed by
+  // the local-http bridge in src/p2p; the player sees an ordinary
+  // 127.0.0.1 URL with Range support and no backend learns about torrents.
+  // Declared before `player` so the player (which holds the bridge's HTTP
+  // connection) is torn down first.
+  soar::p2p::TorrentStream torrent_stream;
+  std::string uri(argv[uri_index]);
+  {
+    const std::string lower_uri = lower_copy(uri);
+    if (lower_uri.rfind("magnet:", 0) == 0) {
+      fmt::print(stderr, "magnet: links are not supported yet (P4b); use a .torrent file\n");
+      return 2;
+    }
+    const bool is_torrent =
+        lower_uri.size() > 8 && lower_uri.compare(lower_uri.size() - 8, 8, ".torrent") == 0;
+    if (is_torrent) {
+      if (torrent_store.empty()) {
+        torrent_store =
+            (std::filesystem::temp_directory_path() / "soar-torrent").string();
+      }
+      std::error_code fs_err;
+      std::filesystem::create_directories(torrent_store, fs_err);
+
+      soar::p2p::TorrentStream::Params tp;
+      tp.torrent_path = uri;
+      tp.store_dir = torrent_store;
+      tp.file_index = torrent_index;
+      tp.peers = torrent_peers;
+      tp.on_progress = [](const soar::p2p::TorrentStatus& s) {
+        fmt::print(stderr, "torrent: {:.1f}/{:.1f} MiB peers={}\n",
+                   s.downloaded / 1048576.0, s.total / 1048576.0, s.peers);
+      };
+      if (!torrent_stream.start(tp)) {
+        fmt::print(stderr, "torrent: {}\n", torrent_stream.lastError());
+        return 1;
+      }
+      fmt::print(stderr, "torrent: {} ({} bytes) -> {}\n", torrent_stream.fileName(),
+                 torrent_stream.fileSize(), torrent_stream.playbackUrl());
+      uri = torrent_stream.playbackUrl();
+    }
   }
 
   soar::Player player(std::move(backend));
@@ -156,7 +223,6 @@ int main(int argc, char** argv) {
     }
   });
 
-  const std::string uri(argv[uri_index]);
   if (!player.open(soar::MediaSource{uri, cache_dir})) {
     fmt::print(stderr, "Failed to open source: {}\n", uri);
     fmt::print(stderr, "Error: {}\n", player.lastError());
