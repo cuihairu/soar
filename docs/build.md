@@ -36,8 +36,8 @@ libtorrent（P2P 下载内核，docs/mvp.md §5 P4）vendor 在 `third_party/lib
 
 - `--headless`：不开窗口，执行打开 → 播放 → Seek → 暂停 → 停止后退出，用于冒烟测试
 - `--backend=`：选择后端（`ffmpeg`、`null`），默认 `null`；请求的后端不可用时回退并提示
-- `.torrent` 位置参数即 P2P 源（docs/mvp.md §5 P4a）：本地 libtorrent 会话顺序下载，桥接成 `http://127.0.0.1:<port>/` 交给普通播放链路；`--torrent-store=`（数据落盘目录，默认 `<tmp>/soar-torrent`）、`--torrent-peer=host:port`（直连种子，可重复）、`--torrent-index=N`（多文件种子选第几个文件）；`magnet:` 链接尚未支持（P4b）
-- 本地 P2P 走查工具：`./build/seed_torrent --file=<媒体> --out=<x.torrent> [--port=6881] [--rate-kb=N]`（限速模拟慢 peer），然后 `soar --torrent-peer=127.0.0.1:6881 <x.torrent>`
+- `.torrent` 位置参数或 `magnet:` URI 即 P2P 源（docs/mvp.md §5 P4）：本地 libtorrent 会话顺序下载，桥接成 `http://127.0.0.1:<port>/` 交给普通播放链路；`--torrent-store=`（数据落盘目录，默认 `<tmp>/soar-torrent`）、`--torrent-peer=host:port`（直连种子，可重复）、`--torrent-index=N`（多文件种子选第几个文件）。magnet 取 `xt=urn:btih:`（40 位十六进制或 32 位 base32 均可），tracker 走 magnet 内 `tr=`、peer 可用 `x.pe=` 内置或 `--torrent-peer=` 直连，公网 DHT bootstrap 自动进行；swarm 送不来元数据 60 秒后显式报错退出
+- 本地 P2P 走查工具：`./build/seed_torrent --file=<媒体> --out=<x.torrent> [--port=6881] [--rate-kb=N]`（限速模拟慢 peer），然后 `soar --torrent-peer=127.0.0.1:6881 <x.torrent>`，或等价 magnet：`soar 'magnet:?xt=urn:btih:<seeder 打印的 info hash>&x.pe=127.0.0.1:6881'`
 
 ## 4) 测试
 

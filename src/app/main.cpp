@@ -35,8 +35,8 @@ static void print_usage(const char* argv0) {
   fmt::print("  --torrent-store=  Where torrent data lands (default: <tmp>/soar-torrent)\n");
   fmt::print("  --torrent-peer=   Seed endpoint host:port to connect to directly (repeatable)\n");
   fmt::print("  --torrent-index=  Which file of a multi-file torrent to stream (default 0)\n");
-  fmt::print("Sources: local paths, http(s)://, .torrent files (served over a\n");
-  fmt::print("local-http bridge, docs/mvp.md §5 P4).\n");
+  fmt::print("Sources: local paths, http(s)://, .torrent files and magnet: URIs\n");
+  fmt::print("(served over a local-http bridge, docs/mvp.md §5 P4).\n");
 #ifdef SOAR_WITH_FFMPEG
   fmt::print("\nFFmpeg backend is available.\n");
 #else
@@ -125,22 +125,19 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  // P2P sources (docs/mvp.md §5 P4): a `.torrent` positional is streamed by
-  // the local-http bridge in src/p2p; the player sees an ordinary
-  // 127.0.0.1 URL with Range support and no backend learns about torrents.
-  // Declared before `player` so the player (which holds the bridge's HTTP
-  // connection) is torn down first.
+  // P2P sources (docs/mvp.md §5 P4): a `.torrent` positional or a magnet:
+  // URI is streamed by the local-http bridge in src/p2p; the player sees an
+  // ordinary 127.0.0.1 URL with Range support and no backend learns about
+  // torrents. Declared before `player` so the player (which holds the
+  // bridge's HTTP connection) is torn down first.
   soar::p2p::TorrentStream torrent_stream;
   std::string uri(argv[uri_index]);
   {
     const std::string lower_uri = lower_copy(uri);
-    if (lower_uri.rfind("magnet:", 0) == 0) {
-      fmt::print(stderr, "magnet: links are not supported yet (P4b); use a .torrent file\n");
-      return 2;
-    }
-    const bool is_torrent =
+    const bool is_magnet = lower_uri.rfind("magnet:", 0) == 0;
+    const bool is_torrent = !is_magnet &&
         lower_uri.size() > 8 && lower_uri.compare(lower_uri.size() - 8, 8, ".torrent") == 0;
-    if (is_torrent) {
+    if (is_magnet || is_torrent) {
       if (torrent_store.empty()) {
         torrent_store =
             (std::filesystem::temp_directory_path() / "soar-torrent").string();
@@ -149,16 +146,21 @@ int main(int argc, char** argv) {
       std::filesystem::create_directories(torrent_store, fs_err);
 
       soar::p2p::TorrentStream::Params tp;
-      tp.torrent_path = uri;
+      if (is_magnet) {
+        tp.magnet_uri = uri;
+      } else {
+        tp.torrent_path = uri;
+      }
       tp.store_dir = torrent_store;
       tp.file_index = torrent_index;
       tp.peers = torrent_peers;
       tp.on_progress = [](const soar::p2p::TorrentStatus& s) {
-        fmt::print(stderr, "torrent: {:.1f}/{:.1f} MiB peers={}\n",
-                   s.downloaded / 1048576.0, s.total / 1048576.0, s.peers);
+        fmt::print(stderr, "torrent: {:.1f}/{:.1f} MiB peers={}{}\n",
+                   s.downloaded / 1048576.0, s.total / 1048576.0, s.peers,
+                   s.metadata ? "" : " (metadata pending)");
       };
       if (!torrent_stream.start(tp)) {
-        fmt::print(stderr, "torrent: {}\n", torrent_stream.lastError());
+        fmt::print(stderr, "{}\n", torrent_stream.lastError());
         return 1;
       }
       fmt::print(stderr, "torrent: {} ({} bytes) -> {}\n", torrent_stream.fileName(),

@@ -1,7 +1,9 @@
 #include "torrent_stream.h"
 
 #include <libtorrent/address.hpp>
+#include <libtorrent/error_code.hpp>
 #include <libtorrent/load_torrent.hpp>
+#include <libtorrent/magnet_uri.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/session_params.hpp>
 #include <libtorrent/socket.hpp>
@@ -45,6 +47,12 @@ constexpr size_t kReadChunk = 256 * 1024;
 // handler drops the connection (FFmpeg surfaces that as an ordinary read
 // error, which the backend turns into an Error event).
 constexpr int kPieceWaitMs = 60000;
+// Magnet-only: how long start() waits for the swarm to deliver the metadata
+// (the info dictionary) before giving up with an explicit error. Peers come
+// from the magnet's trackers, DHT bootstrap or explicit --torrent-peer
+// endpoints; without any of them this timeout is the honest answer, not a
+// hang.
+constexpr int kMetadataWaitMs = 60000;
 // Piece availability poll. libtorrent handles are thread-safe, so the wait
 // loop needs no shared queue; every waiter just polls its own piece.
 constexpr int kPollMs = 25;
@@ -350,7 +358,9 @@ struct TorrentStream::Impl {
       s.downloaded = static_cast<std::uint64_t>(st.total_done);
       s.total = static_cast<std::uint64_t>(st.total_wanted);
       s.peers = st.num_peers;
-      s.metadata = true;  // entry point is a .torrent file: metadata is local
+      // A .torrent entry point carries its metadata locally (valid right
+      // after add); a magnet only has it once the swarm delivered it.
+      s.metadata = th.torrent_file() != nullptr;
       {
         std::lock_guard<std::mutex> lock(status_mu);
         status = s;
@@ -382,8 +392,9 @@ bool TorrentStream::start(const Params& params) {
     last_error_ = "torrent: already started";
     return false;
   }
-  if (params.torrent_path.empty()) {
-    last_error_ = "torrent: no .torrent path given";
+  const bool is_magnet = !params.magnet_uri.empty();
+  if (params.torrent_path.empty() && !is_magnet) {
+    last_error_ = "torrent: no .torrent path or magnet URI given";
     return false;
   }
   if (params.store_dir.empty()) {
@@ -395,34 +406,25 @@ bool TorrentStream::start(const Params& params) {
   impl->params = params;
 
   lt::add_torrent_params atp;
-  try {
-    atp = lt::load_torrent_file(params.torrent_path);
-  } catch (const std::exception& e) {
-    last_error_ = std::string("torrent: cannot parse ") + params.torrent_path + ": " + e.what();
-    return false;
+  if (is_magnet) {
+    // libtorrent accepts btih as 40-hex or 32-base32 and fills trackers
+    // (tr=), the display name (dn=), in-magnet peers (x.pe=) and DHT nodes
+    // (dht=). The session's default bootstrap nodes make the hash alone
+    // enough to find peers on the public DHT.
+    lt::error_code ec;
+    lt::parse_magnet_uri(params.magnet_uri, atp, ec);
+    if (ec) {
+      last_error_ = "torrent: cannot parse magnet URI: " + ec.message();
+      return false;
+    }
+  } else {
+    try {
+      atp = lt::load_torrent_file(params.torrent_path);
+    } catch (const std::exception& e) {
+      last_error_ = std::string("torrent: cannot parse ") + params.torrent_path + ": " + e.what();
+      return false;
+    }
   }
-
-  const std::shared_ptr<lt::torrent_info> ti = atp.ti;
-  const lt::file_storage& fs = ti->files();
-  const int num_files = fs.num_files();
-  int index = params.file_index;
-  if (num_files == 1) index = 0;
-  if (index < 0 || index >= num_files) {
-    last_error_ = "torrent: file index " + std::to_string(index) + " out of range (torrent has " +
-                  std::to_string(num_files) + " files)";
-    return false;
-  }
-  const lt::file_index_t fi{index};
-  impl->file_base = static_cast<std::uint64_t>(fs.file_offset(fi));
-  impl->file_size = static_cast<std::uint64_t>(fs.file_size(fi));
-  impl->piece_len = ti->piece_length();
-  if (impl->file_size == 0 || impl->piece_len == 0) {
-    last_error_ = "torrent: file is empty";
-    return false;
-  }
-  impl->file_path = params.store_dir + "/" + fs.file_path(fi, "");
-  file_name_ = std::string(fs.file_name(fi));
-  file_size_ = impl->file_size;
 
   lt::settings_pack sp;
   sp.set_str(lt::settings_pack::listen_interfaces, "0.0.0.0:6881,[::]:6881");
@@ -462,6 +464,43 @@ bool TorrentStream::start(const Params& params) {
       return false;
     }
   }
+
+  // A magnet starts without the metadata (info dictionary); the swarm has
+  // to deliver it before any file geometry exists. A .torrent carries it
+  // locally, so torrent_file() is valid right after add and this wait is a
+  // no-op there.
+  const auto meta_deadline = std::chrono::steady_clock::now() +
+                             std::chrono::milliseconds(kMetadataWaitMs);
+  while (impl->th.torrent_file() == nullptr) {
+    if (std::chrono::steady_clock::now() >= meta_deadline) {
+      last_error_ = "torrent: timed out waiting for metadata (peers seen: " +
+                    std::to_string(impl->th.status().num_peers) + ")";
+      return false;
+    }
+    sleepMs(kPollMs);
+  }
+
+  const std::shared_ptr<const lt::torrent_info> ti = impl->th.torrent_file();
+  const lt::file_storage& fs = ti->files();
+  const int num_files = fs.num_files();
+  int index = params.file_index;
+  if (num_files == 1) index = 0;
+  if (index < 0 || index >= num_files) {
+    last_error_ = "torrent: file index " + std::to_string(index) + " out of range (torrent has " +
+                  std::to_string(num_files) + " files)";
+    return false;
+  }
+  const lt::file_index_t fi{index};
+  impl->file_base = static_cast<std::uint64_t>(fs.file_offset(fi));
+  impl->file_size = static_cast<std::uint64_t>(fs.file_size(fi));
+  impl->piece_len = ti->piece_length();
+  if (impl->file_size == 0 || impl->piece_len == 0) {
+    last_error_ = "torrent: file is empty";
+    return false;
+  }
+  impl->file_path = params.store_dir + "/" + fs.file_path(fi, "");
+  file_name_ = std::string(fs.file_name(fi));
+  file_size_ = impl->file_size;
 
   sockInit();
 

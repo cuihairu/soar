@@ -42,7 +42,12 @@ struct TorrentStatus {
 class TorrentStream {
  public:
   struct Params {
-    std::string torrent_path;  // .torrent file (magnet links: later batch)
+    std::string torrent_path;  // .torrent file
+    // "magnet:?xt=urn:btih:<hash>&tr=<tracker>&..." — exactly one of
+    // torrent_path / magnet_uri must be set. Metadata (the info dictionary)
+    // then arrives over the swarm; start() fails explicitly if it never
+    // does (see kMetadataWaitMs in the implementation).
+    std::string magnet_uri;
     std::string store_dir;     // piece storage; real files materialize here
     int file_index = 0;        // multi-file torrents: which entry to serve
     // "host:port" endpoints to connect to directly (trackerless local
