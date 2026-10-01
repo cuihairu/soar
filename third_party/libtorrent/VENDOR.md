@@ -38,6 +38,12 @@ The superproject pins the options before the subdirectory:
   `logging=ON`, everything else at upstream defaults (tests/examples/tools/
   python-bindings all OFF).
 - Only external requirement: Boost headers (`Boost::headers`, header-only).
+  With apt (`libboost-dev`) that is one monolithic package; with vcpkg the
+  boost ports are modular, so `vcpkg.json` declares the ports matching the
+  `#include <boost/...>` paths this vendored tree actually uses (asio,
+  container-hash, crc, date-time, intrusive, logic, multi-index,
+  multiprecision, optional, pool, range, smart-ptr, system, utility,
+  variant) — their own transitive dependencies come along automatically.
 
 To update the pin: download the new release tarball from upstream, re-apply
 the pruning and the one-line patch above, update this file (tag + commit +

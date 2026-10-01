@@ -2,11 +2,24 @@
   "name": "soar",
   "version-string": "0.1.0",
   "dependencies": [
+    "boost-asio",
+    "boost-container-hash",
+    "boost-crc",
+    "boost-date-time",
+    "boost-intrusive",
+    "boost-logic",
+    "boost-multi-index",
+    "boost-multiprecision",
+    "boost-optional",
+    "boost-pool",
+    "boost-range",
+    "boost-smart-ptr",
     "boost-system",
+    "boost-utility",
+    "boost-variant",
     "doctest",
     "fmt",
     "libass",
     "sdl2"
   ]
 }
-
