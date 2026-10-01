@@ -193,9 +193,14 @@ int main(int argc, char** argv) {
         } else {
           fmt::print(stderr, "torrent: {} files (pick with --torrent-index=N)\n",
                      files.size());
-          for (const auto& f : files) {
-            fmt::print(stderr, "  [{}] {}  {}\n", f.index, f.size, f.path);
+          // Bounded like the component's error table: a huge torrent must
+          // not flood stderr on every playback start.
+          const std::size_t shown = std::min<std::size_t>(files.size(), 32);
+          for (std::size_t i = 0; i < shown; ++i) {
+            fmt::print(stderr, "  [{}] {}  {}\n", files[i].index, files[i].size,
+                       files[i].path);
           }
+          if (files.size() > shown) fmt::print(stderr, "  ...\n");
         }
       };
       if (!torrent_stream.start(tp)) {

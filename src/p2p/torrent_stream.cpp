@@ -514,16 +514,20 @@ bool TorrentStream::start(const Params& params) {
   if (index < 0 || index >= num_files) {
     last_error_ = "torrent: file index " + std::to_string(index) + " out of range (torrent has " +
                   std::to_string(num_files) + " files)";
-    // The table is the actual picker affordance: show what exists (bounded
-    // so a pathological torrent cannot produce an endless error line).
-    int shown = std::min(num_files, 32);
-    for (int i = 0; i < shown; ++i) {
-      const lt::file_index_t fi{i};
-      last_error_ += "\n  [" + std::to_string(i) + "] " +
-                     std::to_string(fs.file_size(fi)) + "  " +
-                     std::string(fs.file_path(fi, ""));
+    // The table is the actual picker affordance: show what exists so the
+    // error alone tells the caller what to pick. Skip it when on_files
+    // already delivered the table — otherwise the CLI prints it twice.
+    // Bounded so a pathological torrent cannot produce an endless error.
+    if (!params.on_files) {
+      const int shown = std::min(num_files, 32);
+      for (int i = 0; i < shown; ++i) {
+        const lt::file_index_t fi{i};
+        last_error_ += "\n  [" + std::to_string(i) + "] " +
+                       std::to_string(fs.file_size(fi)) + "  " +
+                       std::string(fs.file_path(fi, ""));
+      }
+      if (num_files > shown) last_error_ += "\n  ...";
     }
-    if (num_files > shown) last_error_ += "\n  ...";
     return false;
   }
   const lt::file_index_t fi{index};
