@@ -1184,6 +1184,38 @@ TEST_CASE("playback through the cache replays offline after the server dies") {
   removeTree(dir);
 }
 
+TEST_CASE("an unreachable cache source fails backend open with a clear error") {
+  // The openContext cache-setup arm: HttpCache's ctor probe cannot reach
+  // the source and no usable meta exists, so the backend must surface the
+  // failure as a normal open() error (Error state + event, no hang) — the
+  // cache is a playback feature, not a precondition for error reporting.
+  // The dead port comes from the bind(:0) reserve trick (never a low port
+  // some runner firewall might silently drop); no server is needed.
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  const std::string dir = makeTempDir("cachesetup");
+  REQUIRE(!dir.empty());
+  const int dead_port = freeTcpPort();
+  REQUIRE(dead_port > 0);
+  const std::string url =
+      "http://127.0.0.1:" + std::to_string(dead_port) + "/gone.mkv";
+
+  StateSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+  CHECK_FALSE(backend->open(soar::MediaSource{url, dir + "/cache"}));
+  CHECK(backend->state() == soar::PlaybackState::Error);
+  CHECK(backend->lastError().find("cache setup failed") != std::string::npos);
+  CHECK(backend->lastError().find(url) != std::string::npos);
+  CHECK(sink.errors.load() >= 1);
+  backend->close();
+
+  removeTree(dir);
+#endif
+}
+
 TEST_CASE("seeking into an uncached region fills just that hole and the partial cache replays offline") {
   // P3b's integration promise, first half: a mid-playback seek to a far,
   // never-fetched region issues a Range fetch for THAT region only — the

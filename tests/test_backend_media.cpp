@@ -527,6 +527,64 @@ TEST_CASE("an end-anchored A-B loop wraps at end-of-stream instead of ending") {
   backend->close();
 }
 
+TEST_CASE("an end-anchored A-B loop wraps when the demuxer hits EOF before the clock") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping EOF-wrap A-B loop test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{media}));
+
+  // The 2x twin above wraps through the per-packet check: the clock runs
+  // past B while packets are still arriving. This case exercises the other
+  // anchor of the same contract — the demuxer runs out while the clock is
+  // still short of B, so it is the EOF branch that must route the wrap
+  // back to A instead of flipping to Ended. Half rate widens that margin
+  // (decode-time debt counts against the clock at half weight), and the
+  // pre-seed seek keeps the whole case a few seconds long.
+  CHECK(backend->setRate(0.5));
+  REQUIRE(backend->play());
+  REQUIRE(backend->seek(5000ms));
+  REQUIRE(waitForPosition(*backend, 4900ms, 30s));
+  REQUIRE(backend->setLoopAB(4500ms, 6000ms));
+
+  bool neared_end = false;
+  bool wrapped = false;
+  for (int i = 0; i < 600 && !wrapped; ++i) {
+    if (backend->state() == soar::PlaybackState::Ended) {
+      break;
+    }
+    const auto p = backend->position();
+    if (p >= 5300ms) neared_end = true;
+    if (neared_end && p <= 4700ms) wrapped = true;
+    std::this_thread::sleep_for(20ms);
+  }
+  CHECK(neared_end);
+  CHECK(wrapped);
+  CHECK(backend->state() == soar::PlaybackState::Playing);
+
+  // The wrap serves the loop, it must not disarm it.
+  std::chrono::milliseconds a{0}, b{0};
+  CHECK(backend->loopAB(a, b));
+  CHECK(a == 4500ms);
+  CHECK(b == 6000ms);
+
+  // Clearing restores the natural end from wherever the wrap left us.
+  CHECK(backend->clearLoopAB());
+  bool ended = false;
+  for (int i = 0; i < 400 && !ended; ++i) {
+    ended = backend->state() == soar::PlaybackState::Ended;
+    if (!ended) {
+      std::this_thread::sleep_for(50ms);
+    }
+  }
+  CHECK(ended);
+
+  backend->close();
+}
+
 TEST_CASE("runtime audio switching continues playback seamlessly") {
   std::string media;
   if (!mediaAvailable(media)) {
@@ -3595,6 +3653,67 @@ TEST_CASE("a stalled network source emits buffering events and recovers") {
   CHECK(sink.buffering_started.load() >= 1);
   CHECK(sink.buffering_ended.load() >= 1);
   CHECK(sink.errors.load() == 0);
+#endif
+}
+
+TEST_CASE("an A-B loop refuses to arm on a non-seekable http source") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping non-seekable A-B test");
+    return;
+  }
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping non-seekable A-B test");
+    return;
+  }
+
+  // Plain 200-only server (no Range support): FFmpeg reports such sources
+  // as non-seekable. A-B wrap routes through av_seek_frame, so arming on a
+  // source that cannot seek must be refused up front rather than arming a
+  // window the wrap machinery could never honour. The server is read-only,
+  // so serving the fixture's own directory needs no scratch copy.
+  const std::string name = media.substr(media.find_last_of('/') + 1);
+  const std::string root = media.substr(0, media.find_last_of('/'));
+  const std::string port_str = std::to_string(15400 + (::getpid() % 200));
+  char* const argv[] = {
+    const_cast<char*>("python3"),
+    const_cast<char*>("-c"),
+    const_cast<char*>(test_servers::kPlainServerScript),
+    const_cast<char*>(root.c_str()),
+    const_cast<char*>(port_str.c_str()),
+    nullptr,
+  };
+  test_servers::RangeServer srv;
+  srv.pid = test_servers::startPipedServer(argv);
+  srv.base_url = "http://127.0.0.1:" + port_str;
+  if (srv.pid < 0) {
+    MESSAGE("plain HTTP server failed to start; skipping non-seekable A-B test");
+    return;
+  }
+
+  {
+    auto backend = soar::makeFFmpegBackend();
+    REQUIRE(backend->open(soar::MediaSource{srv.base_url + "/" + name}));
+
+    const auto info = backend->mediaInfo();
+    CHECK(info.duration > 0ms);
+    CHECK_FALSE(info.seekable);
+
+    // The rejection happens before window validation: a window that would
+    // be legal on a seekable twin is refused here for the source itself.
+    CHECK_FALSE(backend->setLoopAB(0ms, info.duration));
+    CHECK(backend->lastError().find("not seekable") != std::string::npos);
+    std::chrono::milliseconds a{0}, b{0};
+    CHECK_FALSE(backend->loopAB(a, b));
+
+    backend->close();
+  }
+
+  srv.stop();
 #endif
 }
 
