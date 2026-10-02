@@ -12,6 +12,21 @@ const slides = [
     caption: '主操控屏 —— 内嵌 ASS/SSA 字幕经 libass 样式渲染，字体、颜色、定位随脚本',
   },
   {
+    src: withBase('/screenshots/player-playlist.png'),
+    alt: 'Playlist 播放队列浮层',
+    caption: '播放队列 —— 打开的文件排成队列，行内切换、一键移除，Loop/Shuffle 就地开关',
+  },
+  {
+    src: withBase('/screenshots/player-media-info.png'),
+    alt: 'Media Info 媒体信息浮层',
+    caption: '媒体信息 —— 解码状态、轨道清单（视频/音频/字幕带语言与编码）一览',
+  },
+  {
+    src: withBase('/screenshots/player-shortcuts.png'),
+    alt: 'Shortcuts 快捷键清单',
+    caption: '快捷键 —— H 呼出全清单：seek、音量、音轨/字幕切换、A-B loop、截图一屏可查',
+  },
+  {
     src: withBase('/screenshots/player-subtitle-settings.png'),
     alt: 'Subtitle Settings 浮层与字幕轨下拉',
     caption: 'Subtitle Settings —— 轨道下拉直接切换，[translate] 行一键送译',
