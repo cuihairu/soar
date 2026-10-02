@@ -4,7 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/cuihairu/soar/main/install.sh | sh
 #
 # 从滚动 nightly Release（每日构建，固定 tag nightly）下载当前平台的
-# zip，解包安装到 ~/.local/bin（可用环境变量覆盖），验证 soar --version。
+# zip，解包安装到 ~/.local/bin（可用环境变量覆盖），Linux 包还把
+# 捆绑的 lib/ 运行时库装到同目录，验证 soar --version。
 # 重复执行即升级到最新 nightly。下载不需要任何凭据（公开仓库的
 # Release assets 匿名可下）。
 #
@@ -92,6 +93,15 @@ OLD_VERSION=""
 cp "$TMPDIR_DL/x/soar" "$DEST.tmp.$$"
 chmod 755 "$DEST.tmp.$$"
 mv -f "$DEST.tmp.$$" "$DEST"
+# Linux 包随附捆绑运行时库（lib/ 与 soar 同目录，相对定位）。
+# 升级时整体替换 lib/，不让旧 nightly 的库与新二进制混搭。
+if [ -d "$TMPDIR_DL/x/lib" ]; then
+  say "==> 安装捆绑运行时库 (lib/)"
+  rm -rf "${INSTALL_DIR:?}/lib.new.$$"
+  cp -R "$TMPDIR_DL/x/lib" "${INSTALL_DIR:?}/lib.new.$$"
+  rm -rf "${INSTALL_DIR:?}/lib"
+  mv "${INSTALL_DIR:?}/lib.new.$$" "${INSTALL_DIR:?}/lib"
+fi
 # macOS 未签名：清隔离属性让 Gatekeeper 放行（无属性时静默跳过）
 [ "$OS_TAG" = "macos" ] && xattr -cr "$DEST" 2>/dev/null || true
 
@@ -120,7 +130,7 @@ if ! VERSION="$("$DEST" --version 2>/dev/null)"; then
     cat "$TMPDIR_DL/x/PLATFORM-NOTES.txt" >&2
     printf '\n' >&2
   fi
-  die "安装后验证失败: $DEST --version 没有正常退出（动态链接缺库？见上方包内说明）"
+  die "安装后验证失败: $DEST --version 没有正常退出（系统 glibc/libstdc++ 版本过低？见上方包内说明）"
 fi
 say "$VERSION"
 if [ -n "$OLD_VERSION" ]; then
@@ -129,4 +139,4 @@ else
   say "==> 安装完成: $VERSION ($DEST)"
 fi
 say "    播放: $DEST --backend=ffmpeg <媒体文件>"
-say "    注意: Linux 构建动态链接系统库，运行缺库时按包内说明安装 SDL2/FFmpeg 运行时"
+say "    注意: Linux 运行时库已随包捆绑（$INSTALL_DIR/lib），仅依赖系统 glibc/libstdc++"

@@ -58,7 +58,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev doctest-dev libboost-dev ffmpeg \
             libavformat-dev libavcodec-dev libavutil-dev \
-            libswresample-dev libswscale-dev libass-dev
+            libswresample-dev libswscale-dev libass-dev patchelf
 
       # Synthetic media for the FFmpeg backend tests (same as ci.yml: the
       # script prints KEY=VALUE lines for $GITHUB_ENV).
@@ -185,33 +185,60 @@ jobs:
           cd stage
           zip -qr ../soar-macos-arm64.zip .
 
-      # Linux binary links the apt runtime packages (libsdl2, libav*),
-      # not bundled — the notes say what to install. One step covers both
-      # arches (linux-x64 / linux-arm64): the zip carries matrix.name.
+      # Linux 包运行时自包含：ldd 全闭包里除「glibc 家族 +
+      # libstdc++/libgcc + GL/Mesa」外全部拷进 lib/ 随包分发，再用
+      # patchelf 给每个捆绑库设 RUNPATH=$ORIGIN、主程序设
+      # $ORIGIN/lib。RUNPATH 不传递——每个库要自己找邻居，只给
+      # 主程序设是不够的（Soname 换代时二进制在新发行版起不来，
+      # 2026-10 的 libfmt.so.9→.10 就是这一课）。三类排除是刻意的:
+      # glibc 家族与 libstdc++/libgcc 靠版本符号与系统锁定，混搭
+      # 反而危险；GL/Mesa 的驱动侧接口（libGL/libEGL/libgallium 等，
+      # SDL2 运行期 dlopen 而非链接）跨版本无 ABI 稳定承诺，必须整套
+      # 随目标系统走（桌面发行版都自带）。注意 libgbm 例外地要捆：
+      # 它是 SDL2 的链接期依赖而非 dlopen 目标——见下面 EXCL 旁注。
+      # 一部覆盖两个架构
+      # (linux-x64 / linux-arm64)：zip 名带 matrix.name。
       - name: Package (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -e
-          mkdir -p stage
+          mkdir -p stage/lib
           cp build-system/soar stage/
+          ldd build-system/soar | awk '$3 ~ /^\// {print $3}' | sort -u > closure.txt
+          # 注意 libgbm 不在排除里：它是 SDL2 的真实 DT_NEEDED，裸
+          # 容器（无 mesa）缺它直接起不来——2026-10-02 裸容器抓到过
+          # 这一次（runner 系统库在场会把漏捆掩盖掉，只有裸容器现形）。
+          EXCL='/(ld-linux|libc\.so\.|libm\.so\.|libpthread|libdl\.so|librt\.so|libresolv|libnsl\.so|libutil\.so|libanl|libBrokenLocale|libmvec|libnss_|libgcc_s|libstdc\+\+|libGL\.so|libGLX|libGLdispatch|libEGL|libgallium|libOSMesa)'
+          grep -vE "$EXCL" closure.txt > bundle.txt
+          while read -r so; do
+            cp -L "$so" "stage/lib/$(basename "$so")"
+            patchelf --set-rpath '$ORIGIN' "stage/lib/$(basename "$so")"
+          done < bundle.txt
+          patchelf --set-rpath '$ORIGIN/lib' stage/soar
+          # 自检：runner 系统库还在场，所以 not found 检查才是硬门——
+          # 缺一个捆绑库它立刻现形（能跑不能说明捆绑齐，ldd 能）。
+          if ldd stage/soar | grep -qi 'not found'; then
+            ldd stage/soar | grep -i 'not found'
+            exit 1
+          fi
+          stage/soar --version > /dev/null
+          echo "bundled $(wc -l < bundle.txt) libs into lib/"
           cat > stage/PLATFORM-NOTES.txt <<NOTES
           Soar 每日构建 - Linux (${{ matrix.name }})
-          包含: soar（动态链接系统库）
+          包含: soar + lib/（运行时库随包捆绑: SDL2 / FFmpeg / libass /
+          fmt 等全部自带，无需安装；GL/Mesa 留给系统，桌面发行版都
+          自带。soar 与 lib/ 必须保持在同一目录）
 
-          运行前需装运行时库（发行版包名大致如下）:
-            SDL2 (libsdl2-2.0-0)、FFmpeg 运行时 (libavformat/libavcodec/
-            libavutil/libswresample/libswscale)、libass (libass9)、fmt
-          库的代际要对上: 本包在 Ubuntu 24.04 上构建，链接的是
-          libfmt.so.9 与 FFmpeg 6.1 系（libavformat.so.60 等）。只有
-          更新代库的发行版（如 Ubuntu 26.04 的 libfmt.so.10 /
-          libavformat.so.62）即使装了 fmt/FFmpeg 也缺这些 SONAME，
-          二进制起不来（--version 报 error while loading shared
-          libraries）。这类环境请用 Ubuntu 24.04 容器/虚拟机运行，
-          或自行提供上述同代运行时。
+          系统要求（如实，捆绑替代不了 libc 本身）:
+          要求 glibc >= 2.38 且 libstdc++ >= GLIBCXX_3.4.32
+          （约 Ubuntu 24.04+ / Debian 13+ / Fedora 39+ / Arch 滚动）。
+          更老的系统（如 Ubuntu 22.04 / Debian 12）装不上这些版本
+          符号，二进制起不来——这是编译器与 libc 版本决定的，
+          随包捆绑解决不了。
 
-          验证: 终端运行 ./soar 不带参数，应打印 Usage
-          （退出码 2 属预期）；或 ./soar --version 打印版本。
+          验证: 终端运行 ./soar --version 打印版本（退出码 0）；
+          或 ./soar 不带参数，应打印 Usage（退出码 2 属预期）。
           NOTES
           # 必须先进 stage：zip . 在 workspace 根会把整个 build/ 打进包
           cd stage
@@ -225,12 +252,73 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # 裸容器验证：镜像里除 glibc/libstdc++ 外没有任何运行时库（连
+  # unzip/python3 都没有），包必须自给自足。两个镜像各跑一遍——
+  # ubuntu:24.04 是构建同代基线；ubuntu:latest（≥ 26.04，FFmpeg/fmt
+  # 的 SONAME 已换代）正是当初 --version 都起不来的跨代场景，
+  # 捆绑库就是为它做的。runner 自己的系统库会把「漏捆」掩盖掉
+  # （缺的库系统里有），裸容器不会。zip 在 runner 侧解包（裸容器
+  # 没有解压工具），容器只负责运行；$ORIGIN 相对二进制定位，挂在
+  # /w 下照样解析到 /w/x/lib。
+  verify-linux:
+    name: Verify (${{ matrix.name }}) in bare containers
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x64
+          # arm64 包在 arm runner 上用原生 arm64 镜像做同样的验证
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+    steps:
+      - name: Download platform package
+        uses: actions/download-artifact@v4
+        with:
+          name: pkg-${{ matrix.name }}
+          path: .
+
+      - name: Unzip (runner side; bare container has no unzip)
+        run: |
+          set -e
+          mkdir x
+          unzip -q soar-*.zip -d x
+
+      - name: Smoke in bare containers (24.04 same-gen + latest cross-gen)
+        run: |
+          set -e
+          cat > x/bare-verify.sh <<'EOF'
+          set -e
+          /w/x/soar --version
+          set +e
+          /w/x/soar > /dev/null 2>&1
+          code=$?
+          set -e
+          if [ "$code" != "2" ]; then
+            echo "Usage 退出码异常: $code（预期 2）"
+            exit 1
+          fi
+          if ldd /w/x/soar | grep -qi 'not found'; then
+            ldd /w/x/soar | grep -i 'not found'
+            exit 1
+          fi
+          EOF
+          for img in ubuntu:24.04 ubuntu:latest; do
+            echo "== $img =="
+            docker pull -q "$img" > /dev/null
+            docker run --rm -v "$PWD:/w:ro" "$img" bash /w/x/bare-verify.sh
+            echo "== $img OK =="
+          done
+
   # 汇总：三平台 zip + BUILD_INFO + VERIFY 打成一个固定名 artifact。
   # 上传前先删历史同名 daily-build——v4 产物不可变，不删必报错；
   # 删了再传即"全仓库只存在一份最新每日构建"。
   collect:
     name: Collect daily-build
-    needs: build
+    needs: [build, verify-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -280,16 +368,16 @@ jobs:
             echo "平台产物:"
             echo "  soar-windows-x64.zip  Windows 10/11 x64: soar.exe + 依赖 DLL"
             echo "  soar-macos-arm64.zip  macOS Apple Silicon: soar（静态链接）"
-            echo "  soar-linux-x64.zip    Linux x64: soar（动态链接系统库，见包内说明）"
-            echo "  soar-linux-arm64.zip  Linux arm64: soar（动态链接系统库，见包内说明）"
+            echo "  soar-linux-x64.zip    Linux x64: soar + lib/（运行时已捆绑，仅依赖系统 glibc/libstdc++，见包内说明）"
+            echo "  soar-linux-arm64.zip  Linux arm64: soar + lib/（运行时已捆绑，仅依赖系统 glibc/libstdc++，见包内说明）"
           } > BUILD_INFO.txt
           cat > VERIFY.md <<'VERIFY'
           # 最简验证
           每个平台 zip 内附 PLATFORM-NOTES.txt。
 
           ## 通用冒烟（各平台一致）
-          1. \`soar --version\`（Windows: \`soar.exe --version\`）应打印
-             \`soar <版本>\` 并以退出码 0 结束。
+          1. `soar --version`（Windows: `soar.exe --version`）应打印
+             `soar <版本>` 并以退出码 0 结束。
           2. 不带参数运行：应打印 Usage 并以退出码 2 结束——这就是
              无媒体源时的预期自证行为。
 
@@ -304,10 +392,11 @@ jobs:
 
           ## Linux (x64 / arm64)
           1. 解压 soar-linux-x64.zip 或 soar-linux-arm64.zip
-          2. 按包内 PLATFORM-NOTES.txt 装好同代运行时库（包在
-             Ubuntu 24.04 构建，需 libfmt.so.9 / FFmpeg 6.1 系；
-             只有更新代库的发行版请用 24.04 容器/虚拟机）
-          3. `chmod +x soar && ./soar`
+          2. 运行时库已随包捆绑（lib/），无需安装 SDL2/FFmpeg；
+             但要求 glibc >= 2.38 且 libstdc++ >= GLIBCXX_3.4.32
+             （Ubuntu 24.04+ / Debian 13+ / Fedora 39+ / Arch 滚动；
+             更老的系统起不来，见包内 PLATFORM-NOTES.txt）
+          3. `chmod +x soar && ./soar --version`（退出码 0）
           VERIFY
           # 打总包：各平台 zip 平铺 + 顶层说明（artifact 解开即见）
           mv pkgs/soar-*.zip .
@@ -370,8 +459,8 @@ jobs:
           |---|---|---|
           | Windows 10/11 x64 | \`soar-windows-x64.zip\` | soar.exe + 依赖 DLL，解压即用 |
           | macOS Apple Silicon | \`soar-macos-arm64.zip\` | soar（静态链接），\`xattr -cr soar\` 后运行 |
-          | Linux x64 | \`soar-linux-x64.zip\` | soar（动态链接，需 Ubuntu 24.04 同代运行时，见包内 PLATFORM-NOTES.txt） |
-          | Linux arm64 | \`soar-linux-arm64.zip\` | soar（动态链接，需 Ubuntu 24.04 同代运行时，见包内 PLATFORM-NOTES.txt） |
+          | Linux x64 | \`soar-linux-x64.zip\` | soar + 捆绑运行时 lib/，免装 SDL2/FFmpeg，仅依赖系统 glibc/libstdc++，解压即用 |
+          | Linux arm64 | \`soar-linux-arm64.zip\` | 同上（arm64 原生构建） |
           | 合装 | \`${daily_zip}\` | 上列四个 zip + BUILD_INFO.txt + VERIFY.md |
 
           一键安装（Linux/macOS）: \`curl -fsSL https://raw.githubusercontent.com/cuihairu/soar/main/install.sh | sh\`
@@ -402,7 +491,7 @@ jobs:
             echo "| 更新时间 | ${utc_time} / ${bj_time} |"
             echo "| Commit | \`${GITHUB_SHA}\` |"
             echo "| 产物 | artifact **daily-build**（唯一最新版，历史已清理）+ Release **Nightly Build (nightly)** 同步发布 |"
-            echo "| 平台 | windows-x64（soar.exe+DLL）/ macos-arm64（静态链接）/ linux-x64 / linux-arm64（动态链接） |"
+            echo "| 平台 | windows-x64（soar.exe+DLL）/ macos-arm64（静态链接）/ linux-x64 / linux-arm64（捆绑运行时） |"
             echo ""
             echo "下载: 本 run 页面底部 Artifacts 区 \`daily-build\`，或 <https://github.com/${GITHUB_REPOSITORY}/releases/tag/nightly>（匿名可下）。"
             echo "验证方式见包内 VERIFY.md。发布面: 本 artifact + 滚动 nightly Release（固定 tag nightly，非版本发布）。"
