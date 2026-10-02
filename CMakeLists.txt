@@ -156,6 +156,9 @@ if(SOAR_BUILD_APP)
     src/app/ui/player_window.cpp
   )
   target_compile_features(soar PRIVATE cxx_std_17)
+  # soar --version prints this; install scripts use it as the post-install
+  # smoke check (daily-build's BUILD_INFO greps the same project VERSION).
+  target_compile_definitions(soar PRIVATE SOAR_APP_VERSION="${PROJECT_VERSION}")
   target_link_libraries(soar PRIVATE soar::core soar_app_ui soar_p2p)
 
   # Dev tool for the P2P walkthrough (docs/mvp.md §5 P4): seeds a local

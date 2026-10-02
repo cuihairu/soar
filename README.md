@@ -87,6 +87,26 @@ flowchart TB
 - **时钟与同步**：以 PTS（Presentation Timestamp，显示时间戳）为基准，结合播放倍速换算墙钟时间，视频按点到点呈现，音频走设备队列并用背压（Backpressure）限流；
 - **测试替身内置**：`NullBackend` 用纯状态机模拟完整播放行为，不依赖任何多媒体库，让核心 API 的单元测试可以在任何 CI 环境运行。
 
+## 一键安装
+
+从每日构建（滚动 nightly Release）安装当前平台的预编译产物；重复执行即升级到最新 nightly。下载不需要任何凭据。
+
+Linux / macOS（bash 或 zsh）:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cuihairu/soar/main/install.sh | sh
+```
+
+Windows（PowerShell）:
+
+```powershell
+irm https://raw.githubusercontent.com/cuihairu/soar/main/install.ps1 | iex
+```
+
+脚本做的事：检测操作系统与 CPU 架构 → 下载对应平台的 zip（`soar-linux-x64.zip` / `soar-linux-arm64.zip` / `soar-macos-arm64.zip` / `soar-windows-x64.zip`）→ 解包安装（Linux/macOS 默认 `~/.local/bin`，Windows 默认 `%LOCALAPPDATA%\Programs\soar`，可用 `SOAR_INSTALL_DIR` 覆盖）→ 需要时写 PATH → `soar --version` 验证。目录不在 PATH 上的平台会写一条带注释的 PATH 行进 shell 配置；不想自动改可设 `SOAR_INSTALL_DIR` 为已在 PATH 的目录。
+
+平台覆盖与每日构建矩阵一致：Linux x64/arm64、macOS Apple Silicon、Windows x64。macOS Intel 与 Windows arm64 没有免费的 CI runner，脚本遇到会明确报错（不会装一个跑不起来的包）。两个如实边界：soar 是桌面播放器、无常驻服务形态，脚本不注册系统服务；每日构建未做代码签名，Windows SmartScreen 拦截时选「更多信息 → 仍要运行」，macOS 首次运行前 `xattr -cr`（脚本已代做）。
+
 ## 构建
 
 前置：CMake 3.20+、C++17 编译器（GCC / Clang / MSVC，任何支持 C++17 的版本）、Ninja（推荐）、[vcpkg](https://github.com/microsoft/vcpkg)。

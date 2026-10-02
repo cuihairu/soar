@@ -24,12 +24,17 @@
 #include <string>
 #include <vector>
 
+#ifndef SOAR_APP_VERSION
+#  define SOAR_APP_VERSION "dev"
+#endif
+
 static void print_usage(const char* argv0) {
   fmt::print("Usage:\n");
   fmt::print("  {} [--backend=ffmpeg|null] <path-or-url> [more-paths...]\n\n", argv0);
   fmt::print("  {} --headless [--backend=ffmpeg|null] <path-or-url>\n\n", argv0);
   fmt::print("Options:\n");
   fmt::print("  --headless    Run without GUI\n");
+  fmt::print("  --version     Print the version and exit\n");
   fmt::print("  --backend=    Select backend (ffmpeg, null)\n");
   fmt::print("  --cache-dir=  Cache http:// downloads here for offline replay\n");
   fmt::print("  --torrent-store=  Where torrent data lands (default: <tmp>/soar-torrent)\n");
@@ -73,6 +78,9 @@ int main(int argc, char** argv) {
     std::string arg(argv[i]);
     if (arg == "--headless") {
       headless = true;
+    } else if (arg == "--version") {
+      fmt::print("soar {}\n", SOAR_APP_VERSION);
+      return 0;
     } else if (arg.rfind("--backend=", 0) == 0) {
       backend_type = arg.substr(10);  // after "--backend="
     } else if (arg.rfind("--cache-dir=", 0) == 0) {

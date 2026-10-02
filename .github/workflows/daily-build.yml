@@ -37,6 +37,10 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-x64
+          # Linux arm64 on the free public ARM runner (no cost for public
+          # repos); install.sh targets it, so the matrix must ship it.
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
           - os: macos-latest
             name: macos-arm64
           - os: windows-latest
@@ -149,8 +153,9 @@ jobs:
           Soar 每日构建 - Windows x64
           包含: soar.exe 及其依赖 DLL（SDL2 / FFmpeg 等，随包分发）
 
-          验证: 命令行运行不带参数的 soar.exe，应打印 Usage
-          （退出码 2 属预期——无媒体源时程序就是这样自证的）。
+          验证: soar.exe --version 打印版本（退出码 0）；
+          不带参数运行应打印 Usage（退出码 2 属预期——无媒体源时
+          程序就是这样自证的）。
 
           说明: 若 SmartScreen 拦截，点"更多信息 -> 仍要运行"
           （每日构建未做代码签名）。
@@ -170,8 +175,8 @@ jobs:
           Soar 每日构建 - macOS (Apple Silicon)
           包含: soar（SDL2/FFmpeg 已静态链接进二进制）
 
-          验证: 终端运行 ./soar 不带参数，应打印 Usage
-          （退出码 2 属预期）。
+          验证: ./soar --version 打印版本（退出码 0）；
+          不带参数运行应打印 Usage（退出码 2 属预期）。
           首次运行如被 Gatekeeper 拦截: xattr -cr soar
 
           说明: 未签名（每日构建不做代码签名）。
@@ -181,7 +186,8 @@ jobs:
           zip -qr ../soar-macos-arm64.zip .
 
       # Linux binary links the apt runtime packages (libsdl2, libav*),
-      # not bundled — the notes say what to install.
+      # not bundled — the notes say what to install. One step covers both
+      # arches (linux-x64 / linux-arm64): the zip carries matrix.name.
       - name: Package (Linux)
         if: runner.os == 'Linux'
         shell: bash
@@ -189,8 +195,8 @@ jobs:
           set -e
           mkdir -p stage
           cp build-system/soar stage/
-          cat > stage/PLATFORM-NOTES.txt <<'NOTES'
-          Soar 每日构建 - Linux x64
+          cat > stage/PLATFORM-NOTES.txt <<NOTES
+          Soar 每日构建 - Linux (${{ matrix.name }})
           包含: soar（动态链接系统库）
 
           运行前需装运行时库（发行版包名大致如下）:
@@ -198,11 +204,11 @@ jobs:
             libavutil/libswresample/libswscale)、libass (libass9)、fmt
 
           验证: 终端运行 ./soar 不带参数，应打印 Usage
-          （退出码 2 属预期）。
+          （退出码 2 属预期）；或 ./soar --version 打印版本。
           NOTES
           # 必须先进 stage：zip . 在 workspace 根会把整个 build/ 打进包
           cd stage
-          zip -qr ../soar-linux-x64.zip .
+          zip -qr ../soar-${{ matrix.name }}.zip .
 
       - name: Upload platform package
         uses: actions/upload-artifact@v4
@@ -268,15 +274,17 @@ jobs:
             echo "  soar-windows-x64.zip  Windows 10/11 x64: soar.exe + 依赖 DLL"
             echo "  soar-macos-arm64.zip  macOS Apple Silicon: soar（静态链接）"
             echo "  soar-linux-x64.zip    Linux x64: soar（动态链接系统库，见包内说明）"
+            echo "  soar-linux-arm64.zip  Linux arm64: soar（动态链接系统库，见包内说明）"
           } > BUILD_INFO.txt
           cat > VERIFY.md <<'VERIFY'
           # 最简验证
           每个平台 zip 内附 PLATFORM-NOTES.txt。
 
-          ## 通用冒烟（三平台一致）
-          命令行运行 soar（Windows 为 soar.exe）不带参数：
-          应打印 Usage 并以退出码 2 结束——这就是无媒体源时
-          的预期自证行为。
+          ## 通用冒烟（各平台一致）
+          1. \`soar --version\`（Windows: \`soar.exe --version\`）应打印
+             \`soar <版本>\` 并以退出码 0 结束。
+          2. 不带参数运行：应打印 Usage 并以退出码 2 结束——这就是
+             无媒体源时的预期自证行为。
 
           ## Windows
           1. 解压 soar-windows-x64.zip（soar.exe 与 DLL 须同目录）
@@ -292,12 +300,11 @@ jobs:
           2. 按包内 PLATFORM-NOTES.txt 装好 SDL2/FFmpeg 运行时库
           3. `chmod +x soar && ./soar`
           VERIFY
-          # 打总包：三平台 zip 平铺 + 顶层说明（artifact 解开即见）
-          mv pkgs/soar-windows-x64.zip pkgs/soar-macos-arm64.zip \
-             pkgs/soar-linux-x64.zip .
+          # 打总包：各平台 zip 平铺 + 顶层说明（artifact 解开即见）
+          mv pkgs/soar-*.zip .
           zip -q "soar-daily-${BUILD_DATE}-${GITHUB_SHA::8}.zip" \
             soar-windows-x64.zip soar-macos-arm64.zip \
-            soar-linux-x64.zip BUILD_INFO.txt VERIFY.md
+            soar-linux-x64.zip soar-linux-arm64.zip BUILD_INFO.txt VERIFY.md
           # 供后续步骤引用的输出
           echo "daily_zip=soar-daily-${BUILD_DATE}-${GITHUB_SHA::8}.zip" >> "$GITHUB_ENV"
           echo "utc_time=${UTC_TIME}" >> "$GITHUB_ENV"
@@ -355,19 +362,24 @@ jobs:
           | Windows 10/11 x64 | \`soar-windows-x64.zip\` | soar.exe + 依赖 DLL，解压即用 |
           | macOS Apple Silicon | \`soar-macos-arm64.zip\` | soar（静态链接），\`xattr -cr soar\` 后运行 |
           | Linux x64 | \`soar-linux-x64.zip\` | soar（动态链接，见包内 PLATFORM-NOTES.txt） |
-          | 三平台合装 | \`${daily_zip}\` | 上列三个 zip + BUILD_INFO.txt + VERIFY.md |
+          | Linux arm64 | \`soar-linux-arm64.zip\` | soar（动态链接，见包内 PLATFORM-NOTES.txt） |
+          | 合装 | \`${daily_zip}\` | 上列四个 zip + BUILD_INFO.txt + VERIFY.md |
+
+          一键安装（Linux/macOS）: \`curl -fsSL https://raw.githubusercontent.com/cuihairu/soar/main/install.sh | sh\`
+          一键安装（Windows PowerShell）: \`irm https://raw.githubusercontent.com/cuihairu/soar/main/install.ps1 | iex\`
 
           ## 验证
 
-          命令行运行 soar（Windows 为 soar.exe）不带参数：应打印 Usage
-          并以退出码 2 结束——无媒体源时的预期自证行为。详细步骤见
+          \`soar --version\` 打印版本即安装成功；命令行运行不带参数应打印
+          Usage 并以退出码 2 结束——无媒体源时的预期自证行为。详细步骤见
           包内 VERIFY.md 与各平台 PLATFORM-NOTES.txt。
 
           Commit: ${GITHUB_SHA}
           NOTES
           gh release edit nightly --notes-file release-notes.md
           gh release upload nightly "$daily_zip" \
-            soar-windows-x64.zip soar-macos-arm64.zip soar-linux-x64.zip \
+            soar-windows-x64.zip soar-macos-arm64.zip \
+            soar-linux-x64.zip soar-linux-arm64.zip \
             BUILD_INFO.txt VERIFY.md --clobber
           echo "nightly release updated: ${daily_zip}"
 
@@ -381,7 +393,7 @@ jobs:
             echo "| 更新时间 | ${utc_time} / ${bj_time} |"
             echo "| Commit | \`${GITHUB_SHA}\` |"
             echo "| 产物 | artifact **daily-build**（唯一最新版，历史已清理）+ Release **Nightly Build (nightly)** 同步发布 |"
-            echo "| 平台 | windows-x64（soar.exe+DLL）/ macos-arm64（静态链接）/ linux-x64（动态链接） |"
+            echo "| 平台 | windows-x64（soar.exe+DLL）/ macos-arm64（静态链接）/ linux-x64 / linux-arm64（动态链接） |"
             echo ""
             echo "下载: 本 run 页面底部 Artifacts 区 \`daily-build\`，或 <https://github.com/${GITHUB_REPOSITORY}/releases/tag/nightly>（匿名可下）。"
             echo "验证方式见包内 VERIFY.md。发布面: 本 artifact + 滚动 nightly Release（固定 tag nightly，非版本发布）。"
