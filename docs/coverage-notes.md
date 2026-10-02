@@ -214,7 +214,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 ### 3.14 外挂文本轨画布批：合成文档 + UI 防双绘门（批 1c）
 
-本批把外挂 SRT/WebVTT 轨在有 libass 的构建里搬上画布。自研与复用的分账（措辞口径）：**libass 的**是字形渲染；**本仓库的**是 `synthesizeAssDocument` 纯函数（白字黑边、底缘居中、字号 h/14 钳 12-96、MarginV h/10 钳下限、PlayRes 跟视频、尺寸未知回落 384×288、cue 文本换行→`\N` 其余逐字节保留）、加载期接线（`loadExternalSubtitle` 合成一次存进槽位，PlayRes 取打开时的稳定尺寸）、UI 防双绘门与画布的 V 显隐/同步偏移补齐（`presentVideoFrame` 新增 `subs_visible` 门控 blend，两调用点传 `position + sub_offset`）。**门放 UI 不放泵**：drawSubtitles 开头查 `subtitleDocumentActive()` 早退——泵（`tryGetSubtitleFrame` → `pumpExternalCues`）的语义两种构建通用，测试直接拉帧照常驱动它；产线唯一的拉帧点就是这扇门，门关则泵随停，可观察行为与泵旁路无异，差别只在代码路径不被构建劈开。
+本批把外挂 SRT/WebVTT 轨在有 libass 的构建里搬上画布。自写与复用的分账（措辞口径）：**libass 的**是字形渲染；**本仓库的**是 `synthesizeAssDocument` 纯函数（白字黑边、底缘居中、字号 h/14 钳 12-96、MarginV h/10 钳下限、PlayRes 跟视频、尺寸未知回落 384×288、cue 文本换行→`\N` 其余逐字节保留）、加载期接线（`loadExternalSubtitle` 合成一次存进槽位，PlayRes 取打开时的稳定尺寸）、UI 防双绘门与画布的 V 显隐/同步偏移补齐（`presentVideoFrame` 新增 `subs_visible` 门控 blend，两调用点传 `position + sub_offset`）。**门放 UI 不放泵**：drawSubtitles 开头查 `subtitleDocumentActive()` 早退——泵（`tryGetSubtitleFrame` → `pumpExternalCues`）的语义两种构建通用，测试直接拉帧照常驱动它；产线唯一的拉帧点就是这扇门，门关则泵随停，可观察行为与泵旁路无异，差别只在代码路径不被构建劈开。
 
 水位：本地 cov3 完整口径 **行 95.3%（4830/5068）、分支 84.5%（4869/5759）**，双升于批 1b（95.0/84.3）；分母 +42 行 / +61 分支（合成函数 + 加载期接线 + UI 门与画布参数，减去中途删掉的 select 期重合成死码，见文末教训）。CI 同提交行 94.96%（4809/5066）、分支 84.73%（4777/5637）。门禁上抬至 94.8/84.2——行门初次取 94.9 时 CI 侧余量只有 1.4 行（落在抖动带内），收到 94.8（定值经过见 §2）。
 
@@ -235,7 +235,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 ### 3.15 内嵌轨选择语义批：解码门 + 非默认流切换 + mov_text/subrip 上画布（todo.md 剩余边界）
 
-本批把「选内嵌字幕轨」从元数据语义改成解码语义，并让被选中的内嵌文本轨上画布。自研与复用的分账（措辞口径）：**字形渲染仍是 libass 的**；**本仓库的**是选择语义本身——`subtitle_decode_active_` 解码门（decodeLoop 只在门开时处理字幕包：open 起开、sidecar 选中/Off 关门并清队列、内嵌选中重开，批 1b/1c 只能靠画布侧关闭的叠加在两种构建里都从源头关闭）、非默认流的解码器交接（`buildSubtitleDecoder` + pending 槽，与音频切换同一 handoff 契约减去 resume seek：解码线程活着则 packet 边界换入、已死则 join 后直换并报 Stopped）、mov_text/subrip 的每帧重组（帧内多 rect 文本拼接为一条 Dialogue 事件、`assDialogueLineFromText` 重建事件行、文本流 arm feed 时喂合成默认头），以及 `disableSubtitles` 的解码语义化（关门 + 清队 + 释放 feed/文档）。顺带删除了 `ass_codec_private_` 暂存（arm 时从 codecpar 现读，open 期少一份镜像状态）。
+本批把「选内嵌字幕轨」从元数据语义改成解码语义，并让被选中的内嵌文本轨上画布。自写与复用的分账（措辞口径）：**字形渲染仍是 libass 的**；**本仓库的**是选择语义本身——`subtitle_decode_active_` 解码门（decodeLoop 只在门开时处理字幕包：open 起开、sidecar 选中/Off 关门并清队列、内嵌选中重开，批 1b/1c 只能靠画布侧关闭的叠加在两种构建里都从源头关闭）、非默认流的解码器交接（`buildSubtitleDecoder` + pending 槽，与音频切换同一 handoff 契约减去 resume seek：解码线程活着则 packet 边界换入、已死则 join 后直换并报 Stopped）、mov_text/subrip 的每帧重组（帧内多 rect 文本拼接为一条 Dialogue 事件、`assDialogueLineFromText` 重建事件行、文本流 arm feed 时喂合成默认头），以及 `disableSubtitles` 的解码语义化（关门 + 清队 + 释放 feed/文档）。顺带删除了 `ass_codec_private_` 暂存（arm 时从 codecpar 现读，open 期少一份镜像状态）。
 
 水位：本地 cov3 完整口径 **行 95.3%（4956/5203）、分支 84.6%（4969/5872）**（本批 commit 门禁那次完整跑），门禁 94.8/84.2 双过（本地余量 23 行 / 24 分支）。分母 +135 行 / +113 分支（对批 1c 的 5068/5759），命中 +126 行 / +100 分支——选择语义新码的可覆盖主干全被命中。分文件：`player_window.cpp` 行 95.0%（1090/1147，批 1c 93.9%——涨幅来自本批的 OSC 注入器修复，见文末）、`ffmpeg_backend.cpp` 行 91.8%（1712/1866，批内新增行的未覆盖臂即下文逐条定性的 20 条，门禁跑 missing 列表全部在场）、`ass_dialogue.cpp` 行 98.2%（162/165，缺口仍是 §3.10 家族三条闭括号清理弧）、`main.cpp` 98.5%（133/135，142-143 本轮翻 Missing——X11 窗口纹理弧的既知逐轮摆动家族，§2.1 RTSP 批同款）。CI 同提交读数：行 **95.3%（4955/5201）**、分支 **85.3%（4907/5750）**——批 1c 的「命中低 ~21 行」观察未复现，两侧基本持平（判门禁一律看 CI）。
 

@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Soar
   text: 万般格式，任其翱翔
-  tagline: 基于 FFmpeg + SDL2 的 C++17 开源媒体播放器 —— 自研核心播放抽象与桌面 UI，解码交给 FFmpeg
+  tagline: 基于 FFmpeg + SDL2 的 C++17 开源媒体播放器 —— 封装统一的播放抽象层与桌面 UI，解码交给 FFmpeg
   image:
     src: /logo.svg
     alt: Soar
