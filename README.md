@@ -103,6 +103,8 @@ Windows（PowerShell）:
 irm https://raw.githubusercontent.com/cuihairu/soar/main/install.ps1 | iex
 ```
 
+平台边界（如实）：Windows 包随附依赖 DLL、macOS 包静态链接，均开箱即用；Linux 包在 Ubuntu 24.04 上构建、动态链接系统库，需要同代运行时（libfmt.so.9 / FFmpeg 6.1 系 .so.60 / SDL2 / libass）——只有更新代库的发行版（如 Ubuntu 26.04 的 libfmt.so.10 / libavformat.so.62）即使装了 fmt/FFmpeg 也对不上，这类环境请在 Ubuntu 24.04 容器/虚拟机里运行（详见包内 PLATFORM-NOTES.txt；安装脚本的验证步会把包内说明打给你看）。
+
 脚本做的事：检测操作系统与 CPU 架构 → 下载对应平台的 zip（`soar-linux-x64.zip` / `soar-linux-arm64.zip` / `soar-macos-arm64.zip` / `soar-windows-x64.zip`）→ 解包安装（Linux/macOS 默认 `~/.local/bin`，Windows 默认 `%LOCALAPPDATA%\Programs\soar`，可用 `SOAR_INSTALL_DIR` 覆盖）→ 需要时写 PATH → `soar --version` 验证。目录不在 PATH 上的平台会写一条带注释的 PATH 行进 shell 配置；不想自动改可设 `SOAR_INSTALL_DIR` 为已在 PATH 的目录。
 
 平台覆盖与每日构建矩阵一致：Linux x64/arm64、macOS Apple Silicon、Windows x64。macOS Intel 与 Windows arm64 没有免费的 CI runner，脚本遇到会明确报错（不会装一个跑不起来的包）。两个如实边界：soar 是桌面播放器、无常驻服务形态，脚本不注册系统服务；每日构建未做代码签名，Windows SmartScreen 拦截时选「更多信息 → 仍要运行」，macOS 首次运行前 `xattr -cr`（脚本已代做）。

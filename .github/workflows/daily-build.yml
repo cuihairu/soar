@@ -202,6 +202,13 @@ jobs:
           运行前需装运行时库（发行版包名大致如下）:
             SDL2 (libsdl2-2.0-0)、FFmpeg 运行时 (libavformat/libavcodec/
             libavutil/libswresample/libswscale)、libass (libass9)、fmt
+          库的代际要对上: 本包在 Ubuntu 24.04 上构建，链接的是
+          libfmt.so.9 与 FFmpeg 6.1 系（libavformat.so.60 等）。只有
+          更新代库的发行版（如 Ubuntu 26.04 的 libfmt.so.10 /
+          libavformat.so.62）即使装了 fmt/FFmpeg 也缺这些 SONAME，
+          二进制起不来（--version 报 error while loading shared
+          libraries）。这类环境请用 Ubuntu 24.04 容器/虚拟机运行，
+          或自行提供上述同代运行时。
 
           验证: 终端运行 ./soar 不带参数，应打印 Usage
           （退出码 2 属预期）；或 ./soar --version 打印版本。
@@ -295,9 +302,11 @@ jobs:
           1. 解压 soar-macos-arm64.zip
           2. `xattr -cr soar && ./soar`（未签名，必须先清隔离属性）
 
-          ## Linux x64
-          1. 解压 soar-linux-x64.zip
-          2. 按包内 PLATFORM-NOTES.txt 装好 SDL2/FFmpeg 运行时库
+          ## Linux (x64 / arm64)
+          1. 解压 soar-linux-x64.zip 或 soar-linux-arm64.zip
+          2. 按包内 PLATFORM-NOTES.txt 装好同代运行时库（包在
+             Ubuntu 24.04 构建，需 libfmt.so.9 / FFmpeg 6.1 系；
+             只有更新代库的发行版请用 24.04 容器/虚拟机）
           3. `chmod +x soar && ./soar`
           VERIFY
           # 打总包：各平台 zip 平铺 + 顶层说明（artifact 解开即见）
@@ -361,8 +370,8 @@ jobs:
           |---|---|---|
           | Windows 10/11 x64 | \`soar-windows-x64.zip\` | soar.exe + 依赖 DLL，解压即用 |
           | macOS Apple Silicon | \`soar-macos-arm64.zip\` | soar（静态链接），\`xattr -cr soar\` 后运行 |
-          | Linux x64 | \`soar-linux-x64.zip\` | soar（动态链接，见包内 PLATFORM-NOTES.txt） |
-          | Linux arm64 | \`soar-linux-arm64.zip\` | soar（动态链接，见包内 PLATFORM-NOTES.txt） |
+          | Linux x64 | \`soar-linux-x64.zip\` | soar（动态链接，需 Ubuntu 24.04 同代运行时，见包内 PLATFORM-NOTES.txt） |
+          | Linux arm64 | \`soar-linux-arm64.zip\` | soar（动态链接，需 Ubuntu 24.04 同代运行时，见包内 PLATFORM-NOTES.txt） |
           | 合装 | \`${daily_zip}\` | 上列四个 zip + BUILD_INFO.txt + VERIFY.md |
 
           一键安装（Linux/macOS）: \`curl -fsSL https://raw.githubusercontent.com/cuihairu/soar/main/install.sh | sh\`

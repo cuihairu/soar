@@ -111,9 +111,17 @@ case ":$PATH:" in
 esac
 
 # ---- 验证：--version 打印版本即安装成功 --------------------------
+# 验证失败时临时目录还没被 trap 清掉——把包内 PLATFORM-NOTES.txt
+# 一并打出来，报错自包含（用户不用再去翻已解压删除的 zip）。
 say "==> 验证"
-VERSION="$("$DEST" --version 2>/dev/null)" ||
-  die "安装后验证失败: $DEST --version 没有正常退出（动态链接缺库？见包内 PLATFORM-NOTES.txt 的运行时依赖清单）"
+if ! VERSION="$("$DEST" --version 2>/dev/null)"; then
+  if [ -f "$TMPDIR_DL/x/PLATFORM-NOTES.txt" ]; then
+    printf '\n包内 PLATFORM-NOTES.txt:\n' >&2
+    cat "$TMPDIR_DL/x/PLATFORM-NOTES.txt" >&2
+    printf '\n' >&2
+  fi
+  die "安装后验证失败: $DEST --version 没有正常退出（动态链接缺库？见上方包内说明）"
+fi
 say "$VERSION"
 if [ -n "$OLD_VERSION" ]; then
   say "==> 升级完成: $OLD_VERSION -> $VERSION ($DEST)"
