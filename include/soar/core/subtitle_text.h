@@ -18,36 +18,48 @@ struct SubtitleCue {
 
 // Subtitle container formats. SubRip/WebVtt are plain text; Ass is a full
 // ASS/SSA script document (rendered style-faithfully through libass when
-// the build has it, extracted to plain cues otherwise). Bitmap ones (PGS,
-// VobSub, dvdsub) are deliberately absent: they need a decoder, not a
-// parser, and the sidecar provider never offers them.
+// the build has it, extracted to plain cues otherwise); Ttml is an XML
+// timed-text document (TTML/DFXP) read as plain cues — its styles and
+// regions are not applied, same as every other text sidecar. Bitmap ones
+// (PGS, VobSub, dvdsub) are deliberately absent: they need a decoder, not
+// a parser, and the sidecar provider never offers them.
 enum class SubtitleFormat {
   Unknown,
   SubRip,
   WebVtt,
-  Ass
+  Ass,
+  Ttml
 };
 
 // Format implied by a file extension, case-insensitively: ".srt" -> SubRip,
-// ".vtt"/".webvtt" -> WebVtt, ".ass"/".ssa" -> Ass, anything else (including
-// no extension) -> Unknown.
+// ".vtt"/".webvtt" -> WebVtt, ".ass"/".ssa" -> Ass, ".ttml"/".dfxp" -> Ttml,
+// anything else (including no extension) -> Unknown. ".xml" stays Unknown on
+// purpose: the extension alone says nothing about what is inside.
 SubtitleFormat subtitleFormatFromPath(const std::string& path);
 
 // Format implied by the content: a "WEBVTT" first line decides it, else
 // whichever marker shows up first — a "Dialogue:" line or a "[Script Info]"
 // section header decides Ass, the first parseable "-->" block decides
 // SubRip vs WebVtt by the fraction separator, since SubRip writes
-// "00:00:01,000" and WebVTT "00:00:01.000". Unknown when the text is empty
-// or carries none of the markers.
+// "00:00:01,000" and WebVTT "00:00:01.000". A document whose first element
+// is <tt> (with or without a namespace prefix) decides Ttml, checked last so
+// an XML-looking file carrying an ASS or "-->" marker keeps resolving the
+// way it always did. Unknown when the text is empty or carries none of the
+// markers.
 SubtitleFormat detectSubtitleFormat(const std::string& content);
 
-// Parse SubRip or WebVTT text into cues, in file order.
+// Parse SubRip, WebVTT or TTML text into cues, in file order.
 //
 // Deliberately forgiving, because subtitle files in the wild are: a UTF-8
 // BOM (first line or a stray one mid-file), CRLF or bare-CR line endings, a
 // missing hour field ("01:23,456"), a fraction of 1-6 digits, WebVTT cue
 // identifiers and cue settings ("align:start position:0%"), NOTE/STYLE/
-// REGION blocks, and header metadata after "WEBVTT".
+// REGION blocks, and header metadata after "WEBVTT". The TTML reader is the
+// same kind of tolerant: it reaches for <p begin end dur> elements and their
+// text, decodes the five predefined character references plus numeric ones,
+// turns <br/> into a line break, drops any other inline markup, and collapses
+// the whitespace an indented XML file would otherwise print into the middle
+// of the line.
 //
 // A block whose timestamp pair does not parse, or that carries no text, is
 // skipped and parsing resumes with the next block — one bad cue never

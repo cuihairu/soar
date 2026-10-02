@@ -537,6 +537,10 @@ bool FFmpegBackend::open(const MediaSource& source) {
       });
     }
 
+        // The export pass (exportSubtitleText) reopens this source on its
+        // own later; remember what to reopen.
+        opened_source_ = source;
+
         ok = true;
       } else {
         // findStreamInfo or setupDecoders failed: release everything that
@@ -572,6 +576,10 @@ void FFmpegBackend::close() {
       decode_thread_.join();
       should_stop_decoding_ = false;
     }
+
+    // The export pass snapshots this under the same lock; a closed media
+    // has no source to reopen.
+    opened_source_ = MediaSource{};
 
     // Drop any audio-track switch that never reached the decode loop.
     {
@@ -1330,7 +1338,8 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
         std::string build_error;
         {
           std::lock_guard<std::mutex> lock(decode_mutex_);
-          new_decoder = buildSubtitleDecoder(id, build_error);
+          new_decoder = buildSubtitleDecoder(format_ctx_, id, "selectTrack",
+                                             build_error);
         }
         if (new_decoder == nullptr) {
           return fail(std::move(build_error));
@@ -1669,23 +1678,28 @@ bool FFmpegBackend::loadExternalSubtitle(const std::string& path, TrackId& out_i
       document = std::move(text);
       cues.clear();
     }
-  } else if (format == SubtitleFormat::SubRip || format == SubtitleFormat::WebVtt) {
+  } else if (format == SubtitleFormat::SubRip || format == SubtitleFormat::WebVtt ||
+             format == SubtitleFormat::Ttml) {
     // SRT/WebVTT sidecars are plain-text cue lists. When libass is available
     // they are resynthesized as a default-styled ASS document so the canvas
     // renders them with libass's glyphs and default style (batch 1c). The
     // plain-text copy stays in `cues` for the no-libass degrade and for
-    // frame-count bookkeeping in the pump.
+    // frame-count bookkeeping in the pump. A TTML/DFXP sidecar joins here:
+    // it parses to the same plain cues (styles/regions not applied, like
+    // every other text sidecar) and rides the same default-styled canvas.
     cues = parseSubtitleText(text);
     if (cues.empty()) {
       return fail("loadExternalSubtitle: no cues in '" + path + "',", /*emit_event=*/false);
     }
-    codec = format == SubtitleFormat::WebVtt ? "webvtt" : "subrip";
+    codec = format == SubtitleFormat::WebVtt   ? "webvtt"
+            : format == SubtitleFormat::Ttml   ? "ttml"
+                                               : "subrip";
     if (ass_renderer_.available()) {
       document = synthesizeAssDocument(cues, video_w, video_h);
     }
   } else {
     // Unknown format — keep the existing behaviour (should not happen after
-    // detectSubtitleFormat covers .srt/.vtt/.ass/.ssa).
+    // detectSubtitleFormat covers .srt/.vtt/.ass/.ssa/.ttml/.dfxp).
     return fail("loadExternalSubtitle: no cues in '" + path + "',", /*emit_event=*/false);
   }
 
@@ -1732,6 +1746,180 @@ bool FFmpegBackend::loadExternalSubtitle(const std::string& path, TrackId& out_i
 
   out_id = id;
   emit(Event{EventType::MediaInfoChanged});
+  return true;
+}
+
+// SubRip timestamp ("00:00:01,000") for the export pass. Negative input
+// clamps to zero; hours run past two digits for very long media.
+static std::string srtTimestamp(std::chrono::milliseconds ms) {
+  if (ms.count() < 0) {
+    ms = std::chrono::milliseconds::zero();
+  }
+  const auto h = std::chrono::duration_cast<std::chrono::hours>(ms);
+  const auto m = std::chrono::duration_cast<std::chrono::minutes>(ms - h);
+  const auto s = std::chrono::duration_cast<std::chrono::seconds>(ms - h - m);
+  const auto frac = ms - h - m - s;
+  return fmt::format("{:02d}:{:02d}:{:02d},{:03d}", h.count(), m.count(),
+                     s.count(), frac.count());
+}
+
+bool FFmpegBackend::exportSubtitleText(TrackId id, std::string& out_srt) {
+  out_srt.clear();
+
+  // Snapshot the reopen inputs under decode_mutex_ and run the whole demux
+  // pass outside every lock (loadExternalSubtitle's rule: file/network IO
+  // must not block the decode thread). The second input belongs to this
+  // call alone — openContext()/avio_cache_ stay untouched, so the decode
+  // thread's own input is unaffected.
+  std::string uri;
+  bool embedded_subtitle = false;
+  {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (!format_ctx_) {
+      return fail("exportSubtitleText: no media opened", /*emit_event=*/false);
+    }
+    embedded_subtitle =
+        id >= 0 && id < static_cast<TrackId>(format_ctx_->nb_streams) &&
+        format_ctx_->streams[id] && format_ctx_->streams[id]->codecpar &&
+        format_ctx_->streams[id]->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE;
+    uri = opened_source_.uri;
+  }
+  if (!embedded_subtitle) {
+    return fail("exportSubtitleText: not an embedded subtitle track",
+                /*emit_event=*/false);
+  }
+
+  // Reopen independently (plain avformat_open_input — the pass does not use
+  // the disk cache even when the playing input does) and locate the same
+  // stream index; container stream order is stable for a given input, so id
+  // maps 1:1.
+  AVFormatContext* ctx = nullptr;
+  int ret = avformat_open_input(&ctx, uri.c_str(), nullptr, nullptr);
+  if (ret < 0) {
+    return fail(
+        fmt::format("exportSubtitleText: cannot reopen '{}': {}", uri,
+                    avError(ret)),
+        /*emit_event=*/false);
+  }
+
+  std::string error;
+  AVCodecContext* decoder = nullptr;
+  AVPacket* packet = av_packet_alloc();
+  const AVStream* stream =
+      id < static_cast<TrackId>(ctx->nb_streams) ? ctx->streams[id] : nullptr;
+  bool ready = stream && stream->codecpar &&
+               stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE &&
+               stream->codecpar->codec_id != AV_CODEC_ID_NONE;
+  if (!ready && avformat_find_stream_info(ctx, nullptr) >= 0) {
+    // The header usually already names the codec (MKV carries codec id and
+    // private data in the segment header); this pass only probes when it
+    // does not.
+    stream = id < static_cast<TrackId>(ctx->nb_streams) ? ctx->streams[id]
+                                                        : nullptr;
+    ready = stream && stream->codecpar &&
+            stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE &&
+            stream->codecpar->codec_id != AV_CODEC_ID_NONE;
+  }
+  if (!ready) {
+    error = "exportSubtitleText: no subtitle stream at that id in the "
+            "reopened input";
+  } else if (packet != nullptr) {
+    decoder = buildSubtitleDecoder(ctx, id, "exportSubtitleText", error);
+  } else {
+    error = "exportSubtitleText: failed to allocate packet";
+  }
+
+  std::string srt;
+  int cue_count = 0;
+  if (decoder != nullptr) {
+    while ((ret = av_read_frame(ctx, packet)) >= 0) {
+      if (packet->stream_index != id) {
+        av_packet_unref(packet);
+        continue;
+      }
+      // Same decode interface as the decode loop (subtitle decoders do not
+      // go through avcodec_send_packet/receive_frame) and the same timing
+      // rules: display times are relative to the packet pts, and the ASS
+      // decoder leaves end_display_time at 0 so the cue length falls back
+      // to the packet duration.
+      AVSubtitle sub;
+      std::memset(&sub, 0, sizeof(sub));
+      int got_sub = 0;
+      ret = avcodec_decode_subtitle2(decoder, &sub, &got_sub, packet);
+      if (ret < 0 || got_sub == 0) {
+        av_packet_unref(packet);
+        continue;
+      }
+
+      const AVStream* st = ctx->streams[id];
+      const int64_t ts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
+      auto pts = fromAVTimestamp(ts, st->time_base.num, st->time_base.den);
+      auto duration = std::chrono::milliseconds(
+          sub.end_display_time > sub.start_display_time
+              ? sub.end_display_time - sub.start_display_time
+              : 0);
+      if (duration.count() <= 0 && packet->duration > 0 &&
+          packet->duration != AV_NOPTS_VALUE) {
+        duration = fromAVTimestamp(packet->duration, st->time_base.num,
+                                   st->time_base.den);
+      }
+      if (duration.count() <= 0) {
+        duration = kDefaultCueDuration;
+      }
+
+      // Text payloads only — processSubtitleFrame's render-state gates do
+      // not apply here (nothing is being drawn). Bitmap rects contribute
+      // nothing; a track that yields no text at all fails below.
+      std::string text;
+      for (unsigned i = 0; i < sub.num_rects; ++i) {
+        const AVSubtitleRect* rect = sub.rects[i];
+        if (rect == nullptr) {
+          continue;
+        }
+        std::string piece;
+        if (rect->type == SUBTITLE_TEXT && rect->text != nullptr) {
+          piece = rect->text;
+        } else if (rect->type == SUBTITLE_ASS && rect->ass != nullptr) {
+          piece = assDialogueText(rect->ass);
+        }
+        if (piece.empty()) {
+          continue;
+        }
+        if (!text.empty()) {
+          text += '\n';
+        }
+        text += piece;
+      }
+      avsubtitle_free(&sub);
+      if (text.empty()) {
+        av_packet_unref(packet);
+        continue;
+      }
+
+      ++cue_count;
+      srt += std::to_string(cue_count);
+      srt += '\n';
+      srt += srtTimestamp(pts);
+      srt += " --> ";
+      srt += srtTimestamp(pts + duration);
+      srt += '\n';
+      srt += text;
+      srt += "\n\n";
+      av_packet_unref(packet);
+    }
+  }
+
+  avcodec_free_context(&decoder);
+  av_packet_free(&packet);
+  avformat_close_input(&ctx);
+
+  if (cue_count == 0) {
+    return fail(error.empty()
+                    ? "exportSubtitleText: no text cues in the track"
+                    : error,
+                /*emit_event=*/false);
+  }
+  out_srt = std::move(srt);
   return true;
 }
 
@@ -3274,36 +3462,40 @@ void FFmpegBackend::applyPendingSubtitleTrack() {
   subtitle_decode_active_.store(true, std::memory_order_relaxed);
 }
 
-AVCodecContext* FFmpegBackend::buildSubtitleDecoder(TrackId id, std::string& error) {
-  // Caller holds decode_mutex_ (selectTrack); the caller reports the
-  // error, and on any failure here the old decoder stays put.
-  if (id < 0 || id >= static_cast<TrackId>(format_ctx_->nb_streams) ||
-      !format_ctx_->streams[id] || !format_ctx_->streams[id]->codecpar ||
-      format_ctx_->streams[id]->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
-    error = "selectTrack: unknown subtitle track id";
+AVCodecContext* FFmpegBackend::buildSubtitleDecoder(AVFormatContext* ctx,
+                                                    TrackId id,
+                                                    const char* what,
+                                                    std::string& error) {
+  // For the playing context the caller holds decode_mutex_ (selectTrack);
+  // for the export pass ctx is the call's own reopened input. The caller
+  // reports the error, and on any failure here the old decoder stays put.
+  if (id < 0 || id >= static_cast<TrackId>(ctx->nb_streams) ||
+      !ctx->streams[id] || !ctx->streams[id]->codecpar ||
+      ctx->streams[id]->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
+    error = fmt::format("{}: unknown subtitle track id", what);
     return nullptr;
   }
-  const AVCodecParameters* codecpar = format_ctx_->streams[id]->codecpar;
+  const AVCodecParameters* codecpar = ctx->streams[id]->codecpar;
   const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
   if (!codec) {
-    error = "selectTrack: subtitle codec not found";
+    error = fmt::format("{}: subtitle codec not found", what);
     return nullptr;
   }
   AVCodecContext* decoder = avcodec_alloc_context3(codec);
   if (!decoder) {
-    error = "selectTrack: failed to allocate subtitle decoder context";
+    error = fmt::format("{}: failed to allocate subtitle decoder context", what);
     return nullptr;
   }
   int ret = avcodec_parameters_to_context(decoder, codecpar);
   if (ret < 0) {
     avcodec_free_context(&decoder);
-    error = fmt::format("selectTrack: failed to copy subtitle params: {}", avError(ret));
+    error = fmt::format("{}: failed to copy subtitle params: {}", what, avError(ret));
     return nullptr;
   }
   ret = avcodec_open2(decoder, codec, nullptr);
   if (ret < 0) {
     avcodec_free_context(&decoder);
-    error = fmt::format("selectTrack: failed to open subtitle decoder: {}", avError(ret));
+    error = fmt::format("{}: failed to open subtitle decoder: {}", what, avError(ret));
     return nullptr;
   }
   return decoder;

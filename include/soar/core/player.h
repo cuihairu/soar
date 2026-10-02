@@ -38,6 +38,7 @@ public:
   bool selectTrack(TrackType type, TrackId id);
   bool disableSubtitles();
   bool loadExternalSubtitle(const std::string& path, TrackId& out_id);
+  bool exportSubtitleText(TrackId id, std::string& out_srt);
 
   // Style-faithful ASS rendering (see IBackend for the contract): null
   // when no backend is attached or the build has no libass.

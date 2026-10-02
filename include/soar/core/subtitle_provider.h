@@ -47,10 +47,11 @@ public:
 // Local sidecar files sitting next to the media. For /videos/movie.mkv it
 // offers movie.srt, movie.en.srt, movie.zh-Hans.vtt, movie.ass, ... — the
 // naming players have always agreed on. Text sidecars the core can use are
-// offered (.srt / .vtt / .webvtt / .ass / .ssa); bitmap subtitles (PGS,
-// VobSub) need a decoder and are skipped. An ASS/SSA sidecar loads as a
-// style-faithful document when the build has libass, and as plain-text
-// cues otherwise.
+// offered (.srt / .vtt / .webvtt / .ass / .ssa / .ttml / .dfxp); bitmap
+// subtitles (PGS, VobSub) need a decoder and are skipped. An ASS/SSA
+// sidecar loads as a style-faithful document when the build has libass,
+// and as plain-text cues otherwise; a TTML/DFXP sidecar loads as plain
+// cues (styles and regions not applied).
 //
 // Matching is case-insensitive, an untagged file (movie.srt) sorts ahead of
 // tagged ones, and the rest is ordered by name so the menu does not shuffle
@@ -90,13 +91,15 @@ struct HttpSubtitleConfig {
 //           X-API-Key: {api_key}            (header sent when configured)
 //           200 + text body, one candidate per line, four tab-separated
 //           fields: url, language, title, extension ("srt"/"vtt"/"ass"/
-//           "ssa"). Lines starting with '#' are comments; an empty body
+//           "ssa"/"ttml"/"dfxp"). Lines starting with '#' are comments;
+//           an empty body
 //           means no candidates. Only http:// candidate urls are offered
 //           (this client speaks no TLS, like HttpCache — see
 //           http_cache.h).
 //   fetch   GET {candidate url}; 200 + a body that detectSubtitleFormat()
-//           recognizes (SubRip, WebVTT or ASS) yields the text, anything
-//           else (non-2xx, wrong bytes, unreachable) yields false.
+//           recognizes (SubRip, WebVTT, ASS or TTML) yields the text,
+//           anything else (non-2xx, wrong bytes, unreachable) yields
+//           false.
 //
 // The hash is the widely used sum-of-64-bit-words recipe over the first
 // and last 64 KiB plus the file size (see mediaHashHex), so a service can
@@ -127,8 +130,8 @@ class ExternalSubtitleProvider : public SubtitleProvider {
 // Persists fetched subtitle text under <dir>/subtitles/ (or the system
 // temp directory when `dir` is empty), named after a sanitized copy of the
 // candidate title — path separators and other hostile characters become
-// underscores — with a SubRip/WebVTT extension appended when the title
-// carries none. Returns the written path, or "" when the directory cannot
+// underscores — with an extension of the candidate's format appended when
+// the title carries none (.srt/.vtt/.ass/.ttml). Returns the written path, or "" when the directory cannot
 // be created or the file cannot be written. A returned path is loadable by
 // Player::loadExternalSubtitle, which is how a download joins the sidecar
 // pipeline.
@@ -211,7 +214,10 @@ class SubtitleTranslator {
   void configure(SubtitleTranslateConfig config);
 
   // Translates `subtitle_text` (SubRip or WebVTT, auto-detected) into
-  // `target_language`. On success writes a subtitle file in the same
+  // `target_language`. Anything else — an ASS/SSA document, a TTML file,
+  // text with no recognized marker — is rejected up front: it would parse
+  // into cues but serialize back into the wrong container. On success
+  // writes a subtitle file in the same
   // format as the input — same cue count, same timings — to `*out_text`
   // and returns true. On failure returns false, leaves `*out_text`
   // untouched and puts a short reason into `*err` (either pointer may be

@@ -12,6 +12,7 @@ option(SOAR_ENABLE_SDL2 "Enable SDL2 window/event loop in the app (if available)
 option(SOAR_ENABLE_FFMPEG "Enable FFmpeg backend (if available)" ON)
 option(SOAR_ENABLE_IMGUI "Enable the Dear ImGui player UI overlay (fetched at configure time)" ON)
 option(SOAR_ENABLE_LIBASS "Enable libass ASS/SSA subtitle rendering (if available)" ON)
+option(SOAR_ENABLE_TORRENT_ENCRYPTION "Enable BitTorrent protocol encryption (MSE) in the P2P download kernel" ON)
 
 add_library(soar_core)
 add_library(soar::core ALIAS soar_core)
@@ -112,7 +113,20 @@ endif()
 # option(), and a normal variable shadows the cache entry in this scope.
 set(BUILD_SHARED_LIBS OFF)
 set(static_runtime OFF)
-set(encryption OFF)  # bundled SHA-1/SHA-256; drops OpenSSL (VENDOR.md)
+# BitTorrent protocol encryption (MSE, docs/mvp.md §5 P4b-5). In 2.0.15 the
+# handshake is self-contained — DH over boost::multiprecision plus the
+# bundled RC4/SHA-1 (src/pe_crypto.cpp) — so switching it on costs one extra
+# TU and *no* new external dependency; the OpenSSL lookup further down in
+# the vendored CMakeLists is independent of this flag and already runs
+# either way. With it off, peers that require encryption (pe_forced on their
+# side) drop the connection outright, so the default is on; the option is
+# the escape hatch if a platform ever misbehaves.
+if(SOAR_ENABLE_TORRENT_ENCRYPTION)
+  set(encryption ON)
+else()
+  set(encryption OFF)
+  message(STATUS "Torrent protocol encryption disabled; require-encryption peers stay unreachable")
+endif()
 set(gnutls OFF)
 set(dht ON)          # upstream defaults, spelled out for review
 set(streaming ON)    # piece deadlines — required for stream-on-demand

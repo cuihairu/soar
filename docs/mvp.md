@@ -30,7 +30,7 @@
 - 读取 `MediaInfo`：时长、是否可 seek、轨道列表
 - 选择音轨/字幕轨
 - 关闭字幕
-- 加载外部字幕（sidecar）：`loadExternalSubtitle` 把媒体同目录的 `.srt`/`.vtt`/`.ass`/`.ssa` 挂成一条字幕轨并可选中（ASS/SSA 文档的渲染口径见 §6 批 1b），字幕菜单与 Subtitle Settings 浮层列出候选（见 §6）
+- 加载外部字幕（sidecar）：`loadExternalSubtitle` 把媒体同目录的 `.srt`/`.vtt`/`.ass`/`.ssa`/`.ttml`/`.dfxp` 挂成一条字幕轨并可选中（ASS/SSA 文档的渲染口径见 §6 批 1b），字幕菜单与 Subtitle Settings 浮层列出候选（见 §6）
 
 ### 1.4 事件与指标（可观测）
 

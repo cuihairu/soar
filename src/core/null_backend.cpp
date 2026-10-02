@@ -188,6 +188,15 @@ public:
     return fail("loadExternalSubtitle: external subtitles need the FFmpeg backend");
   }
 
+  // Same story: no container streams to demux a subtitle track out of.
+  bool exportSubtitleText(TrackId id, std::string& out_srt) override {
+    out_srt.clear();
+    if (!opened_) {
+      return fail("exportSubtitleText: no media opened");
+    }
+    return fail("exportSubtitleText: embedded-track export needs the FFmpeg backend");
+  }
+
   // The null backend has no decode thread, so it arms/disarms and validates
   // the loop but never wraps: its clock only moves when a test calls seek().
   // The FFmpeg backend owns the actual replay behavior (see

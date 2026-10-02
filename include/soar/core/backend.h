@@ -143,6 +143,22 @@ public:
   // path twice replaces the earlier copy in place and returns its id.
   virtual bool loadExternalSubtitle(const std::string& path, TrackId& out_id) = 0;
 
+  // Demuxes an embedded subtitle stream out to plain SubRip text (docs/mvp.md
+  // §6, the embedded-track translate slice — "内嵌轨先导出"). id is a
+  // container stream; the external tracks that loadExternalSubtitle creates
+  // are rejected (their text already sits in a file). The source is reopened
+  // independently — the playing decode path is never touched — so the call is
+  // a synchronous second demux pass: quick for local and loopback sources,
+  // as long as the pass itself for a network one. Only text payloads come
+  // out (Text/ASS rects, override blocks stripped); bitmap subtitles produce
+  // no cue and fail the call.
+  //
+  // False — leaving out_srt empty — when no media is open, the id is not an
+  // embedded subtitle stream, no text cue survives the pass, or the source
+  // cannot be reopened. Failures land in lastError() without an Error event
+  // (same contract as loadExternalSubtitle).
+  virtual bool exportSubtitleText(TrackId id, std::string& out_srt) = 0;
+
   // A-B loop (v0.2): replay the [a, b) window forever while playing. The
   // wrap happens on the decode thread (a seek back to `a` once the play
   // clock reaches `b`, or at end-of-stream when `b` anchors the media

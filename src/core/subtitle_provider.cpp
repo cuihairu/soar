@@ -393,6 +393,8 @@ std::vector<SubtitleCandidate> parseCandidateLines(const std::string& body) {
       format = SubtitleFormat::WebVtt;
     } else if (ext == "ass" || ext == "ssa") {
       format = SubtitleFormat::Ass;
+    } else if (ext == "ttml" || ext == "dfxp") {
+      format = SubtitleFormat::Ttml;
     } else {
       continue;  // only formats the core parser reads are offered
     }
@@ -635,8 +637,9 @@ std::string storeExternalSubtitle(const std::string& dir,
   }
   const size_t dot = name.rfind('.');
   if (dot == std::string::npos || dot == 0) {
-    name += candidate.format == SubtitleFormat::WebVtt ? ".vtt"
-            : candidate.format == SubtitleFormat::Ass  ? ".ass"
+    name += candidate.format == SubtitleFormat::WebVtt  ? ".vtt"
+            : candidate.format == SubtitleFormat::Ass   ? ".ass"
+            : candidate.format == SubtitleFormat::Ttml  ? ".ttml"
                                                        : ".srt";
   }
 
@@ -1090,7 +1093,11 @@ bool SubtitleTranslator::translate(const std::string& subtitle_text,
     return false;
   }
   const SubtitleFormat format = detectSubtitleFormat(subtitle_text);
-  if (format == SubtitleFormat::Unknown) {
+  // Only SubRip/WebVTT are translator input: the wire format is numbered
+  // plain-text lines and serializeSubtitle renders back SubRip/WebVTT. An
+  // ASS/SSA document or a TTML file would parse into cues but serialize
+  // into a container that is not its own — a row that can only mangle.
+  if (format != SubtitleFormat::SubRip && format != SubtitleFormat::WebVtt) {
     if (err != nullptr) {
       *err = "translate: input is not SubRip or WebVTT text";
     }

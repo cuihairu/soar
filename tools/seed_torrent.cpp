@@ -6,10 +6,16 @@
 //
 // Usage:
 //   seed_torrent --file=<path> --out=<file.torrent> [--port=6881] [--rate-kb=N]
+//     [--require-encryption]
 // --file takes a regular file or a directory (directory => multi-file
 // torrent rooted at the directory's base name).
 // --rate-kb caps the upload rate (bytes/s = N*1024), simulating a slow peer
 // so the stream-while-downloading behavior is observable at all.
+// --require-encryption sets the torrent's incoming *and* outgoing policy to
+// pe_forced: the seeder then closes any plaintext peer, exactly like the
+// public swarms that refuse unencrypted connections. That makes it the
+// walkthrough's negative control for the MSE support (docs/mvp.md §5 P4b-5):
+// a build without protocol encryption cannot pull a single byte from it.
 
 #include <libtorrent/add_torrent_params.hpp>
 #include <libtorrent/bencode.hpp>
@@ -19,6 +25,7 @@
 #include <libtorrent/load_torrent.hpp>
 #include <libtorrent/session.hpp>
 #include <libtorrent/session_params.hpp>
+#include <libtorrent/settings_pack.hpp>
 #include <libtorrent/torrent_flags.hpp>
 #include <libtorrent/torrent_handle.hpp>
 #include <libtorrent/torrent_info.hpp>
@@ -35,6 +42,7 @@ int main(int argc, char** argv) {
   std::string file, out;
   int port = 6881;
   int rate_kb = 0;  // 0 = unlimited
+  bool require_encryption = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a(argv[i]);
     if (a.rfind("--file=", 0) == 0) {
@@ -45,13 +53,17 @@ int main(int argc, char** argv) {
       port = std::atoi(a.c_str() + 7);
     } else if (a.rfind("--rate-kb=", 0) == 0) {
       rate_kb = std::atoi(a.c_str() + 10);
+    } else if (a == "--require-encryption") {
+      require_encryption = true;
     } else {
       std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
       return 2;
     }
   }
   if (file.empty() || out.empty()) {
-    std::fprintf(stderr, "usage: seed_torrent --file=<path> --out=<file.torrent> [--port=6881]\n");
+    std::fprintf(stderr,
+                 "usage: seed_torrent --file=<path> --out=<file.torrent> "
+                 "[--port=6881] [--rate-kb=N] [--require-encryption]\n");
     return 2;
   }
 
@@ -97,6 +109,25 @@ int main(int argc, char** argv) {
   if (rate_kb > 0) {
     sp.set_int(lt::settings_pack::upload_rate_limit, rate_kb * 1024);
   }
+#ifdef TORRENT_DISABLE_ENCRYPTION
+  if (require_encryption) {
+    // Refusing the flag beats silently seeding in plaintext while claiming
+    // otherwise: the walkthrough's negative control would prove nothing.
+    std::fprintf(stderr,
+                 "seed_torrent: built without protocol encryption "
+                 "(SOAR_ENABLE_TORRENT_ENCRYPTION=OFF); --require-encryption "
+                 "cannot be honored\n");
+    return 2;
+  }
+#else
+  if (require_encryption) {
+    // pe_forced both ways: incoming plaintext peers are closed (the
+    // public-swarm behavior being reproduced) and the encrypted handshake is
+    // never retried in the clear.
+    sp.set_int(lt::settings_pack::in_enc_policy, lt::settings_pack::pe_forced);
+    sp.set_int(lt::settings_pack::out_enc_policy, lt::settings_pack::pe_forced);
+  }
+#endif
   lt::session_params sparams;
   sparams.settings = std::move(sp);
   lt::session session(sparams);
@@ -118,6 +149,12 @@ int main(int argc, char** argv) {
                lt::aux::to_hex(th.info_hashes().v1).c_str());
   std::fprintf(stderr, "seed_torrent: seeding on port %d (payload dir: %s)\n", port,
                atp.save_path.c_str());
+#ifdef TORRENT_DISABLE_ENCRYPTION
+  std::fprintf(stderr, "seed_torrent: protocol encryption not compiled in\n");
+#else
+  std::fprintf(stderr, "seed_torrent: protocol encryption %s\n",
+               require_encryption ? "required (pe_forced)" : "preferred");
+#endif
 
   // Loop forever; upload accounting goes to stderr as a heartbeat.
   long long last_uploaded = 0;

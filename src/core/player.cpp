@@ -82,6 +82,10 @@ bool Player::loadExternalSubtitle(const std::string& path, TrackId& out_id) {
   return backend_ ? backend_->loadExternalSubtitle(path, out_id) : false;
 }
 
+bool Player::exportSubtitleText(TrackId id, std::string& out_srt) {
+  return backend_ ? backend_->exportSubtitleText(id, out_srt) : false;
+}
+
 AssRenderer* Player::assRenderer() {
   return backend_ ? backend_->assRenderer() : nullptr;
 }

@@ -91,6 +91,7 @@ public:
   bool selectTrack(TrackType type, TrackId id) override;
   bool disableSubtitles() override;
   bool loadExternalSubtitle(const std::string& path, TrackId& out_id) override;
+  bool exportSubtitleText(TrackId id, std::string& out_srt) override;
 
   // Style-faithful ASS rendering (docs/mvp.md §6): non-null when the build
   // links libass; the embedded ASS/SSA track selected at open feeds it and
@@ -233,9 +234,13 @@ private:
   bool subtitleTrackPending();
   void applyPendingSubtitleTrack();
   // Builds a decoder for an arbitrary embedded subtitle stream (the
-  // non-default selection selectTrack() supports). Caller holds
-  // decode_mutex_ and reports the error.
-  AVCodecContext* buildSubtitleDecoder(TrackId id, std::string& error);
+  // non-default selection selectTrack() supports, and the export pass in
+  // exportSubtitleText on a freshly reopened input). Caller holds
+  // decode_mutex_ when ctx is the playing context — the export pass calls
+  // it with its own context and lock — and reports the error with `what`
+  // as the message prefix.
+  AVCodecContext* buildSubtitleDecoder(AVFormatContext* ctx, TrackId id,
+                                       const char* what, std::string& error);
 
   // After a track switch joined a leftover decode thread, playback is not
   // running anymore even if the caller's state snapshot raced ahead of
@@ -313,6 +318,10 @@ private:
   AVCodecContext* video_decoder_{nullptr};
   AVCodecContext* audio_decoder_{nullptr};
   AVCodecContext* subtitle_decoder_{nullptr};
+  // The source behind format_ctx_, kept so exportSubtitleText can reopen
+  // the input for its independent demux pass. Guarded by decode_mutex_
+  // (written once at the end of a successful open(), cleared in close()).
+  MediaSource opened_source_;
 
   // Embedded ASS/SSA style renderer (docs/mvp.md §6). Always constructed:
   // without libass it is the inert stub (available() false). One renderer

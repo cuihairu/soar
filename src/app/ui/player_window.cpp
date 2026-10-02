@@ -274,6 +274,22 @@ struct SubtitleFonts {
   ImFont* size_48 = nullptr;
 };
 
+// Whether an embedded subtitle track's codec carries text the exporter can
+// demux out (decoder names, exactly as mediaInfo() spells them via
+// codecNameFromCodecId). Bitmap subtitles (pgssub/dvdsub/dvbsub) and exotic
+// codecs get no [translate] row — exportSubtitleText would only ever fail.
+static bool embeddedTextSubtitleCodec(const std::string& codec) {
+  static const char* const kTextCodecs[] = {"subrip", "srt",  "ass",
+                                            "ssa",    "movtext", "webvtt",
+                                            "text"};
+  for (const char* name : kTextCodecs) {
+    if (codec == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static SubtitleFonts loadSubtitleFonts() {
   SubtitleFonts fonts;
   ImGuiIO& io = ImGui::GetIO();
@@ -753,25 +769,43 @@ class PlayerHud {
   // Loaded external tracks a "[translate]" row can work on (docs/mvp.md §6
   // "字幕文本翻译", the window wiring): the window knows their source paths
   // because it loaded them, each has not been translated this session, and
-  // an endpoint is configured. Embedded streams never appear here — their
-  // text has no file to read, and demuxing one out is its own slice.
+  // an endpoint is configured. Embedded text streams follow as the
+  // "内嵌轨先导出" slice: their row carries no path, and picking one demuxes
+  // the stream out to plain SubRip first (exportSubtitleText). Bitmap and
+  // unknown-codec streams get no row that can only fail. A subtitle track
+  // whose title is not a loaded external path is embedded by construction —
+  // loadExternalSubtitle titles every external track after its file and the
+  // window records exactly those titles.
   std::vector<std::pair<const TrackInfo*, const std::string*>> translatableTracks(
       const MediaInfo& info) const {
     std::vector<std::pair<const TrackInfo*, const std::string*>> out;
     if (!translate_ready_) {
       return out;
     }
+    // External rows first, embedded rows after: the rows that predate the
+    // embedded slice keep their exact popup positions (the window's
+    // coordinate-pinned drivers probe them), and the section reads in the
+    // order the feature arrived.
+    std::vector<const TrackInfo*> embedded;
     for (const auto& t : info.tracks) {
       if (t.type != TrackType::Subtitle) {
         continue;
       }
       const auto path = loaded_external_paths_.find(t.title);
       if (path == loaded_external_paths_.end()) {
+        if (embeddedTextSubtitleCodec(t.codec) &&
+            std::find(translated_ids_.begin(), translated_ids_.end(),
+                      t.id) == translated_ids_.end()) {
+          embedded.push_back(&t);
+        }
         continue;
       }
-      // ASS/SSA documents are not translator input (the batch path speaks
-      // numbered SubRip/WebVTT cues), so no row that can only fail.
-      if (subtitleFormatFromPath(path->second) == SubtitleFormat::Ass) {
+      // ASS/SSA documents and TTML/DFXP files are not translator input
+      // (the batch path speaks numbered SubRip/WebVTT cues; the translator
+      // rejects both up front), so no row that can only fail.
+      const SubtitleFormat source_format = subtitleFormatFromPath(path->second);
+      if (source_format == SubtitleFormat::Ass ||
+          source_format == SubtitleFormat::Ttml) {
         continue;
       }
       if (std::find(translated_titles_.begin(), translated_titles_.end(),
@@ -779,6 +813,9 @@ class PlayerHud {
         continue;
       }
       out.emplace_back(&t, &path->second);
+    }
+    for (const TrackInfo* t : embedded) {
+      out.emplace_back(t, nullptr);
     }
     return out;
   }
@@ -806,10 +843,17 @@ class PlayerHud {
         });
       if (!loaded) pending.push_back(&c);
     }
-    if (pending.empty() && remote.empty()) {
+    if (pending.empty() && remote.empty() && translatable.empty()) {
       return;
     }
-    ImGui::Separator();
+    // The leading separator belongs to the candidate lists (the rule the
+    // menu predates [translate] with): it printed whenever either list had
+    // anything to show, even when every remote row then filtered out. A
+    // translate-only popup opens without it, keeping the probed positions
+    // of every row above unchanged.
+    if (!pending.empty() || !remote.empty()) {
+      ImGui::Separator();
+    }
     for (const auto* c : pending) {
       std::string item = c->title;
       if (!c->language.empty()) {
@@ -855,17 +899,33 @@ class PlayerHud {
     }
 
     // The [translate] section: one row per loaded external track that has
-    // not been translated yet. Picking one sends the track's text through
-    // SubtitleTranslator and loads the result as a further external track.
+    // not been translated yet, then one per embedded text track. Picking an
+    // external row sends the track's file through SubtitleTranslator;
+    // picking an embedded row demuxes the stream out first ("内嵌轨先导出")
+    // and translates that. Both load the result as a further external track.
     if (!translatable.empty()) {
       ImGui::Separator();
     }
     for (const auto& [track, path] : translatable) {
-      std::string item = "[translate] " + track->title + " -> " + target_language_;
+      std::string item = "[translate] " + track->title;
+      if (path == nullptr && !track->language.empty() &&
+          track->language != "und") {
+        item += " (" + track->language + ")";
+      }
+      item += " -> " + target_language_;
+      if (path == nullptr) {
+        // Container titles repeat ("Subtitles" twice is normal); the hidden
+        // suffix keeps ImGui's ids distinct without changing the label.
+        item += "##tr" + std::to_string(track->id);
+      }
       if (!ImGui::Selectable(item.c_str())) {
         continue;
       }
-      translateAndLoad(track->title, *path, now);
+      if (path != nullptr) {
+        translateAndLoad(track->title, *path, now);
+      } else {
+        exportTranslateAndLoad(*track, now);
+      }
     }
   }
 
@@ -885,10 +945,46 @@ class PlayerHud {
     }
     std::string text((std::istreambuf_iterator<char>(in)),
                      std::istreambuf_iterator<char>());
+    std::string lower;
+    lower.resize(path.size());
+    for (size_t i = 0; i < path.size(); ++i) {
+      lower[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(path[i])));
+    }
+    const SubtitleFormat format =
+        lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".vtt") == 0
+            ? SubtitleFormat::WebVtt
+            : SubtitleFormat::SubRip;
+    if (translateTextAndLoad(title, text, format, now)) {
+      translated_titles_.push_back(title);
+    }
+  }
+
+  // The embedded-track variant (docs/mvp.md §6 "内嵌轨先导出"): demux the
+  // stream out to plain SubRip first, then run the same translate-and-load
+  // tail. The export pass reopens the source independently, so the playing
+  // decode path is never touched; it is synchronous (quick for local and
+  // loopback sources), which is why the pick accepts the pause.
+  void exportTranslateAndLoad(const TrackInfo& track, milliseconds now) {
+    std::string srt;
+    if (!player_.exportSubtitleText(track.id, srt) || srt.empty()) {
+      st_.toast.show("Translation failed", now);
+      return;
+    }
+    if (translateTextAndLoad(track.title, srt, SubtitleFormat::SubRip, now)) {
+      translated_ids_.push_back(track.id);
+    }
+  }
+
+  // Shared tail of both paths: batch-translate, store under the system
+  // temp, load and select. Records the stored path so the new track itself
+  // becomes translatable-external, and reports the result — false means a
+  // toast was shown and nothing changed.
+  bool translateTextAndLoad(const std::string& title, const std::string& text,
+                            SubtitleFormat format, milliseconds now) {
     std::string out;
     if (!translator_.translate(text, target_language_, &out, nullptr)) {
       st_.toast.show("Translation failed", now);
-      return;
+      return false;
     }
     SubtitleCandidate c;
     // The stored name drops the source extension (storeExternalSubtitle
@@ -901,24 +997,17 @@ class PlayerHud {
     }
     c.title = stem + " (" + target_language_ + ")";
     c.language = target_language_;
-    std::string lower;
-    lower.resize(path.size());
-    for (size_t i = 0; i < path.size(); ++i) {
-      lower[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(path[i])));
-    }
-    c.format = lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".vtt") == 0
-                   ? SubtitleFormat::WebVtt
-                   : SubtitleFormat::SubRip;
+    c.format = format;
     const std::string stored = storeExternalSubtitle({}, c, out);
     TrackId id = -1;
     if (stored.empty() || !player_.loadExternalSubtitle(stored, id) ||
         !player_.selectTrack(TrackType::Subtitle, id)) {
       st_.toast.show("Translation failed", now);
-      return;
+      return false;
     }
-    translated_titles_.push_back(title);
     loaded_external_paths_[externalTrackTitle(stored)] = stored;
     st_.toast.show("Translated " + title, now);
+    return true;
   }
 
   // The title a loaded external track carries in the track list: the
@@ -1908,10 +1997,13 @@ class PlayerHud {
   // source path of every external track this window loaded (keyed by the
   // track title the menu shows), so a [translate] row can read the text
   // without the track list having to carry paths; translated_titles_
-  // keeps the menu from re-offering a track it already translated.
+  // keeps the menu from re-offering an external track it already
+  // translated, and translated_ids_ does the same for embedded tracks
+  // (their container titles can repeat, so they key by track id).
   SubtitleTranslator translator_;
   std::map<std::string, std::string> loaded_external_paths_;
   std::vector<std::string> translated_titles_;
+  std::vector<TrackId> translated_ids_;
   std::string target_language_ = "English";
   bool translate_ready_ = false;
   State st_;
