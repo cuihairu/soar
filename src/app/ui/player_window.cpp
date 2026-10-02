@@ -280,8 +280,8 @@ struct SubtitleFonts {
 // codecs get no [translate] row — exportSubtitleText would only ever fail.
 static bool embeddedTextSubtitleCodec(const std::string& codec) {
   static const char* const kTextCodecs[] = {"subrip", "srt",  "ass",
-                                            "ssa",    "movtext", "webvtt",
-                                            "text"};
+                                            "ssa",    "movtext", "mov_text",
+                                            "webvtt", "text"};
   for (const char* name : kTextCodecs) {
     if (codec == name) {
       return true;
