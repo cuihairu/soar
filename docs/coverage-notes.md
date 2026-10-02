@@ -71,6 +71,8 @@ P2 自适应协议批（77ae353/b6a2541）是纯测试批，零产品改动，�
 
 门禁随实测水位同步上抬：测试合入、数字上涨后，把阈值抬到“实测值下方留出抖动余量”的位置，让回退被 CI 自动拦截。
 
+TTML 测试收编批（纯测试零产品改动，af55579 落下的 TTML/DFXP 解析面欠账）：tests/test_subtitle.cpp +286 行、8 个 TEST_CASE / 102 断言——探测（`<tt` 根元素、`<?xml` 声明跳过、命名空间前缀、ASS/`-->` 优先级）、时间戳四形态（HH:MM:SS/MM:SS/SS ± 分数、逗号点双分隔、补零截断）、帧刻度拒绝（`f`/`t` 后缀与四段）、五预定义实体 + 数字参考全套（含坏数字/超范围/代理对原样回退）、嵌套标记/`<br/>`/注释/截断容错/空白折叠、属性词边界（`send=` 不冒充 `end=`）、`begin/end/dur` 三级回退与非推进 end 的默认时长回退、坏 `<p>` 跳过不拖垮全文件。本地 cov3 完整跑（8/8 绿）+ 系统 gcovr，**CI 同口径**（`--filter src/include --exclude '^src/p2p/'`，分母与前批完全一致故直接可比）：行 87.9% → **91.8%（5284/5754，+228 行）**、分支 76.5% → **81.3%（5426/6678，+319 支）**。分文件主战果：`subtitle_text.cpp` 209/454 → **442/454（97.4%）**，af55579 的 TTML 连续缺失块基本收平（余 12 行）。门禁 95.0/84.6 维持不降；距门禁还差 182 行 / 224 支，余缺归下批测试收编（`exportSubtitleText` 媒体电池、`main.cpp` torrent 失败腿、`player_window` 嵌入轨注入与 pending UI、null_backend/player/subtitle_provider 小尾）。本机并行在途的 `src/core/audio_extract.cpp`（origin/main 上不存在）读数时按 `--exclude '^src/core/audio_extract'` 排除，否则分母 +150 行、含它读数 89.5/79.0——gcovr 的 `--exclude` 是从头匹配（CI 的 `^src/p2p/` 同为锚定式），裸词 `audio_extract` 不命中。
+
 ## 3. 未覆盖项定性（如实记录，不写假覆盖）
 
 ### 3.1 结构性不可达（由语言/库实现决定）

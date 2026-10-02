@@ -666,6 +666,299 @@ TEST_CASE("parse_bom_only_file_is_empty") {
 }
 
 // =========================================================================
+// parseSubtitleText — TTML/DFXP
+// =========================================================================
+
+namespace {
+
+// One minimal TTML paragraph, parsed with the format pinned to Ttml so
+// these cases exercise the reader itself rather than detection.
+std::vector<SubtitleCue> parseTtmlParagraph(const std::string& inner) {
+  return parseSubtitleText("<p begin=\"00:00:01\" end=\"00:00:02\">" + inner +
+                               "</p>",
+                           SubtitleFormat::Ttml);
+}
+
+} // namespace
+
+TEST_CASE("ttml_document_cues_basic") {
+  const std::string doc =
+      "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+      "<tt xmlns=\"http://www.w3.org/ns/ttml\" xml:lang=\"en\">\n"
+      "  <body>\n"
+      "    <div>\n"
+      "      <p begin=\"00:00:01.000\" end=\"00:00:03.500\">Hello there.</p>\n"
+      "      <p begin=\"00:00:04,000\" end=\"00:00:06,250\">\n"
+      "        Second cue,\n"
+      "        wrapped across lines.\n"
+      "      </p>\n"
+      "    </div>\n"
+      "  </body>\n"
+      "</tt>\n";
+  // Detection and parsing in one go: no explicit format needed.
+  CHECK(detectSubtitleFormat(doc) == SubtitleFormat::Ttml);
+  const std::vector<SubtitleCue> cues = parseSubtitleText(doc);
+  REQUIRE(cues.size() == 2);
+  CHECK(cues[0].begin == 1000ms);
+  CHECK(cues[0].end == 3500ms);
+  CHECK(cues[0].text == "Hello there.");
+  CHECK(cues[1].begin == 4000ms);
+  CHECK(cues[1].end == 6250ms);
+  CHECK(cues[1].text == "Second cue, wrapped across lines.");
+}
+
+TEST_CASE("detect_ttml_documents") {
+  SUBCASE("the tt root element decides, with or without a prefix") {
+    CHECK(detectSubtitleFormat("<tt xmlns=\"http://www.w3.org/ns/ttml\">\n") ==
+          SubtitleFormat::Ttml);
+    CHECK(detectSubtitleFormat("<tt:tt xmlns:tt=\"urn:x\">\n") ==
+          SubtitleFormat::Ttml);
+    CHECK(detectSubtitleFormat("<tt>") == SubtitleFormat::Ttml);
+  }
+  SUBCASE("the xml declaration is skipped, the root is not") {
+    CHECK(detectSubtitleFormat("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                               "<tt:tt xmlns:tt=\"urn:x\">\n") ==
+          SubtitleFormat::Ttml);
+    CHECK(detectSubtitleFormat("<?xml-stylesheet href=\"a.xsl\"?>\n<tt>\n") ==
+          SubtitleFormat::Ttml);
+  }
+  SUBCASE("leading blank lines and indentation do not hide the root") {
+    CHECK(detectSubtitleFormat("\n \n\t<tt:tt xmlns:tt=\"urn:x\">\n") ==
+          SubtitleFormat::Ttml);
+  }
+  SUBCASE("the ttml and dfxp extensions decide by path") {
+    CHECK(soar::subtitleFormatFromPath("movie.ttml") == SubtitleFormat::Ttml);
+    CHECK(soar::subtitleFormatFromPath("MOVIE.DFXP") == SubtitleFormat::Ttml);
+  }
+  SUBCASE("near misses stay unknown") {
+    // The root must be exactly "<tt": a longer element name that merely
+    // starts with those letters is not the contract, and neither is a
+    // self-closing <tt/> with no document inside.
+    CHECK(detectSubtitleFormat("<ttml:tt xmlns:ttml=\"urn:y\">\n") ==
+          SubtitleFormat::Unknown);
+    CHECK(detectSubtitleFormat("<ttl>nope</ttl>\n") == SubtitleFormat::Unknown);
+    CHECK(detectSubtitleFormat("<tt/>") == SubtitleFormat::Unknown);
+    CHECK(detectSubtitleFormat("<?xml version=\"1.0\"?>\njust prose\n") ==
+          SubtitleFormat::Unknown);
+  }
+  SUBCASE("an earlier ass marker or timed block still wins") {
+    // TTML is checked last: an XML-looking file that carries an ASS event
+    // line or a parseable SubRip arrow resolves the way it always did.
+    CHECK(detectSubtitleFormat(
+              "<xml>\nDialogue: 0,0:00:01.00,0:00:02.00,D,,0,0,0,,hi\n") ==
+          SubtitleFormat::Ass);
+    CHECK(detectSubtitleFormat("<!-- 1\n00:00:01,000 --> 00:00:02,000 -->\n<tt>\n") ==
+          SubtitleFormat::SubRip);
+  }
+}
+
+TEST_CASE("ttml_timestamp_forms") {
+  const auto one = [](const std::string& begin, const std::string& end) {
+    return parseSubtitleText(
+        "<p begin=\"" + begin + "\" end=\"" + end + "\">x</p>",
+        SubtitleFormat::Ttml);
+  };
+  SUBCASE("hour minute second with a dot or comma fraction") {
+    const std::vector<SubtitleCue> cues = one("00:00:01.500", "00:00:02,250");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].begin == 1500ms);
+    CHECK(cues[0].end == 2250ms);
+  }
+  SUBCASE("minute only and seconds only") {
+    // Each field form on its own: MM:SS.mmm paired with a later MM:SS...
+    const std::vector<SubtitleCue> cues = one("01:02.5", "01:03");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].begin == 62500ms);
+    CHECK(cues[0].end == 63000ms);
+    // ...and the bare seconds form, again with a non-reversing range
+    // (an end at or before begin would take the default-duration path).
+    const std::vector<SubtitleCue> bare = one("30.25", "45.5");
+    REQUIRE(bare.size() == 1);
+    CHECK(bare[0].begin == 30250ms);
+    CHECK(bare[0].end == 45500ms);
+  }
+  SUBCASE("no fraction at all, plus surrounding whitespace") {
+    const std::vector<SubtitleCue> cues = one(" 00:00:02 ", "00:05");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].begin == 2000ms);
+    CHECK(cues[0].end == 5000ms);
+  }
+  SUBCASE("fractions are padded and truncated, never rounded") {
+    const std::vector<SubtitleCue> a = one("1.2", "2");
+    REQUIRE(a.size() == 1);
+    CHECK(a[0].begin == 1200ms);
+    const std::vector<SubtitleCue> b = one("1.2345", "2");
+    REQUIRE(b.size() == 1);
+    CHECK(b[0].begin == 1234ms);
+  }
+  SUBCASE("frame and tick offsets, and other junk, kill the cue") {
+    // Converting frames or ticks needs frameRate/tickRate from the <tt>
+    // element; rather than guess and shift the cue, the reader drops it.
+    CHECK(one("1.5f", "2").empty());
+    CHECK(one("10t", "2").empty());
+    CHECK(one("00:00:00:10", "2").empty()); // four fields is not an offset time
+    CHECK(one("1.", "2").empty());          // an empty fraction
+    CHECK(one("1.2a", "2").empty());        // junk in the fraction
+    CHECK(one("", "2").empty());            // no timestamp at all
+  }
+}
+
+TEST_CASE("ttml_character_references") {
+  SUBCASE("the five predefined references") {
+    const std::vector<SubtitleCue> cues =
+        parseTtmlParagraph("a&lt;b&gt;c&amp;d&quot;e&apos;f");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "a<b>c&d\"e'f");
+  }
+  SUBCASE("decimal and hexadecimal numeric references") {
+    const std::vector<SubtitleCue> cues =
+        parseTtmlParagraph("&#60;&#x3C;&#X3c;&#x4e2d;&#128512;");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "<<<\xE4\xB8\xAD\xF0\x9F\x98\x80");
+  }
+  SUBCASE("malformed or out-of-range references stay verbatim") {
+    const std::vector<SubtitleCue> cues =
+        parseTtmlParagraph("&nbsp; &#xD800; &#x110000; &#zz;");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "&nbsp; &#xD800; &#x110000; &#zz;");
+  }
+  SUBCASE("a lone ampersand is text, not a reference") {
+    const std::vector<SubtitleCue> cues = parseTtmlParagraph("AT&T and sons");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "AT&T and sons");
+  }
+}
+
+TEST_CASE("ttml_line_breaks_and_inline_markup") {
+  const auto text_of = [](const std::string& inner) {
+    const std::vector<SubtitleCue> cues = parseTtmlParagraph(inner);
+    REQUIRE(cues.size() == 1);
+    return cues[0].text;
+  };
+  SUBCASE("br is the only line break") {
+    CHECK(text_of("line1<br/>line2") == "line1\nline2");
+  }
+  SUBCASE("a leading, doubled or closing br makes no empty line") {
+    CHECK(text_of("<br/>first") == "first");
+    CHECK(text_of("a<br/> <br/>b") == "a\nb");
+    CHECK(text_of("a<br></br>b") == "a\nb");
+    CHECK(text_of("a<br>b") == "a\nb");
+  }
+  SUBCASE("inline elements lose their tags but keep their text") {
+    CHECK(text_of("a<span ttm:role=\"x\">b<c:e>c</c:e></span>d") == "abcd");
+  }
+  SUBCASE("a self-closing non-br element carries no text and no depth") {
+    CHECK(text_of("a<pause/>b") == "ab");
+  }
+  SUBCASE("a comment is skipped whole, brackets and all") {
+    CHECK(text_of("a<!-- a comment, > even with a bracket -->b") == "ab");
+  }
+  SUBCASE("indentation collapses to single spaces") {
+    const std::vector<SubtitleCue> cues = parseSubtitleText(
+        "<p begin=\"00:00:01\" end=\"00:00:02\">\n"
+        "    hello\n"
+        "    cruel\n"
+        "    world\n"
+        "  </p>\n",
+        SubtitleFormat::Ttml);
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "hello cruel world");
+  }
+  SUBCASE("a truncated file keeps what was read") {
+    const std::vector<SubtitleCue> a = parseSubtitleText(
+        "<p begin=\"00:00:01\" end=\"00:00:02\">abc", SubtitleFormat::Ttml);
+    REQUIRE(a.size() == 1);
+    CHECK(a[0].text == "abc");
+    const std::vector<SubtitleCue> b = parseSubtitleText(
+        "<p begin=\"00:00:01\" end=\"00:00:02\">a<span", SubtitleFormat::Ttml);
+    REQUIRE(b.size() == 1);
+    CHECK(b[0].text == "a");
+    const std::vector<SubtitleCue> c =
+        parseSubtitleText("<p begin=\"00:00:01\" end=\"00:00:02\">a<!-- never closed",
+                          SubtitleFormat::Ttml);
+    REQUIRE(c.size() == 1);
+    CHECK(c[0].text == "a");
+  }
+}
+
+TEST_CASE("ttml_end_dur_and_the_default_duration") {
+  const auto one = [](const std::string& attrs) {
+    return parseSubtitleText("<p begin=\"00:00:01\"" + attrs + ">x</p>",
+                             SubtitleFormat::Ttml);
+  };
+  SUBCASE("an explicit end wins") {
+    const std::vector<SubtitleCue> cues = one(" end=\"00:00:02.500\"");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].begin == 1000ms);
+    CHECK(cues[0].end == 2500ms);
+  }
+  SUBCASE("dur extends begin when end is missing") {
+    const std::vector<SubtitleCue> cues = one(" dur=\"00:00:01.500\"");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].end == 2500ms);
+  }
+  SUBCASE("an unparsable end falls back to dur") {
+    const std::vector<SubtitleCue> cues = one(" end=\"soon\" dur=\"2\"");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].end == 3000ms);
+  }
+  SUBCASE("no usable end at all gets the default duration") {
+    const std::vector<SubtitleCue> a = one("");
+    REQUIRE(a.size() == 1);
+    CHECK(a[0].end == 1000ms + kDefaultCueDuration);
+    const std::vector<SubtitleCue> b = one(" end=\"soon\" dur=\"2t\"");
+    REQUIRE(b.size() == 1);
+    CHECK(b[0].end == 1000ms + kDefaultCueDuration);
+  }
+  SUBCASE("a non-advancing end gets the default duration too") {
+    const std::vector<SubtitleCue> a = one(" end=\"00:00:01\"");
+    REQUIRE(a.size() == 1);
+    CHECK(a[0].end == 1000ms + kDefaultCueDuration);
+    const std::vector<SubtitleCue> b = one(" end=\"00:00:00.500\"");
+    REQUIRE(b.size() == 1);
+    CHECK(b[0].end == 1000ms + kDefaultCueDuration);
+  }
+}
+
+TEST_CASE("ttml_skips_unparsable_paragraphs_and_keeps_the_rest") {
+  const std::vector<SubtitleCue> cues = parseSubtitleText(
+      "<?xml version=\"1.0\"?>\n"
+      "<tt:tt xmlns:tt=\"urn:x\">\n"
+      "  <tt:body>\n"
+      "    <tt:p>no begin, no cue</tt:p>\n"
+      "    <tt:p begin=\"soon\">unparsable begin</tt:p>\n"
+      "    <tt:p begin=\"00:00:01\" end=\"00:00:02\">kept one</tt:p>\n"
+      "    <tt:p begin=\"00:00:03\" end=\"00:00:04\">   </tt:p>\n"
+      "    <tt:p begin=\"00:00:05\" end=\"00:00:06\">kept two</tt:p>\n"
+      "  </tt:body>\n"
+      "</tt:tt>\n");
+  REQUIRE(cues.size() == 2);
+  CHECK(cues[0].begin == 1000ms);
+  CHECK(cues[0].text == "kept one");
+  CHECK(cues[1].begin == 5000ms);
+  CHECK(cues[1].end == 6000ms);
+  CHECK(cues[1].text == "kept two");
+}
+
+TEST_CASE("ttml_lookalike_elements_are_not_cues") {
+  // <p/> self-closing, <pX>, <param/> and prose without any '<' produce
+  // nothing; an empty document too.
+  CHECK(parseSubtitleText("<p/><pX begin=\"00:00:01\" end=\"00:00:02\">x</pX>"
+                          "<param/>",
+                          SubtitleFormat::Ttml)
+            .empty());
+  CHECK(parseSubtitleText("prose only, no markup", SubtitleFormat::Ttml).empty());
+  CHECK(parseSubtitleText("", SubtitleFormat::Ttml).empty());
+  // The attribute name must start at a word boundary: "send=" is not an
+  // "end" attribute, so the real end timestamp on the same tag is used.
+  const std::vector<SubtitleCue> cues =
+      parseSubtitleText("<p begin=\"00:00:01\" send=\"x\" end=\"00:00:02\">y</p>",
+                        SubtitleFormat::Ttml);
+  REQUIRE(cues.size() == 1);
+  CHECK(cues[0].end == 2000ms);
+}
+
+// =========================================================================
 // readSubtitleFile
 // =========================================================================
 
