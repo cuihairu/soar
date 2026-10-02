@@ -1,10 +1,12 @@
 name: Daily Build
 
-# 每日构建流水线：CI 构建产物分发，不是发版——绝不 git tag / gh release
-# （铁律：本仓库的产物只存在于 Actions artifact，任何改动都不得引入
-# tag 或 Release 步骤）。全仓库只保留一份"最新每日构建"：固定 artifact
-# 名 daily-build，上传前先删历史同名（upload-artifact@v4 产物不可变，
-# 同名直接传会报错）。
+# 每日构建流水线：产物分发面有两个，都不是版本发布——
+# ① Actions artifact（固定名 daily-build，全仓库只留一份最新）；
+# ② 滚动 nightly Release（固定 tag: nightly，Pre-release，每次构建
+#    清掉旧 assets 再传新的，Release 页任何人匿名可下）。
+# 固定 tag nightly 是分发通道，不对应版本：版本发布禁令仍然有效
+# （不打 v* 版本 tag、不发正式 Release）。
+# upload-artifact@v4 产物不可变，同名直接传会报错，所以都走"先删后传"。
 #
 # 构建与测试步骤逐段对齐 ci.yml 的 build job（同样的 preset、同样的
 # 依赖清单、测试媒体只在 Linux 生成——Windows/macOS 的媒体套件在无
@@ -20,8 +22,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  actions: write # collect job 删除历史 daily-build artifact 需要
+  contents: write # collect job 维护滚动 nightly Release（建/清/传）需要
+  actions: write  # collect job 删除历史 daily-build artifact 需要
 
 jobs:
   build:
@@ -260,7 +262,7 @@ jobs:
             echo "版本:     ${VERSION}（CMake project VERSION，非 Release 版本号）"
             echo "触发方式: ${{ github.event_name }}"
             echo ""
-            echo "这是 CI 构建产物分发，不对应任何 Release/tag。"
+            echo "这是 CI 构建产物分发，同时发布到滚动 nightly Release（固定 tag nightly，非版本发布）。"
             echo ""
             echo "平台产物:"
             echo "  soar-windows-x64.zip  Windows 10/11 x64: soar.exe + 依赖 DLL"
@@ -309,6 +311,66 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # 滚动 nightly Release：固定 tag，每次构建把 target 重新指到本次
+      # commit、清掉全部旧 assets 再传新的（全仓库只留最新一份，重跑幂等）。
+      # Release 说明对齐 falcon nightly 的形态：时间 / commit / 下载表 /
+      # 注意事项 / 验证方法。匿名可下（公开仓库 Release assets 无需登录）。
+      - name: Publish nightly Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          if gh release view nightly > /dev/null 2>&1; then
+            gh release edit nightly --title "Nightly Build (nightly)" --prerelease
+            # gh release edit 不支持 --target：移动固定 tag 指向本次 commit
+            # （PATCH 失败兜底删重建，秒级窗口内完成）
+            if ! gh api -X PATCH \
+                "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
+                -f sha="$GITHUB_SHA" -F force=true > /dev/null 2>&1; then
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
+                || true
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f ref=refs/tags/nightly -f sha="$GITHUB_SHA"
+            fi
+          else
+            gh release create nightly --target "$GITHUB_SHA" \
+              --title "Nightly Build (nightly)" --prerelease \
+              --notes "每日构建发布中…"
+          fi
+          for name in $(gh release view nightly --json assets --jq '.assets[].name'); do
+            gh release delete-asset nightly "$name" -y && echo "deleted asset $name"
+          done
+          cat > release-notes.md <<NOTES
+          # Soar Nightly Build
+
+          \`nightly-${BUILD_DATE}-${GITHUB_SHA::8}\` · 更新时间 ${utc_time} / ${bj_time}
+
+          这是每日构建（自动构建、未签名），可能包含未完成的实验性功能，
+          稳定性不作保证；追求稳定请等正式版本。
+
+          ## 下载
+
+          | 平台 | 文件 | 说明 |
+          |---|---|---|
+          | Windows 10/11 x64 | \`soar-windows-x64.zip\` | soar.exe + 依赖 DLL，解压即用 |
+          | macOS Apple Silicon | \`soar-macos-arm64.zip\` | soar（静态链接），\`xattr -cr soar\` 后运行 |
+          | Linux x64 | \`soar-linux-x64.zip\` | soar（动态链接，见包内 PLATFORM-NOTES.txt） |
+          | 三平台合装 | \`${daily_zip}\` | 上列三个 zip + BUILD_INFO.txt + VERIFY.md |
+
+          ## 验证
+
+          命令行运行 soar（Windows 为 soar.exe）不带参数：应打印 Usage
+          并以退出码 2 结束——无媒体源时的预期自证行为。详细步骤见
+          包内 VERIFY.md 与各平台 PLATFORM-NOTES.txt。
+
+          Commit: ${GITHUB_SHA}
+          NOTES
+          gh release edit nightly --notes-file release-notes.md
+          gh release upload nightly "$daily_zip" \
+            soar-windows-x64.zip soar-macos-arm64.zip soar-linux-x64.zip \
+            BUILD_INFO.txt VERIFY.md --clobber
+          echo "nightly release updated: ${daily_zip}"
+
       - name: Run summary
         run: |
           {
@@ -318,9 +380,9 @@ jobs:
             echo "|---|---|"
             echo "| 更新时间 | ${utc_time} / ${bj_time} |"
             echo "| Commit | \`${GITHUB_SHA}\` |"
-            echo "| 产物 | artifact **daily-build**（唯一最新版，历史已清理） |"
+            echo "| 产物 | artifact **daily-build**（唯一最新版，历史已清理）+ Release **Nightly Build (nightly)** 同步发布 |"
             echo "| 平台 | windows-x64（soar.exe+DLL）/ macos-arm64（静态链接）/ linux-x64（动态链接） |"
             echo ""
-            echo "下载: 本 run 页面底部 Artifacts 区 \`daily-build\`。"
-            echo "验证方式见包内 VERIFY.md。这是 CI 构建产物分发，无 tag、无 Release。"
+            echo "下载: 本 run 页面底部 Artifacts 区 \`daily-build\`，或 <https://github.com/${GITHUB_REPOSITORY}/releases/tag/nightly>（匿名可下）。"
+            echo "验证方式见包内 VERIFY.md。发布面: 本 artifact + 滚动 nightly Release（固定 tag nightly，非版本发布）。"
           } >> "$GITHUB_STEP_SUMMARY"
