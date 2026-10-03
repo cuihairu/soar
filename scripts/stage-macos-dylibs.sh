@@ -54,7 +54,9 @@ mkdir -p "$dest/lib"
 base=$(basename "$exe")
 cp "$exe" "$dest/$base"
 
-declare -A seen=()
+# The macOS runners still ship Apple's bash 3.2, so no associative
+# arrays: the seen-set is a newline-separated name list.
+seen_names=""
 touched=("$dest/$base")
 queue=("$dest/$base")
 i=0
@@ -71,8 +73,8 @@ while [ "$i" -lt "${#queue[@]}" ]; do
     fi
     name=$(basename "$ref")
     bundled="$dest/lib/$name"
-    if [ -z "${seen[$name]:-}" ]; then
-      seen[$name]=1
+    if ! printf '%s\n' "$seen_names" | grep -qxF "$name"; then
+      seen_names="$seen_names$name"$'\n'
       if [ ! -f "$ref" ]; then
         echo "unresolvable dylib reference: $ref (needed by $current)" >&2
         exit 1
