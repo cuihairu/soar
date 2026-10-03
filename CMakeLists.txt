@@ -60,6 +60,7 @@ if(SOAR_ENABLE_FFMPEG)
     target_compile_definitions(soar_core PUBLIC SOAR_WITH_FFMPEG=1)
     target_sources(soar_core PRIVATE
       src/core/ffmpeg_backend.cpp
+      src/core/audio_extract.cpp
     )
     target_link_libraries(soar_core PUBLIC
       PkgConfig::FFMPEG
@@ -167,6 +168,14 @@ if(SOAR_BUILD_APP)
   add_executable(seed_torrent tools/seed_torrent.cpp)
   target_compile_features(seed_torrent PRIVATE cxx_std_17)
   target_link_libraries(seed_torrent PRIVATE torrent-rasterbar)
+
+  if(SOAR_ENABLE_FFMPEG AND FFMPEG_FOUND)
+    # Dev tool for the §6 ASR slice: extract a source's audio track as a
+    # 16 kHz mono WAV. Not referenced by tests; not shipped.
+    add_executable(extract_audio tools/extract_audio.cpp)
+    target_compile_features(extract_audio PRIVATE cxx_std_17)
+    target_link_libraries(extract_audio PRIVATE soar::core PkgConfig::FFMPEG)
+  endif()
 
   if(SOAR_ENABLE_SDL2)
     # 2.0.18 is the floor: the ImGui sdlrenderer2 backend needs 2.0.17
