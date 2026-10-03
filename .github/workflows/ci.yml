@@ -131,12 +131,18 @@ jobs:
             build/vcpkg_installed/x64-windows/debug/bin \
             build/vcpkg_installed/x64-windows/bin
 
+      # 与 daily-build 的 Verify 同款三道锁（run 37137950125 教训）：
+      # pwsh -command 收尾会把执行期 ErrorRecord/$? 折算成 1，断言全过
+      # 也能莫名红——关原生退出记录偏好、原生调用不进 2>&1、通过时显式
+      # exit 0，成败只由断言裁决。
       - name: Smoke packaged exe from a clean dir (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
           $env:PATH = "$env:SystemRoot\System32"
-          $out = (& .\stage-verify\soar.exe --version 2>&1 | Out-String)
+          $out = (& .\stage-verify\soar.exe --version | Out-String)
           $code = $LASTEXITCODE
           Write-Host "exit code: $code"
           Write-Host "output: $out"
@@ -144,6 +150,8 @@ jobs:
             Write-Host "::error::packaged soar.exe failed from a clean dir (missing DLL or bad exit)"
             exit 1
           }
+          Write-Host "smoke passed: packaged exe runs from an empty dir with PATH=System32 only"
+          exit 0
 
       # 防回归（macOS 面与 Windows 对称）：SDL2 与 vcpkg 管理的依赖
       # 静态链进二进制，但 macOS 的 FFmpeg 经 pkg-config 来自 brew

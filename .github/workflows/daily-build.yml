@@ -172,16 +172,28 @@ jobs:
       # 产物级防回归：把 zip 解压到干净目录、PATH 只留 System32 再实
       # 跑——runner 自带的运行库会把漏捆掩盖掉，收窄 PATH 后缺一个
       # DLL 立刻现形（这正是用户机器上的死法）。
+      #
+      # 退出码三道锁（run 37137950125 教训：两个断言全过、无任何错误
+      # 输出，步骤仍退 1）。`pwsh -command` 的收尾语义会把执行期的
+      # ErrorRecord/$? 折算成 1；本地 7.4/7.5/7.6 复现实证：原生调用带
+      # 2>&1 且退出码非 0 就会生成静默记录（被管道吞掉看不见）。因此：
+      #   1) 关掉原生非零退出生成记录的偏好（防 profile 打开）；
+      #   2) 原生调用一律不进 2>&1，记录连源头都不留；
+      #   3) 通过路径显式 exit 0，成败只由断言裁决，不交给 $?。
       - name: Verify package (Windows, clean dir)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
           Expand-Archive soar-windows-x64.zip -DestinationPath smoke-win -Force
           $env:PATH = "$env:SystemRoot\System32"
-          $out = (& .\smoke-win\soar.exe --version 2>&1 | Out-String)
+          $out = (& .\smoke-win\soar.exe --version | Out-String)
           $code = $LASTEXITCODE
           Write-Host "version exit=$code output=$out"
-          $usage = (& .\smoke-win\soar.exe 2>&1 | Out-String)
+          # 无参用法约定打印 Usage、退出 2（main.cpp argc<2 分支）。文本
+          # 原样漏进日志留证；两个流都不经 2>&1 重定向。
+          & .\smoke-win\soar.exe
           $ucode = $LASTEXITCODE
           Write-Host "usage exit=$ucode"
           if ($code -ne 0 -or $out -notmatch 'soar' -or $out -match '(?i)\.dll') {
@@ -192,6 +204,8 @@ jobs:
             Write-Host "::error::soar.exe without args should exit 2, got $ucode"
             exit 1
           }
+          Write-Host "verify passed: package runs from an empty dir with PATH=System32 only"
+          exit 0
 
       # macOS 打包同样按闭包（与 Windows/Linux 同哲学）：SDL2 与
       # vcpkg 管理的依赖（含 openssl）静态链进二进制，但 macOS 的
