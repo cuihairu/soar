@@ -17,6 +17,10 @@
 #   4. VC Redist CRT folder  — MSVCP140 / VCRUNTIME140 / ... (always
 #                              bundled, even though this runner has them:
 #                              System32 is exactly what would mask a gap)
+#   4b. Redist debug_nonredist + Windows SDK ucrt dirs — the debug CRT
+#       twins (MSVCP140D / VCRUNTIME140D / ucrtbased) that a Debug build
+#       imports. Only ci.yml stages a Debug exe; the nightly Release
+#       walk never asks for these names.
 #   5. System32             — inbox OS DLLs, skipped, never copied
 #                              (api-ms-win-* UCRT included: Win10+ inbox)
 # A name that resolves nowhere fails the script with the full list — a
@@ -26,7 +30,14 @@
 # env:   DUMPBIN         dumpbin binary        (default: dumpbin on PATH)
 #        VCINSTALLDIR    VC root, for Redist   (msvc-dev-cmd sets it)
 #        VCToolsInstallDir  tools root, CRT fallback
+#        WindowsSdkDir / WindowsSDKVersion  SDK root, for ucrtbased.dll
 #        SYSTEM32_DIR    system dir            (default: $WINDIR/System32)
+#
+# dumpbin is invoked with dash-form options (-dependents, not /dependents):
+# under Git Bash the MSYS layer rewrites a leading "/dependents" into a
+# Windows path before dumpbin ever sees it, and dumpbin dies with a
+# swallowed diagnostics-only exit (run 37127854221). The LINK-family
+# option parser accepts both prefixes, so dash form is portable.
 set -euo pipefail
 
 if [ $# -lt 3 ]; then
@@ -61,10 +72,24 @@ vc_redist=""
 if [ -n "$vcinstalldir" ]; then
   vc_redist=$(ls -d "$vcinstalldir"/Redist/MSVC/*/x64/Microsoft.VC14*.CRT 2>/dev/null | sort -V | tail -1 || true)
 fi
+# …and its debug twin (…/debug_nonredist/x64/Microsoft.VC14x.DebugCRT),
+# the only place MSVCP140D / VCRUNTIME140D live. Never redistributed:
+# the nightly package is a Release build and never imports them; only
+# ci.yml's Debug stage-verify walk resolves from here.
+vc_redist_debug=""
+if [ -n "$vcinstalldir" ]; then
+  vc_redist_debug=$(ls -d "$vcinstalldir"/Redist/MSVC/*/debug_nonredist/x64/Microsoft.VC14*.DebugCRT 2>/dev/null | sort -V | tail -1 || true)
+fi
 vc_tools=""
 if [ -n "$vctools" ]; then
   arch=${VSCMD_ARG_TGT_ARCH:-x64}
   vc_tools="$vctools/bin/Host$arch/$arch"
+fi
+# Prefer PATH (msvc-dev-cmd puts the tools bin there); fall back to the
+# tools dir so a bash step without the MSVC PATH still finds dumpbin.
+if [ "$dumpbin_cmd" = dumpbin ] && ! command -v dumpbin >/dev/null 2>&1 \
+   && [ -n "$vc_tools" ] && [ -f "$vc_tools/dumpbin.exe" ]; then
+  dumpbin_cmd="$vc_tools/dumpbin.exe"
 fi
 
 # The CRT allow-list: names permitted to fall through to the tools dir or
@@ -88,6 +113,21 @@ find_in() {
   find "$1" -maxdepth 1 -iname "$2" -print -quit
 }
 
+# ucrtbased.dll — the debug UCRT a /MDd build imports — ships with the
+# Windows SDK, not VC (neither Redist nor System32 ever has it).
+sdk_ucrt=""
+sdk=${WindowsSdkDir:-}
+sdk=${sdk//\\//}
+sdkver=${WindowsSDKVersion:-}
+if [ -n "$sdk" ] && [ -n "$sdkver" ]; then
+  for d in "$sdk/bin/$sdkver/x64/ucrt" "$sdk/Redist/$sdkver/ucrt/DLLs/x64"; do
+    if [ -n "$(find_in "$d" ucrtbased.dll)" ]; then
+      sdk_ucrt=$d
+      break
+    fi
+  done
+fi
+
 mkdir -p "$dest"
 base=$(basename "$exe")
 cp "$exe" "$dest/$base"
@@ -103,9 +143,13 @@ while [ "$i" -lt "${#queue[@]}" ]; do
   # dumpbin prints one indented dependency per line under "Image has the
   # following dependencies:" (and the delay-load section, if any). The
   # anchored sed keeps only bare "<name>.dll" lines, so the header, the
-  # file path and the Summary block never leak in.
-  if ! deps=$("$dumpbin_cmd" /nologo /dependents "$current"); then
-    echo "dumpbin /dependents failed on: $current" >&2
+  # file path and the Summary block never leak in. Dash-form options: a
+  # "/dependents" would be rewritten into a path by Git Bash's MSYS layer
+  # (see the header note) — and keep dumpbin's own stderr flowing to the
+  # log so a failure here names its reason instead of exiting silently.
+  deps=$("$dumpbin_cmd" -nologo -dependents "$current") && drc=0 || drc=$?
+  if [ "$drc" -ne 0 ]; then
+    echo "dumpbin -dependents failed (exit $drc) on: $current" >&2
     exit 1
   fi
   while read -r dll; do
@@ -119,7 +163,8 @@ while [ "$i" -lt "${#queue[@]}" ]; do
     seen[$key]=1
 
     src=""
-    for dir in "$dest" "$vcpkg_bin" "$vcpkg_debug_bin" "$vc_redist"; do
+    for dir in "$dest" "$vcpkg_bin" "$vcpkg_debug_bin" "$vc_redist" \
+               "$vc_redist_debug" "$sdk_ucrt"; do
       src=$(find_in "$dir" "$dll")
       if [ -n "$src" ]; then
         break
