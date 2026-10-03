@@ -1114,10 +1114,12 @@ if mode == "assdrive":
 if mode == "stall":
     # The window's buffering indicator is the one HUD element driven by a
     # backend event rather than by input: the UI polls the atomic that
-    # main.cpp sets from BufferingStarted/Ended. Sit still long enough for
-    # the throttled server's mid-body pause to cross the backend's 10s
-    # stall threshold, then quit. No clicking: the HUD is allowed to
-    # auto-hide, which is the point (the chip is not part of the OSC).
+    # main.cpp sets from BufferingStarted/Ended. Sit still through the
+    # whole throttled arc — the mid-body pause crosses the backend's 10s
+    # stall threshold (BufferingStarted), and the server's second burst
+    # ~40s in ends it (BufferingEnded, the print half no other case
+    # reaches) — then quit. No clicking: the HUD is allowed to auto-hide,
+    # which is the point (the chip is not part of the OSC).
     time.sleep(4)
     # The fixture is audio-only, so the subtitle shortcuts have nothing to
     # cycle and the HUD has to say so instead of silently doing nothing —
@@ -1140,7 +1142,7 @@ if mode == "stall":
         d.sync()
     except Exception:
         pass
-    time.sleep(16)
+    time.sleep(46)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
@@ -1528,6 +1530,12 @@ TEST_CASE("a missing .torrent file fails fast with the torrent parse error") {
 }
 
 TEST_CASE("torrent flags reach the stream params before the parse fails") {
+#ifdef _WIN32
+  // MSVC has no POSIX mkdtemp; the flags land in the params regardless of
+  // where the store points, so the Linux case below is the assertion.
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
   // --torrent-store skips the temp-dir default, --torrent-peer and
   // --torrent-index land in the params, --torrent-list sets the listing
   // flag — all observable through one malformed magnet that still fails
@@ -1545,6 +1553,7 @@ TEST_CASE("torrent flags reach the stream params before the parse fails") {
                            "magnet:?dn=broken"});
   CHECK(run.exit_code == 1);
   CHECK(run.output.find("torrent: cannot parse magnet URI") != std::string::npos);
+#endif
 }
 
 TEST_CASE("a malformed magnet in window mode fails before the window opens") {
@@ -3420,6 +3429,10 @@ TEST_CASE("windowed run over a stalled network source shows the buffering state"
   // ... and the stall crossed the backend's report threshold while the
   // window was up, which is the event the buffering chip is drawn from.
   CHECK(run.output.find("event: buffering started") != std::string::npos);
+  // The injector now outlives the throttled server's second burst, so the
+  // same arc must close: the Ended print in main.cpp runs when the burst
+  // un-stalls the read.
+  CHECK(run.output.find("event: buffering ended") != std::string::npos);
   // The subtitle shortcut on this audio-only source changed nothing: the
   // backend reported no track, so the HUD must have toasted instead of
   // selecting (a select would have shown up as a media-info event with a
