@@ -4520,6 +4520,72 @@ TEST_CASE("audio extraction reports an unwritable output path") {
   CHECK(err.rfind("open output:", 0) == 0);
 }
 
+TEST_CASE("audio extraction fails when the decoder refuses the packets") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_AUDIO_REJECT", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_REJECT not set; skipping rejected-packet test");
+    return;
+  }
+  // Same fixture as the playback twin above: the container opens and the
+  // DTS decoder exists, but every AAC packet is refused on the sync word.
+  // Whether FFmpeg surfaces that at send or at receive is version
+  // behavior (the playback case says the same), so the assertion pins
+  // the stage — the decode loop — rather than the exact call.
+  ScratchDir dir;
+  const std::string out = dir.file("reject.wav");
+  std::string err;
+
+  CHECK(!soar::extractAudioToWav(media, out, &err));
+  INFO(err);
+  // Stage, not call: swr_init refuses the -1 sample format when the
+  // container never decoded a frame for the parameters to come from
+  // (FFmpeg 8 locally), while a decoder whose format is pinned at open
+  // reaches the packet loop and is refused there — the same version
+  // split the playback twin documents. The container opens fine on both
+  // (the twin requires it), so none of the open-stage prefixes may
+  // appear; anything else in the pipeline is this fixture's refusal.
+  const bool pipeline_stage =
+      err.rfind("swr_alloc_set_opts2:", 0) == 0 ||
+      err.rfind("swr_init:", 0) == 0 ||
+      err.rfind("send_packet:", 0) == 0 ||
+      err.rfind("receive_frame:", 0) == 0;
+  CHECK(pipeline_stage);
+}
+
+TEST_CASE("a cached http source with unusable bytes is torn down on open failure") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping cached-open failure test");
+    return;
+  }
+  // The disk cache arms a custom AVIO session before the demuxer probe
+  // runs. When the probe fails (this file is no container), avformat_
+  // open_input frees the format context but leaves a custom pb alone —
+  // so the open path must free the AVIO context and drop the session
+  // itself, and must not leave a half-torn-down cache for the next open.
+  ScratchDir dir;
+  dir.write("garbage.bin", "soar: not a media container, just bytes");
+  const std::string cache_dir = dir.file("cache");
+  std::error_code ec;
+  std::filesystem::create_directories(cache_dir, ec);
+
+  const test_servers::RangeServer srv =
+      test_servers::startRangeServer(dir.path, 17400);
+  REQUIRE(srv.pid >= 0);
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+  CHECK_FALSE(backend->open(
+      soar::MediaSource{srv.base_url + "/garbage.bin", cache_dir}));
+  CHECK(backend->lastError().find("failed to open") != std::string::npos);
+  CHECK(sink.errors.load() >= 1);
+#endif
+}
+
 #else // !SOAR_WITH_FFMPEG
 
 // Keep the test binary meaningful when the FFmpeg backend is not compiled.

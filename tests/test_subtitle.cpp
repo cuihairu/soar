@@ -2195,6 +2195,18 @@ TEST_CASE("malformed_candidate_urls_fail_at_parse_time") {
   CHECK_FALSE(provider.fetch(SubtitleCandidate{
       "http://127.0.0.1:notaport/x.srt", "en", "x.srt",
       SubtitleFormat::SubRip}, out));
+  // An authority with a port but no host, and a host with a trailing
+  // colon but no port: each split leaves one empty field, and the empty
+  // field is refused before anything is dialed.
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "http://:8080/x.srt", "en", "x.srt", SubtitleFormat::SubRip}, out));
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "http://127.0.0.1:/x.srt", "en", "x.srt", SubtitleFormat::SubRip}, out));
+  // A parse that succeeds with a path far past the small-string buffer:
+  // the dial then finds nothing on port 1 and the fetch is still false.
+  CHECK_FALSE(provider.fetch(SubtitleCandidate{
+      "http://127.0.0.1:1/aaaaaaaaaaaaaaaaaaaaaaa.srt", "en", "x.srt",
+      SubtitleFormat::SubRip}, out));
 
   // The same grammar guards the endpoint side of the search.
   const TempDir tmp;

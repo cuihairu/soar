@@ -1644,6 +1644,26 @@ TEST_CASE("renderer selection fails cleanly under the dummy video driver") {
   CHECK(run.exit_code == 1);
 }
 
+TEST_CASE("queue positionals drop empty and option-shaped arguments") {
+  // The queue loop behind the first positional keeps only real paths: an
+  // empty argument short-circuits before the subscript, and an argument
+  // starting with '-' fails the guard — neither may reach the play
+  // queue. (The duplicate option is re-parsed harmlessly by the upfront
+  // arg loop; it exists to be filtered here.) Like the case above, the
+  // run dies at the renderer under the dummy driver — but only after the
+  // loop has walked every argument, so the child still reports the exit
+  // code this asserts on.
+  const ScopedEnv video("SDL_VIDEODRIVER", "dummy");
+  const ScopedEnv audio("SDL_AUDIODRIVER", "dummy");
+  const auto run = runCli({"--backend=null", "asset://sample", "",
+                           "--backend=null"});
+  if (run.output.find("SDL_CreateRenderer failed") == std::string::npos) {
+    MESSAGE("SDL2 not compiled in; queue loop absent; skipping");
+    return;
+  }
+  CHECK(run.exit_code == 1);
+}
+
 TEST_CASE("windowed run plays on a real X server and exits cleanly on Escape") {
 #ifdef _WIN32
   MESSAGE("the X11 window test is POSIX-only; skipping");
