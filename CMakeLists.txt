@@ -110,6 +110,16 @@ endif()
 # file as a plain local-http URL with Range support, so the player opens it
 # through the normal path and no backend learns about torrents. The vendored
 # tree is pinned to upstream v2.0.15 — see third_party/libtorrent/VENDOR.md.
+#
+# libtorrent's own find_package(OpenSSL) is why vcpkg.json declares openssl
+# even though nothing else uses it: without the manifest entry, vcpkg never
+# installs it, CMAKE_PREFIX_PATH comes up empty and the module falls through
+# to whatever the build machine happens to have — PATH's C:/Program
+# Files/OpenSSL on the CI runner (DLLs absent from the nightly zip) or
+# brew's /opt/homebrew dylibs on macOS. Declared in the manifest, the
+# Windows build links vcpkg's DLLs (staged by scripts/stage-windows-dlls.sh
+# and shipped in the zip) and the macOS build links vcpkg's static apple
+# triplet — either way the product stops depending on the build host.
 # Options must be set before add_subdirectory: feature_option() calls
 # option(), and a normal variable shadows the cache entry in this scope.
 set(BUILD_SHARED_LIBS OFF)

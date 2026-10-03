@@ -145,6 +145,31 @@ jobs:
             exit 1
           }
 
+      # 防回归（macOS 面与 Windows 对称）：SDL2 与 vcpkg 管理的依赖
+      # 静态链进二进制，但 macOS 的 FFmpeg 经 pkg-config 来自 brew
+      # （动态），openssl 在 vcpkg.json 声明之前也来自 brew——2026-10
+      # nightly 的 macOS 包因此只能在装了同版本 brew 的机器上启动。
+      # 闭包 staged 后，otool 断言 bundle 内没有任何构建机 brew 路径
+      # 引用；runner 上 brew 在场会掩盖漏捆，静态断言才是硬门。
+      - name: Stage package closure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          bash scripts/stage-macos-dylibs.sh build/soar stage-verify-mac
+
+      - name: Smoke staged bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          bad=$(otool -L stage-verify-mac/soar stage-verify-mac/lib/*.dylib 2>/dev/null \
+            | grep -E '/opt/homebrew|/usr/local/' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::brew path refs remain in the staged bundle:"
+            echo "$bad"
+            exit 1
+          fi
+          ./stage-verify-mac/soar --version
+
   tsan:
     # ThreadSanitizer job: exercises the FFmpeg backend concurrency tests
     # (decode_mutex_ discipline around format_ctx_/decode threads) with a

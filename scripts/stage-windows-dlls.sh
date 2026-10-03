@@ -103,6 +103,18 @@ is_crt() {
   esac
 }
 
+# API-set names (api-ms-win-*, ext-ms-win-*): virtual DLLs the loader
+# resolves through the apiset schema — no physical file exists anywhere,
+# not even in System32 (run 37130141646 listed ~28 of them as missing
+# before this exemption). Inbox since Windows 8, so they are resolved by
+# the OS on every target machine and can never be bundled.
+is_apiset() {
+  case "$1" in
+    api-ms-*|ext-ms-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Case-insensitive lookup: import-table names and on-disk names disagree
 # on case (MSVCP140.dll vs msvcp140.dll), which Windows' filesystem hides
 # — and which the local harness on a case-sensitive one does not.
@@ -182,12 +194,13 @@ while [ "$i" -lt "${#queue[@]}" ]; do
         cp "$src" "$dest/$dll"
       fi
       queue+=("$dest/$dll")
-    elif [ -z "$(find_in "$sys32" "$dll")" ]; then
+    elif [ -z "$(find_in "$sys32" "$dll")" ] && ! is_apiset "$key"; then
       missing+=("$dll")
     fi
     # Found in System32 and not CRT-allow-listed: an inbox OS DLL
-    # (kernel32, shell32, api-ms-win-crt-* …) — resolved by the OS on
-    # every target machine, deliberately not bundled.
+    # (kernel32, shell32, …) — resolved by the OS on every target
+    # machine, deliberately not bundled. Same for API-set names, which
+    # have no file to find anywhere (see is_apiset).
   done < <(printf '%s\n' "$deps" |
     sed -n 's/^[[:space:]]\{1,\}\([A-Za-z0-9_.-]\{1,\}\.dll\)[[:space:]]*$/\1/Ip')
 done

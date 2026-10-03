@@ -102,8 +102,10 @@ if [ -d "$TMPDIR_DL/x/lib" ]; then
   rm -rf "${INSTALL_DIR:?}/lib"
   mv "${INSTALL_DIR:?}/lib.new.$$" "${INSTALL_DIR:?}/lib"
 fi
-# macOS 未签名：清隔离属性让 Gatekeeper 放行（无属性时静默跳过）
-[ "$OS_TAG" = "macos" ] && xattr -cr "$DEST" 2>/dev/null || true
+# macOS 未签名：清隔离属性让 Gatekeeper 放行（无属性时静默跳过）。
+# 清整个安装目录：macOS 包的 lib/ 捆绑 dylib 同样带隔离属性，加载
+# 时和主程序一样被拦。
+[ "$OS_TAG" = "macos" ] && xattr -cr "$INSTALL_DIR" 2>/dev/null || true
 
 # ---- PATH --------------------------------------------------------
 case ":$PATH:" in

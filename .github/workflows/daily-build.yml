@@ -193,18 +193,23 @@ jobs:
             exit 1
           }
 
-      # vcpkg's macOS triplet links SDL2/FFmpeg statically into the
-      # binary; system frameworks stay external as usual.
+      # macOS 打包同样按闭包（与 Windows/Linux 同哲学）：SDL2 与
+      # vcpkg 管理的依赖（含 openssl）静态链进二进制，但 macOS 的
+      # FFmpeg 经 pkg-config 来自 brew（动态）、fontconfig 亦然——
+      # 不捆绑的话产物只能在装了同版本 brew 的机器上启动（2026-10
+      # nightly 实测：libav*×5 + openssl×2 + fontconfig×1 全是
+      # /opt/homebrew 绝对路径引用）。闭包 resolve 不到的名字直接
+      # 失败，不出不完整的包。
       - name: Package (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -e
-          mkdir -p stage
-          cp build/soar stage/
+          bash scripts/stage-macos-dylibs.sh build/soar stage
           cat > stage/PLATFORM-NOTES.txt <<'NOTES'
           Soar 每日构建 - macOS (Apple Silicon)
-          包含: soar（SDL2/FFmpeg 已静态链接进二进制）
+          包含: soar + lib/（FFmpeg 等动态库随包捆绑；SDL2 静态链接
+          进二进制。soar 与 lib/ 必须保持在同一目录）
 
           验证: ./soar --version 打印版本（退出码 0）；
           不带参数运行应打印 Usage（退出码 2 属预期）。
@@ -215,6 +220,30 @@ jobs:
           # 必须先进 stage：zip . 在 workspace 根会把整个 build/ 打进包
           cd stage
           zip -qr ../soar-macos-arm64.zip .
+
+      # 产物级防回归（与 Windows/Linux 同哲学）：解压后断言 bundle
+      # 内任何二进制不再引用构建机 brew 路径，并实跑 --version 与
+      # 无参 Usage。runner 上 brew 在场会掩盖漏捆，otool 断言才是
+      # 硬门。
+      - name: Verify package (macOS, no brew refs)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          rm -rf smoke-mac && unzip -q soar-macos-arm64.zip -d smoke-mac
+          bad=$(otool -L smoke-mac/soar smoke-mac/lib/*.dylib 2>/dev/null \
+            | grep -E '/opt/homebrew|/usr/local/' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::brew path refs remain in the package:"
+            echo "$bad"
+            exit 1
+          fi
+          ./smoke-mac/soar --version
+          set +e; ./smoke-mac/soar > /dev/null 2>&1; code=$?; set -e
+          if [ "$code" != 2 ]; then
+            echo "::error::soar without args should exit 2, got $code"
+            exit 1
+          fi
 
       # Linux 包运行时自包含：ldd 全闭包里除「glibc 家族 +
       # libstdc++/libgcc + GL/Mesa」外全部拷进 lib/ 随包分发，再用
@@ -398,7 +427,7 @@ jobs:
             echo ""
             echo "平台产物:"
             echo "  soar-windows-x64.zip  Windows 10/11 x64: soar.exe + 依赖 DLL"
-            echo "  soar-macos-arm64.zip  macOS Apple Silicon: soar（静态链接）"
+            echo "  soar-macos-arm64.zip  macOS Apple Silicon: soar + lib/（FFmpeg 等动态库已捆绑，SDL2 静态链接）"
             echo "  soar-linux-x64.zip    Linux x64: soar + lib/（运行时已捆绑，仅依赖系统 glibc/libstdc++，见包内说明）"
             echo "  soar-linux-arm64.zip  Linux arm64: soar + lib/（运行时已捆绑，仅依赖系统 glibc/libstdc++，见包内说明）"
           } > BUILD_INFO.txt
@@ -422,8 +451,10 @@ jobs:
              不可用——媒体播放链路待 Windows 侧 FFmpeg 接通后开放
 
           ## macOS (Apple Silicon)
-          1. 解压 soar-macos-arm64.zip
-          2. `xattr -cr soar && ./soar`（未签名，必须先清隔离属性）
+          1. 解压 soar-macos-arm64.zip（soar 与 lib/ 须保持同目录；
+             FFmpeg 等动态库已随包捆绑，SDL2 静态链接进二进制）
+          2. `xattr -cr . && ./soar --version`（未签名，先清整个
+             解压目录的隔离属性——lib/ 里的库也要清）
 
           ## Linux (x64 / arm64)
           1. 解压 soar-linux-x64.zip 或 soar-linux-arm64.zip
@@ -493,7 +524,7 @@ jobs:
           | 平台 | 文件 | 说明 |
           |---|---|---|
           | Windows 10/11 x64 | \`soar-windows-x64.zip\` | soar.exe + 依赖 DLL，解压即用 |
-          | macOS Apple Silicon | \`soar-macos-arm64.zip\` | soar（静态链接），\`xattr -cr soar\` 后运行 |
+          | macOS Apple Silicon | \`soar-macos-arm64.zip\` | soar + 捆绑动态库 lib/（SDL2 静态链接），\`xattr -cr .\` 后运行，解压即用 |
           | Linux x64 | \`soar-linux-x64.zip\` | soar + 捆绑运行时 lib/，免装 SDL2/FFmpeg，仅依赖系统 glibc/libstdc++，解压即用 |
           | Linux arm64 | \`soar-linux-arm64.zip\` | 同上（arm64 原生构建） |
           | 合装 | \`${daily_zip}\` | 上列四个 zip + BUILD_INFO.txt + VERIFY.md |
@@ -526,7 +557,7 @@ jobs:
             echo "| 更新时间 | ${utc_time} / ${bj_time} |"
             echo "| Commit | \`${GITHUB_SHA}\` |"
             echo "| 产物 | artifact **daily-build**（唯一最新版，历史已清理）+ Release **Nightly Build (nightly)** 同步发布 |"
-            echo "| 平台 | windows-x64（soar.exe+DLL）/ macos-arm64（静态链接）/ linux-x64 / linux-arm64（捆绑运行时） |"
+            echo "| 平台 | windows-x64（soar.exe+DLL）/ macos-arm64（soar+lib/ 捆绑）/ linux-x64 / linux-arm64（捆绑运行时） |"
             echo ""
             echo "下载: 本 run 页面底部 Artifacts 区 \`daily-build\`，或 <https://github.com/${GITHUB_REPOSITORY}/releases/tag/nightly>（匿名可下）。"
             echo "验证方式见包内 VERIFY.md。发布面: 本 artifact + 滚动 nightly Release（固定 tag nightly，非版本发布）。"
