@@ -394,6 +394,17 @@ ffmpeg -hide_banner -loglevel error -y \
   -f dash -seg_duration 2 \
   "$media_dir/dash_audio/manifest.mpd"
 
+# WMA audio: the one decoder family in the kit that still holds a frame
+# when the stream ends (probe with a send-all/drain loop: wmav2 yields 1
+# drain frame; aac/pcm/mp3/flac/opus hand every frame back per packet, so
+# their extract runs leave the extractor's flush-loop body cold). Only a
+# source like this can drive the flush tail through the resampler and
+# writer.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i sine=frequency=440 \
+  -t 1 -ac 1 -ar 44100 -c:a wmav2 \
+  "$media_dir/wma_audio.wma"
+
 echo "SOAR_TEST_MEDIA=$media_dir/sample_dual_audio.mkv"
 echo "SOAR_TEST_AUDIO_ONLY=$media_dir/audio_only.mkv"
 echo "SOAR_TEST_SUBS_MEDIA=$media_dir/subs_media.mkv"
@@ -416,3 +427,4 @@ echo "SOAR_TEST_UNKNOWN_AUDIO_DUAL=$media_dir/unknown_audio_dual.mkv"
 echo "SOAR_TEST_HLS_MEDIA=$media_dir/hls_hi/index.m3u8"
 echo "SOAR_TEST_HLS_MASTER=$media_dir/master.m3u8"
 echo "SOAR_TEST_DASH_AUDIO=$media_dir/dash_audio/manifest.mpd"
+echo "SOAR_TEST_WMA_AUDIO=$media_dir/wma_audio.wma"

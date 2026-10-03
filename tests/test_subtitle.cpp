@@ -28,6 +28,7 @@
 #  include <csignal>
 #  include <fcntl.h>
 #  include <sys/resource.h>
+#  include <sys/stat.h>
 #  include <unistd.h>
 #endif
 
@@ -711,6 +712,47 @@ TEST_CASE("ttml_document_cues_basic") {
   CHECK(cues[1].text == "Second cue, wrapped across lines.");
 }
 
+TEST_CASE("ttml attribute extraction refuses mid-word, unquoted and unterminated values") {
+  // tagAttr's three false arms, driven through the <p> reader: a key hit
+  // inside a longer word must not count (the scan continues past it), a
+  // value that is not quoted at all is refused, and a value whose quote
+  // never closes is refused. Each refusal leaves the cue without a usable
+  // begin/end, so the paragraph yields nothing.
+  SUBCASE("a key inside a word is skipped, the namespaced one counts") {
+    // "send=" offers a fake end= first (prev 's' fails the word-boundary
+    // check, so the scan continues); the real attributes ride the "tta:"
+    // prefix (prev ':'), which the boundary check accepts.
+    const std::vector<SubtitleCue> cues = parseSubtitleText(
+        "<p send=\"x\" tta:begin=\"00:00:01\" tta:end=\"00:00:02\">hi</p>",
+        SubtitleFormat::Ttml);
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].begin == 1000ms);
+    CHECK(cues[0].end == 2000ms);
+    CHECK(cues[0].text == "hi");
+  }
+  SUBCASE("an unquoted value never becomes a timestamp") {
+    CHECK(parseSubtitleText("<p begin=00:00:01>hi</p>", SubtitleFormat::Ttml)
+              .empty());
+  }
+  SUBCASE("an unterminated quote never becomes a timestamp") {
+    CHECK(parseSubtitleText("<p begin=\"00:00:01>hi</p>", SubtitleFormat::Ttml)
+              .empty());
+  }
+}
+
+TEST_CASE("ttml_timestamps_accept_minute_second_form_without_hours") {
+  // The shared timestamp parser keeps an hour-less arm (MM:SS, hours
+  // defaulting to 0); the HH:MM:SS shape every other fixture uses never
+  // takes it.
+  const std::vector<SubtitleCue> cues =
+      parseSubtitleText("<p begin=\"05:30\" end=\"05:32\">hi</p>",
+                        SubtitleFormat::Ttml);
+  REQUIRE(cues.size() == 1);
+  CHECK(cues[0].begin == 330000ms);
+  CHECK(cues[0].end == 332000ms);
+  CHECK(cues[0].text == "hi");
+}
+
 TEST_CASE("detect_ttml_documents") {
   SUBCASE("the tt root element decides, with or without a prefix") {
     CHECK(detectSubtitleFormat("<tt xmlns=\"http://www.w3.org/ns/ttml\">\n") ==
@@ -718,6 +760,8 @@ TEST_CASE("detect_ttml_documents") {
     CHECK(detectSubtitleFormat("<tt:tt xmlns:tt=\"urn:x\">\n") ==
           SubtitleFormat::Ttml);
     CHECK(detectSubtitleFormat("<tt>") == SubtitleFormat::Ttml);
+    // The bare root with nothing after it at all (size 3, end of input).
+    CHECK(detectSubtitleFormat("<tt") == SubtitleFormat::Ttml);
   }
   SUBCASE("the xml declaration is skipped, the root is not") {
     CHECK(detectSubtitleFormat("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
@@ -1579,6 +1623,20 @@ TEST_CASE("media_hash_hex") {
   // An empty file still has a size to hash.
   tmp.write("empty.bin", "");
   CHECK(mediaHashHex(tmp.file("empty.bin")) == "0000000000000000");
+
+#ifndef _WIN32
+  // A regular file that exists but refuses to open (mode 000; only a
+  // non-root caller is actually refused) must read as no hash rather than
+  // trip over the failed FILE* — the fopen arm between the is-regular-file
+  // check and the read.
+  if (::geteuid() != 0) {
+    tmp.write("locked.bin", std::string(64, 'x'));
+    const std::string locked = tmp.file("locked.bin");
+    REQUIRE(::chmod(locked.c_str(), 0) == 0);
+    CHECK(mediaHashHex(locked).empty());
+    ::chmod(locked.c_str(), 0644);  // the temp dir's cleanup can unlink it
+  }
+#endif
 
   tmp.write("a.bin", std::string(200, 'x'));
   const std::string ha = mediaHashHex(tmp.file("a.bin"));

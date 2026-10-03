@@ -4386,8 +4386,7 @@ TEST_CASE("audio extraction takes the default track and skips other streams") {
   // h264 + aac(default) + a second audio stream whose codec id was patched to
   // an unknown one. Best-stream selection must land on the decodable AAC
   // track, and the video packets interleaved with it must be skipped rather
-  // than sent to the audio decoder. AAC also carries decoder delay, so the
-  // trailing-frame flush runs here.
+  // than sent to the audio decoder.
   ScratchDir dir;
   const std::string out = dir.file("dual.wav");
 
@@ -4403,6 +4402,36 @@ TEST_CASE("audio extraction takes the default track and skips other streams") {
   const double seconds = static_cast<double>(w.data_bytes) / (16000.0 * 2);
   CHECK(seconds > 2.5);
   CHECK(seconds < 3.6);
+}
+
+TEST_CASE("audio extraction flushes a decoder that holds its last frame") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_WMA_AUDIO", media)) {
+    MESSAGE("SOAR_TEST_WMA_AUDIO not set; skipping flush-tail test");
+    return;
+  }
+  // wmav2 is the one decoder in the kit that still owes a frame when the
+  // stream ends (probe: send all packets, then drain — wmav2 yields one
+  // frame, aac/pcm/mp3/flac/opus yield none, so every other fixture runs
+  // the flush loop with an empty body). The held frame must take the same
+  // resample-and-write path as the streamed ones, and the duration bound
+  // below is what proves it landed in the wav: a dropped tail would come
+  // up one frame (~68 ms) short of the 1 s fixture.
+  ScratchDir dir;
+  const std::string out = dir.file("flush.wav");
+
+  std::string err;
+  REQUIRE(soar::extractAudioToWav(media, out, &err));
+  CHECK(err.empty());
+
+  const WavShape w = readWavShape(out);
+  INFO(w.error);
+  REQUIRE(w.ok);
+  CHECK(w.sample_rate == 16000);
+  CHECK(w.channels == 1);
+  const double seconds = static_cast<double>(w.data_bytes) / (16000.0 * 2);
+  CHECK(seconds > 0.9);
+  CHECK(seconds < 1.15);
 }
 
 TEST_CASE("audio extraction upsamples an 8 kHz source to the 16 kHz wire rate") {
