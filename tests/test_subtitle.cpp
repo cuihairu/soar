@@ -244,6 +244,9 @@ void writeCatalog(const TempDir& root, int port) {
              "MarginV, Effect, Text\n"
              "Dialogue: 0,0:00:01.00,0:00:02.50,Default,,0,0,0,,"
              "ssa alias from the network\n");
+  root.write("dl/movie.ttml",
+             "<tt><body><p begin=\"00:00:01\" end=\"00:00:02.500\">"
+             "ttml from the network</p></body></tt>\n");
   root.write("catalog.tsv",
              "# url<TAB>lang<TAB>title<TAB>ext, one candidate per line\n"
              "\n"
@@ -258,7 +261,8 @@ void writeCatalog(const TempDir& root, int port) {
              + base + "/dl/movie.en.srt\tde\tFive fields\tvtt\tignored-extra\n"
              + base + "/dl/movie.en.srt\tpt\tBr VTT\tWEBVTT\n"
              + base + "/dl/movie.ass\tja\tStyled ASS\tass\n"
-             + base + "/dl/movie.ssa\tko\tStyled SSA\tssa\n");
+             + base + "/dl/movie.ssa\tko\tStyled SSA\tssa\n"
+             + base + "/dl/movie.ttml\tvi\tTTML twin\tttml\n");
 }
 #endif
 
@@ -958,6 +962,103 @@ TEST_CASE("ttml_lookalike_elements_are_not_cues") {
   CHECK(cues[0].end == 2000ms);
 }
 
+TEST_CASE("ttml_tag_scanner_attribute_edges") {
+  // The attribute reader between the tag scanner and the timestamp parser:
+  // values must be quoted, quotes must close, and the attribute name must
+  // start at a word boundary — where ' ', '\t', ':' and '<' all count, so
+  // both a tab after the element name and a namespaced "tt:begin" read as
+  // the real attribute.
+  const auto doc = [](const std::string& open_tag) {
+    return parseSubtitleText(open_tag + "x</p>", SubtitleFormat::Ttml);
+  };
+  SUBCASE("a value that is not quoted is not a value") {
+    CHECK(doc("<p begin=1 end=2>").empty());
+  }
+  SUBCASE("an unclosed quote swallows the rest of the tag") {
+    // The first '>' sits inside the quoted span, so the tag runs to the
+    // payload's end and no second quote ever closes the attribute.
+    CHECK(doc("<p begin=\"1 end=2").empty());
+  }
+  SUBCASE("a tab before the attribute name is a word boundary") {
+    const std::vector<SubtitleCue> tab = doc("<p\tbegin=\"1\" end=\"2\">");
+    REQUIRE(tab.size() == 1);
+    CHECK(tab[0].begin == 1s);
+    CHECK(tab[0].end == 2s);
+  }
+  SUBCASE("a namespaced attribute still carries the timestamp") {
+    const std::vector<SubtitleCue> ns = doc("<p tt:begin=\"1\" end=\"2\">");
+    REQUIRE(ns.size() == 1);
+    CHECK(ns[0].begin == 1s);
+    CHECK(ns[0].end == 2s);
+  }
+  SUBCASE("a tag truncated before its '>' ends the read") {
+    // Two shapes: a document that is nothing but an unterminated tag, and
+    // a good cue followed by a trailing fragment.
+    CHECK(parseSubtitleText("<p begin=\"1\" end=\"2\"", SubtitleFormat::Ttml)
+              .empty());
+    const std::vector<SubtitleCue> tail = parseSubtitleText(
+        "<p begin=\"1\" end=\"2\">kept</p><p begin=\"3\"", SubtitleFormat::Ttml);
+    REQUIRE(tail.size() == 1);
+    CHECK(tail[0].text == "kept");
+  }
+  SUBCASE("a long span to the semicolon is prose, not a reference") {
+    // extractXmlText looks at most 12 characters ahead for the ';': a
+    // longer run stays verbatim instead of being decoded.
+    const std::vector<SubtitleCue> cues =
+        parseTtmlParagraph("a&01234567890123;x");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "a&01234567890123;x");
+  }
+  SUBCASE("an inline element left open at end of file keeps its text") {
+    const std::vector<SubtitleCue> cues = parseTtmlParagraph("a<b>c");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "ac");
+  }
+}
+
+TEST_CASE("ttml_numeric_reference_widths") {
+  SUBCASE("two-byte codepoints come out as two bytes") {
+    const std::vector<SubtitleCue> cues = parseTtmlParagraph("&#233;&#xFF;");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "\xC3\xA9\xC3\xBF");
+  }
+  SUBCASE("hex digits must follow the x") {
+    // An empty digit run and a non-hex character both leave the whole
+    // reference verbatim.
+    const std::vector<SubtitleCue> cues = parseTtmlParagraph("&#x;&#x1g;");
+    REQUIRE(cues.size() == 1);
+    CHECK(cues[0].text == "&#x;&#x1g;");
+  }
+}
+
+TEST_CASE("ttml_timestamps_reject_bad_fields_in_every_segment") {
+  // parseTimestamp runs behind the TTML reader without the SRT cue
+  // scanner's line-shape gate, so the raw field rules show here directly:
+  // every field position of every segment count must refuse a non-digit.
+  const auto one = [](const std::string& begin, const std::string& end) {
+    return parseSubtitleText(
+        "<p begin=\"" + begin + "\" end=\"" + end + "\">x</p>",
+        SubtitleFormat::Ttml);
+  };
+  SUBCASE("a non-digit field rejects in the three- and two-field forms") {
+    CHECK(one("x1:02:03", "00:00:04").empty());
+    CHECK(one("01:x2:03", "00:00:04").empty());
+    CHECK(one("01:02:x3", "00:00:04").empty());
+    CHECK(one("x0:02", "00:04").empty());
+    CHECK(one("00:x2", "00:04").empty());
+  }
+  SUBCASE("minute-second fractions pad, truncate and reject like hours") {
+    CHECK(one("00:02.", "00:03").empty());   // empty fraction
+    CHECK(one("00:02.x", "00:03").empty());  // junk in the fraction
+    const std::vector<SubtitleCue> trunc = one("00:02.1234", "00:03");
+    REQUIRE(trunc.size() == 1);
+    CHECK(trunc[0].begin == 2123ms);
+    const std::vector<SubtitleCue> pad = one("00:02.1", "00:03");
+    REQUIRE(pad.size() == 1);
+    CHECK(pad[0].begin == 2100ms);
+  }
+}
+
 // =========================================================================
 // readSubtitleFile
 // =========================================================================
@@ -1602,7 +1703,7 @@ TEST_CASE("search_finds_candidates_and_fetch_downloads_one") {
   // well formed — anything else is a 400).
   const std::vector<SubtitleCandidate> c =
       provider.findCandidates(MediaSource{root.file("movie.mkv"), {}});
-  REQUIRE(c.size() == 9);  // junk, https and bitmap-format lines are skipped
+  REQUIRE(c.size() == 10);  // junk, https and bitmap-format lines are skipped
   CHECK(c[0].path == srv.base_url + "/dl/movie.en.srt");
   CHECK(c[0].language == "en");
   CHECK(c[0].title == "Movie EN (downloaded)");
@@ -1627,6 +1728,8 @@ TEST_CASE("search_finds_candidates_and_fetch_downloads_one") {
   CHECK(c[7].format == SubtitleFormat::Ass);
   CHECK(c[8].title == "Styled SSA");
   CHECK(c[8].format == SubtitleFormat::Ass);  // .ssa shares the ASS mapping
+  CHECK(c[9].title == "TTML twin");
+  CHECK(c[9].format == SubtitleFormat::Ttml);
 
   SUBCASE("fetch returns text the core parser accepts") {
     std::string out;
@@ -1663,7 +1766,7 @@ TEST_CASE("search_finds_candidates_and_fetch_downloads_one") {
     HttpSubtitleConfig cfg2 = cfg;
     cfg2.endpoint = srv.base_url + "/search?src=unit";
     p2.configure(cfg2);
-    CHECK(p2.findCandidates(MediaSource{root.file("movie.mkv"), {}}).size() == 9);
+    CHECK(p2.findCandidates(MediaSource{root.file("movie.mkv"), {}}).size() == 10);
   }
 #endif
 }
@@ -2075,7 +2178,7 @@ TEST_CASE("answers_without_content_length_are_read_to_eof") {
   provider.configure(cfg);
   const std::vector<SubtitleCandidate> c =
       provider.findCandidates(MediaSource{root.file("movie.mkv"), {}});
-  REQUIRE(c.size() == 9);
+  REQUIRE(c.size() == 10);
 
   std::string out;
   REQUIRE(provider.fetch(c[0], out));
@@ -2192,6 +2295,33 @@ TEST_CASE("unwritable_store_targets_fail_cleanly") {
     cand.title = std::string(300, 'a') + ".srt";
     CHECK(storeExternalSubtitle(tmp.path, cand, kText).empty());
   }
+}
+
+TEST_CASE("an unresolvable_temp_directory_fails_the_store_silently") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  // The no-directory overload resolves the system temp first; when even
+  // that cannot be resolved (TMPDIR pointing somewhere that does not
+  // exist), the store gives up with an empty path rather than throwing
+  // or inventing a location.
+  const char* old_tmp = std::getenv("TMPDIR");
+  const bool had_tmp = old_tmp != nullptr;
+  const std::string saved_tmp = had_tmp ? old_tmp : "";
+  ::setenv("TMPDIR", "/nonexistent-soar-tmp", /*overwrite=*/1);
+  SubtitleCandidate cand;
+  cand.title = "orphan";
+  cand.format = SubtitleFormat::SubRip;
+  CHECK(storeExternalSubtitle("", cand,
+                              "1\n00:00:01,000 --> 00:00:02,000\nx\n")
+            .empty());
+  if (had_tmp) {
+    ::setenv("TMPDIR", saved_tmp.c_str(), 1);
+  } else {
+    ::unsetenv("TMPDIR");
+  }
+#endif
 }
 
 // ---------------------------------------------------------------------------

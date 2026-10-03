@@ -3325,6 +3325,358 @@ TEST_CASE("a container whose default subtitle stream has no decoder fails to ope
   backend->close();
 }
 
+TEST_CASE("exporting embedded subtitle tracks yields SubRip text") {
+  // The export pass (backend.h exportSubtitleText): an independent reopen
+  // of the same source, every cue on that stream decoded, SubRip assembly.
+  // The dual fixture carries both rect shapes in one container — the
+  // default subrip stream and the styled ASS stream — plus non-subtitle
+  // stream ids that must share the "not an embedded subtitle track"
+  // refusal with out-of-range ids.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_DUAL", media)) {
+    MESSAGE("SOAR_TEST_SUBS_DUAL not set; skipping subtitle export test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  soar::TrackId text_id = -1;
+  soar::TrackId ass_id = -1;
+  soar::TrackId video_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle) {
+      if (t.codec == "ass" || t.codec == "ssa") {
+        ass_id = t.id;
+      } else {
+        text_id = t.id;
+      }
+    } else if (video_id < 0) {
+      video_id = t.id;
+    }
+  }
+  REQUIRE(text_id >= 0);
+  REQUIRE(ass_id >= 0);
+  REQUIRE(video_id >= 0);
+
+  // The subrip stream: a full SubRip block with the fixture's own timing.
+  std::string srt;
+  REQUIRE(backend->exportSubtitleText(text_id, srt));
+  CHECK(srt.find("1\n00:00:00,000 --> 00:00:02,000\nAlpha One") !=
+        std::string::npos);
+  CHECK(srt.find("Alpha Two") != std::string::npos);
+
+  // The ASS stream: rects arrive as ass and go through assDialogueText.
+  std::string ass_srt;
+  REQUIRE(backend->exportSubtitleText(ass_id, ass_srt));
+  CHECK(ass_srt.find("Red Blanket") != std::string::npos);
+  CHECK(ass_srt.find("--> 00:00:04,000") != std::string::npos);
+
+  // Refusals: a non-subtitle id and ids outside the stream table share
+  // one answer, and the output never carries a previous export's text.
+  std::string nope;
+  CHECK_FALSE(backend->exportSubtitleText(video_id, nope));
+  CHECK(nope.empty());
+  CHECK(backend->lastError().find("not an embedded subtitle track") !=
+        std::string::npos);
+  CHECK_FALSE(backend->exportSubtitleText(-1, nope));
+  CHECK(nope.empty());
+  CHECK_FALSE(backend->exportSubtitleText(99, nope));
+  CHECK(nope.empty());
+  backend->close();
+}
+
+TEST_CASE("export fails without media and when the source vanishes") {
+  // Two failure legs of the export pass that need no broken bytes: the
+  // unopened guard, and the reopen — the pass has its own input, so
+  // deleting the file behind the open handle breaks only the export.
+  auto fresh = soar::makeFFmpegBackend();
+  std::string srt;
+  CHECK_FALSE(fresh->exportSubtitleText(0, srt));
+  CHECK(srt.empty());
+  CHECK(fresh->lastError().find("no media opened") != std::string::npos);
+  fresh->close();
+
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_DUAL", media)) {
+    MESSAGE("SOAR_TEST_SUBS_DUAL not set; skipping vanished-source export test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  soar::TrackId text_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle && t.codec != "ass" &&
+        t.codec != "ssa") {
+      text_id = t.id;
+      break;
+    }
+  }
+  REQUIRE(text_id >= 0);
+  std::error_code ec;
+  std::filesystem::remove(local, ec);
+  REQUIRE_FALSE(ec);
+
+  CHECK_FALSE(backend->exportSubtitleText(text_id, srt));
+  CHECK(srt.empty());
+  CHECK(backend->lastError().find("cannot reopen") != std::string::npos);
+  backend->close();
+}
+
+TEST_CASE("exporting an unknown-codec subtitle track fails at the reopen probe") {
+  // The §4 pattern at the export boundary: same-length CodecID patch
+  // S_TEXT/ASS -> S_TEXT/XXX (EBML sizes stay valid). The track still
+  // reports as a subtitle stream, so the embedded check passes, but the
+  // reopened input carries codec id NONE: the header probe does not invent
+  // one and the pass fails with its reopen-side message.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_DUAL", media)) {
+    MESSAGE("SOAR_TEST_SUBS_DUAL not set; skipping broken-codec export test");
+    return;
+  }
+  ScratchDir dir;
+  std::string bytes;
+  {
+    std::ifstream in(media, std::ios::binary);
+    REQUIRE(in);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    bytes = ss.str();
+  }
+  const std::size_t codec_id = bytes.find("S_TEXT/ASS");
+  REQUIRE(codec_id != std::string::npos);
+  bytes.replace(codec_id, 10, "S_TEXT/XXX");
+  dir.write("broken.mkv", bytes);
+  const std::string local = dir.file("broken.mkv");
+  REQUIRE_FALSE(local.empty());
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  soar::TrackId broken_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle && t.codec != "srt") {
+      broken_id = t.id;
+      break;
+    }
+  }
+  REQUIRE(broken_id >= 0);
+
+  std::string srt;
+  CHECK_FALSE(backend->exportSubtitleText(broken_id, srt));
+  CHECK(srt.empty());
+  CHECK(backend->lastError().find("exportSubtitleText") != std::string::npos);
+  backend->close();
+}
+
+TEST_CASE("exporting a track that yields no text fails with the empty-track answer") {
+  // Every payload stripped to nothing: patch the visible cue of the
+  // empty-payload fixture to another override-only string of the same
+  // length (7 bytes in place — EBML sizes untouched). Both events then
+  // decode to empty text, the loop emits no cue, and no earlier error was
+  // set, so the pass reports the cue_count==0 answer.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_EMPTY", media)) {
+    MESSAGE("SOAR_TEST_SUBS_EMPTY not set; skipping empty-cue export test");
+    return;
+  }
+  ScratchDir dir;
+  std::string bytes;
+  {
+    std::ifstream in(media, std::ios::binary);
+    REQUIRE(in);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    bytes = ss.str();
+  }
+  const std::size_t visible = bytes.find("Visible");
+  REQUIRE(visible != std::string::npos);
+  bytes.replace(visible, 7, " {\\i1} ");  // strips to nothing after braces
+  dir.write("empty_only.mkv", bytes);
+  const std::string local = dir.file("empty_only.mkv");
+  REQUIRE_FALSE(local.empty());
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  soar::TrackId sub_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle) {
+      sub_id = t.id;
+      break;
+    }
+  }
+  REQUIRE(sub_id >= 0);
+
+  std::string srt;
+  CHECK_FALSE(backend->exportSubtitleText(sub_id, srt));
+  CHECK(srt.empty());
+  CHECK(backend->lastError().find("no text cues") != std::string::npos);
+  backend->close();
+}
+
+TEST_CASE("exporting a mov_text track yields the cues regardless of rect shape") {
+  // mov_text is the one fixture whose rect shape varies by FFmpeg build
+  // (raw per-line text rects on older builds, ass-wrapped on newer), so
+  // the assertions stay on content: the same three cues as the srt
+  // source, through whichever arm the decoder feeds.
+  std::string media;
+  if (!envMedia("SOAR_TEST_MOVTEXT_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MOVTEXT_MEDIA not set; skipping mov_text export test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mp4");
+  REQUIRE_FALSE(local.empty());
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+  soar::TrackId sub_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle) {
+      sub_id = t.id;
+      break;
+    }
+  }
+  REQUIRE(sub_id >= 0);
+
+  std::string srt;
+  REQUIRE(backend->exportSubtitleText(sub_id, srt));
+  CHECK(srt.find("Hello") != std::string::npos);
+  CHECK(srt.find("World") != std::string::npos);
+  CHECK(srt.find("Two") != std::string::npos);
+  CHECK(srt.find("Lines") != std::string::npos);
+  CHECK(srt.find(" --> ") != std::string::npos);
+  backend->close();
+}
+
+TEST_CASE("exportSubtitleText exercises the duration fallback to kDefaultCueDuration") {
+  // The export pass falls back to kDefaultCueDuration when both the
+  // ASS end_display_time and the packet duration are missing or invalid.
+  // The subs_media.mkv fixture (SRT in MKV) produces packets where the
+  // srt decoder leaves packet duration at 0/AV_NOPTS_VALUE, triggering
+  // the fallback at line 1867.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping duration fallback export test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  soar::TrackId text_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle && t.codec != "ass" &&
+        t.codec != "ssa") {
+      text_id = t.id;
+      break;
+    }
+  }
+  REQUIRE(text_id >= 0);
+
+  std::string srt;
+  REQUIRE(backend->exportSubtitleText(text_id, srt));
+  // The fixture has 3 cues: "Hello", "World", "Two\nLines"
+  CHECK(srt.find("Hello") != std::string::npos);
+  CHECK(srt.find("World") != std::string::npos);
+  CHECK(srt.find("Two") != std::string::npos);
+  CHECK(srt.find("Lines") != std::string::npos);
+  // Verify timestamp format includes the fallback duration path.
+  CHECK(srt.find(" --> ") != std::string::npos);
+  backend->close();
+}
+
+TEST_CASE("exportSubtitleText handles decode failure (got_sub == 0) gracefully") {
+  // When avcodec_decode_subtitle2 returns got_sub == 0 (no output for a
+  // valid packet), the pass must skip that packet and continue decoding
+  // subsequent ones instead of aborting the whole export.
+  // The subs_junk_media.mkv fixture contains cues with empty/override-only
+  // payloads that decode to got_sub == 0 or empty text, plus valid cues.
+  std::string media;
+  if (!envMedia("SOAR_TEST_JUNK_SRT_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_JUNK_SRT_MEDIA not set; skipping decode-failure export test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  soar::TrackId text_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle && t.codec != "ass" &&
+        t.codec != "ssa") {
+      text_id = t.id;
+      break;
+    }
+  }
+  REQUIRE(text_id >= 0);
+
+  std::string srt;
+  // The export should succeed (it finds valid cues among the junk) and
+  // produce the valid ones, skipping the decode-failure packets.
+  // The junk fixture has cues like "Hard\nbreak", "Trailing backslash", etc.
+  REQUIRE(backend->exportSubtitleText(text_id, srt));
+  CHECK(srt.find("Hard") != std::string::npos);
+  CHECK(srt.find("Trailing") != std::string::npos);
+  backend->close();
+}
+
+TEST_CASE("exportSubtitleText covers both SUBTITLE_TEXT and SUBTITLE_ASS rect branches in one pass") {
+  // The dual subtitle fixture carries both a subrip stream (SUBTITLE_TEXT
+  // rects) and an ASS stream (SUBTITLE_ASS rects via assDialogueText).
+  // Running export on both streams in one test ensures both rect-type
+  // branches are hit in a single coverage run, which helps gcov's branch
+  // tracking for the if/else-if chain at lines 1880-1883.
+  std::string media;
+  if (!envMedia("SOAR_TEST_SUBS_DUAL", media)) {
+    MESSAGE("SOAR_TEST_SUBS_DUAL not set; skipping dual-rect export test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string local = dir.copyIn(media, "movie.mkv");
+  REQUIRE_FALSE(local.empty());
+
+  auto backend = soar::makeFFmpegBackend();
+  REQUIRE(backend->open(soar::MediaSource{local}));
+
+  soar::TrackId text_id = -1;
+  soar::TrackId ass_id = -1;
+  for (const auto& t : backend->mediaInfo().tracks) {
+    if (t.type == soar::TrackType::Subtitle) {
+      if (t.codec == "ass" || t.codec == "ssa") {
+        ass_id = t.id;
+      } else {
+        text_id = t.id;
+      }
+    }
+  }
+  REQUIRE(text_id >= 0);
+  REQUIRE(ass_id >= 0);
+
+  std::string srt;
+  REQUIRE(backend->exportSubtitleText(text_id, srt));
+  CHECK(srt.find("Alpha One") != std::string::npos);
+  CHECK(srt.find("Alpha Two") != std::string::npos);
+
+  std::string ass_srt;
+  REQUIRE(backend->exportSubtitleText(ass_id, ass_srt));
+  CHECK(ass_srt.find("Red Blanket") != std::string::npos);
+  CHECK(ass_srt.find("--> 00:00:04,000") != std::string::npos);
+
+  backend->close();
+}
+
 TEST_CASE("a local source with a cache_dir ignores the cache") {
   // backend.h contract: MediaSource::cache_dir arms the disk cache only
   // for http:// URLs and is ignored for local paths. Open a local file

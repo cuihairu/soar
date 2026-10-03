@@ -326,6 +326,32 @@ TEST_CASE("loadExternalSubtitle fails safely without a backend") {
   CHECK(id == 7);  // untouched: the facade never even reached a backend
 }
 
+TEST_CASE("exportSubtitleText reports why the null backend cannot") {
+  Fixture fx;
+  std::string srt = "stale";
+
+  // Before open: the same "no media" answer every other control call
+  // gives. The null backend clears the output first, so a failed export
+  // can never leave the caller holding a previous track's text.
+  CHECK_FALSE(fx.player.exportSubtitleText(2, srt));
+  CHECK(srt.empty());
+  CHECK(fx.player.lastError().find("no media opened") != std::string::npos);
+
+  // With media open it still refuses, but for the real reason: there are
+  // no container streams to demux a subtitle track out of.
+  REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));
+  CHECK_FALSE(fx.player.exportSubtitleText(2, srt));
+  CHECK(srt.empty());
+  CHECK(fx.player.lastError().find("FFmpeg") != std::string::npos);
+}
+
+TEST_CASE("exportSubtitleText fails safely without a backend") {
+  soar::Player player{nullptr};
+  std::string srt = "stale";
+  CHECK_FALSE(player.exportSubtitleText(0, srt));
+  CHECK(srt == "stale");  // untouched: the facade never even reached a backend
+}
+
 TEST_CASE("events carry the state and position at emit time") {
   Fixture fx;
   REQUIRE(fx.player.open(soar::MediaSource{"asset://sample"}));

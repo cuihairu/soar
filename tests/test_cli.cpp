@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -730,6 +731,159 @@ if mode == "substl":
             sys.exit(0)
     sys.exit(4)
 
+if mode == "subsembed":
+    # The embedded-track [translate] pick against a chat endpoint that
+    # answers 500: the pick demuxes the container's subrip stream out
+    # (the POST the fixture logs proves the export ran), the translate
+    # fails, and the toast arm runs. Then the harness overwrites the
+    # media file under the still-open player (argv[4] played, argv[5]
+    # audio-only), and the same pick fails earlier — at the export's
+    # reopen probe. Neither attempt may load a track, so the selection
+    # trail never leaves the container's stream range.
+    time.sleep(2.2)
+    focus(); key(d.keysym_to_keycode(0x20))  # space: wake the HUD, pause
+    time.sleep(0.8)
+
+    def sclick(x, y):
+        moved(x, y); time.sleep(0.15)
+        button(1); time.sleep(0.5)
+
+    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    time.sleep(0.9)
+    sclick(459, 190)   # Track combo: popup = Off / srt / sep / [translate]
+    time.sleep(1.0)
+    sclick(460, 274)   # the [translate] row -> export + 500 -> toast
+    time.sleep(2.0)    # room for the export + POST round trip
+    # Swap the media under the open player: the next export reopens the
+    # path, probes an audio-only file and fails before any translation.
+    if len(sys.argv) > 5:
+        import shutil
+        shutil.copyfile(sys.argv[5], sys.argv[4])
+    time.sleep(0.5)
+    sclick(459, 190)   # reopen the combo (the row is still offered: the
+    time.sleep(1.0)    # failed translate left the id unrecorded)
+    sclick(460, 274)   # the [translate] row again -> export-fail toast
+    time.sleep(1.5)
+    sclick(200, 400)   # bare video area: dismiss any popup
+    time.sleep(0.5)
+    sclick(637, 495)   # close the settings page
+    time.sleep(0.5)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        # Same popup-wedge defense as subsdl: with a popup up, every
+        # key — q included — is swallowed by the app.
+        if moved(200, 400):
+            button(1)
+        time.sleep(0.7)
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
+if mode == "subsdl404":
+    # A dead catalog row and a live translator behind the same settings
+    # combo. Pick 1 hits [download] for a URL the catalog server 404s —
+    # the fetch-fail toast, nothing loaded, the row still offered on
+    # reopen. Pick 2 hits [translate] on the embedded srt row: export,
+    # batch chat over the ok fixture, store, load — the selection trail
+    # ends on the new external id. Coordinates probed under
+    # SOAR_UI_BITMAP_FONT=1 (same popup slot arithmetic as subsdl and
+    # substl: the [download] row keeps its 4-row-popup slot, and the
+    # [translate] row sits one selectable-plus-separator lower with both
+    # candidate-list separators above it).
+    time.sleep(2.2)
+    focus(); key(d.keysym_to_keycode(0x20))  # space: wake the HUD, pause
+    time.sleep(0.8)
+
+    def sclick(x, y):
+        moved(x, y); time.sleep(0.15)
+        button(1); time.sleep(0.5)
+
+    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    time.sleep(0.9)
+    sclick(459, 190)   # Track combo: Off / srt / sep / [download] / sep /
+    time.sleep(1.0)    # [translate]
+    sclick(460, 274)   # the [download] row -> 404 -> fetch-fail toast
+    time.sleep(2.0)    # room for the loopback 404 round trip
+    sclick(459, 190)   # reopen the combo (the dead row is still offered)
+    time.sleep(1.0)
+    sclick(460, 307)   # the [translate] row -> export + chat + store + load
+    time.sleep(3.0)    # room for the chat round trip + store + load
+    sclick(200, 400)   # bare video area: dismiss any popup
+    time.sleep(0.5)
+    sclick(637, 495)   # close the settings page
+    time.sleep(0.5)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        # Same popup-wedge defense as subsdl: with a popup up, every
+        # key — q included — is swallowed by the app.
+        if moved(200, 400):
+            button(1)
+        time.sleep(0.7)
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
+if mode == "subcycle":
+    # A dual-subtitle fixture whose second track was codec-patched to an
+    # unregistered id (same S_TEXT/ASS -> S_TEXT/XXX patch the backend
+    # suite uses). The settings combo still lists both rows; picking the
+    # broken one fails at the backend (switch-failed toast), and C's
+    # cycle first selects the good track, then walks onto the broken one
+    # and fails the same way. The patched codec also denies the track a
+    # [translate] row — the translatable scan's not-a-text-codec arm —
+    # which is why the translate envs are set for this mode's run.
+    time.sleep(2.2)
+    focus(); key(d.keysym_to_keycode(0x20))  # space: wake the HUD, pause
+    time.sleep(0.8)
+
+    def sclick(x, y):
+        moved(x, y); time.sleep(0.15)
+        button(1); time.sleep(0.5)
+
+    sclick(637, 495)   # Sub button: open the page (its combo build runs
+    time.sleep(0.9)    # the translatable scan over the patched codec)
+    sclick(459, 190)   # Track combo: Off / srt / (patched) row 3 ...
+    time.sleep(1.0)
+    sclick(460, 267)   # ... the patched track row -> selectTrack fails
+    time.sleep(1.0)
+    sclick(200, 400)   # bare video area: dismiss the popup
+    time.sleep(0.5)
+    sclick(637, 495)   # close the settings page
+    time.sleep(0.5)
+    focus(); key(d.keysym_to_keycode(0x63))  # C: cycle selects the srt track
+    time.sleep(0.6)
+    focus(); key(d.keysym_to_keycode(0x63))  # C: onto the patched track ->
+    time.sleep(0.6)                           # switch-failed toast
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        if moved(200, 400):
+            button(1)
+        time.sleep(0.7)
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
 if mode == "sidecar":
     # The sidecar-pick case over a private copy of the subs fixture: three
     # looks at the settings page's track combo. Every popup is closed by a
@@ -1347,6 +1501,58 @@ TEST_CASE("unknown backend name exits with 2") {
   CHECK(run.exit_code == 2);
   CHECK(run.output.find("Unknown backend type: walrus") != std::string::npos);
   CHECK(run.output.find("Available backends: null") != std::string::npos);
+}
+
+TEST_CASE("--version prints the build version and exits with 0") {
+  const auto run = runCli({"--version"});
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("soar ") != std::string::npos);
+}
+
+TEST_CASE("a malformed magnet fails fast with the torrent parse error") {
+  // No xt= parameter: the parse half of the torrent start rejects the URI
+  // before any session or swarm setup, so this stays a millisecond-scale
+  // failure (not the 60s metadata wait of a well-formed hash).
+  const auto run = runCli({"--headless", "magnet:?dn=broken"});
+  CHECK(run.exit_code == 1);
+  CHECK(run.output.find("torrent: cannot parse magnet URI") != std::string::npos);
+}
+
+TEST_CASE("a missing .torrent file fails fast with the torrent parse error") {
+  // The file-extension arm of the positional check, and the default store
+  // (temp directory) branch the flags case below skips.
+  const auto run = runCli({"--headless", "/nonexistent/soar-nope.torrent"});
+  CHECK(run.exit_code == 1);
+  CHECK(run.output.find("torrent: cannot parse /nonexistent/soar-nope.torrent") !=
+        std::string::npos);
+}
+
+TEST_CASE("torrent flags reach the stream params before the parse fails") {
+  // --torrent-store skips the temp-dir default, --torrent-peer and
+  // --torrent-index land in the params, --torrent-list sets the listing
+  // flag — all observable through one malformed magnet that still fails
+  // fast afterwards.
+  std::string tmpl = "/tmp/soar_cli_torrent_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const auto run = runCli({"--headless",
+                           std::string("--torrent-store=") + tmp,
+                           "--torrent-peer=127.0.0.1:1",
+                           "--torrent-index=0",
+                           "--torrent-list",
+                           "magnet:?dn=broken"});
+  CHECK(run.exit_code == 1);
+  CHECK(run.output.find("torrent: cannot parse magnet URI") != std::string::npos);
+}
+
+TEST_CASE("a malformed magnet in window mode fails before the window opens") {
+  // Window mode takes the startAsync arm: the synchronous prepare half
+  // still rejects the URI, so the run exits 1 without ever reaching SDL.
+  const auto run = runCli({"magnet:?dn=broken"});
+  CHECK(run.exit_code == 1);
+  CHECK(run.output.find("torrent: cannot parse magnet URI") != std::string::npos);
 }
 
 TEST_CASE("headless run over the null backend succeeds") {
@@ -2309,6 +2515,452 @@ TEST_CASE("windowed FFmpeg run translates a loaded subtitle track") {
     }
     CHECK(found);
   }
+  std::filesystem::remove_all(scratch, ec);
+#endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run rejects an embedded subtitle translate over a failing chat endpoint") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  MESSAGE("app built without the ImGui overlay; skipping the embedded-translate window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the embedded-translate window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the embedded-translate window test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping the embedded-translate window test");
+    return;
+  }
+  std::string audio_only;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", audio_only)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the embedded-translate window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the embedded-translate window test");
+    return;
+  }
+
+  // The embedded-track [translate] pick over a chat fixture that answers
+  // every POST with 500: the pick demuxes the container's subrip stream
+  // out (the POST the fixture logs proves the export ran), the translate
+  // fails and the run degrades to a toast. The injector then overwrites
+  // the played copy with the audio-only fixture — the next pick reopens
+  // the path and dies earlier, at the export's reopen probe — so both
+  // failure arms run and neither may load a track.
+  const std::string scratch = "/tmp/soar_subsembed_x11_" + std::to_string(::getpid());
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  REQUIRE(std::filesystem::create_directories(scratch, ec));
+  REQUIRE_FALSE(ec);
+  const std::string played = scratch + "/feature_film.mkv";
+  std::filesystem::copy_file(media, played,
+                             std::filesystem::copy_options::overwrite_existing, ec);
+  REQUIRE_FALSE(ec);
+  const auto chat = test_servers::startChatServer(scratch, "status500", "sembed-chat-key");
+  REQUIRE(chat.pid > 0);
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the embedded-translate window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "subsembed", played.c_str(), audio_only.c_str(),
+             static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const std::string state_home = "/tmp/soar_subsembed_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const ScopedEnv tr_endpoint_env("SOAR_TRANSLATE_ENDPOINT", chat.base_url.c_str());
+  const ScopedEnv tr_key_env("SOAR_TRANSLATE_API_KEY", "sembed-chat-key");
+  const ScopedEnv tr_model_env("SOAR_TRANSLATE_MODEL", "sembed-model");
+  const ScopedEnv tr_lang_env("SOAR_TRANSLATE_LANGUAGE", "Klingon");
+  // Ctor arm: the translator's timeout override (no SOAR_SUBTITLE_*
+  // endpoint in this run — the menu offers no [download] section).
+  const ScopedEnv tr_timeout_env("SOAR_TRANSLATE_TIMEOUT_MS", "2500");
+  const auto run = runCli({"--backend=ffmpeg", played});
+
+  std::printf("x11 embedded-translate window test: cli exit=%d, output:\n%s\n",
+              run.exit_code, run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(scratch, ec);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  CHECK(run.output.find("event: state=1") != std::string::npos);
+  // The export ran: the numbered batch reached the chat fixture, which
+  // logs every POST before answering 500 (the fixture's own record of the
+  // traffic; the product never logs the key itself).
+  {
+    std::ifstream log(scratch + "/requests.log");
+    REQUIRE(log.good());
+    std::string line;
+    bool found = false;
+    while (std::getline(log, line)) {
+      if (line.find("sembed-model") != std::string::npos) {
+        found = true;
+        CHECK(line.find("Bearer sembed-chat-key") != std::string::npos);
+        CHECK(line.find("1. Hello") != std::string::npos);
+      }
+    }
+    CHECK(found);
+  }
+  // Neither attempt loaded a track: a successful translate would have
+  // landed on an external id past the container's stream range (the subs
+  // fixture's nb_streams = 4, so the first external id is 4). The toast
+  // arms are the observable contract; the selection trail must stay put.
+  CHECK(run.output.find("selected(video=0,audio=1,sub=4)") == std::string::npos);
+  std::filesystem::remove_all(scratch, ec);
+#endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run keeps a dead catalog row and still translates the embedded track") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  MESSAGE("app built without the ImGui overlay; skipping the catalog-404 window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the catalog-404 window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the catalog-404 window test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping the catalog-404 window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the catalog-404 window test");
+    return;
+  }
+
+  // A catalog row whose URL 404s, and a live translator behind the same
+  // combo: pick 1 hits [download] and fetch-fails (nothing loaded, the row
+  // still offered on reopen); pick 2 hits [translate] on the embedded srt
+  // row — export, batch chat over the ok fixture, store, load. The server
+  // reads catalog.tsv per request, so it starts before the file exists.
+  const std::string scratch = "/tmp/soar_subsd404_x11_" + std::to_string(::getpid());
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  REQUIRE(std::filesystem::create_directories(scratch, ec));
+  REQUIRE_FALSE(ec);
+  const std::string played = scratch + "/feature_film.mkv";
+  std::filesystem::copy_file(media, played,
+                             std::filesystem::copy_options::overwrite_existing, ec);
+  REQUIRE_FALSE(ec);
+  const auto srv = test_servers::startSubtitleServer(scratch, "catalog", "subsd404-key");
+  REQUIRE(srv.pid > 0);
+  {
+    std::ofstream catalog(scratch + "/catalog.tsv", std::ios::binary);
+    REQUIRE(catalog.good());
+    catalog << "# size hash name\n"
+            << srv.base_url << "/dl/missing.en.srt\ten\tDead catalog row\tsrt\n";
+  }
+  const auto chat = test_servers::startChatServer(scratch, "ok", "subsd404-chat-key");
+  REQUIRE(chat.pid > 0);
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the catalog-404 window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "subsdl404", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const std::string state_home = "/tmp/soar_subsd404_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const ScopedEnv endpoint_env("SOAR_SUBTITLE_ENDPOINT", (srv.base_url + "/search").c_str());
+  const ScopedEnv key_env("SOAR_SUBTITLE_API_KEY", "subsd404-key");
+  // Ctor arm: the fetch timeout override.
+  const ScopedEnv sub_timeout_env("SOAR_SUBTITLE_TIMEOUT_MS", "3000");
+  const ScopedEnv tr_endpoint_env("SOAR_TRANSLATE_ENDPOINT", chat.base_url.c_str());
+  const ScopedEnv tr_key_env("SOAR_TRANSLATE_API_KEY", "subsd404-chat-key");
+  const ScopedEnv tr_model_env("SOAR_TRANSLATE_MODEL", "subsd404-model");
+  const ScopedEnv tr_lang_env("SOAR_TRANSLATE_LANGUAGE", "Klingon");
+  const auto run = runCli({"--backend=ffmpeg", played});
+
+  std::printf("x11 catalog-404 window test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(scratch, ec);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  CHECK(run.output.find("event: state=1") != std::string::npos);
+  // The translate loaded on the first external id (nb_streams = 4): the
+  // dead download never consumed one, so id 4 is the translation and no
+  // id 5 exists anywhere in the trail — [download] failed and [translate]
+  // succeeded, in that order, or the numbers would differ.
+  const std::size_t translated_on = run.output.find("selected(video=0,audio=1,sub=4)");
+  CHECK(translated_on != std::string::npos);
+  CHECK(run.output.find("selected(video=0,audio=1,sub=5)") == std::string::npos);
+  // The batch reached the chat fixture: the export ran over loopback HTTP
+  // and the translator answered.
+  {
+    std::ifstream log(scratch + "/requests.log");
+    REQUIRE(log.good());
+    std::string line;
+    bool found = false;
+    while (std::getline(log, line)) {
+      if (line.find("subsd404-model") != std::string::npos) {
+        found = true;
+        CHECK(line.find("1. Hello") != std::string::npos);
+      }
+    }
+    CHECK(found);
+  }
+  // Nothing after the pick may have turned subtitles back off — a stray
+  // Off pick from a mis-aimed click would show up here.
+  if (translated_on != std::string::npos) {
+    CHECK(run.output.find("selected(video=0,audio=1,sub=-1)", translated_on) ==
+          std::string::npos);
+  }
+  std::filesystem::remove_all(scratch, ec);
+#endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run refuses a codec-broken subtitle track from the menu and the C cycle") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  MESSAGE("app built without the ImGui overlay; skipping the broken-track window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the broken-track window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the broken-track window test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_SUBS_DUAL", media)) {
+    MESSAGE("SOAR_TEST_SUBS_DUAL not set; skipping the broken-track window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the broken-track window test");
+    return;
+  }
+
+  // Same-length CodecID patch on a copy (S_TEXT/ASS -> S_TEXT/XXX, the
+  // backend suite's patch): the container still opens on its healthy
+  // default subrip stream, the second subtitle track keeps its row in the
+  // menu — but selecting it fails at the backend (switch-failed toast),
+  // and C's cycle walks onto the same broken track after first selecting
+  // the good one. The patched codec also denies the track a [translate]
+  // row: the translatable scan's not-a-text-codec arm, which is why the
+  // translate envs are configured for this run's menu.
+  const std::string scratch = "/tmp/soar_subscycle_x11_" + std::to_string(::getpid());
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  REQUIRE(std::filesystem::create_directories(scratch, ec));
+  REQUIRE_FALSE(ec);
+  std::string bytes;
+  {
+    std::ifstream in(media, std::ios::binary);
+    REQUIRE(in);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    bytes = ss.str();
+  }
+  const std::size_t codec_id = bytes.find("S_TEXT/ASS");
+  REQUIRE(codec_id != std::string::npos);
+  bytes.replace(codec_id, 10, "S_TEXT/XXX");
+  const std::string played = scratch + "/broken.mkv";
+  {
+    std::ofstream out(played, std::ios::binary);
+    REQUIRE(out.good());
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  }
+  // Env honesty for the translate config: the [translate] row is offered
+  // for the healthy srt track (never picked), and the broken codec is
+  // filtered out — the menu build is the assertion surface.
+  const auto chat = test_servers::startChatServer(scratch, "ok", "subscycle-chat-key");
+  REQUIRE(chat.pid > 0);
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the broken-track window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "subcycle", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const std::string state_home = "/tmp/soar_subscycle_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const ScopedEnv tr_endpoint_env("SOAR_TRANSLATE_ENDPOINT", chat.base_url.c_str());
+  const ScopedEnv tr_key_env("SOAR_TRANSLATE_API_KEY", "subscycle-chat-key");
+  const ScopedEnv tr_model_env("SOAR_TRANSLATE_MODEL", "subscycle-model");
+  const ScopedEnv tr_lang_env("SOAR_TRANSLATE_LANGUAGE", "Klingon");
+  const auto run = runCli({"--backend=ffmpeg", played});
+
+  std::printf("x11 broken-track window test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(scratch, ec);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  CHECK(run.output.find("event: state=1") != std::string::npos);
+  // The dual fixture's subrip stream is id 2 and the patched one id 3.
+  // Windowed startup selects nothing (the auto-select lives in the
+  // headless flow), so the first C press selects the healthy track — the
+  // selection trail must show it — and the broken track must never show
+  // up as selected anywhere: its menu pick and the second C both fail at
+  // the backend and leave the selection where it was.
+  const std::size_t healthy_on = run.output.find("selected(video=0,audio=1,sub=2)");
+  CHECK(healthy_on != std::string::npos);
+  CHECK(run.output.find("selected(video=0,audio=1,sub=3)") == std::string::npos);
   std::filesystem::remove_all(scratch, ec);
 #endif
 #endif
