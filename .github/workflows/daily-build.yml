@@ -138,29 +138,60 @@ jobs:
         if: runner.os != 'Linux'
         run: ctest --preset default -V --output-on-failure
 
-      # vcpkg's x64-windows triplet copies the dependent DLLs (SDL2,
-      # FFmpeg, ...) next to the exe (applocal deployment), so the whole
-      # runtime travels with build/*.dll.
+      # 打包显式按 dumpbin 依赖闭包 staged（vcpkg applocal 只搬了它
+      # 认得的一部分：2026-10 夜间包里 SDL2/fmt 在、openssl 对和
+      # MSVC 运行库不在，用户解压即"缺少 DLL"）。闭包里 resolve 不
+      # 到的名字会让本步直接失败，包不完整就不出包。
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           set -e
           mkdir -p stage
-          cp build/soar.exe stage/
-          cp build/*.dll stage/ 2>/dev/null || true
+          bash scripts/stage-windows-dlls.sh build/soar.exe stage \
+            build/vcpkg_installed/x64-windows/bin \
+            build/vcpkg_installed/x64-windows/debug/bin
           cat > stage/PLATFORM-NOTES.txt <<'NOTES'
           Soar 每日构建 - Windows x64
-          包含: soar.exe 及其依赖 DLL（SDL2 / FFmpeg 等，随包分发）
+          包含: soar.exe 及其全部运行时 DLL（SDL2 / fmt / openssl 与
+          MSVC 运行库均随包捆绑，无需另装 Visual C++ 可运行库）
 
           验证: soar.exe --version 打印版本（退出码 0）；
           不带参数运行应打印 Usage（退出码 2 属预期——无媒体源时
           程序就是这样自证的）。
 
-          说明: 若 SmartScreen 拦截，点"更多信息 -> 仍要运行"
-          （每日构建未做代码签名）。
+          说明:
+          - 若 SmartScreen 拦截，点"更多信息 -> 仍要运行"（每日构建
+            未做代码签名）。
+          - 当前 Windows 构建未启用 FFmpeg 后端，--backend=ffmpeg 会
+            如实报告不可用；媒体播放链路待 Windows 侧 FFmpeg 接通后
+            开放。
           NOTES
           powershell -NoProfile -Command "Compress-Archive -Path stage/* -DestinationPath soar-windows-x64.zip -Force"
+
+      # 产物级防回归：把 zip 解压到干净目录、PATH 只留 System32 再实
+      # 跑——runner 自带的运行库会把漏捆掩盖掉，收窄 PATH 后缺一个
+      # DLL 立刻现形（这正是用户机器上的死法）。
+      - name: Verify package (Windows, clean dir)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Expand-Archive soar-windows-x64.zip -DestinationPath smoke-win -Force
+          $env:PATH = "$env:SystemRoot\System32"
+          $out = (& .\smoke-win\soar.exe --version 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          Write-Host "version exit=$code output=$out"
+          $usage = (& .\smoke-win\soar.exe 2>&1 | Out-String)
+          $ucode = $LASTEXITCODE
+          Write-Host "usage exit=$ucode"
+          if ($code -ne 0 -or $out -notmatch 'soar' -or $out -match '(?i)\.dll') {
+            Write-Host "::error::soar.exe --version failed from a clean dir (missing DLL or bad exit)"
+            exit 1
+          }
+          if ($ucode -ne 2) {
+            Write-Host "::error::soar.exe without args should exit 2, got $ucode"
+            exit 1
+          }
 
       # vcpkg's macOS triplet links SDL2/FFmpeg statically into the
       # binary; system frameworks stay external as usual.
@@ -382,9 +413,13 @@ jobs:
              无媒体源时的预期自证行为。
 
           ## Windows
-          1. 解压 soar-windows-x64.zip（soar.exe 与 DLL 须同目录）
-          2. `soar.exe`（SmartScreen 拦截时"仍要运行"）
-          3. 正常播放: `soar.exe --backend=ffmpeg <媒体文件>`
+          1. 解压 soar-windows-x64.zip（soar.exe 与 DLL 须同目录，
+             运行时 DLL 已全部随包，无需另装 VC 可运行库）
+          2. `soar.exe --version` 打印版本（SmartScreen 拦截时
+             "仍要运行"）
+          3. `soar.exe` 不带参数打印 Usage（退出码 2）。当前 Windows
+             构建未启用 FFmpeg 后端，`--backend=ffmpeg` 会如实报告
+             不可用——媒体播放链路待 Windows 侧 FFmpeg 接通后开放
 
           ## macOS (Apple Silicon)
           1. 解压 soar-macos-arm64.zip

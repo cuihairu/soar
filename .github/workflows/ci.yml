@@ -115,6 +115,36 @@ jobs:
         # the log, instead of zero trace.
         run: ctest --preset default -V --output-on-failure
 
+      # 防回归（2026-10 夜间包缺 DLL 报障）：把 exe 连同 dumpbin 依赖
+      # 闭包 staged 到干净目录，再以只剩 System32 的 PATH 实跑
+      # --version。runner 自带的 VC 可运行库会把漏捆掩盖掉（缺的
+      # DLL 系统里有），收窄 PATH 之后缺一个就红——打包脚本与每日
+      # 构建共用 scripts/stage-windows-dlls.sh，这里每个 push 都验。
+      - name: Stage package closure (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # Debug 构建：debug bin 优先（同名 DLL 的 debug/release 变体
+        # 不能混，vcpkg 两种都在各自的 bin 目录里）。
+        run: |
+          set -e
+          bash scripts/stage-windows-dlls.sh build/soar.exe stage-verify \
+            build/vcpkg_installed/x64-windows/debug/bin \
+            build/vcpkg_installed/x64-windows/bin
+
+      - name: Smoke packaged exe from a clean dir (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:SystemRoot\System32"
+          $out = (& .\stage-verify\soar.exe --version 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          Write-Host "exit code: $code"
+          Write-Host "output: $out"
+          if ($code -ne 0 -or $out -notmatch 'soar' -or $out -match '(?i)\.dll') {
+            Write-Host "::error::packaged soar.exe failed from a clean dir (missing DLL or bad exit)"
+            exit 1
+          }
+
   tsan:
     # ThreadSanitizer job: exercises the FFmpeg backend concurrency tests
     # (decode_mutex_ discipline around format_ctx_/decode threads) with a
