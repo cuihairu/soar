@@ -11,6 +11,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include "soar/core/audio_extract.h"
 #include "soar/core/ffmpeg_backend.h"
 #include "soar/core/subtitle_provider.h"
 #include "test_http_servers.h"
@@ -21,6 +22,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <string>
@@ -154,6 +156,75 @@ bool contains(const std::vector<soar::DecodedSubtitleFrame>& frames,
     if (f.text.find(needle) != std::string::npos) return true;
   }
   return false;
+}
+
+// --- WAV shape reader for the extraction battery -------------------------
+// The extractor owns a format contract (16 kHz mono s16le) that ASR callers
+// depend on, so the assertions parse the produced header instead of just
+// checking the file is non-empty: a resampler that silently kept the source
+// rate would still write a plausible-looking file.
+struct WavShape {
+  bool ok = false;
+  std::string error;  // why ok is false, for assertion messages
+  int audio_format = 0;
+  int channels = 0;
+  int sample_rate = 0;
+  int bits = 0;
+  long long data_bytes = 0;
+};
+
+// RIFF keeps chunk sizes and the fmt fields as binary little-endian
+// integers, so they must be decoded byte-wise. Handing the raw bytes to
+// strtoul reads them as decimal *text*: a size byte such as 0x10 is not a
+// digit, so every field parses as 0 and the chunk walk runs off the end.
+unsigned readLe(const std::string& blob, std::size_t off, std::size_t width) {
+  unsigned value = 0;
+  for (std::size_t i = 0; i < width && off + i < blob.size(); ++i) {
+    value |= static_cast<unsigned>(static_cast<unsigned char>(blob[off + i]))
+             << (8 * i);
+  }
+  return value;
+}
+
+WavShape readWavShape(const std::string& path) {
+  WavShape s;
+  std::ifstream f(path, std::ios::binary);
+  if (!f.good()) {
+    s.error = "cannot open " + path;
+    return s;
+  }
+  std::string blob((std::istreambuf_iterator<char>(f)),
+                   std::istreambuf_iterator<char>());
+  if (blob.size() < 12) {
+    s.error = "file is " + std::to_string(blob.size()) + " bytes, too short for RIFF/WAVE";
+    return s;
+  }
+  if (blob.compare(0, 4, "RIFF") != 0 || blob.compare(8, 4, "WAVE") != 0) {
+    s.error = "missing RIFF/WAVE magic";
+    return s;
+  }
+  // Walk the chunk list rather than assuming the canonical 44-byte layout:
+  // the wav muxer inserts a LIST/INFO chunk, so a test that hardcoded the
+  // 44-byte offsets would read the tag bytes as format fields.
+  std::size_t pos = 12;
+  while (pos + 8 <= blob.size()) {
+    const std::string id = blob.substr(pos, 4);
+    const std::size_t body = pos + 8;
+    if (id == "fmt " && body + 16 <= blob.size()) {
+      s.audio_format = static_cast<int>(readLe(blob, body, 2));
+      s.channels = static_cast<int>(readLe(blob, body + 2, 2));
+      s.sample_rate = static_cast<int>(readLe(blob, body + 4, 4));
+      s.bits = static_cast<int>(readLe(blob, body + 14, 2));
+    } else if (id == "data") {
+      s.data_bytes = static_cast<long long>(readLe(blob, pos + 4, 4));
+      s.ok = true;
+      return s;
+    }
+    const std::size_t size = readLe(blob, pos + 4, 4);
+    pos = body + size + (size & 1);  // RIFF chunks are word aligned
+  }
+  s.error = "no data chunk among " + std::to_string(blob.size()) + " bytes";
+  return s;
 }
 
 } // namespace
@@ -4269,6 +4340,155 @@ TEST_CASE("an HLS VOD source over a Range-capable server reports seekable and se
   ::waitpid(server, nullptr, 0);
   CHECK(sink.errors.load() == 0);
 #endif
+}
+
+// --- extraction (src/core/audio_extract.cpp) ---------------------------
+// The puller half of the ASR slice: decode the best audio track and fold it
+// to the 16 kHz mono s16le wire format. These cases drive it directly — it
+// takes no backend, so opening a Player over the fixture would only add a
+// decode thread and a video pipeline around the very thing under test.
+
+TEST_CASE("audio extraction folds a source to 16 kHz mono s16le") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping extraction test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string out = dir.file("tone16k.wav");
+
+  std::string err;
+  REQUIRE(soar::extractAudioToWav(media, out, &err));
+  CHECK(err.empty());  // success must leave the sink alone
+
+  const WavShape w = readWavShape(out);
+  INFO(w.error);
+  REQUIRE(w.ok);
+  CHECK(w.audio_format == 1);  // WAVE_FORMAT_PCM
+  CHECK(w.channels == 1);
+  CHECK(w.sample_rate == 16000);
+  CHECK(w.bits == 16);
+  // The fixture is 6 s of 44.1 kHz tone; after folding to 16 kHz the payload
+  // must land near 6 s. The bounds are deliberately loose: resampler delay
+  // and the drain tail move the exact figure, and a slow 8 kHz-sourced variant
+  // would still sit inside them.
+  const double seconds = static_cast<double>(w.data_bytes) / (16000.0 * 2);
+  CHECK(seconds > 5.0);
+  CHECK(seconds < 6.6);
+}
+
+TEST_CASE("audio extraction takes the default track and skips other streams") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_UNKNOWN_AUDIO_DUAL", media)) {
+    MESSAGE("SOAR_TEST_UNKNOWN_AUDIO_DUAL not set; skipping dual-track test");
+    return;
+  }
+  // h264 + aac(default) + a second audio stream whose codec id was patched to
+  // an unknown one. Best-stream selection must land on the decodable AAC
+  // track, and the video packets interleaved with it must be skipped rather
+  // than sent to the audio decoder. AAC also carries decoder delay, so the
+  // trailing-frame flush runs here.
+  ScratchDir dir;
+  const std::string out = dir.file("dual.wav");
+
+  std::string err;
+  REQUIRE(soar::extractAudioToWav(media, out, &err));
+  CHECK(err.empty());  // success must leave the sink alone
+
+  const WavShape w = readWavShape(out);
+  INFO(w.error);
+  REQUIRE(w.ok);
+  CHECK(w.sample_rate == 16000);
+  CHECK(w.channels == 1);
+  const double seconds = static_cast<double>(w.data_bytes) / (16000.0 * 2);
+  CHECK(seconds > 2.5);
+  CHECK(seconds < 3.6);
+}
+
+TEST_CASE("audio extraction upsamples an 8 kHz source to the 16 kHz wire rate") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping resample test");
+    return;
+  }
+  // sample_dual_audio.mkv carries a 44.1 kHz and an 8 kHz audio track. Which
+  // one is "best" is FFmpeg's call, so this asserts only the contract that
+  // holds either way: the output is 16 kHz mono with a plausible duration.
+  ScratchDir dir;
+  const std::string out = dir.file("dual_audio.wav");
+
+  std::string err;
+  REQUIRE(soar::extractAudioToWav(media, out, &err));
+  CHECK(err.empty());  // success must leave the sink alone
+
+  const WavShape w = readWavShape(out);
+  INFO(w.error);
+  REQUIRE(w.ok);
+  CHECK(w.sample_rate == 16000);
+  CHECK(w.channels == 1);
+  CHECK(w.data_bytes > 0);
+}
+
+TEST_CASE("audio extraction rejects a source it cannot open") {
+  ScratchDir dir;
+  const std::string missing = dir.file("no_such_file.mkv");
+  const std::string out = dir.file("never.wav");
+  std::string err;
+
+  CHECK(!soar::extractAudioToWav(missing, out, &err));
+  CHECK(err.rfind("openInput:", 0) == 0);
+  // A missing source must not leave a plausible output behind.
+  CHECK_FALSE(std::filesystem::exists(out));
+
+  // The error sink is optional per the header contract.
+  CHECK(!soar::extractAudioToWav(missing, out, nullptr));
+}
+
+TEST_CASE("audio extraction rejects a source with no audio track") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_MULTI_RES", media)) {
+    MESSAGE("SOAR_TEST_MULTI_RES not set; skipping no-audio-track test");
+    return;
+  }
+  // multi_res.ts is two video streams and nothing else, so the audio lookup
+  // has to fail with the explicit message instead of producing an empty WAV.
+  ScratchDir dir;
+  const std::string out = dir.file("video_only.wav");
+  std::string err;
+
+  CHECK(!soar::extractAudioToWav(media, out, &err));
+  CHECK(err == "no audio track in source");
+}
+
+TEST_CASE("audio extraction rejects an audio codec with no decoder") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_UNKNOWN_AUDIO", media)) {
+    MESSAGE("SOAR_TEST_UNKNOWN_AUDIO not set; skipping unknown-codec test");
+    return;
+  }
+  ScratchDir dir;
+  const std::string out = dir.file("unknown.wav");
+  std::string err;
+
+  CHECK(!soar::extractAudioToWav(media, out, &err));
+  CHECK(err == "no decoder for audio codec");
+}
+
+TEST_CASE("audio extraction reports an unwritable output path") {
+  std::string media;
+  if (!envMedia("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping output-path test");
+    return;
+  }
+  ScratchDir dir;
+  // A directory that does not exist: the muxer context can be built for the
+  // "wav" format without touching the filesystem, so this fails at the file
+  // open and must say so.
+  const std::string out = dir.file("missing_dir/tone.wav");
+  std::string err;
+
+  CHECK(!soar::extractAudioToWav(media, out, &err));
+  CHECK(err.rfind("open output:", 0) == 0);
 }
 
 #else // !SOAR_WITH_FFMPEG
