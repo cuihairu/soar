@@ -138,12 +138,11 @@ bool extractAudioToWav(const std::string& uri, const std::string& out_wav,
       int max_out = frame->nb_samples * 16000 / in_rate + 256;
       std::string buf(static_cast<size_t>(max_out) * 2, '\0');
       uint8_t* out_ptr = reinterpret_cast<uint8_t*>(buf.data());
-      // Frame data as plain `const uint8_t**`: swr_convert's `in` takes
-      // exactly that on the FFmpeg 6.x line (CI's apt build), and the
-      // newer headers taking `const uint8_t* const*` accept it as a
-      // qualification conversion. The const* const* form only compiles on
-      // the new headers — 6.x rejects it for dropping a const.
-      const uint8_t** in_data = const_cast<const uint8_t**>(frame->data);
+      // frame->data is uint8_t*[]; build a const uint8_t*[] for swr_convert
+      // (C++ forbids uint8_t** → const uint8_t** direct cast; works on all
+      // FFmpeg header versions).
+      const uint8_t* in_data[AV_NUM_DATA_POINTERS];
+      for (int i = 0; i < AV_NUM_DATA_POINTERS; ++i) in_data[i] = frame->data[i];
       int converted = swr_convert(swr.get(), &out_ptr, max_out, in_data,
                                   frame->nb_samples);
       av_frame_unref(frame);
@@ -172,8 +171,9 @@ bool extractAudioToWav(const std::string& uri, const std::string& out_wav,
     int max_out = frame->nb_samples * 16000 / in_rate + 256;
     std::string buf(static_cast<size_t>(max_out) * 2, '\0');
     uint8_t* out_ptr = reinterpret_cast<uint8_t*>(buf.data());
-    // Same `const uint8_t**` form as the loop above (FFmpeg 6.x signature).
-    const uint8_t** in_data = const_cast<const uint8_t**>(frame->data);
+    // Same const uint8_t*[] array as above.
+    const uint8_t* in_data[AV_NUM_DATA_POINTERS];
+    for (int i = 0; i < AV_NUM_DATA_POINTERS; ++i) in_data[i] = frame->data[i];
     int converted =
         swr_convert(swr.get(), &out_ptr, max_out, in_data, frame->nb_samples);
     av_frame_unref(frame);
