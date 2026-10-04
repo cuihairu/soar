@@ -273,9 +273,13 @@ jobs:
           }
           Write-Host "soarw version: $($t.Trim())"
           # ③ 无参（usage 类）在 SOAR_NO_DIALOG=1 豁免下退出 2：没有豁免
-          #    的话 GUI exe 无 stdout 句柄会弹模态框挂死 CI。
-          & .\smoke-win\soarw.exe
-          $wcode = $LASTEXITCODE
+          #    的话 GUI exe 无 stdout 句柄会弹模态框挂死 CI。GUI 子系统
+          #    exe 直接 & 调用 pwsh 不等待、$LASTEXITCODE 恒空（ci.yml
+          #    run 37171717828 实证），必须 Start-Process -Wait -PassThru。
+          $uo = Join-Path $env:RUNNER_TEMP 'soarw-usage-out.txt'
+          $p = Start-Process .\smoke-win\soarw.exe -Wait -PassThru `
+            -RedirectStandardOutput $uo
+          $wcode = $p.ExitCode
           Write-Host "soarw usage exit=$wcode"
           if ($wcode -ne 2) {
             Write-Host "::error::soarw.exe without args should exit 2, got $wcode"

@@ -190,8 +190,13 @@ jobs:
             exit 1
           }
           Write-Host "soarw version: $($t.Trim())"
-          & .\stage-verify\soarw.exe
-          $wcode = $LASTEXITCODE
+          # GUI 子系统 exe 直接 & 调用 pwsh 不等待、$LASTEXITCODE 恒空
+          # （run 37171717828 实证：断言先失败、Usage 文本后到日志）——
+          # 必须与 --version 同款 Start-Process -Wait -PassThru 取 ExitCode。
+          $uo = Join-Path $env:RUNNER_TEMP 'soarw-usage-out.txt'
+          $p = Start-Process .\stage-verify\soarw.exe -Wait -PassThru `
+            -RedirectStandardOutput $uo
+          $wcode = $p.ExitCode
           Write-Host "soarw usage exit=$wcode"
           if ($wcode -ne 2) {
             Write-Host "::error::soarw.exe without args should exit 2, got $wcode"
