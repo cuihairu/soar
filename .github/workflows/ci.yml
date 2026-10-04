@@ -130,6 +130,9 @@ jobs:
           bash scripts/stage-windows-dlls.sh build/soar.exe stage-verify \
             build/vcpkg_installed/x64-windows/debug/bin \
             build/vcpkg_installed/x64-windows/bin
+          # GUI 子系统双胞胎（BUGS.md #2）：与 soar.exe 同链，依赖闭包
+          # 相同，无需二次闭包——进同一个干净目录验证面
+          cp build/soarw.exe stage-verify/
 
       # 与 daily-build 的 Verify 同款三道锁（run 37137950125 教训）：
       # pwsh -command 收尾会把执行期 ErrorRecord/$? 折算成 1，断言全过
@@ -151,6 +154,67 @@ jobs:
             exit 1
           }
           Write-Host "smoke passed: packaged exe runs from an empty dir with PATH=System32 only"
+          exit 0
+
+      # soarw.exe（GUI 子系统双胞胎）防回归（BUGS.md #2 黑框闪退）：
+      # ① PE 子系统字节校验——soarw 必须 GUI（2），soar 必须控制台（3），
+      #    配错就是「双击黑框」回归；② GUI exe 的 --version 经句柄重定向
+      #    捕获；③ 无参 usage 在 SOAR_NO_DIALOG=1 豁免下退出 2（没有
+      #    豁免的话无 stdout 句柄会弹模态框挂死 CI）；④ 窗口站住：null
+      #    后端起真窗口 8 秒存活断言——runner 无 GPU 时只接受带日志的
+      #    干净 SDL 失败，闪退/崩溃都不行。三道锁同上一步。
+      - name: Smoke packaged GUI twin (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $env:PATH = "$env:SystemRoot\System32"
+          $env:SOAR_NO_DIALOG = '1'
+          foreach ($pair in @(@('soarw', 2), @('soar', 3))) {
+            $pe = [IO.File]::ReadAllBytes("$PWD\stage-verify\$($pair[0]).exe")
+            $off = [BitConverter]::ToInt32($pe, 0x3C)
+            $sub = [BitConverter]::ToUInt16($pe, $off + 92)
+            Write-Host "$($pair[0]).exe PE subsystem = $sub (expect $($pair[1]))"
+            if ($sub -ne $pair[1]) {
+              Write-Host "::error::$($pair[0]).exe PE subsystem is $sub, expected $($pair[1])"
+              exit 1
+            }
+          }
+          $vf = Join-Path $env:RUNNER_TEMP 'soarw-ver.txt'
+          $p = Start-Process .\stage-verify\soarw.exe -ArgumentList '--version' -Wait -PassThru `
+            -RedirectStandardOutput $vf
+          $t = Get-Content $vf -Raw
+          if ($p.ExitCode -ne 0 -or $t -notmatch 'soar') {
+            Write-Host "::error::soarw.exe --version failed (exit=$($p.ExitCode), output=$t)"
+            exit 1
+          }
+          Write-Host "soarw version: $($t.Trim())"
+          & .\stage-verify\soarw.exe
+          $wcode = $LASTEXITCODE
+          Write-Host "soarw usage exit=$wcode"
+          if ($wcode -ne 2) {
+            Write-Host "::error::soarw.exe without args should exit 2, got $wcode"
+            exit 1
+          }
+          $so = Join-Path $env:RUNNER_TEMP 'soarw-alive-out.txt'
+          $se = Join-Path $env:RUNNER_TEMP 'soarw-alive-err.txt'
+          $p = Start-Process .\stage-verify\soarw.exe -ArgumentList '--backend=null', 'ci-alive-probe' -PassThru `
+            -RedirectStandardOutput $so -RedirectStandardError $se
+          Start-Sleep -Seconds 8
+          if (-not $p.HasExited) {
+            Write-Host "soarw windowed run still alive after 8s (null backend) - OK"
+            $p.Kill()
+          } else {
+            $err = Get-Content $se -Raw
+            Write-Host "soarw exited early (code $($p.ExitCode)): $err"
+            if ($p.ExitCode -ne 1 -or $err -notmatch 'SDL_') {
+              Write-Host "::error::soarw windowed run neither stayed up nor failed cleanly at an SDL step"
+              exit 1
+            }
+            Write-Host "degraded to the documented clean SDL failure path (renderer-less runner)"
+          }
+          Write-Host "smoke passed: GUI twin verified (PE subsystem, version, usage, windowed alive)"
           exit 0
 
       # 防回归（macOS 面与 Windows 对称）：SDL2 与 vcpkg 管理的依赖

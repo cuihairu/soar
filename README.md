@@ -109,6 +109,8 @@ irm https://raw.githubusercontent.com/cuihairu/soar/main/install.ps1 | iex
 
 平台覆盖与每日构建矩阵一致：Linux x64/arm64、macOS Apple Silicon、Windows x64。macOS Intel 与 Windows arm64 没有免费的 CI runner，脚本遇到会明确报错（不会装一个跑不起来的包）。两个如实边界：soar 是桌面播放器、无常驻服务形态，脚本不注册系统服务；每日构建未做代码签名，Windows SmartScreen 拦截时选「更多信息 → 仍要运行」，macOS 首次运行前 `xattr -cr`（脚本已代做）。
 
+除脚本使用的便携 zip 外，nightly Release 还提供：Linux 安装包 `soar-linux-<arch>.deb` / `.rpm`（`dpkg -i` / `rpm -ivh` 安装，含 `/opt/soar` + `/usr/bin/soar` + 菜单项与图标）；Windows 安装器 `soar-setup-windows-x64.exe`（装目录/开始菜单/桌面快捷方式/卸载器，快捷方式指向 `soarw.exe`——GUI 版入口，双击启动无控制台黑框，启动失败会弹错误框并写 `%TEMP%\soar-startup-failures.log`）。Release 附 `SHA256SUMS.txt` 覆盖全部资产。
+
 ## 构建
 
 前置：CMake 3.20+、C++17 编译器（GCC / Clang / MSVC，任何支持 C++17 的版本）、Ninja（推荐）、[vcpkg](https://github.com/microsoft/vcpkg)。

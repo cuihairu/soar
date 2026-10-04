@@ -1,4 +1,6 @@
+#include "app_main.h"
 #include "soar/core/player.h"
+#include "startup_report.h"
 
 // fmt/format.h (not core.h): fmt::print lives here across the fmt 9.x
 // (system packages) and 11.x (vcpkg) range we build against.
@@ -27,6 +29,9 @@
 #ifndef SOAR_APP_VERSION
 #  define SOAR_APP_VERSION "dev"
 #endif
+
+using soar::app::reportFatalStartupError;
+using soar::app::showStartupNotice;
 
 static void print_usage(const char* argv0) {
   fmt::print("Usage:\n");
@@ -58,9 +63,23 @@ static std::string lower_copy(std::string s) {
   return s;
 }
 
-int main(int argc, char** argv) {
+// Dialog-facing variants of the usage exits: the full print_usage stays
+// on stdout/stderr for terminal users; a double-clicked binary (no
+// console that outlives it) gets the one-line story in a dialog instead
+// (startup_report.h).
+static void notice_usage(const char* argv0) {
+  showStartupNotice(
+      "soar",
+      std::string("soar ") + SOAR_APP_VERSION +
+          "\n\nNo media source given.\n\nUsage: " + argv0 +
+          " [--backend=ffmpeg|null] <path-or-url> [more-paths...]\n\n"
+          "Run soar from a terminal for the full usage text.");
+}
+
+int soarAppMain(int argc, char** argv) {
   if (argc < 2) {
     print_usage(argv[0]);
+    notice_usage(argv[0]);
     return 2;
   }
 
@@ -96,6 +115,7 @@ int main(int argc, char** argv) {
     } else if (arg.rfind('-', 0) == 0) {
       fmt::print(stderr, "Unknown option: {}\n", arg);
       print_usage(argv[0]);
+      showStartupNotice("soar", "Unknown option: " + arg);
       return 2;
     } else {
       // First positional is the playing source; the rest queue up
@@ -106,6 +126,7 @@ int main(int argc, char** argv) {
 
   if (uri_index < 0) {
     print_usage(argv[0]);
+    notice_usage(argv[0]);
     return 2;
   }
 
@@ -135,6 +156,12 @@ int main(int argc, char** argv) {
     fmt::print(stderr, ", ffmpeg");
 #endif
     fmt::print(stderr, "\n");
+    showStartupNotice("soar", "Unknown backend type: " + backend_type +
+                                  "\nAvailable backends: null"
+#ifdef SOAR_WITH_FFMPEG
+                                  ", ffmpeg"
+#endif
+    );
     return 2;
   }
 
@@ -226,12 +253,14 @@ int main(int argc, char** argv) {
       if (window_mode && !torrent_list) {
         if (!torrent_stream.startAsync(tp)) {
           fmt::print(stderr, "{}\n", torrent_stream.lastError());
+          reportFatalStartupError("soar", torrent_stream.lastError());
           return 1;
         }
         torrent_async = true;
       } else {
         if (!torrent_stream.start(tp)) {
           fmt::print(stderr, "{}\n", torrent_stream.lastError());
+          reportFatalStartupError("soar", torrent_stream.lastError());
           return 1;
         }
         if (torrent_list) {
@@ -304,6 +333,9 @@ int main(int argc, char** argv) {
     if (!player.open(soar::MediaSource{uri, cache_dir})) {
       fmt::print(stderr, "Failed to open source: {}\n", uri);
       fmt::print(stderr, "Error: {}\n", player.lastError());
+      reportFatalStartupError(
+          "soar", "Failed to open source: " + uri +
+                      "\nError: " + player.lastError());
       return 1;
     }
     player.play();
@@ -377,4 +409,8 @@ int main(int argc, char** argv) {
   fmt::print(stderr, "Window support not compiled in; use --headless.\n");
   return 0;
 #endif
+}
+
+int main(int argc, char** argv) {
+  return soarAppMain(argc, argv);
 }

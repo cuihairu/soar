@@ -164,6 +164,7 @@ target_include_directories(soar_app_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/ap
 if(SOAR_BUILD_APP)
   add_executable(soar
     src/app/main.cpp
+    src/app/startup_report.cpp
     src/app/ui/player_window.cpp
   )
   target_compile_features(soar PRIVATE cxx_std_17)
@@ -257,6 +258,34 @@ if(SOAR_BUILD_APP)
           message(STATUS "Player UI overlay: Dear ImGui ${soar_imgui_tag} (imgui_impl_sdlrenderer2)")
         else()
           message(STATUS "Dear ImGui unavailable (no git, or no network); building the bare video window. (-DSOAR_ENABLE_IMGUI=OFF to skip the attempt)")
+        endif()
+      endif()
+
+      # soarw.exe: the GUI-subsystem twin of the console soar.exe
+      # (Windows double-click story, BUGS.md "black box flash"). Same
+      # sources plus winmain.cpp's WinMain; WIN32_EXECUTABLE keeps the
+      # console away, so early exits surface through startup_report's
+      # dialog and log instead of a console that dies with the process.
+      # SDL2main never conflicts: nothing here references its real
+      # main(), and an unreferenced static-library object is simply not
+      # pulled in (the console soar.exe links the same ${SOAR_SDL2_LIBS}).
+      if(WIN32)
+        add_executable(soarw WIN32
+          src/app/winmain.cpp
+          src/app/main.cpp
+          src/app/startup_report.cpp
+          src/app/ui/player_window.cpp
+        )
+        target_compile_features(soarw PRIVATE cxx_std_17)
+        target_compile_definitions(soarw PRIVATE
+          SOAR_APP_VERSION="${PROJECT_VERSION}"
+          SOAR_WITH_SDL2=1
+        )
+        target_link_libraries(soarw PRIVATE
+          soar::core soar_app_ui soar_p2p ${SOAR_SDL2_LIBS} shell32)
+        if(soar_imgui_ok)
+          target_compile_definitions(soarw PRIVATE SOAR_WITH_IMGUI=1)
+          target_link_libraries(soarw PRIVATE imgui)
         endif()
       endif()
     else()

@@ -58,7 +58,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libsdl2-dev libfmt-dev doctest-dev libboost-dev ffmpeg \
             libavformat-dev libavcodec-dev libavutil-dev \
-            libswresample-dev libswscale-dev libass-dev patchelf
+            libswresample-dev libswscale-dev libass-dev patchelf rpm
 
       # Synthetic media for the FFmpeg backend tests (same as ci.yml: the
       # script prints KEY=VALUE lines for $GITHUB_ENV).
@@ -151,14 +151,24 @@ jobs:
           bash scripts/stage-windows-dlls.sh build/soar.exe stage \
             build/vcpkg_installed/x64-windows/bin \
             build/vcpkg_installed/x64-windows/debug/bin
+          # soarw.exe = GUI 子系统双胞胎（BUGS.md #2 黑框闪退修复）：
+          # 双击启动无控制台黑框；依赖闭包与 soar.exe 相同（同链），无需
+          # 二次闭包。soar.ico 随包（Inno 安装器 SetupIconFile 同源）。
+          cp build/soarw.exe stage/
+          cp assets/icons/soar.ico stage/
           cat > stage/PLATFORM-NOTES.txt <<'NOTES'
           Soar 每日构建 - Windows x64
-          包含: soar.exe 及其全部运行时 DLL（SDL2 / fmt / openssl 与
-          MSVC 运行库均随包捆绑，无需另装 Visual C++ 可运行库）
+          包含: soar.exe / soarw.exe 及其全部运行时 DLL（SDL2 / fmt /
+          openssl 与 MSVC 运行库均随包捆绑，无需另装 Visual C++ 可运行库）
 
-          验证: soar.exe --version 打印版本（退出码 0）；
-          不带参数运行应打印 Usage（退出码 2 属预期——无媒体源时
-          程序就是这样自证的）。
+          用哪个 exe:
+          - soarw.exe: 双击启动（GUI 程序，无控制台黑框）。启动失败会
+            弹错误框，并写一行记录到 %TEMP%\soar-startup-failures.log
+            （设置 SOAR_STARTUP_LOG 环境变量可改路径）。
+          - soar.exe: 命令行版（终端里跑 CLI 用），无参运行打印 Usage
+            后退出码 2 属预期。
+
+          验证: soar.exe --version 打印版本（退出码 0）。
 
           说明:
           - 若 SmartScreen 拦截，点"更多信息 -> 仍要运行"（每日构建
@@ -168,6 +178,38 @@ jobs:
             开放。
           NOTES
           powershell -NoProfile -Command "Compress-Archive -Path stage/* -DestinationPath soar-windows-x64.zip -Force"
+
+      # setup.exe 安装器（2026-10 包格式补全，todo.md ②）：Inno Setup，
+      # falcon/memex 同形态（装目录/开始菜单/桌面图标/卸载器）。快捷方式
+      # 指向 soarw.exe（无黑框）。runner 预装 Inno Setup 6.x（falcon 实证
+      # 6.3+ 即可用，本 iss 只用标准指令）。pwsh 三道锁同 Verify 步。
+      - name: Build installer (Windows, Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $iscc = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host "::error::ISCC.exe not found (expected the preinstalled Inno Setup 6 on windows-latest)"
+            exit 1
+          }
+          $version = (Select-String -Path CMakeLists.txt -Pattern 'VERSION (\d+\.\d+\.\d+)' |
+            Select-Object -First 1).Matches[0].Groups[1].Value
+          & $iscc "/DAppVersion=$version" "/DStageDir=$PWD\stage" "/O$PWD" 'packaging/windows/soar.iss'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::ISCC failed with exit $LASTEXITCODE"
+            exit 1
+          }
+          if (-not (Test-Path 'soar-setup-windows-x64.exe')) {
+            Write-Host "::error::installer output soar-setup-windows-x64.exe missing"
+            exit 1
+          }
+          Write-Host "installer: soar-setup-windows-x64.exe, $((Get-Item 'soar-setup-windows-x64.exe').Length) bytes"
+          exit 0
 
       # 产物级防回归：把 zip 解压到干净目录、PATH 只留 System32 再实
       # 跑——runner 自带的运行库会把漏捆掩盖掉，收窄 PATH 后缺一个
@@ -204,7 +246,104 @@ jobs:
             Write-Host "::error::soar.exe without args should exit 2, got $ucode"
             exit 1
           }
-          Write-Host "verify passed: package runs from an empty dir with PATH=System32 only"
+
+          # —— soarw.exe（GUI 子系统双胞胎，BUGS.md #2 防回归）——
+          # ① PE 子系统字节校验：soarw 必须 =2（GUI，双击无控制台黑框），
+          #    soar 必须 =3（控制台——CLI 行为的载体，别被误标）。
+          foreach ($pair in @(@('soarw', 2), @('soar', 3))) {
+            $pe = [IO.File]::ReadAllBytes("$PWD\smoke-win\$($pair[0]).exe")
+            $off = [BitConverter]::ToInt32($pe, 0x3C)
+            $sub = [BitConverter]::ToUInt16($pe, $off + 92)
+            Write-Host "$($pair[0]).exe PE subsystem = $sub (expect $($pair[1]))"
+            if ($sub -ne $pair[1]) {
+              Write-Host "::error::$($pair[0]).exe PE subsystem is $sub, expected $($pair[1])"
+              exit 1
+            }
+          }
+          # ② GUI 子系统 exe 的 --version 经句柄重定向捕获（stdout 句柄
+          #    是文件时不弹对话框——CI 安全路径的实证）。
+          $env:SOAR_NO_DIALOG = '1'
+          $vf = Join-Path $env:RUNNER_TEMP 'soarw-ver.txt'
+          $p = Start-Process .\smoke-win\soarw.exe -ArgumentList '--version' -Wait -PassThru `
+            -RedirectStandardOutput $vf
+          $t = Get-Content $vf -Raw
+          if ($p.ExitCode -ne 0 -or $t -notmatch 'soar') {
+            Write-Host "::error::soarw.exe --version failed (exit=$($p.ExitCode), output=$t)"
+            exit 1
+          }
+          Write-Host "soarw version: $($t.Trim())"
+          # ③ 无参（usage 类）在 SOAR_NO_DIALOG=1 豁免下退出 2：没有豁免
+          #    的话 GUI exe 无 stdout 句柄会弹模态框挂死 CI。
+          & .\smoke-win\soarw.exe
+          $wcode = $LASTEXITCODE
+          Write-Host "soarw usage exit=$wcode"
+          if ($wcode -ne 2) {
+            Write-Host "::error::soarw.exe without args should exit 2, got $wcode"
+            exit 1
+          }
+          # ④ 窗口站住（BUGS.md #2 验收「窗口能站住」）：null 后端 + 默认
+          #    视频驱动起一个真窗口，8 秒后进程必须还活着。runner 无
+          #    GPU 时渲染器可能起不来——只接受「站住」或「带日志的干净
+          #    渲染器失败」两种结果，闪退/崩溃都不行。
+          $so = Join-Path $env:RUNNER_TEMP 'soarw-alive-out.txt'
+          $se = Join-Path $env:RUNNER_TEMP 'soarw-alive-err.txt'
+          $p = Start-Process .\smoke-win\soarw.exe -ArgumentList '--backend=null', 'smoke-win\PLATFORM-NOTES.txt' -PassThru `
+            -RedirectStandardOutput $so -RedirectStandardError $se
+          Start-Sleep -Seconds 8
+          if (-not $p.HasExited) {
+            Write-Host "soarw windowed run still alive after 8s (null backend) - OK"
+            $p.Kill()
+          } else {
+            $err = Get-Content $se -Raw
+            Write-Host "soarw exited early (code $($p.ExitCode)): $err"
+            if ($p.ExitCode -ne 1 -or $err -notmatch 'SDL_') {
+              Write-Host "::error::soarw windowed run neither stayed up nor failed cleanly at an SDL step"
+              exit 1
+            }
+            Write-Host "degraded to the documented clean SDL failure path (renderer-less runner)"
+          }
+          Remove-Item Env:SOAR_NO_DIALOG
+
+          # —— 安装器真装走查（todo.md ②）：静默装 → 装后实跑 → 快捷方式
+          #    断言 → 静默卸载。装完就能跑 = 安装器价值所在。 ——
+          $setup = "$PWD\soar-setup-windows-x64.exe"
+          if (-not (Test-Path $setup)) {
+            Write-Host "::error::installer not found: $setup"
+            exit 1
+          }
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            Write-Host "::error::installer exited with $($p.ExitCode)"
+            exit 1
+          }
+          $app = Join-Path $env:ProgramFiles 'Soar\soarw.exe'
+          if (-not (Test-Path $app)) {
+            Write-Host "::error::not installed: $app"
+            exit 1
+          }
+          $vf2 = Join-Path $env:RUNNER_TEMP 'installed-ver.txt'
+          $p2 = Start-Process $app -ArgumentList '--version' -Wait -PassThru -RedirectStandardOutput $vf2
+          $t2 = Get-Content $vf2 -Raw
+          if ($p2.ExitCode -ne 0 -or $t2 -notmatch 'soar') {
+            Write-Host "::error::installed soarw --version failed (exit=$($p2.ExitCode), output=$t2)"
+            exit 1
+          }
+          $lnk = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Soar\Soar.lnk'
+          if (-not (Test-Path $lnk)) {
+            Write-Host "::error::start menu shortcut missing: $lnk"
+            exit 1
+          }
+          Write-Host "installed + verified: $($t2.Trim())"
+          & (Join-Path $env:ProgramFiles 'Soar\unins000.exe') /VERYSILENT /SUPPRESSMSGBOXES
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::uninstaller exited with $LASTEXITCODE"
+            exit 1
+          }
+          if (Test-Path $app) {
+            Write-Host "::error::uninstall left $app behind"
+            exit 1
+          }
+          Write-Host "verify passed: package runs from an empty dir with PATH=System32 only; installer round-trip OK"
           exit 0
 
       # macOS 打包同样按闭包（与 Windows/Linux 同哲学）：SDL2 与
@@ -318,11 +457,54 @@ jobs:
           cd stage
           zip -qr ../soar-${{ matrix.name }}.zip .
 
+      # deb / rpm 安装包（2026-10 包格式补全，todo.md ①）：从上面同源
+      # zip 二次打包——单一事实源，包内布局与 zip 解包即用一致（
+      # /opt/soar + /usr/bin/soar + .desktop + hicolor 图标）。自包含口径
+      # 不声明 Depends，目标机 glibc/libstdc++ 底线与 zip 相同。
+      - name: Package (Linux deb/rpm)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+          VERSION=$(sed -n 's/^  VERSION \([0-9.]*\)$/\1/p' CMakeLists.txt | head -1)
+          ARCH=x64; case "${{ matrix.name }}" in linux-arm64) ARCH=arm64;; esac
+          # 输出到 workspace 根：upload 步的 pattern 在根上匹配
+          bash scripts/package-linux-pkg.sh deb "$ARCH" "soar-${{ matrix.name }}.zip" . "$VERSION"
+          bash scripts/package-linux-pkg.sh rpm "$ARCH" "soar-${{ matrix.name }}.zip" . "$VERSION"
+          ls -la soar-*.deb soar-*.rpm
+
+      # 安装包真装走查（memex 同款口径）：deb 装上 → 入口实跑 → 卸载；
+      # rpm 同一载荷再走一遍。安装包的价值在「装完就能跑」，走查必须
+      # 是真安装而不是解包检查。
+      - name: Verify packages (Linux dpkg/rpm install walk)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+          sudo dpkg -i soar-${{ matrix.name }}.deb
+          /usr/bin/soar --version
+          set +e; /usr/bin/soar > /dev/null 2>&1; code=$?; set -e
+          if [ "$code" != "2" ]; then
+            echo "::error::installed soar without args should exit 2, got $code"
+            exit 1
+          fi
+          sudo dpkg -r soar
+          sudo rpm -ivh --replacepkgs soar-${{ matrix.name }}.rpm
+          /usr/bin/soar --version
+          sudo rpm -e soar
+          echo "deb/rpm install walk passed (${{ matrix.name }})"
+
       - name: Upload platform package
         uses: actions/upload-artifact@v4
         with:
           name: pkg-${{ matrix.name }}
-          path: soar-*.zip
+          # deb/rpm 仅 Linux 腿、setup.exe 仅 Windows 腿产出——同一
+          # pattern 列表跨平台复用，各腿只上传自己有的
+          path: |
+            soar-*.zip
+            soar-*.deb
+            soar-*.rpm
+            soar-setup-*.exe
           retention-days: 1
           if-no-files-found: error
 
@@ -440,14 +622,18 @@ jobs:
             echo "这是 CI 构建产物分发，同时发布到滚动 nightly Release（固定 tag nightly，非版本发布）。"
             echo ""
             echo "平台产物:"
-            echo "  soar-windows-x64.zip  Windows 10/11 x64: soar.exe + 依赖 DLL"
-            echo "  soar-macos-arm64.zip  macOS Apple Silicon: soar + lib/（FFmpeg 等动态库已捆绑，SDL2 静态链接）"
-            echo "  soar-linux-x64.zip    Linux x64: soar + lib/（运行时已捆绑，仅依赖系统 glibc/libstdc++，见包内说明）"
-            echo "  soar-linux-arm64.zip  Linux arm64: soar + lib/（运行时已捆绑，仅依赖系统 glibc/libstdc++，见包内说明）"
+            echo "  soar-windows-x64.zip       Windows x64 便携: soar.exe / soarw.exe + 依赖 DLL"
+            echo "  soar-setup-windows-x64.exe Windows x64 安装器（Inno Setup: 装目录/开始菜单/桌面图标/卸载器，快捷方式指向 soarw.exe）"
+            echo "  soar-macos-arm64.zip       macOS Apple Silicon: soar + lib/（FFmpeg 等动态库已捆绑，SDL2 静态链接）"
+            echo "  soar-linux-x64.zip         Linux x64 便携: soar + lib/（运行时已捆绑，仅依赖系统 glibc/libstdc++，见包内说明）"
+            echo "  soar-linux-x64.deb / .rpm  Linux x64 安装包（/opt/soar + /usr/bin/soar + 菜单项/图标）"
+            echo "  soar-linux-arm64.zip       Linux arm64 便携: 同上 arm64 构建"
+            echo "  soar-linux-arm64.deb / .rpm Linux arm64 安装包"
           } > BUILD_INFO.txt
           cat > VERIFY.md <<'VERIFY'
           # 最简验证
-          每个平台 zip 内附 PLATFORM-NOTES.txt。
+          每个平台 zip 内附 PLATFORM-NOTES.txt；Release 附
+          SHA256SUMS.txt 覆盖全部资产（`sha256sum -c SHA256SUMS.txt`）。
 
           ## 通用冒烟（各平台一致）
           1. `soar --version`（Windows: `soar.exe --version`）应打印
@@ -456,13 +642,16 @@ jobs:
              无媒体源时的预期自证行为。
 
           ## Windows
-          1. 解压 soar-windows-x64.zip（soar.exe 与 DLL 须同目录，
-             运行时 DLL 已全部随包，无需另装 VC 可运行库）
-          2. `soar.exe --version` 打印版本（SmartScreen 拦截时
-             "仍要运行"）
-          3. `soar.exe` 不带参数打印 Usage（退出码 2）。当前 Windows
-             构建未启用 FFmpeg 后端，`--backend=ffmpeg` 会如实报告
-             不可用——媒体播放链路待 Windows 侧 FFmpeg 接通后开放
+          - 便携: 解压 soar-windows-x64.zip（exe 与 DLL 须同目录，
+             运行时 DLL 已全部随包，无需另装 VC 可运行库）。双击用
+             soarw.exe（GUI 版，无控制台黑框；启动失败会弹错误框并
+             写 %TEMP%\soar-startup-failures.log），终端跑 CLI 用
+             soar.exe。
+          - 安装器: 双击 soar-setup-windows-x64.exe（装目录/开始
+             菜单/桌面快捷方式/卸载器；SmartScreen 拦截时"仍要运行"）。
+          - 当前 Windows 构建未启用 FFmpeg 后端，`--backend=ffmpeg`
+             会如实报告不可用——媒体播放链路待 Windows 侧 FFmpeg
+             接通后开放。
 
           ## macOS (Apple Silicon)
           1. 解压 soar-macos-arm64.zip（soar 与 lib/ 须保持同目录；
@@ -471,18 +660,27 @@ jobs:
              解压目录的隔离属性——lib/ 里的库也要清）
 
           ## Linux (x64 / arm64)
-          1. 解压 soar-linux-x64.zip 或 soar-linux-arm64.zip
-          2. 运行时库已随包捆绑（lib/），无需安装 SDL2/FFmpeg；
-             但要求 glibc >= 2.38 且 libstdc++ >= GLIBCXX_3.4.32
-             （Ubuntu 24.04+ / Debian 13+ / Fedora 39+ / Arch 滚动；
-             更老的系统起不来，见包内 PLATFORM-NOTES.txt）
-          3. `chmod +x soar && ./soar --version`（退出码 0）
+          - 便携: 解压 soar-linux-<arch>.zip，运行时库已随包捆绑
+            （lib/），无需安装 SDL2/FFmpeg；但要求 glibc >= 2.38 且
+            libstdc++ >= GLIBCXX_3.4.32（Ubuntu 24.04+ / Debian 13+ /
+            Fedora 39+ / Arch 滚动；更老的系统起不来，见包内
+            PLATFORM-NOTES.txt），`chmod +x soar && ./soar --version`。
+          - 安装包: deb 系 `sudo dpkg -i soar-linux-<arch>.deb`、
+            rpm 系 `sudo rpm -ivh soar-linux-<arch>.rpm`，装完
+            `soar --version`（菜单项在 AudioVideo 分类）。重装/升级 =
+            再装一次（包管理器幂等）。
           VERIFY
-          # 打总包：各平台 zip 平铺 + 顶层说明（artifact 解开即见）
-          mv pkgs/soar-*.zip .
+          # 打总包：全部平台产物平铺 + 顶层说明（artifact 解开即见）
+          mv pkgs/soar-*.zip pkgs/soar-*.deb pkgs/soar-*.rpm pkgs/soar-setup-*.exe .
+          # SHA256 清单覆盖全部产物（自身与说明文件除外）
+          find . -maxdepth 1 -type f \
+            ! -name 'SHA256SUMS.txt' ! -name 'VERIFY.md' ! -name 'BUILD_INFO.txt' \
+            -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS.txt
           zip -q "soar-daily-${BUILD_DATE}-${GITHUB_SHA::8}.zip" \
-            soar-windows-x64.zip soar-macos-arm64.zip \
-            soar-linux-x64.zip soar-linux-arm64.zip BUILD_INFO.txt VERIFY.md
+            soar-windows-x64.zip soar-setup-windows-x64.exe soar-macos-arm64.zip \
+            soar-linux-x64.zip soar-linux-x64.deb soar-linux-x64.rpm \
+            soar-linux-arm64.zip soar-linux-arm64.deb soar-linux-arm64.rpm \
+            BUILD_INFO.txt VERIFY.md SHA256SUMS.txt
           # 供后续步骤引用的输出
           echo "daily_zip=soar-daily-${BUILD_DATE}-${GITHUB_SHA::8}.zip" >> "$GITHUB_ENV"
           echo "utc_time=${UTC_TIME}" >> "$GITHUB_ENV"
@@ -537,28 +735,34 @@ jobs:
 
           | 平台 | 文件 | 说明 |
           |---|---|---|
-          | Windows 10/11 x64 | \`soar-windows-x64.zip\` | soar.exe + 依赖 DLL，解压即用 |
+          | Windows 10/11 x64 | \`soar-setup-windows-x64.exe\` | 安装器（装目录/开始菜单/桌面图标/卸载器；启动 soarw.exe，无控制台黑框） |
+          | Windows 10/11 x64 | \`soar-windows-x64.zip\` | 便携: soar.exe / soarw.exe + 依赖 DLL，解压即用 |
           | macOS Apple Silicon | \`soar-macos-arm64.zip\` | soar + 捆绑动态库 lib/（SDL2 静态链接），\`xattr -cr .\` 后运行，解压即用 |
-          | Linux x64 | \`soar-linux-x64.zip\` | soar + 捆绑运行时 lib/，免装 SDL2/FFmpeg，仅依赖系统 glibc/libstdc++，解压即用 |
-          | Linux arm64 | \`soar-linux-arm64.zip\` | 同上（arm64 原生构建） |
-          | 合装 | \`${daily_zip}\` | 上列四个 zip + BUILD_INFO.txt + VERIFY.md |
+          | Linux x64 | \`soar-linux-x64.deb\` / \`.rpm\` | 安装包（/opt/soar + /usr/bin/soar + 菜单项/图标；运行时自包含） |
+          | Linux x64 | \`soar-linux-x64.zip\` | 便携: soar + 捆绑运行时 lib/，免装 SDL2/FFmpeg，仅依赖系统 glibc/libstdc++ |
+          | Linux arm64 | \`soar-linux-arm64.deb\` / \`.rpm\` / \`.zip\` | 同上（arm64 原生构建） |
+          | 全部 + 校验 | \`${daily_zip}\` | 上列全部产物 + SHA256SUMS.txt + BUILD_INFO.txt + VERIFY.md |
 
           一键安装（Linux/macOS）: \`curl -fsSL https://raw.githubusercontent.com/cuihairu/soar/main/install.sh | sh\`
           一键安装（Windows PowerShell）: \`irm https://raw.githubusercontent.com/cuihairu/soar/main/install.ps1 | iex\`
 
           ## 验证
 
+          先 \`sha256sum -c SHA256SUMS.txt\`（校验清单随 Release 发布）。
           \`soar --version\` 打印版本即安装成功；命令行运行不带参数应打印
-          Usage 并以退出码 2 结束——无媒体源时的预期自证行为。详细步骤见
-          包内 VERIFY.md 与各平台 PLATFORM-NOTES.txt。
+          Usage 并以退出码 2 结束——无媒体源时的预期自证行为。Windows
+          双击请用 soarw.exe（GUI 版；启动失败弹错误框并写
+          %TEMP%\soar-startup-failures.log）。详细步骤见包内 VERIFY.md
+          与各平台 PLATFORM-NOTES.txt。
 
           Commit: ${GITHUB_SHA}
           NOTES
           gh release edit nightly --notes-file release-notes.md
           gh release upload nightly "$daily_zip" \
-            soar-windows-x64.zip soar-macos-arm64.zip \
-            soar-linux-x64.zip soar-linux-arm64.zip \
-            BUILD_INFO.txt VERIFY.md --clobber
+            soar-windows-x64.zip soar-setup-windows-x64.exe soar-macos-arm64.zip \
+            soar-linux-x64.zip soar-linux-x64.deb soar-linux-x64.rpm \
+            soar-linux-arm64.zip soar-linux-arm64.deb soar-linux-arm64.rpm \
+            BUILD_INFO.txt VERIFY.md SHA256SUMS.txt --clobber
           echo "nightly release updated: ${daily_zip}"
 
       - name: Run summary
@@ -571,7 +775,7 @@ jobs:
             echo "| 更新时间 | ${utc_time} / ${bj_time} |"
             echo "| Commit | \`${GITHUB_SHA}\` |"
             echo "| 产物 | artifact **daily-build**（唯一最新版，历史已清理）+ Release **Nightly Build (nightly)** 同步发布 |"
-            echo "| 平台 | windows-x64（soar.exe+DLL）/ macos-arm64（soar+lib/ 捆绑）/ linux-x64 / linux-arm64（捆绑运行时） |"
+            echo "| 平台 | windows-x64（zip+setup.exe 安装器）/ macos-arm64（soar+lib/ 捆绑）/ linux-x64·arm64（zip + deb/rpm 安装包） |"
             echo ""
             echo "下载: 本 run 页面底部 Artifacts 区 \`daily-build\`，或 <https://github.com/${GITHUB_REPOSITORY}/releases/tag/nightly>（匿名可下）。"
             echo "验证方式见包内 VERIFY.md。发布面: 本 artifact + 滚动 nightly Release（固定 tag nightly，非版本发布）。"

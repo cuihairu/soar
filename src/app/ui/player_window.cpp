@@ -16,6 +16,7 @@
 
 #include "soar/core/player.h"
 #include "soar/core/subtitle_provider.h"
+#include "startup_report.h"
 #include "ui_state.h"
 
 #include <fmt/format.h>
@@ -2042,6 +2043,8 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
 #else
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
     fmt::print(stderr, "SDL_Init failed: {}\n", SDL_GetError());
+    reportFatalStartupError(
+        "soar", std::string("SDL_Init failed: ") + SDL_GetError());
     return 1;
   }
   // P2P sources name the window after the streamed file, not the bridge URL
@@ -2060,6 +2063,8 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
       SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
   if (!renderer) {
     fmt::print(stderr, "SDL_CreateRenderer failed: {}\n", SDL_GetError());
+    reportFatalStartupError(
+        "soar", std::string("SDL_CreateRenderer failed: ") + SDL_GetError());
     SDL_DestroyWindow(window);
     SDL_Quit();
     return 1;

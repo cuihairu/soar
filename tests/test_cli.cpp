@@ -17,11 +17,13 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -1578,6 +1580,68 @@ TEST_CASE("headless run over an unopenable source fails with 1") {
   const auto run = runCli({"--headless", "--backend=null", "asset://fail-open.mp4"});
   CHECK(run.exit_code == 1);
   CHECK(run.output.find("Failed to open source: asset://fail-open.mp4") != std::string::npos);
+}
+
+TEST_CASE("a failed open appends its reason to the SOAR_STARTUP_LOG") {
+  // Startup failure visibility (BUGS.md "black box flash"): a failure-class
+  // early exit must leave a trace in the log a double-clicked user could
+  // still find. Relative path on purpose: the child inherits this
+  // process's working directory, and a bare filename survives runCli's
+  // Windows quoting rules.
+  const std::string log = "soar_startup_report_test.log";
+  std::remove(log.c_str());
+  {
+    const ScopedEnv log_env("SOAR_STARTUP_LOG", log.c_str());
+    const auto run = runCli({"--headless", "--backend=null", "asset://fail-open.mp4"});
+    CHECK(run.exit_code == 1);
+  }
+  std::ifstream in(log);
+  REQUIRE(in.good());
+  std::string logged((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+  in.close();
+  std::remove(log.c_str());
+  // One timestamped entry: the message itself spans two lines (uri line +
+  // backend Error line), each newline from a single log call.
+  CHECK(logged.find("soar: Failed to open source: asset://fail-open.mp4") !=
+        std::string::npos);
+  CHECK(logged.find("Error: ") != std::string::npos);
+  CHECK(std::count(logged.begin(), logged.end(), '\n') == 2);
+}
+
+TEST_CASE("a window-mode startup failure still reaches the log") {
+  // The startAsync arm of the torrent start (window mode) is a different
+  // early-exit point from the headless one above; it must log the same
+  // way. The malformed magnet fails during the synchronous prepare half,
+  // before any window or SDL call, so no display is needed.
+  const std::string log = "soar_startup_report_test.log";
+  std::remove(log.c_str());
+  {
+    const ScopedEnv log_env("SOAR_STARTUP_LOG", log.c_str());
+    const auto run = runCli({"magnet:?dn=broken"});
+    CHECK(run.exit_code == 1);
+  }
+  std::ifstream in(log);
+  REQUIRE(in.good());
+  std::string logged((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+  in.close();
+  std::remove(log.c_str());
+  CHECK(logged.find("torrent: cannot parse magnet URI") != std::string::npos);
+}
+
+TEST_CASE("usage exits write no startup log") {
+  // Usage-class exits (no arguments here) are expected behavior, not
+  // failures: they show the dialog at most and must not litter the log.
+  const std::string log = "soar_startup_report_test.log";
+  std::remove(log.c_str());
+  {
+    const ScopedEnv log_env("SOAR_STARTUP_LOG", log.c_str());
+    const auto run = runCli({});
+    CHECK(run.exit_code == 2);
+  }
+  std::ifstream in(log);
+  CHECK(!in.good());
 }
 
 TEST_CASE("headless FFmpeg run over a missing file fails with the demuxer error") {
