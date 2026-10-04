@@ -44,8 +44,8 @@ v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/�
 - **音频输出**：SDL2 音频设备，重采样（Resample）到设备参数，支持音量/静音/倍速，输出端点可在音轨菜单中枚举与切换（下一个音频帧生效）；
 - **网络与下载**：HTTP(S) 顺序播放即边下边看；`--cache-dir=` 磁盘缓存——同一 URL 离线可重播、断点续播、seek 进未下载段只补目标块，`Downloading N%` 进度徽标（http:// 走缓存，https 直通；见 docs/mvp.md §5 P3）；`.torrent`/`magnet:` 经 vendored libtorrent 内核顺序下载、以本地 `http://127.0.0.1:<port>/` 桥进同一播放链路（`--torrent-store=`/`--torrent-peer=`/`--torrent-index=`/`--torrent-list`，窗口期「connecting to swarm - N peers」状态与下载徽标可见；P2P 边界见 docs/mvp.md §5 P4）；
 - **桌面 UI**：底部悬浮 OSC（2.5s 无输入自动隐藏，悬停/拖动/浮层/暂停时钉住），整宽 seek 条（悬停时间提示、拖动预览、松手提交）+ 按钮行（传输控制、时钟、音量、倍速、音轨、字幕、全屏）；
-- **键鼠交互**：单击切换 OSC、双击全屏、垂直滚轮调音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开（MRU×15，持久化）；
-- **快捷键**：`Space/K` 播放暂停、`←/→ ±5s`、`Shift+←/→ ±1s`、`PgUp/PgDn ±60s`、`Home`、`0–9` 百分比、`↑/↓` 音量、`M` 静音、`,/.` 倍速、`F` 全屏、`A/C` 循环音轨/字幕、`L` A-B 循环（定 A → 定 B → 清除）、`V` 字幕显隐、`[/]` 字幕前后偏移、`S` 截图（PNG）、`P` 播放队列浮层、`N/Shift+N` 下一首/上一首、`I/R/H` 信息/最近/帮助、`Q` 退出、`Esc` 退全屏或退出；
+- **键鼠交互**：单击切换 OSC、双击全屏、垂直滚轮调音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开（MRU×15，持久化）；GUI 版（`soarw.exe`/`--gui`）无源启动直接进空主界面——「Open a file」海报，`O` 键或点海报打开文件（Windows 弹文件对话框，其他平台降级为拖放提示 toast）；
+- **快捷键**：`Space/K` 播放暂停、`←/→ ±5s`、`Shift+←/→ ±1s`、`PgUp/PgDn ±60s`、`Home`、`0–9` 百分比、`↑/↓` 音量、`M` 静音、`,/.` 倍速、`F` 全屏、`A/C` 循环音轨/字幕、`L` A-B 循环（定 A → 定 B → 清除）、`V` 字幕显隐、`[/]` 字幕前后偏移、`S` 截图（PNG）、`P` 播放队列浮层、`N/Shift+N` 下一首/上一首、`O` 打开文件、`I/R/H` 信息/最近/帮助、`Q` 退出、`Esc` 退全屏或退出；
 - **状态提示**：暂停/缓冲指示、OSD Toast 反馈操作结果、媒体信息浮层（含错误行与轨道清单）。
 
 ## 架构
@@ -116,7 +116,7 @@ irm https://raw.githubusercontent.com/cuihairu/soar/main/install.ps1 | iex
 
 平台覆盖与每日构建矩阵一致：Linux x64/arm64、macOS Apple Silicon、Windows x64。macOS Intel 与 Windows arm64 没有免费的 CI runner，脚本遇到会明确报错（不会装一个跑不起来的包）。另外两条边界：soar 是桌面播放器、无常驻服务形态，脚本不注册系统服务；每日构建未做代码签名，Windows SmartScreen 拦截时选「更多信息 → 仍要运行」，macOS 首次运行前 `xattr -cr`（脚本已代做）。
 
-除脚本使用的便携 zip 外，nightly Release 还提供：Linux 安装包 `soar-linux-<arch>.deb` / `.rpm`（`dpkg -i` / `rpm -ivh` 安装，含 `/opt/soar` + `/usr/bin/soar` + 菜单项与图标）；Windows 安装器 `soar-setup-windows-x64.exe`（装目录/开始菜单/桌面快捷方式/卸载器，快捷方式指向 `soarw.exe`——GUI 版入口，双击启动无控制台黑框，启动失败会弹错误框并写 `%TEMP%\soar-startup-failures.log`）。Release 附 `SHA256SUMS.txt` 覆盖全部资产。
+除脚本使用的便携 zip 外，nightly Release 还提供：Linux 安装包 `soar-linux-<arch>.deb` / `.rpm`（`dpkg -i` / `rpm -ivh` 安装，含 `/opt/soar` + `/usr/bin/soar` + 菜单项与图标，菜单项 `soar --gui` 打开空主界面，MimeType 注册 video/audio/torrent/magnet）；Windows 安装器 `soar-setup-windows-x64.exe`（装目录/开始菜单/桌面快捷方式/卸载器，快捷方式指向 `soarw.exe`——GUI 版入口，双击启动无控制台黑框、无源直接进空主界面，启动失败会弹错误框并写 `%TEMP%\soar-startup-failures.log`；常见媒体扩展注册为「打开方式 → Soar」候选，不抢默认）。Release 附 `SHA256SUMS.txt` 覆盖全部资产。
 
 ## 构建
 
@@ -133,8 +133,11 @@ cmake --preset default && cmake --build --preset default   # Debug
 ## 使用
 
 ```bash
-# SDL2 窗口播放（编译包含 FFmpeg 后端时）
-./build/soar --backend=ffmpeg <path-or-url>
+# SDL2 窗口播放（默认后端即 FFmpeg——编译包含时；--backend= 可显式指定）
+./build/soar <path-or-url>
+
+# 无源启动进空主界面（「Open a file」海报；GUI 版 soarw.exe 双击同此）
+./build/soar --gui
 
 # CLI 冒烟测试（不开窗口：打开 → 播放 → Seek → 暂停 → 停止）
 ./build/soar --headless --backend=ffmpeg <path-or-url>

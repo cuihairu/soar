@@ -41,7 +41,8 @@
 
 - 浮动控制栏（OSC）：底部居中、2.5s 无输入自动隐藏，悬停/拖动/浮层打开/暂停时钉住
 - 控件：整宽 seek 条（悬停时间提示、拖动预览、松手提交）+ 传输控制、时钟、音量、倍速、音轨/字幕菜单、信息、全屏
-- 键鼠：单击切换 OSC、双击全屏、垂直滚轮音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开
+- 键鼠：单击切换 OSC、双击全屏、垂直滚轮音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开；空主界面（GUI 无源启动，BUGS.md #3）：`O` 键 / 点海报打开文件（Windows `GetOpenFileNameW`，其他平台降级拖放提示）
+- 启动语义（BUGS.md #3，与 #2 并案）：GUI 前端 `soarw.exe` 与 `--gui` 无源启动 = 空主界面（「Open a file」海报），不报 usage；控制台 `soar.exe` 无源仍 usage 退出 2；`--help/-h` 打用法退出 0。默认后端无显式 `--backend=` 时取 FFmpeg（编译包含时；原默认 null 对任意 URI 假播黑屏，窗口会话打开的文件会静默黑屏）。文件关联：Windows 安装器注册 18 扩展「打开方式 → Soar」候选（OpenWithProgids，不抢默认，卸载无痕），Linux `.desktop` `Exec=soar --gui` + MimeType
 - 状态提示：暂停/缓冲指示、OSD Toast、媒体信息浮层
 
 设计与技术选型（SDL2 自绘 / ImGui / Qt / Web 壳的对比与取舍）见 [ui-design.md](ui-design.md)。

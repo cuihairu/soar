@@ -282,6 +282,40 @@ if mode == "delete":
         time.sleep(0.2)
     sys.exit(5)
 
+if mode == "empty":
+    # Source-less window (BUGS.md #3): the GUI entry starts with no media
+    # and the poster is the open entry. Exercise both entries — the O key
+    # (dialog on Windows, toast here) and a click over the video area —
+    # then Escape out. No decode runs, so a short settle wait is enough.
+    time.sleep(2.5)
+    geo = None
+    try:
+        geo = win.get_geometry()
+    except Exception:
+        pass
+    if not focus():
+        sys.exit(4)
+    if not key(d.keysym_to_keycode(0x6F)):  # 'o'
+        sys.exit(4)
+    time.sleep(0.4)
+    if geo is not None:
+        if not moved(geo.width // 2, geo.height // 2):
+            sys.exit(4)
+        time.sleep(0.3)
+        if not button(1):
+            sys.exit(4)
+        time.sleep(0.4)
+    if not focus():
+        sys.exit(4)
+    if not key(d.keysym_to_keycode(0xFF1B)):  # Escape
+        sys.exit(4)
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if find_window() is None:
+            sys.exit(0)
+        time.sleep(0.2)
+    sys.exit(5)
+
 if mode == "drive":
     # Let the UI come up and the null backend start before touching it.
     time.sleep(3.0)
@@ -1500,6 +1534,26 @@ TEST_CASE("options without a source URI exit with 2") {
   CHECK(run.output.find("Usage:") != std::string::npos);
 }
 
+TEST_CASE("--help prints usage and exits with 0") {
+  // Help is usage-class output (expected behavior, exit 0), distinct
+  // from the no-source error exit.
+  const auto run = runCli({"--help"});
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("Usage:") != std::string::npos);
+  const auto short_run = runCli({"-h"});
+  CHECK(short_run.exit_code == 0);
+  CHECK(short_run.output.find("Usage:") != std::string::npos);
+}
+
+TEST_CASE("--gui with --headless and no source keeps the usage exit") {
+  // --gui only re-routes the windowed no-source start; combined with
+  // --headless there is still nothing to do, so the console contract
+  // holds (BUGS.md #3 guards this corner explicitly).
+  const auto run = runCli({"--gui", "--headless"});
+  CHECK(run.exit_code == 2);
+  CHECK(run.output.find("Usage:") != std::string::npos);
+}
+
 TEST_CASE("unknown backend name exits with 2") {
   const auto run = runCli({"--backend=walrus", "asset://sample"});
   CHECK(run.exit_code == 2);
@@ -1573,6 +1627,25 @@ TEST_CASE("headless run over the null backend succeeds") {
   // The headless flow announces the media and drives seek/pause/stop.
   CHECK(run.output.find("=== Media Info ===") != std::string::npos);
   CHECK(run.output.find("event: media-info") != std::string::npos);
+}
+
+TEST_CASE("the default backend resolves to FFmpeg when built in") {
+  // No --backend on the command line: the run must pick the real decoder,
+  // not the fake-media null backend — window sessions open more sources
+  // later (file dialog, drag-and-drop) and those need actual decoding
+  // (BUGS.md #3). Same fixture guard as the media-backed cases below.
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping the default-backend test");
+    return;
+  }
+  const auto run = runCli({"--headless", media});
+  CHECK(run.exit_code == 0);
+#ifdef SOAR_WITH_FFMPEG
+  CHECK(run.output.find("Using FFmpeg backend") != std::string::npos);
+#else
+  CHECK(run.output.find("Using null backend") != std::string::npos);
+#endif
 }
 
 TEST_CASE("headless run over an unopenable source fails with 1") {
@@ -1894,6 +1967,85 @@ TEST_CASE("windowed null-backend run exits cleanly on WM_DELETE_WINDOW") {
     return;
   }
   CHECK(run.exit_code == 0);
+#endif
+}
+
+TEST_CASE("windowed --gui run with no source opens the empty player") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+  // Opt-in (the CI coverage job), same gating as the window tests above.
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the X11 window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the X11 window test");
+    return;
+  }
+
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "640x480x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the X11 window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  // The "empty" injector exercises both open entries (O key, center
+  // click) and quits through Escape — the same exit contract as the
+  // media-backed window runs.
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "empty", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // No positional: exactly the shape a double-clicked GUI binary (or the
+  // Linux .desktop menu item) produces (BUGS.md #3). The run must reach
+  // the window and exit cleanly — a usage exit here is the regression
+  // this test exists to catch.
+  const auto run = runCli({"--gui"});
+
+  std::printf("x11 empty-window test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    // Same environment gap as the Escape test: a skip, not a failure.
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    return;
+  }
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("Usage:") == std::string::npos);
+  CHECK(run.output.find("No media source given") == std::string::npos);
 #endif
 }
 

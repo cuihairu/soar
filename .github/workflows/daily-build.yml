@@ -233,8 +233,9 @@ jobs:
           $out = (& .\smoke-win\soar.exe --version | Out-String)
           $code = $LASTEXITCODE
           Write-Host "version exit=$code output=$out"
-          # 无参用法约定打印 Usage、退出 2（main.cpp argc<2 分支）。文本
-          # 原样漏进日志留证；两个流都不经 2>&1 重定向。
+          # 无参用法约定打印 Usage、退出 2（控制台入口：无源→usage 退
+          # 出；GUI 入口的空主界面见 ③）。文本原样漏进日志留证；两个
+          # 流都不经 2>&1 重定向。
           & .\smoke-win\soar.exe
           $ucode = $LASTEXITCODE
           Write-Host "usage exit=$ucode"
@@ -272,18 +273,28 @@ jobs:
             exit 1
           }
           Write-Host "soarw version: $($t.Trim())"
-          # ③ 无参（usage 类）在 SOAR_NO_DIALOG=1 豁免下退出 2：没有豁免
-          #    的话 GUI exe 无 stdout 句柄会弹模态框挂死 CI。GUI 子系统
-          #    exe 直接 & 调用 pwsh 不等待、$LASTEXITCODE 恒空（ci.yml
-          #    run 37171717828 实证），必须 Start-Process -Wait -PassThru。
-          $uo = Join-Path $env:RUNNER_TEMP 'soarw-usage-out.txt'
-          $p = Start-Process .\smoke-win\soarw.exe -Wait -PassThru `
-            -RedirectStandardOutput $uo
-          $wcode = $p.ExitCode
-          Write-Host "soarw usage exit=$wcode"
-          if ($wcode -ne 2) {
-            Write-Host "::error::soarw.exe without args should exit 2, got $wcode"
-            exit 1
+          # ③ 无参 = 空主界面（BUGS.md #3：双击是启动不是命令行，不再
+          #    usage 退出 2——控制台 soar.exe 的无参 usage 断言在上面保持
+          #    不变）。GUI 子系统 exe 直接 & 调用 pwsh 不等待、$LASTEXITCODE
+          #    恒空（ci.yml run 37171717828 实证），且修复后无参不再退出
+          #    ——必须 -PassThru 看 8 秒存活；真退了（含 exit 2 的 usage
+          #    回归）都不行，唯一豁免与 ④ 同款：exit 1 + SDL_ 日志。
+          $eo = Join-Path $env:RUNNER_TEMP 'soarw-empty-out.txt'
+          $ee = Join-Path $env:RUNNER_TEMP 'soarw-empty-err.txt'
+          $p = Start-Process .\smoke-win\soarw.exe -PassThru `
+            -RedirectStandardOutput $eo -RedirectStandardError $ee
+          Start-Sleep -Seconds 8
+          if (-not $p.HasExited) {
+            Write-Host "soarw empty start (no args) still alive after 8s - OK (BUGS.md #3)"
+            $p.Kill()
+          } else {
+            $err = Get-Content $ee -Raw
+            Write-Host "soarw exited early (code $($p.ExitCode)): $err"
+            if ($p.ExitCode -ne 1 -or $err -notmatch 'SDL_') {
+              Write-Host "::error::soarw with no args must open the empty player window (exit 2 = usage regression, BUGS.md #3)"
+              exit 1
+            }
+            Write-Host "degraded to the documented clean SDL failure path (renderer-less runner)"
           }
           # ④ 窗口站住（BUGS.md #2 验收「窗口能站住」）：null 后端 + 默认
           #    视频驱动起一个真窗口，8 秒后进程必须还活着。runner 无
@@ -338,6 +349,27 @@ jobs:
             exit 1
           }
           Write-Host "installed + verified: $($t2.Trim())"
+          # 资源管理器「打开方式 → Soar」注册（BUGS.md #3 收口 ③）：
+          # Soar.Media ProgId 打开命令必须指向 soarw.exe（双击关联媒体
+          # 文件全链路的注册面），.mp4 的 OpenWithProgids 必须有 Soar.Media
+          # 候选——只作候选不抢默认。PrivilegesRequired=admin → HKA 落
+          # HKLM。
+          $cls = 'HKLM:\Software\Classes'
+          $cv = $null
+          $ck = Get-Item "$cls\Soar.Media\shell\open\command" -ErrorAction SilentlyContinue
+          if ($ck) { $cv = $ck.GetValue(''); $ck.Close() }
+          if (-not $cv -or $cv -notmatch 'soarw\.exe') {
+            Write-Host "::error::Soar.Media open command missing or wrong: $cv"
+            exit 1
+          }
+          $has = $false
+          $mk = Get-Item "$cls\.mp4\OpenWithProgids" -ErrorAction SilentlyContinue
+          if ($mk) { $has = $mk.GetValueNames() -contains 'Soar.Media'; $mk.Close() }
+          if (-not $has) {
+            Write-Host "::error::.mp4 OpenWithProgids has no Soar.Media candidate"
+            exit 1
+          }
+          Write-Host "association registered: $cv"
           # Inno 卸载器是两阶段自删除：unins000.exe 先把自己拷进 %TEMP%
           # 再起副本执行真正卸载，首进程立即退出且退出码非 0（run
           # 37176187658 实证 exit 2，卸载本身成功）——成败只看卸载痕迹
@@ -348,7 +380,8 @@ jobs:
           for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 2
             if (-not (Test-Path (Join-Path $env:ProgramFiles 'Soar')) `
-                -and -not (Test-Path $lnk)) {
+                -and -not (Test-Path $lnk) `
+                -and -not (Test-Path "$cls\Soar.Media")) {
               $gone = $true
               break
             }
@@ -361,6 +394,15 @@ jobs:
             Write-Host "::error::uninstall left $app behind"
             exit 1
           }
+          # 关联清理也必须收干净（BUGS.md #3：装是候选、卸是无痕）
+          $left = $false
+          $mk2 = Get-Item "$cls\.mp4\OpenWithProgids" -ErrorAction SilentlyContinue
+          if ($mk2) { $left = $mk2.GetValueNames() -contains 'Soar.Media'; $mk2.Close() }
+          if ($left -or (Test-Path "$cls\Soar.Media")) {
+            Write-Host "::error::uninstall left association registry behind"
+            exit 1
+          }
+          Write-Host "association cleaned up on uninstall"
           Write-Host "verify passed: package runs from an empty dir with PATH=System32 only; installer round-trip OK"
           exit 0
 

@@ -69,10 +69,11 @@ Type=Application
 Name=Soar
 Comment=媒体播放器（nightly，运行库随包自包含）
 GenericName=Media Player
-Exec=soar
+Exec=soar --gui
 Icon=soar
 Terminal=false
 Categories=AudioVideo;Video;Player;
+MimeType=video/*;audio/*;application/x-bittorrent;x-scheme-handler/magnet;
 StartupWMClass=soar
 StartupNotify=true
 EOF

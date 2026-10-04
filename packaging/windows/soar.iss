@@ -47,6 +47,34 @@ CloseApplications=yes
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; Flags: unchecked
 
+; 资源管理器「打开方式 → Soar」注册（BUGS.md #3 收口 ③）。只注册
+; OpenWithProgids 候选、不写 .ext 默认值——不抢用户的默认播放器，由
+; 用户在资源管理器里自己设为默认。HKA = 管理员装到 HKLM、按用户装到
+; HKCU，与 PrivilegesRequired=admin 的机器级安装对齐。命令行走 soarw.exe
+; （GUI 前端），路径参数经 WinMain→CommandLineToArgvW→UTF-8 进原有播放
+; 流程；卸载时 ProgId 整键删除、各扩展只删自己的候选值。
+Root: HKA; Subkey: "Software\Classes\Soar.Media"; ValueType: string; ValueData: "Soar media file"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Soar.Media\DefaultIcon"; ValueType: string; ValueData: "{app}\soar.ico,0"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Soar.Media\shell\open\command"; ValueType: string; ValueData: """{app}\soarw.exe"" ""%1"""; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\.mp4\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.mkv\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.webm\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.avi\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.mov\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.flv\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.ts\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.m2ts\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.mp3\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.m4a\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.aac\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.flac\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.wav\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.ogg\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.opus\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.m3u8\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.mpd\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.torrent\OpenWithProgids"; ValueType: string; ValueName: "Soar.Media"; ValueData: ""; Flags: uninsdeletevalue
+
 [Files]
 ; 载荷 = stage 暂存的完整运行时（soar.exe / soarw.exe / 依赖 DLL 闭包
 ; / soar.ico / PLATFORM-NOTES.txt）——装完就能跑，缺 DLL 缺陷的并案

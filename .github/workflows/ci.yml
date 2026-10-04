@@ -159,10 +159,12 @@ jobs:
       # soarw.exe（GUI 子系统双胞胎）防回归（BUGS.md #2 黑框闪退）：
       # ① PE 子系统字节校验——soarw 必须 GUI（2），soar 必须控制台（3），
       #    配错就是「双击黑框」回归；② GUI exe 的 --version 经句柄重定向
-      #    捕获；③ 无参 usage 在 SOAR_NO_DIALOG=1 豁免下退出 2（没有
-      #    豁免的话无 stdout 句柄会弹模态框挂死 CI）；④ 窗口站住：null
-      #    后端起真窗口 8 秒存活断言——runner 无 GPU 时只接受带日志的
-      #    干净 SDL 失败，闪退/崩溃都不行。三道锁同上一步。
+      #    捕获；③ 无参 = 空主界面（BUGS.md #3：双击是启动不是命令行，
+      #    不再 usage 退出 2——控制台 soar.exe 的无参 usage 断言在上一步
+      #    保持不变）；8 秒存活断言，SOAR_NO_DIALOG=1 豁免下起不来时走
+      #    日志不弹模态框；④ 窗口站住：null 后端起真窗口 8 秒存活断言
+      #    ——runner 无 GPU 时只接受带日志的干净 SDL 失败，闪退/崩溃都
+      #    不行。三道锁同上一步。
       - name: Smoke packaged GUI twin (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -190,17 +192,27 @@ jobs:
             exit 1
           }
           Write-Host "soarw version: $($t.Trim())"
-          # GUI 子系统 exe 直接 & 调用 pwsh 不等待、$LASTEXITCODE 恒空
-          # （run 37171717828 实证：断言先失败、Usage 文本后到日志）——
-          # 必须与 --version 同款 Start-Process -Wait -PassThru 取 ExitCode。
-          $uo = Join-Path $env:RUNNER_TEMP 'soarw-usage-out.txt'
-          $p = Start-Process .\stage-verify\soarw.exe -Wait -PassThru `
-            -RedirectStandardOutput $uo
-          $wcode = $p.ExitCode
-          Write-Host "soarw usage exit=$wcode"
-          if ($wcode -ne 2) {
-            Write-Host "::error::soarw.exe without args should exit 2, got $wcode"
-            exit 1
+          # 无参空启动（BUGS.md #3 修复的正是这条：安装版双击弹错 usage）。
+          # GUI 子系统 exe 直接 & 调用 pwsh 不等待、$LASTEXITCODE 恒空（run
+          # 37171717828 实证），且修复后无参不再退出——必须 -PassThru 看
+          # 8 秒存活；真退了（含 exit 2 的 usage 回归）都不行，唯一豁免
+          # 与 ④ 同款：exit 1 + SDL_ 日志的渲染器缺失干净失败。
+          $eo = Join-Path $env:RUNNER_TEMP 'soarw-empty-out.txt'
+          $ee = Join-Path $env:RUNNER_TEMP 'soarw-empty-err.txt'
+          $p = Start-Process .\stage-verify\soarw.exe -PassThru `
+            -RedirectStandardOutput $eo -RedirectStandardError $ee
+          Start-Sleep -Seconds 8
+          if (-not $p.HasExited) {
+            Write-Host "soarw empty start (no args) still alive after 8s - OK (BUGS.md #3)"
+            $p.Kill()
+          } else {
+            $err = Get-Content $ee -Raw
+            Write-Host "soarw exited early (code $($p.ExitCode)): $err"
+            if ($p.ExitCode -ne 1 -or $err -notmatch 'SDL_') {
+              Write-Host "::error::soarw with no args must open the empty player window (exit 2 = usage regression, BUGS.md #3)"
+              exit 1
+            }
+            Write-Host "degraded to the documented clean SDL failure path (renderer-less runner)"
           }
           $so = Join-Path $env:RUNNER_TEMP 'soarw-alive-out.txt'
           $se = Join-Path $env:RUNNER_TEMP 'soarw-alive-err.txt'
@@ -219,7 +231,7 @@ jobs:
             }
             Write-Host "degraded to the documented clean SDL failure path (renderer-less runner)"
           }
-          Write-Host "smoke passed: GUI twin verified (PE subsystem, version, usage, windowed alive)"
+          Write-Host "smoke passed: GUI twin verified (PE subsystem, version, empty start, windowed alive)"
           exit 0
 
       # 防回归（macOS 面与 Windows 对称）：SDL2 与 vcpkg 管理的依赖

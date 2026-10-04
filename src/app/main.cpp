@@ -39,8 +39,10 @@ static void print_usage(const char* argv0) {
   fmt::print("  {} --headless [--backend=ffmpeg|null] <path-or-url>\n\n", argv0);
   fmt::print("Options:\n");
   fmt::print("  --headless    Run without GUI\n");
+  fmt::print("  --gui         Open the window with no media source (empty start)\n");
   fmt::print("  --version     Print the version and exit\n");
-  fmt::print("  --backend=    Select backend (ffmpeg, null)\n");
+  fmt::print("  --help        Print this help and exit\n");
+  fmt::print("  --backend=    Select backend (ffmpeg, null; default: ffmpeg when built in)\n");
   fmt::print("  --cache-dir=  Cache http:// downloads here for offline replay\n");
   fmt::print("  --torrent-store=  Where torrent data lands (default: <tmp>/soar-torrent)\n");
   fmt::print("  --torrent-peer=   Seed endpoint host:port to connect to directly (repeatable)\n");
@@ -76,15 +78,16 @@ static void notice_usage(const char* argv0) {
           "Run soar from a terminal for the full usage text.");
 }
 
-int soarAppMain(int argc, char** argv) {
-  if (argc < 2) {
-    print_usage(argv[0]);
-    notice_usage(argv[0]);
-    return 2;
-  }
+int soarAppMain(int argc, char** argv, bool gui_entry) {
+  // No up-front argc check: the no-source exit below covers it (no
+  // arguments means no positional, and nothing in between can have parse
+  // side effects), and the GUI entry must not take it at all — the
+  // installed shortcuts launch with no arguments and expect the empty
+  // window, not the CLI usage exit (BUGS.md #3).
 
   bool headless = false;
-  std::string backend_type = "null";  // default to null backend
+  std::string backend_type;  // empty until --backend=; resolved below
+  bool backend_given = false;
   std::string cache_dir;
   std::string torrent_store;
   std::vector<std::string> torrent_peers;
@@ -100,8 +103,17 @@ int soarAppMain(int argc, char** argv) {
     } else if (arg == "--version") {
       fmt::print("soar {}\n", SOAR_APP_VERSION);
       return 0;
+    } else if (arg == "--help" || arg == "-h") {
+      print_usage(argv[0]);
+      return 0;
+    } else if (arg == "--gui") {
+      // Explicit window entry with no media source (the GUI front-end
+      // sets the same flag): the empty player window is the start state,
+      // not a usage error (BUGS.md #3).
+      gui_entry = true;
     } else if (arg.rfind("--backend=", 0) == 0) {
       backend_type = arg.substr(10);  // after "--backend="
+      backend_given = true;
     } else if (arg.rfind("--cache-dir=", 0) == 0) {
       cache_dir = arg.substr(12);  // after "--cache-dir="
     } else if (arg.rfind("--torrent-store=", 0) == 0) {
@@ -125,12 +137,30 @@ int soarAppMain(int argc, char** argv) {
   }
 
   if (uri_index < 0) {
-    print_usage(argv[0]);
-    notice_usage(argv[0]);
-    return 2;
+    // The no-source exit keeps the console contract (tests pin usage text
+    // + exit 2) and covers --headless too — there is nothing for a
+    // headless run to do without a source. A GUI entry (--gui, or the
+    // Windows GUI front-end) falls through to the window with no media:
+    // the poster is the open-file entry there (BUGS.md #3).
+    if (!gui_entry || headless) {
+      print_usage(argv[0]);
+      notice_usage(argv[0]);
+      return 2;
+    }
   }
 
-  // Create backend based on selection
+  // Create backend based on selection. Default: FFmpeg when built in —
+  // window sessions open more sources later (file dialog, drag-and-drop)
+  // and the null backend only fakes a decodable media, so a null default
+  // would black-screen everything opened from the UI (BUGS.md #3). An
+  // explicit --backend always wins.
+  if (!backend_given) {
+#ifdef SOAR_WITH_FFMPEG
+    backend_type = "ffmpeg";
+#else
+    backend_type = "null";
+#endif
+  }
   std::unique_ptr<soar::IBackend> backend;
 #ifdef SOAR_WITH_FFMPEG
   soar::FFmpegBackend* ffmpeg_backend = nullptr;
@@ -178,11 +208,14 @@ int soarAppMain(int argc, char** argv) {
   // torrents. Declared before `player` so the player (which holds the
   // bridge's HTTP connection) is torn down first.
   soar::p2p::TorrentStream torrent_stream;
-  std::string uri(argv[uri_index]);
+  // Empty until a positional arrives (a --gui start has none); the torrent
+  // probe and the upfront open below both guard on uri_index.
+  std::string uri;
+  if (uri_index >= 0) uri = argv[uri_index];
   // True when the stream was started with startAsync() for the window (the
   // bridge is opened by the window's pending-torrent poll, not here).
   bool torrent_async = false;
-  {
+  if (uri_index >= 0) {
     const std::string lower_uri = lower_copy(uri);
     const bool is_magnet = lower_uri.rfind("magnet:", 0) == 0;
     const bool is_torrent = !is_magnet &&
@@ -328,8 +361,9 @@ int soarAppMain(int argc, char** argv) {
 
   // Async torrent sources open from the window once the metadata lands;
   // everything here (open, play, media info print) runs for the sources
-  // that were already openable at this point.
-  if (!torrent_async) {
+  // that were already openable at this point. A --gui start has no source
+  // at all: the player stays closed until the UI opens one.
+  if (uri_index >= 0 && !torrent_async) {
     if (!player.open(soar::MediaSource{uri, cache_dir})) {
       fmt::print(stderr, "Failed to open source: {}\n", uri);
       fmt::print(stderr, "Error: {}\n", player.lastError());
@@ -380,8 +414,10 @@ int soarAppMain(int argc, char** argv) {
   ui_cfg.title = "soar";
   ui_cfg.initial_uri = uri;
   // Remaining positionals join the play queue behind `uri` (docs/mvp.md
-  // §2 playlist). Headless keeps the single-source contract.
-  for (int i = uri_index + 1; i < argc; ++i) {
+  // §2 playlist). Headless keeps the single-source contract. The start
+  // index is floored at 1 so a --gui launch (uri_index == -1) never
+  // walks argv[0].
+  for (int i = std::max(uri_index + 1, 1); i < argc; ++i) {
     std::string extra(argv[i]);
     if (!extra.empty() && extra[0] != '-') ui_cfg.queued_uris.push_back(extra);
   }

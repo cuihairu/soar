@@ -45,7 +45,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
   }
   argv.push_back(nullptr);
   LocalFree(wide);
-  return soarAppMain(argc, argv.data());
+  // gui_entry=true: this front end is the GUI subsystem one — launching
+  // it with no media source must land in the empty player window, never
+  // in the CLI usage exit (BUGS.md #3).
+  return soarAppMain(argc, argv.data(), true);
 }
 
 #endif  // _WIN32

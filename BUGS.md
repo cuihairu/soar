@@ -90,3 +90,74 @@
   gcovr 行 95.1%/分支 84.6% 过；CI 终证（run 37191653811，35ee683）
   行 5660/5954 = 95.1%、分支 5795/6811 = 85.09% 双过门禁，
   `player_window.cpp` 缺失行 2058-2062 与预测一致。
+
+## 3. 安装版 soarw.exe 双击启动弹错「No media source given / Usage」（已修复，待真机复测）
+
+- **现象**：安装版双击 soarw.exe（桌面/开始菜单快捷方式、资源管理器
+  直接双击），弹出对话框「soar 0.1.0 / No media source given /
+  Usage: ...」——用户双击打开一个播放器，得到的却是一段命令行用法。
+- **排查**：
+  - 与缺陷 2 同根、是它的续集：双前端修复让黑框与启动失败可见了，
+    但**没区分「双击」与「终端调用」的语义**——`soarAppMain` 无参数
+    一律走 usage 退出 2，`usage 类` 启动对话框（缺陷 2 修的「可见化」）
+    把这段报错原样弹了出来。「双击是启动，不是命令行」这个边界从
+    没有被编码；
+  - 资源管理器「打开方式」链路同查：安装器（soar.iss）原本**没有任何**
+    文件关联注册（连 OpenWithProgids 都没有），`.desktop` 是
+    `Exec=soar` 无参（菜单点开 = usage 退出且 Terminal=false 什么都不
+    显示）——「双击媒体文件打开播放」的链路两端都没接线，argv 传文件
+    的那段行为是好的（所有 CLI 测试都在跑），缺的是入口注册与空启动。
+- **修复**（2026-10-05，与 #2 并案收口）：
+  1. **入口语义分叉**：`soarAppMain(argc, argv, gui_entry)`——GUI 前端
+     （`winmain.cpp` 的 `WinMain`，命令行经 `CommandLineToArgvW` → UTF-8）
+     与显式 `--gui` 旗标置 `gui_entry=true`；无源时只有
+     `!gui_entry || headless`（终端调用/headless）才打 usage 退出 2。
+     `--help/-h` 照打 usage 退出 0；未知选项照打 usage 退出 2——
+     「参数非法才输出 usage」的口径不变。控制台 `soar.exe` 无参行为
+     逐字不变（退出 2 + Usage）；
+  2. **空主界面**（`player_window.cpp`）：GUI 无源启动直接进窗口——
+     `firstRunEmpty()`（当前无源且非 torrent 等待态）显示「Open a file」
+     海报 + 「Drop a file here - R recent - H shortcuts」提示，HUD 正常；
+     打开入口三路：**O 键** / **点海报**（Windows 下
+     `GetOpenFileNameW` 真文件对话框、comdlg32 链接；其他平台降级
+     toast「No file dialog in this build - drop a file to open」）/
+     **拖放**（原 SDL_DROPFILE 路径）。help overlay 增 `O` 行。
+     有源启动（关联双击、命令行）不受影响，走原有播放流程；
+  3. **默认后端改 ffmpeg**：无显式 `--backend=` 时 `SOAR_WITH_FFMPEG`
+     → ffmpeg、未编入 → null。原默认 null 对任何 URI 都「成功」假播
+     10 分钟黑屏——GUI 空窗后续打开的文件（对话框/拖放/最近）会静默
+     黑屏假播，必须用能真解码的后端；`--backend=` 显式指定行为不变；
+  4. **文件关联接线**（收口 ③）：
+     - Windows：soar.iss 注册 `Soar.Media` ProgId + 18 个媒体扩展的
+       `OpenWithProgids` 候选（mp4/mkv/…/m3u8/mpd/torrent）——只作
+       「打开方式」候选**不抢默认**，打开命令 `soarw.exe "%1"`，
+       卸载时 ProgId 整键删、候选值逐个删（无痕）；
+     - Linux：`.desktop` 改 `Exec=soar --gui`（菜单点开不再 usage
+       静默退出）+ `MimeType=video/*;audio/*;application/x-bittorrent;
+       x-scheme-handler/magnet;`；
+  5. **CI 同步改**：ci.yml / daily-build 的 Windows 冒烟「soarw 无参
+     退出 2」断言改为「无参空启动 8 秒存活」（`SOAR_NO_DIALOG=1` 下
+     真退了才判——exit 2 = usage 回归，唯一豁免仍与窗口站住断言同款：
+     exit 1 + SDL_ 日志的渲染器缺失干净失败）；daily-build 安装器走查
+     增断言：装后 `HKLM\Software\Classes\Soar.Media\shell\open\command`
+     指向 soarw.exe、`.mp4\OpenWithProgids` 有 Soar.Media 候选；
+     卸载后两者必须消失。
+- **验证**：
+  - 本地 CLI 冒烟 8 项：无参 exit 2 + Usage；`--help`/`-h` exit 0；
+    `--gui --headless` 无源 exit 2（headless 是显式命令行语义）；
+    默认后端打印 `Using FFmpeg backend`；`--version` 0；`--bogus` 2；
+  - 本地 Xvfb 走查（SOAR_ENABLE_IMGUI=ON 树，display :103）：空窗海报
+    「Open a file / Stopped / Drop a file here - R recent - H shortcuts」
+    + 完整 HUD；按 O 出 toast「No file dialog in this build - drop a
+    file to open」（Toast 800ms，首拍 0.8s 恰好过期，0.3s 重拍实锤）；
+    H 帮助面板第 2 行 `O / Open a file (Windows dialog)`；Esc 退出；
+  - 新增测试 4 条：`--help/-h` 退出 0、`--gui --headless` 无源保持
+    usage 退出 2、默认后端解析为 FFmpeg（fixture 门控）、X11 空窗端到端
+    （injector `empty` 模式：O 键 → 点击 → Escape，断言 exit 0 且无
+    Usage/No media source 文本）；
+  - 七腿 CI 终证与覆盖率读数：见提交后的 run 记账（本条目随 run 落账）。
+- **残余（如实）**：Windows 真机复测待用户——安装版双击进空窗、
+  对话框选文件、资源管理器「打开方式 → Soar」关联播放三条链路
+  （CI runner 无交互桌面，文件对话框与关联双击无法自动化）；
+  Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）
+  未在真桌面环境走查。

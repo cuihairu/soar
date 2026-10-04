@@ -24,6 +24,14 @@
 #ifdef SOAR_WITH_SDL2
 #  include <SDL.h>
 
+#  ifdef _WIN32
+// The open-file entry (BUGS.md #3): SDL_syswm.h brings windows.h for the
+// HWND, commdlg.h declares GetOpenFileNameW (comdlg32, linked in
+// CMakeLists.txt for both front ends).
+#    include <SDL_syswm.h>
+#    include <commdlg.h>
+#  endif
+
 #  include "torrent_stream.h"
 
 #  include <algorithm>
@@ -502,6 +510,11 @@ class PlayerHud {
           case SDLK_n:  // mpv binding: next / previous queue entry
             playlistStep(shift, now);
             return;
+          case SDLK_o:
+            // Open-a-file entry (BUGS.md #3): the Windows common dialog;
+            // elsewhere the attempt degrades to a toast saying what works.
+            openFilePicker();
+            return;
           // Subtitle keys (v0.2), back on since the X11 drive scripts
           // pin every coordinate they used to disturb (subsdrive presses
           // [ ] v with the overlay measured). `s` follows mpv and takes a
@@ -528,6 +541,13 @@ class PlayerHud {
       case SDL_MOUSEBUTTONDOWN: {
         if (e.button.button != SDL_BUTTON_LEFT) return;
         if (ImGui::GetIO().WantCaptureMouse) return;  // on a widget
+        // First-run window (BUGS.md #3): no source yet — a click is the
+        // open-file entry, not an OSC toggle (nothing is playing to
+        // toggle anything for).
+        if (firstRunEmpty()) {
+          openFilePicker();
+          return;
+        }
         // Double click (<=500ms) toggles fullscreen; a single click toggles
         // the OSC (IINA singleClickAction semantics, docs §1.1 — keeps the
         // second click of the fullscreen gesture from toggling pause).
@@ -1086,6 +1106,55 @@ class PlayerHud {
     }
   }
 
+  // First-run window (BUGS.md #3): the GUI entry can start with no media
+  // at all (--gui, the installed shortcuts, a double-clicked soarw.exe).
+  // The poster is then the open entry rather than a playback state. The
+  // async torrent wait also runs source-less, but it has its own poster
+  // state (connecting...), so it stays out of this predicate.
+  bool firstRunEmpty() const {
+    return current_uri_.empty() && !torrent_pending_;
+  }
+
+  // Open-a-file entry: the Windows common dialog picks a path and rides
+  // the same openSource() path as a drop; elsewhere (SDL2 ships no dialog
+  // API) the attempt degrades to a toast that names what does work.
+  void openFilePicker() {
+#ifdef _WIN32
+    wchar_t picked[4096] = L"";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    SDL_SysWMinfo wmi{};
+    SDL_VERSION(&wmi.version);
+    if (SDL_GetWindowWMInfo(window_, &wmi)) {
+      ofn.hwndOwner = wmi.info.win.window;
+    }
+    ofn.lpstrFile = picked;
+    ofn.nMaxFile = static_cast<DWORD>(std::size(picked));
+    ofn.lpstrFilter =
+        L"Media files\0*.mp4;*.m4v;*.mkv;*.webm;*.avi;*.mov;*.flv;*.wmv;"
+        L"*.ts;*.m2ts;*.mp3;*.m4a;*.aac;*.flac;*.wav;*.ogg;*.opus;"
+        L"*.m3u8;*.mpd;*.torrent\0"
+        L"All files\0*.*\0";
+    ofn.lpstrTitle = L"Open media file";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (GetOpenFileNameW(&ofn)) {
+      const int bytes = WideCharToMultiByte(
+          CP_UTF8, 0, picked, -1, nullptr, 0, nullptr, nullptr);
+      if (bytes > 0) {
+        std::string path(static_cast<std::size_t>(bytes), '\0');
+        WideCharToMultiByte(
+            CP_UTF8, 0, picked, -1, path.data(), bytes, nullptr, nullptr);
+        path.resize(static_cast<std::size_t>(bytes) - 1);  // drop the nul
+        openSource(path);
+      }
+    }
+    // Cancel leaves the window exactly as it was: no toast, no state.
+#else
+    st_.toast.show("No file dialog in this build - drop a file to open",
+                   nowMs());
+#endif
+  }
+
   // Reopen path for Recent/DnD; Player::open closes existing media first
   // (the FFmpeg backend re-enters cleanly — verified in its open()). Both
   // are user-initiated opens, so the source also joins the playlist as the
@@ -1450,19 +1519,32 @@ class PlayerHud {
                          ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoBackground |
                          ImGuiWindowFlags_NoInputs)) {
-      ImGui::TextUnformatted(displayName(current_uri_).c_str());
-      if (torrent_pending_ && torrent_->phase() ==
-              soar::p2p::TorrentPhase::Connecting) {
-        // Async P2P source not yet serving: the wait itself is the state.
-        char line[64];
-        std::snprintf(line, sizeof(line), "connecting to swarm - %d peers",
-                      torrent_->status().peers);
-        ImGui::TextDisabled("%s", line);
-      } else {
+      if (firstRunEmpty()) {
+        // GUI start with no source (BUGS.md #3): the poster is the open
+        // entry itself — click / O / drop all land in openFilePicker().
+        ImGui::TextUnformatted("Open a file");
         ImGui::TextDisabled("%s", stateName(player_.state()));
+        ImGui::Spacing();
+#ifdef _WIN32
+        ImGui::TextDisabled("%s", "Click, press O, or drop a file here");
+#else
+        ImGui::TextDisabled("%s", "Drop a file here - R recent - H shortcuts");
+#endif
+      } else {
+        ImGui::TextUnformatted(displayName(current_uri_).c_str());
+        if (torrent_pending_ && torrent_->phase() ==
+                soar::p2p::TorrentPhase::Connecting) {
+          // Async P2P source not yet serving: the wait itself is the state.
+          char line[64];
+          std::snprintf(line, sizeof(line), "connecting to swarm - %d peers",
+                        torrent_->status().peers);
+          ImGui::TextDisabled("%s", line);
+        } else {
+          ImGui::TextDisabled("%s", stateName(player_.state()));
+        }
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", "Drop a file here - R recent - H shortcuts");
       }
-      ImGui::Spacing();
-      ImGui::TextDisabled("%s", "Drop a file here - R recent - H shortcuts");
     }
     ImGui::End();
   }
@@ -1797,6 +1879,7 @@ class PlayerHud {
     if (ImGui::Begin("Shortcuts", &open, ImGuiWindowFlags_NoSavedSettings)) {
       static const char* const kRows[][2] = {
           {"Space / K", "Play / pause"},
+          {"O", "Open a file (Windows dialog)"},
           {"Left / Right", "Seek -5s / +5s"},
           {"Shift+Left / Right", "Seek -1s / +1s"},
           {"PgUp / PgDn", "Seek -60s / +60s"},

@@ -172,6 +172,11 @@ if(SOAR_BUILD_APP)
   # smoke check (daily-build's BUILD_INFO greps the same project VERSION).
   target_compile_definitions(soar PRIVATE SOAR_APP_VERSION="${PROJECT_VERSION}")
   target_link_libraries(soar PRIVATE soar::core soar_app_ui soar_p2p)
+  if(WIN32)
+    # player_window.cpp 的打开文件对话框（GetOpenFileNameW）——窗口代码
+    # 两个前端共用，控制台 soar.exe 也一样能按 O / 点海报选文件。
+    target_link_libraries(soar PRIVATE comdlg32)
+  endif()
 
   # Dev tool for the P2P walkthrough (docs/mvp.md §5 P4): seeds a local
   # swarm from a file so the TorrentStream path can be exercised without
@@ -282,7 +287,7 @@ if(SOAR_BUILD_APP)
           SOAR_WITH_SDL2=1
         )
         target_link_libraries(soarw PRIVATE
-          soar::core soar_app_ui soar_p2p ${SOAR_SDL2_LIBS} shell32)
+          soar::core soar_app_ui soar_p2p ${SOAR_SDL2_LIBS} shell32 comdlg32)
         if(soar_imgui_ok)
           target_compile_definitions(soarw PRIVATE SOAR_WITH_IMGUI=1)
           target_link_libraries(soarw PRIVATE imgui)
