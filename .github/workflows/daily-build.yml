@@ -29,7 +29,11 @@ jobs:
   build:
     name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    # 180min（原 120）：2026-10-04 nightly 37233871129 的 Windows 腿摊上
+    # 病态慢 runner——libtorrent 单 TU 30-76s（健康 ~10s），编到 [117/214]
+    # 撞 120min 被 timeout 杀掉整跑；configure+vcpkg+build 的正常全程
+    # ~22min，180 是慢 runner 下的三倍余量，仍能封住真挂死。
+    timeout-minutes: 180
 
     strategy:
       fail-fast: false
