@@ -73,3 +73,18 @@
 - **残余（如实）**：`SDL_CreateWindow` 失败点（SDL_Init 成功后建窗
   失败，实践上极罕见）只打印不弹框不落日志——该路径无测试覆盖，
   为不突破覆盖率门禁未接线，留待后续测试收编批。
+- **收口（2026-10-04）**：建窗失败分支已接线——`player_window.cpp`
+  的 `if (!window)` 块与 SDL_Init/CreateRenderer 同款：print →
+  `reportFatalStartupError`（Windows 下弹框 + 落
+  `%TEMP%\soar-startup-failures.log`）→ `SDL_Quit` → exit 1，soarw.exe
+  无控制台场景不再静默死。该分支的确定性端到端触发经实证不存在
+  （SDL 2.32.10 探针走查）：建窗失败须 SDL_Init 成功而
+  SDL_CreateWindow 返回 NULL——dummy / offscreen / x11（常规、1x1 屏、
+  8bpp PseudoColor）下建窗恒成功；令 Init 失败的杠杆（bogus 驱动、
+  断连 display、无效 `SDL_VIDEO_X11_VISUALID`/`SDL_HINT_VIDEO_X11_
+  WINDOW_VISUALID`）全部落在 SDL_Init 点（已有测试覆盖）；
+  RLIMIT_AS 扫描的失败断点在 SDL_CreateRenderer 阶段而非建窗；
+  注入 SDL 失败等于 mock 被测库，按 coverage-notes §3.2 政策不做。
+  故该分支维持"已接线、未覆盖"：接线在既已未覆盖的块内**只加
+  分母 +2 行、零新增分支**，门禁数学成立。本地双树全量 8/8 绿 +
+  gcovr 行 95.1%/分支 84.6% 过；CI 读数待本批 run 终证。

@@ -2056,6 +2056,8 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
       SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
   if (!window) {
     fmt::print(stderr, "SDL_CreateWindow failed: {}\n", SDL_GetError());
+    reportFatalStartupError(
+        "soar", std::string("SDL_CreateWindow failed: ") + SDL_GetError());
     SDL_Quit();
     return 1;
   }
