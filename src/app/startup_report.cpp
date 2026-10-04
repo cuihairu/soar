@@ -78,7 +78,7 @@ bool dialogWouldHelp() {
   // text stays on screen after we exit; alone means Windows spawned the
   // console just for us and it closes with the process.
   DWORD attached[2] = {};
-  return GetConsoleProcessList(2, attached) <= 1;
+  return GetConsoleProcessList(attached, 2) <= 1;
 }
 
 std::wstring widen(const std::string& utf8) {
