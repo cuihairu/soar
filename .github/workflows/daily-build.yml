@@ -338,9 +338,23 @@ jobs:
             exit 1
           }
           Write-Host "installed + verified: $($t2.Trim())"
-          & (Join-Path $env:ProgramFiles 'Soar\unins000.exe') /VERYSILENT /SUPPRESSMSGBOXES
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::uninstaller exited with $LASTEXITCODE"
+          # Inno 卸载器是两阶段自删除：unins000.exe 先把自己拷进 %TEMP%
+          # 再起副本执行真正卸载，首进程立即退出且退出码非 0（run
+          # 37176187658 实证 exit 2，卸载本身成功）——成败只看卸载痕迹
+          # 是否消失，轮询等待副本收尾，不盯首进程退出码。
+          Start-Process (Join-Path $env:ProgramFiles 'Soar\unins000.exe') `
+            -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES'
+          $gone = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 2
+            if (-not (Test-Path (Join-Path $env:ProgramFiles 'Soar')) `
+                -and -not (Test-Path $lnk)) {
+              $gone = $true
+              break
+            }
+          }
+          if (-not $gone) {
+            Write-Host "::error::uninstall incomplete after 60s (install dir and/or start menu shortcut still present)"
             exit 1
           }
           if (Test-Path $app) {
