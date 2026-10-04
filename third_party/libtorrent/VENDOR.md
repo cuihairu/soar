@@ -29,11 +29,18 @@ Added with `add_subdirectory(third_party/libtorrent)` from the repository root.
 The superproject pins the options before the subdirectory:
 
 - `BUILD_SHARED_LIBS=OFF` (static link into the `soar` binary)
-- `encryption=OFF` — drops the OpenSSL dependency entirely; hashing uses the
-  bundled SHA-1/SHA-256 (`src/sha1.cpp`, `src/sha256.cpp`). Boundary: peers
-  that require MSE stream encryption are not reachable; P4a targets plain
-  peers (local walkthrough swarm and tracker/DHT swarms that accept
-  unencrypted peers).
+- `encryption=ON` (default, via the superproject's
+  `SOAR_ENABLE_TORRENT_ENCRYPTION` option; docs/mvp.md §5 P4b-5) — MSE
+  stream encryption. The P4a batch originally pinned `encryption=OFF`
+  (bundled SHA-1/SHA-256 only, plain peers reachable); that boundary was
+  closed by P4b-5: the 2.0.15 handshake is self-contained (DH over
+  boost::multiprecision plus the bundled RC4/SHA-1), so enabling it adds
+  no external dependency. Peers that require encryption are now reachable.
+- OpenSSL: the superproject's `vcpkg.json` declares `openssl` so
+  libtorrent's `find_package(OpenSSL)` resolves to vcpkg instead of
+  whatever the build host has (Windows links vcpkg's DLLs, staged into
+  the package by the dependency closure; macOS links vcpkg's static
+  apple triplet). That lookup runs regardless of the encryption flag.
 - `dht=ON`, `streaming=ON` (piece deadlines — required for stream-on-demand),
   `logging=ON`, everything else at upstream defaults (tests/examples/tools/
   python-bindings all OFF).

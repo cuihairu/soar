@@ -1187,8 +1187,12 @@ bool FFmpegBackend::selectTrack(TrackType type, TrackId id) {
     return fail("selectTrack: video track switching not supported");
   }
 
-  // Subtitle selection is metadata only (no subtitle decoder yet), so it is
-  // safe in any state.
+  // Subtitle selection is decode semantics, not metadata (docs/mvp.md §6):
+  // selecting an embedded stream arms the decode gate on it and swaps in a
+  // fresh decoder at a packet boundary below; selecting an external track
+  // (or the built-in default path before any selection) decides what the
+  // gate feeds. Safe in any state: the handover follows the audio switch's
+  // pending-decoder contract, so failure leaves the old track playing.
   if (type == TrackType::Subtitle) {
     // External tracks (docs/mvp.md §6) live past the container's stream
     // range, so the embedded check below only sees ids below that count.

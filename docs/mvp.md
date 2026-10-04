@@ -85,6 +85,8 @@
 
 **P4b-4 异步 open ✅**：`TorrentStream::startAsync()` 将「解析→建会话→监听 socket」的快路径留在调用线程（返回即拿到 `playbackUrl()`），把元数据等待、文件选择、服务线程孵化移到 worker 线程。窗口层 `runPlayerWindow` 每帧轮询 `phase()`：`Connecting` 海报显示 `connecting to swarm - N peers`（真实状态行，peers 数实时），`Serving` 自动 `player.open(playbackUrl())` 并把窗口标题改为 `soar - <文件名>`，`Failed` toast 首行错误（含 bounded 文件表）不挂死、窗口留下。`stop()` 先置 `stopped` 再 join worker，保证 60s 元数据超时不会阻塞退出（连接期 ESC 实测 0.87s 干净退出）。同步入口 `start()` = `prepare()+runTail()` 行为保持 `--torrent-list`/headless 契约。走查：magnet 无 seeder 窗口即开海报连接中、中途起 seeder 元数据到自动开播、随机 infohash 60s 准时 Failed（stderr + toast）、.torrent 窗口路径近瞬时起播、`--torrent-list`/headless 同步回归绿；受影响最小测试面（cli/ui 套件）2/2 绿。
 
+**P4b-5 协议加密 MSE ✅**：P4a 记载的「`encryption=OFF` 走捆绑 SHA-1/SHA-256——真实 swarm 里强制 MSE 加密的 peer 连不上」边界就此关闭：`SOAR_ENABLE_TORRENT_ENCRYPTION`（默认 ON）把 vendored libtorrent 2.0.15 的 `encryption` 置 ON，握手自包含（DH over boost::multiprecision + 库内捆绑的 RC4/SHA-1），不新增外部依赖；OpenSSL 的查找与该开关相互独立、照常执行。vcpkg manifest 据此声明 `openssl`——让 libtorrent 的 `find_package(OpenSSL)` 命中 vcpkg 而非构建机现成库：Windows 链 vcpkg 的 DLL（由 `scripts/stage-windows-dlls.sh` 依赖闭包随包）、macOS 链 vcpkg 静态三元组；这一收口正是 BUGS.md #1「缺 DLL」根因的修复面（完整记载见 CMakeLists.txt 的 P2P 注释段）。
+
 架构约定：**核心抽象不动**——网络能力是后端实现细节，唯一的核心层变更是 P1 的事件模型扩展；P3 起的缓存/下载层做成独立组件，`IBackend` 之上可组合，不绑死 FFmpeg。
 
 ## 6. 字幕生态（下载与 AI 翻译）

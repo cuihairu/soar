@@ -39,7 +39,30 @@ tree at configure time; see docs/build.md).
     backends. Vendored by the build; the upstream `LICENSE.txt` travels
     with the cloned tree and must be included in releases.
 
-Runtime/optional capabilities already listed in docs/licensing.md but
-resolved from the system (not redistributed by us): SDL2 (zlib),
-FFmpeg (LGPL-2.1-or-later builds only), fmt (MIT), doctest (MIT).
+Runtime libraries bundled in the release packages (this used to read
+"resolved from the system, not redistributed by us" — that is no longer
+true): the nightly zips / deb / rpm / setup.exe carry the FFmpeg, SDL2,
+libass and OpenSSL runtime libraries (plus the MSVC runtime on Windows),
+staged by `scripts/stage-windows-dlls.sh` (dumpbin dependency closure),
+`scripts/stage-macos-dylibs.sh` (`otool -L` closure + install_name_tool
+repoint) and the Linux packager. Per-platform layouts are documented in
+each package's `PLATFORM-NOTES.txt`. License highlights for the bundled
+set — the license texts must travel with any distribution:
+
+- SDL2 — zlib license
+- FFmpeg (libavformat/libavcodec/swresample/swscale) — LGPL-2.1-or-later
+  build only; we do not distribute GPL builds or GPL-enabled components
+- libass — ISC
+- OpenSSL (libssl/libcrypto) — Apache-2.0
+- fmt — MIT
+- MSVC runtime (MSVCP140/VCRUNTIME140/VCRUNTIME140_1, Windows) —
+  redistributable under Microsoft's terms
+
+(Bundling form varies by platform — shared libraries under `lib/` on
+Linux/macOS, DLLs next to the exe on Windows, static where the vcpkg
+apple triplets link statically; see each package's PLATFORM-NOTES.txt.)
+
+Build-time only (linked in, never shipped as separate files): doctest
+(MIT), the vendored libtorrent listed above, and the Dear ImGui clone
+described above.
 

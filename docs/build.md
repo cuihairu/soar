@@ -22,7 +22,7 @@
 - Release（vcpkg）：`cmake --preset release && cmake --build --preset release`
 - Linux 系统包（不依赖 vcpkg，apt 安装 libsdl2-dev/libfmt-dev/libboost-dev/ffmpeg 开发头）：`cmake --preset linux-system && cmake --build --preset linux-system`，测试用 `ctest --preset linux-system`
 
-libtorrent（P2P 下载内核，docs/mvp.md §5 P4）vendor 在 `third_party/libtorrent/`（钉 v2.0.15，BSD-3，见该目录 `VENDOR.md`），随构建一起编译，只需要 Boost 头（apt `libboost-dev`、vcpkg `boost-system`）；无 OpenSSL（`encryption=OFF` 走捆绑 SHA-1/SHA-256）。
+libtorrent（P2P 下载内核，docs/mvp.md §5 P4）vendor 在 `third_party/libtorrent/`（钉 v2.0.15，BSD-3，见该目录 `VENDOR.md`），随构建一起编译，只需要 Boost 头（apt `libboost-dev`、vcpkg `boost-system`）；BitTorrent 协议加密（MSE）默认启用（`SOAR_ENABLE_TORRENT_ENCRYPTION`，握手走库内捆绑的 DH/RC4/SHA-1 实现，见 docs/mvp.md §5 P4b-5）。vcpkg manifest 声明了 `openssl`：libtorrent 自己的 `find_package(OpenSSL)` 需要它命中 vcpkg 而不是构建机现成库——Windows 链 vcpkg 的 DLL（随包闭包捆绑，见 BUGS.md #1 根因）、macOS 链 vcpkg 静态三元组。
 
 输出目录：`build/`（linux-system 为 `build-system/`）
 
@@ -35,7 +35,9 @@ libtorrent（P2P 下载内核，docs/mvp.md §5 P4）vendor 在 `third_party/lib
 选项说明：
 
 - `--headless`：不开窗口，执行打开 → 播放 → Seek → 暂停 → 停止后退出，用于冒烟测试
+- `--version`：打印版本即退出
 - `--backend=`：选择后端（`ffmpeg`、`null`），默认 `null`；请求的后端不可用时回退并提示
+- `--cache-dir=`：把 `http://` 下载落盘缓存（同一 URL 离线可重播、断点续播、Range 补洞；https 直通不走缓存，docs/mvp.md §5 P3）
 - `.torrent` 位置参数或 `magnet:` URI 即 P2P 源（docs/mvp.md §5 P4）：本地 libtorrent 会话顺序下载，桥接成 `http://127.0.0.1:<port>/` 交给普通播放链路；`--torrent-store=`（数据落盘目录，默认 `<tmp>/soar-torrent`）、`--torrent-peer=host:port`（直连种子，可重复）、`--torrent-index=N`（多文件种子选第几个文件）、`--torrent-list`（打印种子的文件表即退出，magnet 会先向 swarm 取元数据；配合 `--torrent-index` 先看表再选）。magnet 取 `xt=urn:btih:`（40 位十六进制或 32 位 base32 均可），tracker 走 magnet 内 `tr=`、peer 可用 `x.pe=` 内置或 `--torrent-peer=` 直连，公网 DHT bootstrap 自动进行；swarm 送不来元数据 60 秒后显式报错退出。多文件种子播放时，窗口标题与海报显示所选文件的文件名（而非 `127.0.0.1:<port>` 桥地址）。**窗口模式下 P2P 源自动走异步 open（P4b-4）**：启动即开窗，海报显示 `connecting to swarm - N peers` 直至元数据就绪自动起播（`Downloading N%` 徽标同期可观测）、标题栏切为 `soar - <文件名>`；取不到元数据 60 秒后 toast 报错、窗口留下；`--headless` 与 `--torrent-list` 保持同步阻塞契约（即打印表/报错即退出）。
 - 本地 P2P 走查工具：`./build/seed_torrent --file=<媒体或目录> --out=<x.torrent> [--port=6881] [--rate-kb=N]`（目录即多文件种子，root 取目录名；限速模拟慢 peer），然后 `soar --torrent-peer=127.0.0.1:6881 <x.torrent>`，或等价 magnet：`soar 'magnet:?xt=urn:btih:<seeder 打印的 info hash>&x.pe=127.0.0.1:6881'`
 
@@ -56,6 +58,8 @@ CMake 选项（全部默认 `ON`，缺失时降级而不是构建失败）：
 | `SOAR_ENABLE_FFMPEG` | FFmpeg 后端（pkg-config 探测 libav*/sw*） | 只有 `NullBackend`，CLI 仍可用 |
 | `SOAR_ENABLE_SDL2` | SDL2 窗口与音频（需 **SDL ≥ 2.0.18**） | 只构建 CLI（`--headless`） |
 | `SOAR_ENABLE_IMGUI` | 窗口上的播放器 UI 叠加层（Dear ImGui v1.91.9b，`imgui_impl_sdlrenderer2`） | 退化为裸视频窗口（无控制栏） |
+| `SOAR_ENABLE_LIBASS` | libass 字幕渲染（Linux pkg-config `libass-dev` / mac-win vcpkg `libass` port） | ASS/SSA 脚本降级为纯文本字幕 |
+| `SOAR_ENABLE_TORRENT_ENCRYPTION` | BitTorrent 协议加密 MSE（docs/mvp.md §5 P4b-5） | 强制加密的 peer 连不上 |
 | `SOAR_BUILD_APP` / `SOAR_BUILD_TESTS` | 应用 / 测试目标 | — |
 
 `SOAR_ENABLE_IMGUI` 需要在**配置阶段**能访问 GitHub：CMake 把 ImGui 以 `--depth 1` 克隆到 `<build>/_deps/imgui-src`（不进仓库、不进分发物）。无网络或无 git 时会打印提示并降级为裸窗口；`-DSOAR_ENABLE_IMGUI=OFF` 可完全跳过这次拉取。已克隆的目录会被后续配置复用。

@@ -30,20 +30,24 @@ Soar 是一个基于 FFmpeg + SDL2 的 C++17 开源媒体播放器：封装一�
 
 ## 当前状态
 
-项目处于 MVP（v0.1）早期阶段：核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已经在 FFmpeg + SDL2 后端上跑通，CLI 冒烟入口可用；播放中/暂停中的音频轨运行时切换也已落地（解码线程在安全点无感换轨并回跳到当前进度续播）。桌面端已有第一版可用 UI：SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC）、快捷键、媒体信息/最近打开/快捷键浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）。字幕渲染与播放列表均已落地基础版（边界与细节见下文 roadmap 及 [docs/mvp.md](docs/mvp.md)），欢迎按其边界一起推进。
+项目处于 MVP 阶段：v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载——见下文路线图与 [docs/mvp.md](docs/mvp.md)）。桌面端为 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC）、快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）；播放中/暂停中音频轨与字幕轨均支持运行时无感切换（细节见下文及 docs/mvp.md §6）。v1.0（硬解/HDR、投屏、媒体库）尚未开始，欢迎按其边界一起推进。
 
 ## 功能特性（当前已实现）
 
-- **媒体输入**：本地文件与网络流 URL（`http(s)` 等 FFmpeg 支持的一切协议），打开失败时错误原因可见；
+- **媒体输入**：本地文件、多文件入队（`soar <a> <b> …`，首个即播其余排队）、网络流 URL（`http(s)`/HLS/DASH/RTSP 等 FFmpeg 支持的一切协议）、`.torrent` 文件与 `magnet:` 链接；打开失败时错误原因可见；
 - **播放控制**：播放 / 暂停 / 停止 / Seek（跳转）/ 倍速（Rate）/ 音量与静音；
+- **播放列表**：`N`/`Shift+N` 下一首/上一首（越界只 Toast 不绕回），自然播完自动步进（走到队尾停在 Ended，空格可重播），`P` 浮层点选即播、`x` 删除，Loop 三态（off/all/one）与 Shuffle；
+- **截图与 A-B 循环**：`S` 把最近呈现的帧保存为 `screenshot.png`；`L` 三段循环（定 A → 定 B → 清除，到文件尾也回跳，手动 seek 解除）；
 - **媒体信息**：时长、是否可 Seek、轨道（Track）列表（视频 / 音频 / 字幕，含编码、语言、标题）；
-- **轨道选择**：音频轨运行时切换（播放中/暂停中无感续播）；内嵌 ASS/SSA 字幕经 [libass](https://github.com/libass/libass) 样式渲染（字体/颜色/定位/特效随脚本，附件字体即装即用），外挂 .ass/.ssa 同样式渲染、外挂 SRT/WebVTT 按默认样式同走画布（无 libass 的构建降级为纯文本），内嵌 SRT/WebVTT 文本字幕实时提取显示；字幕轨的"选择"仍是元数据记录（作用于打开时选中的内嵌轨，边界见 [docs/mvp.md](docs/mvp.md) §6）；
+- **轨道选择**：音频轨运行时切换（播放中/暂停中无感续播）；视频轨切换不支持；字幕轨运行时切换——选中内嵌轨时解码线程在安全点换字幕解码器、cue 从新轨续流（切换点之前的历史 cue 需一次倒退 seek 重扫，无自动重扫），选中外挂轨或关闭时内嵌字幕解码门关闭（细节与边界见 [docs/mvp.md](docs/mvp.md) §6）；
+- **字幕渲染**：内嵌 ASS/SSA 经 [libass](https://github.com/libass/libass) 样式渲染（字体/颜色/定位/特效随脚本，容器附件字体即装即用），外挂 .ass/.ssa 同样式渲染、外挂 SRT/WebVTT 按仓库默认样式走同一画布（无 libass 的构建降级为纯文本），内嵌 SRT/WebVTT 文本字幕实时提取显示；`V` 显隐、`[`/`]` ±0.5s 同步偏移、字幕设置浮层（字号/同步偏移/可见性）；可选的字幕下载（`SOAR_SUBTITLE_ENDPOINT`/`_API_KEY`）与字幕翻译（`SOAR_TRANSLATE_ENDPOINT` 等，OpenAI 兼容端点）服务——零默认网络，未配置即不发起任何请求（见 docs/mvp.md §6）；
 - **事件驱动**：状态变化、进度更新、媒体信息变化、错误四类事件，UI 只需订阅回调；
 - **视频渲染**：后端解码为 YUV420P 帧并导出，应用层用 SDL2 Texture 直接上屏；
 - **音频输出**：SDL2 音频设备，重采样（Resample）到设备参数，支持音量/静音/倍速，输出端点可在音轨菜单中枚举与切换（下一个音频帧生效）；
+- **网络与下载**：HTTP(S) 顺序播放即边下边看；`--cache-dir=` 磁盘缓存——同一 URL 离线可重播、断点续播、seek 进未下载段只补目标块，`Downloading N%` 进度徽标（http:// 走缓存，https 直通；见 docs/mvp.md §5 P3）；`.torrent`/`magnet:` 经 vendored libtorrent 内核顺序下载、以本地 `http://127.0.0.1:<port>/` 桥进同一播放链路（`--torrent-store=`/`--torrent-peer=`/`--torrent-index=`/`--torrent-list`，窗口期「connecting to swarm - N peers」状态与下载徽标可见；P2P 边界见 docs/mvp.md §5 P4）；
 - **桌面 UI**：底部悬浮 OSC（2.5s 无输入自动隐藏，悬停/拖动/浮层/暂停时钉住），整宽 seek 条（悬停时间提示、拖动预览、松手提交）+ 按钮行（传输控制、时钟、音量、倍速、音轨、字幕、全屏）；
 - **键鼠交互**：单击切换 OSC、双击全屏、垂直滚轮调音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开（MRU×15，持久化）；
-- **快捷键**：`Space/K` 播放暂停、`←/→ ±5s`、`Shift+←/→ ±1s`、`PgUp/PgDn ±60s`、`Home`、`0–9` 百分比、`↑/↓` 音量、`M` 静音、`,/.` 倍速、`F` 全屏、`A/C` 循环音轨/字幕、`L` A-B 循环（定 A → 定 B → 清除）、`V` 字幕显隐、`[/]` 字幕前后偏移、`S` 截图（PNG）、`I/R/H` 信息/最近/帮助、`Esc` 退全屏或退出；
+- **快捷键**：`Space/K` 播放暂停、`←/→ ±5s`、`Shift+←/→ ±1s`、`PgUp/PgDn ±60s`、`Home`、`0–9` 百分比、`↑/↓` 音量、`M` 静音、`,/.` 倍速、`F` 全屏、`A/C` 循环音轨/字幕、`L` A-B 循环（定 A → 定 B → 清除）、`V` 字幕显隐、`[/]` 字幕前后偏移、`S` 截图（PNG）、`P` 播放队列浮层、`N/Shift+N` 下一首/上一首、`I/R/H` 信息/最近/帮助、`Q` 退出、`Esc` 退全屏或退出；
 - **状态提示**：暂停/缓冲指示、OSD Toast 反馈操作结果、媒体信息浮层（含错误行与轨道清单）。
 
 ## 架构
@@ -66,15 +70,24 @@ flowchart TB
         NULLB["NullBackend：状态机测试替身"]
     end
 
+    subgraph NET["网络组件（产出/消费普通 http URL，核心抽象不动）"]
+        CACHE["HttpCache：--cache-dir 磁盘缓存（离线重播/断点续播）"]
+        P2P["TorrentStream（src/p2p）：libtorrent 内核 → 127.0.0.1 本地 HTTP 桥"]
+    end
+
     subgraph LIBS["第三方依赖"]
         FFMPEG["FFmpeg：libavformat / libavcodec / swresample / swscale"]
         SDL2AUDIO["SDL2：音频输出 + 窗口/渲染器"]
         IMGUI["Dear ImGui：即时模式控件（MIT）"]
+        LIBTORRENT["libtorrent 2.0.15：BT 下载内核（vendored，BSD-3）"]
     end
 
     APP --> PLAYER --> IBACKEND
     IBACKEND --> FFB
     IBACKEND --> NULLB
+    APP --> P2P
+    P2P --> LIBTORRENT
+    FFB --> CACHE
     FFB --> FFMPEG
     FFB --> SDL2AUDIO
     UI --> IMGUI
@@ -103,7 +116,7 @@ Windows（PowerShell）:
 irm https://raw.githubusercontent.com/cuihairu/soar/main/install.ps1 | iex
 ```
 
-平台边界（如实）：Windows 包随附依赖 DLL、macOS 包静态链接、Linux 包随附捆绑运行时库（`lib/` 目录，SDL2/FFmpeg/libass 等全部自带），三平台均解压即用。Linux 仍有 libc 层面的版本下限：要求 glibc ≥ 2.38 且 libstdc++ ≥ GLIBCXX_3.4.32（Ubuntu 24.04+ / Debian 13+ / Fedora 39+ / Arch 滚动）——更老的系统（如 Ubuntu 22.04、Debian 12）装不上这些符号版本，二进制起不来，这在包内 PLATFORM-NOTES.txt 有如实说明（安装脚本的验证步会把说明打给你看）。
+平台边界（如实）：Windows 包随附依赖 DLL、macOS 包随附 `lib/`（FFmpeg 等动态库按 `otool -L` 依赖闭包捆绑、`@loader_path` 改写自包含；SDL2 等 vcpkg 静态构建部分为静态链接）、Linux 包随附捆绑运行时库（`lib/` 目录，SDL2/FFmpeg/libass 等全部自带），三平台均解压即用。Linux 仍有 libc 层面的版本下限：要求 glibc ≥ 2.38 且 libstdc++ ≥ GLIBCXX_3.4.32（Ubuntu 24.04+ / Debian 13+ / Fedora 39+ / Arch 滚动）——更老的系统（如 Ubuntu 22.04、Debian 12）装不上这些符号版本，二进制起不来，这在包内 PLATFORM-NOTES.txt 有如实说明（安装脚本的验证步会把说明打给你看）。
 
 脚本做的事：检测操作系统与 CPU 架构 → 下载对应平台的 zip（`soar-linux-x64.zip` / `soar-linux-arm64.zip` / `soar-macos-arm64.zip` / `soar-windows-x64.zip`）→ 解包安装（Linux/macOS 默认 `~/.local/bin`，Windows 默认 `%LOCALAPPDATA%\Programs\soar`，可用 `SOAR_INSTALL_DIR` 覆盖；Linux 包的 lib/ 捆绑运行时装到同目录，升级整体替换）→ 需要时写 PATH → `soar --version` 验证。目录不在 PATH 上的平台会写一条带注释的 PATH 行进 shell 配置；不想自动改可设 `SOAR_INSTALL_DIR` 为已在 PATH 的目录。
 
@@ -138,7 +151,7 @@ cmake --preset default && cmake --build --preset default   # Debug
 
 ## 路线图
 
-- **v0.1（MVP，进行中）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）；
+- **v0.1（MVP，已收口）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）——验收清单全数完成（见 [docs/ui-design.md](docs/ui-design.md) §6）；
 - **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP 冒烟、字幕体验（字体/大小/同步偏移）——均已落地；
 - **v1.0**：硬解（Hardware Decoding）与 HDR、投屏（AirPlay/Chromecast/DLNA）、媒体库与刮削、插件体系。
 
@@ -160,6 +173,8 @@ ctest --preset default
 | `soar_backend_tests` | FFmpeg 后端并发行为（线程交接、竞态） | 无 FFmpeg 时构建为空壳并跳过 |
 | `soar_backend_media_tests` | FFmpeg 后端真实媒体语义（轨道、seek、EOF、事件） | 需先运行 fixture 脚本 |
 | `soar_http_cache_tests` | 磁盘缓存组件与"边下边看"离线重播 | 集成用例需 FFmpeg 与 fixture |
+| `soar_subtitle_tests` | 外挂字幕核心：SRT/WebVTT 解析、sidecar 提供器、下载/翻译客户端 | 纯逻辑，无需媒体与网络 |
+| `soar_ass_tests` | ASS 渲染器：libass 薄封装、直 alpha 合成、内嵌轨流式喂入 | 无 libass 时构建为空壳并跳过；渲染用仓库内附测试字体 |
 | `soar_ui_tests` | 窗口 UI 的纯逻辑（OSC 自动隐藏状态机、最近打开存储、Toast、时间格式化） | 无需显示器 |
 | `soar_cli_tests` | `soar` 子进程冒烟（`--headless` 退出码与报错路径） | 仅当应用目标被构建时注册；Xvfb 用例额外需 `SOAR_TEST_X11=1` |
 
