@@ -22,15 +22,13 @@ Soar 是一个基于 FFmpeg + SDL2 的 C++17 开源媒体播放器：封装一�
 
 ## 为什么做 Soar
 
-我们过去在播放器项目里反复踩同样的坑：播放内核和 UI 纠缠不清、依赖许可证（License）把分发卡死、想在移动端复用时发现核心早已绑死某个平台框架。Soar 是我们把这些经验沉淀成的一个答案——
+我们过去在播放器项目里反复踩同样的坑：播放内核和 UI 纠缠不清，依赖许可证（License）把分发卡死，想在移动端复用时才发现核心绑死在某个平台框架上。Soar 把这三条教训写成了设计约束。
 
-- **核心只有一份**：播放 API 与事件模型不依赖任何具体多媒体库；
-- **后端可插拔**：FFmpeg、系统框架、还是测试用的假后端，都实现同一个 `IBackend` 接口；
-- **合规先行**：项目本体保持 Apache-2.0，依赖选型守住 LGPL/GPL 边界（见 [docs/licensing.md](docs/licensing.md)）。
+播放 API 与事件模型不依赖任何具体多媒体库，UI 换掉、内核不动。后端可插拔：FFmpeg、系统框架、测试用的假后端实现同一个 `IBackend` 接口。项目本体是 Apache-2.0，依赖选型守住 LGPL/GPL 边界（见 [docs/licensing.md](docs/licensing.md)）。
 
 ## 当前状态
 
-项目处于 MVP 阶段：v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载——见下文路线图与 [docs/mvp.md](docs/mvp.md)）。桌面端为 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC）、快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）；播放中/暂停中音频轨与字幕轨均支持运行时无感切换（细节见下文及 docs/mvp.md §6）。v1.0（硬解/HDR、投屏、媒体库）尚未开始，欢迎按其边界一起推进。
+v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载，见下文路线图与 [docs/mvp.md](docs/mvp.md)）。桌面端是 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC），配快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）；播放中、暂停中，音频轨与字幕轨都能运行时切换，播放不中断（细节见下文及 docs/mvp.md §6）。v1.0（硬解/HDR、投屏、媒体库）尚未开始。
 
 ## 功能特性（当前已实现）
 
@@ -94,11 +92,7 @@ flowchart TB
     UI --> SDL2AUDIO
 ```
 
-设计要点（也是我们踩坑后的取舍）：
-
-- **解封装（Demux）与解码（Decode）在独立线程**：播放线程不被 IO 阻塞，暂停/Seek 通过条件变量（Condition Variable）与原子量（Atomic）通知解码循环；
-- **时钟与同步**：以 PTS（Presentation Timestamp，显示时间戳）为基准，结合播放倍速换算墙钟时间，视频按点到点呈现，音频走设备队列并用背压（Backpressure）限流；
-- **测试替身内置**：`NullBackend` 用纯状态机模拟完整播放行为，不依赖任何多媒体库，让核心 API 的单元测试可以在任何 CI 环境运行。
+设计要点是我们踩坑后的取舍。解封装（Demux）与解码（Decode）放在独立线程，播放线程不被 IO 阻塞，暂停与 Seek 通过条件变量（Condition Variable）和原子量（Atomic）通知解码循环。时钟以 PTS（Presentation Timestamp，显示时间戳）为基准、按播放倍速换算墙钟时间：视频按点到点呈现，音频走设备队列、用背压（Backpressure）限流。测试替身是内置的，`NullBackend` 用纯状态机模拟完整播放行为，不依赖任何多媒体库，核心 API 的单元测试因此能在任何 CI 环境跑起来。
 
 ## 一键安装
 
@@ -116,11 +110,11 @@ Windows（PowerShell）:
 irm https://raw.githubusercontent.com/cuihairu/soar/main/install.ps1 | iex
 ```
 
-平台边界（如实）：Windows 包随附依赖 DLL、macOS 包随附 `lib/`（FFmpeg 等动态库按 `otool -L` 依赖闭包捆绑、`@loader_path` 改写自包含；SDL2 等 vcpkg 静态构建部分为静态链接）、Linux 包随附捆绑运行时库（`lib/` 目录，SDL2/FFmpeg/libass 等全部自带），三平台均解压即用。Linux 仍有 libc 层面的版本下限：要求 glibc ≥ 2.38 且 libstdc++ ≥ GLIBCXX_3.4.32（Ubuntu 24.04+ / Debian 13+ / Fedora 39+ / Arch 滚动）——更老的系统（如 Ubuntu 22.04、Debian 12）装不上这些符号版本，二进制起不来，这在包内 PLATFORM-NOTES.txt 有如实说明（安装脚本的验证步会把说明打给你看）。
+平台边界：Windows 包随附依赖 DLL、macOS 包随附 `lib/`（FFmpeg 等动态库按 `otool -L` 依赖闭包捆绑、`@loader_path` 改写自包含；SDL2 等 vcpkg 静态构建部分为静态链接）、Linux 包随附捆绑运行时库（`lib/` 目录，SDL2/FFmpeg/libass 等全部自带），三平台均解压即用。Linux 仍有 libc 层面的版本下限：要求 glibc ≥ 2.38 且 libstdc++ ≥ GLIBCXX_3.4.32（Ubuntu 24.04+ / Debian 13+ / Fedora 39+ / Arch 滚动）——更老的系统（如 Ubuntu 22.04、Debian 12）装不上这些符号版本，二进制起不来，这在包内 PLATFORM-NOTES.txt 有如实说明（安装脚本的验证步会把说明打给你看）。
 
 脚本做的事：检测操作系统与 CPU 架构 → 下载对应平台的 zip（`soar-linux-x64.zip` / `soar-linux-arm64.zip` / `soar-macos-arm64.zip` / `soar-windows-x64.zip`）→ 解包安装（Linux/macOS 默认 `~/.local/bin`，Windows 默认 `%LOCALAPPDATA%\Programs\soar`，可用 `SOAR_INSTALL_DIR` 覆盖；Linux 包的 lib/ 捆绑运行时装到同目录，升级整体替换）→ 需要时写 PATH → `soar --version` 验证。目录不在 PATH 上的平台会写一条带注释的 PATH 行进 shell 配置；不想自动改可设 `SOAR_INSTALL_DIR` 为已在 PATH 的目录。
 
-平台覆盖与每日构建矩阵一致：Linux x64/arm64、macOS Apple Silicon、Windows x64。macOS Intel 与 Windows arm64 没有免费的 CI runner，脚本遇到会明确报错（不会装一个跑不起来的包）。两个如实边界：soar 是桌面播放器、无常驻服务形态，脚本不注册系统服务；每日构建未做代码签名，Windows SmartScreen 拦截时选「更多信息 → 仍要运行」，macOS 首次运行前 `xattr -cr`（脚本已代做）。
+平台覆盖与每日构建矩阵一致：Linux x64/arm64、macOS Apple Silicon、Windows x64。macOS Intel 与 Windows arm64 没有免费的 CI runner，脚本遇到会明确报错（不会装一个跑不起来的包）。另外两条边界：soar 是桌面播放器、无常驻服务形态，脚本不注册系统服务；每日构建未做代码签名，Windows SmartScreen 拦截时选「更多信息 → 仍要运行」，macOS 首次运行前 `xattr -cr`（脚本已代做）。
 
 除脚本使用的便携 zip 外，nightly Release 还提供：Linux 安装包 `soar-linux-<arch>.deb` / `.rpm`（`dpkg -i` / `rpm -ivh` 安装，含 `/opt/soar` + `/usr/bin/soar` + 菜单项与图标）；Windows 安装器 `soar-setup-windows-x64.exe`（装目录/开始菜单/桌面快捷方式/卸载器，快捷方式指向 `soarw.exe`——GUI 版入口，双击启动无控制台黑框，启动失败会弹错误框并写 `%TEMP%\soar-startup-failures.log`）。Release 附 `SHA256SUMS.txt` 覆盖全部资产。
 

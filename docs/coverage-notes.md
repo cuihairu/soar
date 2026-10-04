@@ -12,7 +12,7 @@ CI 的 coverage job（Ubuntu，GCC `--coverage` + gcovr）统计 `src/` + `inclu
 - **计数损坏会伪装成"行缺失"**：窗口 CLI（解码线程 + 主循环 + SDL 线程）里，纹理重建的 212/215 两行曾**连续两轮**报 missing，但控制流证明它们必然执行过（213/214 覆盖而 212 缺失在 -O0 精确计数下不可能成立；CLI 事件流的 position 推进到 4333ms 证明第二/三分辨率帧确实发布过）。第三轮计数正常即显形覆盖。定性行缺失时先做控制流一致性检查，必要时用被测进程的事件流交叉验证，不要把假缺失定性成不可达。
 - **仓库里同时存在两棵带插桩的树 = 读数作废**：gcovr 递归扫的是整个 `--root`，`--object-directory` 只是加了一个搜索路径，不构成限制。另一棵树残留的 `.gcno` 会被一起读进来，而它的行号来自**它自己那版源码**，与本树错位；两份数据的并集看起来比任何一次真实测量都高（2026-09-27 同一份代码先后读出 89.7% 与 77.6%，真值 94.2%）。本地复现门禁前先 `find . -name '*.gcno' -not -path './<本树>/*' -delete`，或干脆在干净 worktree 里单测一棵树。同一原因，测完要清掉手工 `gcov -o` / `gcovr --gcov-keep` 落在仓库根的 `.gcov` 中间文件——陈旧的中间文件也会被下一次 gcovr 当数据吃进去。
 - **陈旧对象 = 行号错位读数（批 1c 实录）**：源码改过（哪怕只加了两行注释）而某次重链没有重编该 TU 时，`.gcda` 仍按旧版行号记账——实测症状是「执行计数落在注释行」与「已被删除的死臂显示已覆盖」（假 12 次执行）。gcov 的行号来自编译期 `.gcno`，与磁盘上的当前源码无关。读单行覆盖、尤其拿它做死码证明之前，先 `stat` 对比对象与源码的 mtime，确认对象新于最后一次源码修改（§3.14 的死码删除就曾被这份假数据挡了一下）。
-- **-O0 注入器点击帧竞态 = hold-click（内嵌轨批实录，详见 §3.15）**：XTEST 背靠背 press/release 只在两事件之间夹着至少一个 ImGui 帧边界时才成为 click；-O0 覆盖构建帧长可超 100ms，而注入对的间隔只有几毫秒——实测 11 次 combo 打开只有 2 次落进 ImGui。同一机理的不对称性会误导定位：app 自己逐事件处理的 SDL 逻辑（如视频区点击切 OSC）永远生效，只有经 ImGui 的 click 会丢。窗口注入器对 combo/菜单类目标一律用 hold-click（按住超过一个帧时长再松开），且**坐标必须对着活弹层实测**（行矩形来自字体度量，猜的坐标可能永远落在分隔带或 padding 上，与帧竞态叠加成「怎么点都没反应」）。
+- **-O0 注入器点击帧竞态 = hold-click（内嵌轨批实录，详见 §3.15）**：XTEST 背靠背 press/release 只在两事件之间夹着至少一个 ImGui 帧边界时才成为 click；-O0 覆盖构建帧长可超 100ms，而注入对的间隔只有几毫秒——实测 11 次 combo 打开只有 2 次落进 ImGui。同一机理的不对称性会误导定位：app 自己逐事件处理的 SDL 逻辑（如视频区点击切 OSC）始终生效，只有经 ImGui 的 click 会丢。窗口注入器对 combo/菜单类目标一律用 hold-click（按住超过一个帧时长再松开），且**坐标必须对着活弹层实测**（行矩形来自字体度量，猜的坐标可能始终落在分隔带或 padding 上，与帧竞态叠加成「怎么点都没反应」）。
 - **本机 gcovr 多版本共存，门禁复现必须钉系统 7.x（门禁上抬批实录）**：hermes PATH 上默认解析到 pip 的 **gcovr 8.6**，其头文件/行聚合与 7.x 有别——同一 cov3 gcda 实测行分母 5205 vs 5200、支分母 5874 vs 5877，且 `ffmpeg_backend.cpp` 行清单 ±2、`ui_state.h` 支清单 ±3，读数会平白漂移且**看起来完全合理**（当时差点据此定错门禁数值）。系统 `/usr/bin/gcovr` **7.2**（dpkg）才是本机历史口径，CI 的 apt 是 **7.0**（ubuntu noble，同 7.x 族、行为一致——行分母 5203 vs 5200 的小差属既有的 CI/本地微差）。本地跑门禁/水位一律 `PATH=/usr/bin:$PATH gcovr ...`（与夹具 env 的 PATH 约定同款），或先 `command -v gcovr` 核对不在 hermes 路径下。
 
 FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job 是 `ffmpeg_backend.cpp` 覆盖数字的唯一来源。
@@ -57,9 +57,9 @@ P3a 补测批兑现了这句话：`http_cache.cpp` 行 80%→99%（407/410）、
 
 P3b 集成批（ed25d72 修 macOS CI 后的下一批）把 P3a 头注释里"seek-past-end 走同一补洞路径"的承诺钉成了集成契约：stopped 态 seek 到远端未缓存区（avio seek 回调只挪 pos、下一读触发 Range 补洞），位图断言**只**长出 seek 目标块（头部与目标之间的块保持为洞，`cachedBytes < size`）；杀 server 后同一 URL 离线重开，在已缓存区间内续播（断点续播），位图逐字节不变；组件级预置"头块+尾块、中间整洞"的部分缓存，离线播放走到洞里时 avio 读回调把 cache miss 转 EIO、解码线程走 `fatal()` 报 Error 事件而非挂死。位图断言的依据是测试侧 `readMetaBitmap`（对真实 meta 文件的反序列化，与 `craftMeta` 同一布局镜像）。总体水位 行 94.6%→94.8%、分支 83.2%→83.6%，门禁抬至 94.1/82.4。
 
-P3c 下载进度批把"边下边存"的最后一环钉成事件契约：缓存 avio 读回调在 decode loop 运行期间（`decode_loop_running_` 门闸，`open()` 在调用线程持 `decode_mutex_` 探头的读不发事件）按源大小的 1/16 步进节流发 `DownloadProgress`，首发读只做标定——全缓存离线会话步进恒定、零事件（seek 补洞用例里在线轮有事件、离线轮严格静默，两个断言钉死）。批内修了一个真产品 bug：avio 读回调在源尾返回 0 会被部分 FFmpeg 版本当"暂无数据"无限重试——缓存回放永远到不了 Ended（窗口化用例揭出，播放冻结在 5851ms），改为按 avio 契约返回 `AVERROR_EOF`。覆盖率侧的决定性发现：给 `Event` 增加两个 u64 字段使分支分母 2680→2883（`ffmpeg_backend.cpp` 单文件 1032→1155）——GCC 在 -O0 给每个 `Event{...}` 聚合构造点生成随成员数扩展的异常清理弧，实测全部 `never executed`、结构不可覆盖，门禁在数学上不可达；const-ref 传参不解决（弧在构造点不在拷贝点，实测 1156 不变）。载荷因此改走 `Event::message` 的 `"downloaded/total"` 格式（政策与伴随噪声记录为 §3.8），分母回落 2709（净 +29，全为新逻辑的可覆盖弧）。本地水位 行 94.4%（2513/2664）、分支 82.5%（2235/2709），与 P3b 本地口径持平（2212/2680 = 82.5%），门禁维持 94.1/82.4。
+P3c 下载进度批把"边下边存"的最后一环钉成事件契约：缓存 avio 读回调在 decode loop 运行期间（`decode_loop_running_` 门闸，`open()` 在调用线程持 `decode_mutex_` 探头的读不发事件）按源大小的 1/16 步进节流发 `DownloadProgress`，首发读只做标定——全缓存离线会话步进恒定、零事件（seek 补洞用例里在线轮有事件、离线轮严格静默，两个断言钉死）。批内修了一个真产品 bug：avio 读回调在源尾返回 0 会被部分 FFmpeg 版本当"暂无数据"无限重试——缓存回放到不了 Ended（窗口化用例揭出，播放冻结在 5851ms），改为按 avio 契约返回 `AVERROR_EOF`。覆盖率侧的决定性发现：给 `Event` 增加两个 u64 字段使分支分母 2680→2883（`ffmpeg_backend.cpp` 单文件 1032→1155）——GCC 在 -O0 给每个 `Event{...}` 聚合构造点生成随成员数扩展的异常清理弧，实测全部 `never executed`、结构不可覆盖，门禁在数学上不可达；const-ref 传参不解决（弧在构造点不在拷贝点，实测 1156 不变）。载荷因此改走 `Event::message` 的 `"downloaded/total"` 格式（政策与伴随噪声记录为 §3.8），分母回落 2709（净 +29，全为新逻辑的可覆盖弧）。本地水位 行 94.4%（2513/2664）、分支 82.5%（2235/2709），与 P3b 本地口径持平（2212/2680 = 82.5%），门禁维持 94.1/82.4。
 
-UI 自身的两个文件是全仓库最高的一档（`ui_state.*` 行 100%、`player_window.cpp` 行 96% / 分支 84%，均高于 `ffmpeg_backend.cpp` 与 `http_cache.cpp`），驱动方式是 §4 末尾那条"无头环境驱动 GUI"的模式：Xvfb + XTEST 脚本化会话（键鼠全家族、拖放以外的指针手势、弹层与 MRU 重开、窗口压到 1x1 的退化几何、慢速 server 下的缓冲指示）。
+UI 自身的两个文件是全仓库最高的一档（`ui_state.*` 行 100%、`player_window.cpp` 行 96% / 分支 84%，均高于 `ffmpeg_backend.cpp` 与 `http_cache.cpp`），驱动方式是 §5 末尾那条"无头环境驱动 GUI"的模式：Xvfb + XTEST 脚本化会话（键鼠全家族、拖放以外的指针手势、弹层与 MRU 重开、窗口压到 1x1 的退化几何、慢速 server 下的缓冲指示）。
 
 RTSP 冒烟批（5695bc7/c899a89）含一个小的产品修复：直播流负 duration 归 0 + seek 对 `duration <= 0` 拒绝（防 clamp UB）——`ffmpeg_backend.cpp` 行分母 +4（1027/1116，新行全被 RTSP 用例命中）、分支分母 +7（1029/1256）。同轮 `main.cpp` 216 行翻转出 Missing（X11 窗口纹理区，与 219 同族的时序弧逐轮摆动）、main 分支 85%→83%（同族纹理弧摆动 -2）；`test_backend_media` 的 lifecycle 用例把 300ms 裸睡改为轮询（§3.5 禁赌墙钟的又一实例，断言不变）。门禁维持不动：行余量 ~4.5、分支余量 ~9。
 
@@ -87,7 +87,7 @@ TTML 测试收编批（纯测试零产品改动，af55579 落下的 TTML/DFXP �
 ### 3.2 防御性代码（注入即污染）
 
 - **OOM 分支（约 41 行）**：`av_mallocz` / `av_frame_alloc` / `SDL_AllocAudioStream` 等失败路径，只能用 interpose/mock 注入失败，会污染真实库行为，与“测真实链路”矛盾。
-- **SDL 音频设备打开失败（8 行）**：`ensureOpen` 把声道数钳制到 1-8（`ffmpeg_backend.cpp:147`）、频率有 `SDL_AUDIO_ALLOW_FREQUENCY_CHANGE`，合法参数下 `SDL_OpenAudioDevice` 只有在无音频设备时才失败；dummy 驱动永不失败。构造真实拒绝（如 16 声道文件）会被 clamp 化解。
+- **SDL 音频设备打开失败（8 行）**：`ensureOpen` 把声道数钳制到 1-8（`ffmpeg_backend.cpp:147`）、频率有 `SDL_AUDIO_ALLOW_FREQUENCY_CHANGE`，合法参数下 `SDL_OpenAudioDevice` 只有在无音频设备时才失败；dummy 驱动不会失败。构造真实拒绝（如 16 声道文件）会被 clamp 化解。
 - **不变量短路弧（分支残余）**：`streams[id]` 存在则 `codecpar` 必存在（849 的复合条件中段）、选中的流必有已建 decoder（380-382 的 `&& decoder_` 侧）、解码帧的 pts 恒有效（1308/1339/1625 的 `AV_NOPTS_VALUE` 三元）——都是容器/解码器契约保证下不可达的防御弧。
 
 ### 3.3 版本依赖行为（随 FFmpeg 版本翻转，断言不钉阶段）
@@ -120,7 +120,7 @@ TTML 测试收编批（纯测试零产品改动，af55579 落下的 TTML/DFXP �
 - **切轨/Seek 失败的 toast（427/493/502/508-509/511/712 行）**：`Player::seek` / `selectTrack` 返回 false 的分支。null 后端对已打开的媒体恒返回 true（无轨可循环时走的是更早的"没有该类轨"分支，已由 stall 会话的纯音频 fixture 覆盖 Subtitle 侧），FFmpeg 后端要构造真实 IO 失败或坏轨 codec（§3.3/§3.4 的版本依赖与注入污染家族）。508-509 还多一层条件：需要**两条以上**字幕轨才会走"下一条"而不是"关掉"，null 后端只有一条。
 - **seek 条的"取消拖动"臂（595 行）**：`IsItemDeactivated()` 且 `IsItemDeactivatedAfterEdit()` 为假。ImGui 的滑条在按下瞬间就会改值（点击即定位），所以"拖走再拖回原位"仍被记为 edited；唯一不改值的按法是**精确按在当前值的手柄上**（把手柄算到像素、且期间播放位置不动），属于坐标级脆弱构造，不做。已覆盖的是它的兄弟路径：悬停提示、拖动预览、松手提交。
 - **字体候选全落空的内嵌回退（206 行）**：七个系统字体候选都不存在时才走到。X11 驱动用例用 `SOAR_UI_BITMAP_FONT=1` 钉住内嵌位图字体（这也是注入器坐标跨机器稳定的前提），因此该回退在测试里被短路；CI runner 实际带 DejaVu，走的是候选命中那条。
-- **"No recent files yet."（850 行）**：窗口化流程里 MRU 永远非空——`PlayerHud` 构造即 `recordOpen(cfg.initial_uri)`，而 CLI 没有 URI 时根本进不到窗口。"空列表"的语义由 `soar_ui_tests` 的 `RecentStore` 单测覆盖。
+- **"No recent files yet."（850 行）**：窗口化流程里 MRU 恒非空——`PlayerHud` 构造即 `recordOpen(cfg.initial_uri)`，而 CLI 没有 URI 时根本进不到窗口。"空列表"的语义由 `soar_ui_tests` 的 `RecentStore` 单测覆盖。
 - **窗口尺寸守卫的新增行**（`drawUi` 的 `DisplaySize < 1` 早退）由驱动会话的 `win.configure(1x1)` 命中：没有窗口管理器时 `XResizeWindow` 直接生效，SDL 拿到退化 drawable 后必须跳过整帧绘制（否则 OSC 宽度会算成负数）。
 
 ### 3.7 http 磁盘缓存（`src/core/http_cache.cpp`）的残余缺口
@@ -183,14 +183,14 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 ### 3.12 字幕翻译批：`SubtitleTranslator` 批量文本翻译客户端
 
-本批把 §6 的「字幕文本翻译」落成核心路径（窗口接线与「已加载轨直译」入口是下一片，头注释里写明）：输入 SubRip/WebVTT 文本，cue 文本折叠单行、按 `batch_cues`（默认 16，<1 按 1）分块，以编号行（`1. text`）批量 POST 到用户自配的 OpenAI 兼容端点 `{endpoint}/chat/completions`；应答必须与批次**逐行编号、条数一致**，缺行/掉编号/非 2xx/超时/不可达/未配置一律 false 并带原因——全有或全无，绝不产出半翻译轨。输出镜像输入格式（srt↔srt、vtt↔vtt），时间轴与 cue 编号保留。JSON 读写是最小手写（`jsonEscape`/`jsonUnescapeString` 含 `\uXXXX` 与代理对、`chatResponseContent` 只定位文档化路径，不是通用解析器），不引 JSON 库；`httpPost` 是 `httpGet` 的传输孪生（同 TU 匿名命名空间，复用 URL 解析/连接/收发）。
+本批把 §6 的「字幕文本翻译」落成核心路径（窗口接线与「已加载轨直译」入口是下一片，头注释里写明）：输入 SubRip/WebVTT 文本，cue 文本折叠单行、按 `batch_cues`（默认 16，<1 按 1）分块，以编号行（`1. text`）批量 POST 到用户自配的 OpenAI 兼容端点 `{endpoint}/chat/completions`；应答必须与批次**逐行编号、条数一致**，缺行/掉编号/非 2xx/超时/不可达/未配置一律 false 并带原因——全有或全无，不会产出半翻译轨。输出镜像输入格式（srt↔srt、vtt↔vtt），时间轴与 cue 编号保留。JSON 读写是最小手写（`jsonEscape`/`jsonUnescapeString` 含 `\uXXXX` 与代理对、`chatResponseContent` 只定位文档化路径，不是通用解析器），不引 JSON 库；`httpPost` 是 `httpGet` 的传输孪生（同 TU 匿名命名空间，复用 URL 解析/连接/收发）。
 
 水位：`subtitle_provider.cpp` **行 97.8%（699/715）、分支 88.7%（822/927）**——新增代码的全部真实行都覆盖，行缺口只剩尾括号/ctor 产物（见下）；全库本地 cov4（含夹具与 X11 窗口用例的完整跑）**行 94.5%（4251/4497）、分支 83.7%（4190/5005）**，双指标高于门禁线（94.3/83.2），比下载源批的本地水位（§3.11：94.43–94.48/83.33–83.41）继续上抬；CI 同提交口径见该批 run（判门禁一律看 CI）。测试 69 用例/544 断言全离线。
 
 测试手法（fixture 全部在 `test_http_servers.h` 的 chat 服务器，不打真实外网，key 不进仓库与日志）：
 
 - **请求形状**：`requests.log` 逐行录制 path/Content-Type/Authorization/body（body 是单行——客户端 JSON 转义了换行），逐字段断言 Bearer key、model、`temperature:0`、system 里的目标语言、编号行与 `\n` 转义。
-- **应答转义双向**：出方向——model 带 `"`,`\t`,`\r`、cue 带 C0 控制字节（`\x01`），线上必须出现 `\"`/`\t`/`\r`/`\u0001` 转义且往返保真；入方向——`hexmix`（大写 hex、分隔符后直接 TAB、3 字节码点）/`escmix`（`\/` `\b` `\f` `\r` `\t` 全集）/`asciiesc`（`ensure_ascii` 的 `\uXXXX` 含代理对）/`lonesur`（孤代理落 U+FFFD，绝不产非法 UTF-8）。关键坑：**json.dumps 会把反斜杠再转义**——要把单反斜杠转义序列放上电线，必须手拼原始字节体（`hexmix`/`escmix`/`contentnum`/`badhex`/`badescape`/`shortu`/`trailbs`/`unterm` 全是 raw body 模式）。
+- **应答转义双向**：出方向——model 带 `"`,`\t`,`\r`、cue 带 C0 控制字节（`\x01`），线上必须出现 `\"`/`\t`/`\r`/`\u0001` 转义且往返保真；入方向——`hexmix`（大写 hex、分隔符后直接 TAB、3 字节码点）/`escmix`（`\/` `\b` `\f` `\r` `\t` 全集）/`asciiesc`（`ensure_ascii` 的 `\uXXXX` 含代理对）/`lonesur`（孤代理落 U+FFFD，不产非法 UTF-8）。关键坑：**json.dumps 会把反斜杠再转义**——要把单反斜杠转义序列放上电线，必须手拼原始字节体（`hexmix`/`escmix`/`contentnum`/`badhex`/`badescape`/`shortu`/`trailbs`/`unterm` 全是 raw body 模式）。
 - **失败降级 20+ 形态**逐个断言 false+原因+输出未动：未配置 endpoint/model、https 拒收、无语言、非字幕、无 cue、坏 URL（`http://` 无 host，拨号前拒绝）、不可达、status500/status100（信息性 1xx 不是终答）、HTML 坏 JSON、content 缺失/content 是数字、空 choices、掉行、无编号、**数字无分隔符**（`badsep`/`onlydigits`——行首空白与裸数字两种形态）、坏 hex、`\u` 被体尾截断、孤立尾反斜杠、字符串不终止、错 key 401、承诺 100 发 3 字节（mid-body）、滞答（300ms 超时 <10s 实测）、9MiB 超帽（拨号后、首字节前拒绝）、无 Content-Length 读到 EOF、负 Content-Length 回落 EOF。
 - **分块与重编号**：batch_cues=2 时 3 cue 出 3 个请求、第二请求编号从 1 重来；batch_cues=0 收紧为 1；端点尾斜杠/已含全路径两种形态。
 - **分隔符契约**：`sepvar` 钉头注释承诺的三种分隔（`12.`/`12)`/`12:`）全部映射回轨。
@@ -264,7 +264,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 本批覆盖侧的决定性工作是 **OSC 字幕组合菜单的注入器修复**（产品零改动，`tests/test_cli.cpp`）：subsdrive 会话跑了多轮，`drawTrackCombo` 的 Off/轨行臂（player_window.cpp 1229-1243）始终零命中，原定性「事件未入 ImGui、按时间盒放弃」。取证推翻了它——两个独立缺陷同时存在：
 
-- **ImGui click 帧竞态**：XTEST 背靠背 press/release 只在两事件之间夹着至少一个 ImGui 帧边界时才成为 click（imgui_impl_sdl2 用 MouseButtonsDown 掩码，同帧内 press+release 净结果 mouse-up，ImGui 什么都看不见）；注入对间隔 ~2-4ms，-O0 覆盖构建帧长可超 100ms——实测 11 次 combo 打开只有 2 次落进 ImGui。**不对称性会误导定位**：app 自己的 SDL 逐事件处理（视频区点击切 OSC）永远生效，于是「OSC 开关灵、combo pick 不灵」并存，看起来像坐标问题单因。修复 = `holdclick`（按住 ≥0.35s 跨帧边界再松开），100% 生效。
+- **ImGui click 帧竞态**：XTEST 背靠背 press/release 只在两事件之间夹着至少一个 ImGui 帧边界时才成为 click（imgui_impl_sdl2 用 MouseButtonsDown 掩码，同帧内 press+release 净结果 mouse-up，ImGui 什么都看不见）；注入对间隔 ~2-4ms，-O0 覆盖构建帧长可超 100ms——实测 11 次 combo 打开只有 2 次落进 ImGui。**不对称性会误导定位**：app 自己的 SDL 逐事件处理（视频区点击切 OSC）始终生效，于是「OSC 开关灵、combo pick 不灵」并存，看起来像坐标问题单因。修复 = `holdclick`（按住 ≥0.35s 跨帧边界再松开），实测每次生效。
 - **行坐标从不在行上**：X server 查窗口原点 (160,130)、活弹层实测 Off 行 y 412-431、轨行 y 438-457（`SOAR_UI_BITMAP_FONT=1` 下）；旧坐标 443/468 分别落在 Off 下方的分隔带与末行下方的 padding 上——即使 click 落地也是静默空打。修复 = 448/423 实测行心。证据链三法：PIL 截图差分（ImageChops 差分 + 暗行轮廓判弹层存在）、事件轨迹判行（app 日志的 media-info selected 链：sub=2=轨行、sub=-1=Off 生效、无事件=空转臂，逐对反推每个 y 落点）、gcov 直读（1229:2、1230:6、1240-1243:4-8，修复前全 0；1246 仍 0——selectTrack 恒成功的不可达 toast，维持 §3.6 定性）。修复后全量跑 `player_window.cpp` 行 93.9%→95.0%。
 
 **残余产品微缺陷（记档不改，UI 单线程序列下不可达）**：`disableSubtitles` 不清 pending 槽——Off 与 pending 切换竞态时，decode 线程应用 pending 会把刚关掉的门重新打开。触发需要「Off 落在 pending 尚未被应用的窗口内」，而 pending 窗口本身只有一个 packet 边界宽；现有用例序列（先选后关）构造不出。后续批与 1357 的 rapid re-switch 一起考虑。
@@ -273,7 +273,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 todo.md 无可做项后按派发 fallback 转覆盖率最大缺口模块（`ffmpeg_backend.cpp`，158 行缺口逐行甄别——其余全部落入 §3.1-§3.4/§3.15 既有定性：OOM/SDL 家族、续行噪声、版本依赖、racy 窄弧）。本批纯测试改动、零产品代码，三条臂全部经 gcov 直读验证命中（2438:1 / 1751:2 / 2033-2038:1）：
 
-- **2437-2438（EOF 锚定的 A-B wrap continue）**：既有 end-anchored 用例在 2x 倍速下永远走不到这条臂，机理是**wrap 锚点由解码时间债决定**——decode 循环的 EOF 读发生在最后一帧 presentation wait 之后，此刻播放时钟 ≈ 末帧 pts + Σ(各帧解码超出帧间隔的部分)；债 × rate 计入播放位置。媒体末帧 pts 距 duration 只有 ~23ms，2x 把债放大一倍越过该间隙 → per-packet 检查先触发 wrap；新用例取 **0.5x**（债减半）并预 seek 到 5s，EOF 先于时钟到达 B，2438 命中。断言与锚点无关（wrap 的两种锚都表现为「回到 A 附近」，用例只判 wrapped + 仍 Playing + loop 未解除），负载极端轮次即使退回 per-packet 锚也绿、只是该行覆盖退场（§1 时序弧家族的既知性质）。
+- **2437-2438（EOF 锚定的 A-B wrap continue）**：既有 end-anchored 用例在 2x 倍速下总走不到这条臂，机理是**wrap 锚点由解码时间债决定**——decode 循环的 EOF 读发生在最后一帧 presentation wait 之后，此刻播放时钟 ≈ 末帧 pts + Σ(各帧解码超出帧间隔的部分)；债 × rate 计入播放位置。媒体末帧 pts 距 duration 只有 ~23ms，2x 把债放大一倍越过该间隙 → per-packet 检查先触发 wrap；新用例取 **0.5x**（债减半）并预 seek 到 5s，EOF 先于时钟到达 B，2438 命中。断言与锚点无关（wrap 的两种锚都表现为「回到 A 附近」，用例只判 wrapped + 仍 Playing + loop 未解除），负载极端轮次即使退回 per-packet 锚也绿、只是该行覆盖退场（§1 时序弧家族的既知性质）。
 - **1750-1751（setLoopAB 对非 seekable 源的拒绝）**：v0.2 批声明「需无 Range 夹具」的残余臂。落地：`kPlainServerScript`（200-only、无 Range）直接以夹具目录为 root 起服务（只读、无需 scratch 拷贝），audio_only.mkv 头自带 duration，open 后 `seekable=false`——`setLoopAB` 给出**本来合法的窗口形状**（0 到 duration）仍被拒，且拒绝先于窗口校验发生（`lastError` 钉 "not seekable"），证明判据是源属性不是窗口。FFmpeg 对无 Range 的 HTTP 源一律报非 seekable，这与 §2.1 里 `main.cpp:130` 的 "no" 弧是同一条夹具语义的两面。
 - **2032-2038（openContext 的 cache setup fatal）**：`HttpCache` ctor 探源失败 → `open()` 以 Error 态收场。构造：`freeTcpPort()`（bind(:0) 保留后释放，避开 §3.7 记录的 runner 防火墙低端口丢弃陷阱）取死端口，无需任何服务器，回环 ECONNREFUSED 即时到达；无 meta 可回落（fresh cache dir）→ ctor invalid → `fatal(emit_event=false)` + open 统一事件收尾发一次 Error 事件。先前所有缓存集成用例都带着活服务器，这条臂零覆盖。
 
@@ -283,7 +283,7 @@ todo.md 无可做项后按派发 fallback 转覆盖率最大缺口模块（`ffmp
 
 按 §3.16 同款 fallback（取分支缺口最大模块）对 `ffmpeg_backend.cpp` 的 **375 条零计数支 / 268 个零行**（41c226f 基线，gcovr JSON 逐臂清单）做三分类甄别——可测落地 / 成对不变量或输入域互锁（撤销）/ 家族定性——最终纯测试零产品改动落 4 个用例，全部经 gcov JSON diff 逐臂验证命中：零支 375→366（+9 命中）、行 4966→4968，`ffmpeg_backend.cpp` 分文件读数 1719→1721 行（92.1%→92.2%）、1386→1395 支（78.7%→79.2%）。
 
-- **2193-2194（setupDecoders 字幕 `find_decoder` 失败）**：§4「open 只为选中的流建 decoder」模式的镜像补全——既有坏流用例 patch 的是**非默认** ASS 流（选择期失败），本批 patch **默认** subrip 流（`S_TEXT/UTF8` → `S_TEXT/QQQQ`，同 11 字节保 EBML 尺寸；demuxer 把未知 id 映射为 `AV_CODEC_ID_NONE`）→ open 期 `avcodec_find_decoder` 返空 → fatal。断言镜像视频 UNKNOWN_CODEC 模板：`open` false + `lastError` 钉 "subtitle codec not found" + Error 态 + Error 事件 ≥1 + 健康媒体恢复开。命中 2193:1、2194:1。
+- **2193-2194（setupDecoders 字幕 `find_decoder` 失败）**：§5「open 只为选中的流建 decoder」模式的镜像补全——既有坏流用例 patch 的是**非默认** ASS 流（选择期失败），本批 patch **默认** subrip 流（`S_TEXT/UTF8` → `S_TEXT/QQQQ`，同 11 字节保 EBML 尺寸；demuxer 把未知 id 映射为 `AV_CODEC_ID_NONE`）→ open 期 `avcodec_find_decoder` 返空 → fatal。断言镜像视频 UNKNOWN_CODEC 模板：`open` false + `lastError` 钉 "subtitle codec not found" + Error 态 + Error 事件 ≥1 + 健康媒体恢复开。命中 2193:1、2194:1。
 - **2027（openContext 的 `use_cache` 判据）**：`MediaSource::cache_dir` 契约（backend.h：仅 http:// 生效，本地路径与 https:// 忽略）此前只有 http 侧用例（CLI `--cache-dir`），「cache_dir 非空 + 本地路径」的短路方向零命中。本地文件 + fresh cache dir 打开 → 走直接路径、`HttpCache` 不构造，断言目录在 open 后仍空。命中该行五元组的零臂（末位 0→1）。
 - **1791-1792（audioOutputDevices 的 SDL 冷初始化）**：甄别发现进程内该函数总在 SDL 音频已热时被调（既有设备用例之前已有十余次 open），外层 `SDL_WasInit(SDL_INIT_AUDIO) == 0` 的真臂与 `SDL_InitSubSystem` 求值零命中。修法不是 fixture 而是**位置**：新用例注册在本 media TU 最前（doctest 按注册序执行、该二进制单 TU），冷进程首触音频，枚举自举子系统。断言沿用既有设备用例形状（不枚举非空——无音频栈的 runner 可报零设备，mac/win 的 ctest 未设 `SDL_AUDIODRIVER=dummy` 也成立）。命中 1791 冷臂 0→1、1792 三条中的两条（`SDL_InitSubSystem` 成功向）；残余失败臂维持 §3.2。
 - **1679-1680（SRT/VTT 检出但零 cue 的拒绝）**：**证伪了 §3.14 的「防御性互锁不追」定性**（该条目已就地修正）——单块无载荷 SRT 过探测（head 时间戳合法）而零 cue（解析器丢无载荷块），断言 load 失败 + `out_id == -1` + `lastError` 钉 "no cues" + 轨列表不动。命中 1679:1、1680 三臂全亮。
@@ -296,7 +296,7 @@ todo.md 无可做项后按派发 fallback 转覆盖率最大缺口模块（`ffmp
 
 残余弧家族定性（其余零支逐家族登记，行号为 41c226f 基线）：
 
-- **低区防御弧（52-206）**：52/56/64（`dictValue`/`codecNameFromCodecId` 的 null key/entry/value——key 恒为字面量、`av_dict_get` 契约 entry 必带 value）、83/94（`assDialogueText` 的 null ass 与空载荷——解码器输出形状）、95/98（`[` 开头的括号包裹载荷与尾 `]`——decoder 输出形状依赖，§3.3 家族；§1 已记「括号包裹永不出现」）、106/108（载荷内真实换行——多行 cue 变多 rect，§1 夹具族不可达）、110/113/119（`Dialogue:` 前缀输入与逗号不足行——合成 rect 恒 8 逗号格式契约）、135（尾反斜杠子臂）、148（尾裁剪子臂）、155/162/180/206（`pickBestStreamIndex` 空 ctx 与防御短路——调用方契约）。
+- **低区防御弧（52-206）**：52/56/64（`dictValue`/`codecNameFromCodecId` 的 null key/entry/value——key 恒为字面量、`av_dict_get` 契约 entry 必带 value）、83/94（`assDialogueText` 的 null ass 与空载荷——解码器输出形状）、95/98（`[` 开头的括号包裹载荷与尾 `]`——decoder 输出形状依赖，§3.3 家族；§1 已记「括号包裹不会出现」）、106/108（载荷内真实换行——多行 cue 变多 rect，§1 夹具族不可达）、110/113/119（`Dialogue:` 前缀输入与逗号不足行——合成 rect 恒 8 逗号格式契约）、135（尾反斜杠子臂）、148（尾裁剪子臂）、155/162/180/206（`pickBestStreamIndex` 空 ctx 与防御短路——调用方契约）。
 - **SDL/OOM（§3.2 既有口径）**：235-311（SDLAudio 各失败臂与 alloc 失败）、1792 残余的 `SDL_InitSubSystem` 失败臂。
 - **§3.15 链**：2785（裸 TEXT 分支未进——mov_text 实测吐 ASS rect）、2797（doc-active 真臂——解码门关闭后结构性）；3142/3148/3149（open 拒 a/v 空容器——SUBS_ONLY 拒收用例支撑）。
 - **清理/噪声弧**：331 构造清理弧（§3.10）、1683 末位（闭括号清理边，T9 后仍在）。
@@ -304,14 +304,13 @@ todo.md 无可做项后按派发 fallback 转覆盖率最大缺口模块（`ffmp
 
 验证口径：本地 cov3 完整跑（8/8 绿、X11 用例 0 跳过）+ 系统 gcovr 7.2 门禁 **GATE_EXIT=0**（行 95.54%、支 85.15%）。
 
-
-
+## 4. 测试纪律
 
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。
 
-测试断言也不得依赖实时解码速度：sanitizer/coverage 插桩让解码慢数倍，轮询窗口要么配 `setRate` 解除墙钟节流，要么按最慢构建留足余量。对不能改的产品代码（如窗口循环里的播放没有 setRate），从进程外驱动时（XTEST 注入按键）按解码时间等待：等待窗口取"预期进度 ÷ 最低解码速度"，而不是赌正常速度。同族的一条：**队列容量契约不得与生产者竞速**——burst FIFO 用例曾以「解码入队快于任何消费者轮询」为前提边播边拉，负载轻的轮次消费者跟得上解码、深度上限永不触发（本地 ctest 实测 6 条 cue 全存活、零丢弃），同一二进制重载轮次才见丢弃；修法是等解码线程到 EOF（`Ended`）后一次性拉取，溢出语义才确定（`queueSubtitleFrame` 丢最旧不阻塞，等待期生产者不会被满队卡死）。同族的另一面：**视频邮箱是 latest-wins 契约**——消费者未采样就被下一帧覆盖是设计（UI 只取最新帧），要观察每个瞬态帧形（多分辨率用例）就必须以高于「内容帧率 × setRate 倍速」的节奏采样：10ms 单帧轮询在 rate 8 下采样上限 100fps 对晋升上限 200fps，余量为零，负载轮次整段丢失（本地 -j8 覆盖跑实测段一段二全灭、只见到第三段）；改 1ms 轮询留 5 倍余量。
+测试断言也不得依赖实时解码速度：sanitizer/coverage 插桩让解码慢数倍，轮询窗口要么配 `setRate` 解除墙钟节流，要么按最慢构建留足余量。对不能改的产品代码（如窗口循环里的播放没有 setRate），从进程外驱动时（XTEST 注入按键）按解码时间等待：等待窗口取"预期进度 ÷ 最低解码速度"，而不是赌正常速度。同族的一条：**队列容量契约不得与生产者竞速**——burst FIFO 用例曾以「解码入队快于任何消费者轮询」为前提边播边拉，负载轻的轮次消费者跟得上解码、深度上限一次都没触发（本地 ctest 实测 6 条 cue 全存活、零丢弃），同一二进制重载轮次才见丢弃；修法是等解码线程到 EOF（`Ended`）后一次性拉取，溢出语义才确定（`queueSubtitleFrame` 丢最旧不阻塞，等待期生产者不会被满队卡死）。同族的另一面：**视频邮箱是 latest-wins 契约**——消费者未采样就被下一帧覆盖是设计（UI 只取最新帧），要观察每个瞬态帧形（多分辨率用例）就必须以高于「内容帧率 × setRate 倍速」的节奏采样：10ms 单帧轮询在 rate 8 下采样上限 100fps 对晋升上限 200fps，余量为零，负载轮次整段丢失（本地 -j8 覆盖跑实测段一段二全灭、只见到第三段）；改 1ms 轮询留 5 倍余量。
 
-## 4. 结论
+## 5. 结论
 
 行 95.54% 与分支 85.15%（分支短板推进轮本地 cov3 完整口径：含夹具媒体与 X11 窗口用例的全量跑，4968/5200 行、5004/5877 分支；CI 同提交读数判门禁一律看 CI——CI 的分支分母被 `negative_hits` 过滤系统性偏小，CI 分支百分比通常比本地高约 0.5 点，定值须让两侧都绿）是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性——其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，UI 的缺口见 §3.6 的六类逐条定性，http 缓存的缺口见 §3.7 的四类逐条定性，翻译客户端的缺口见 §3.12 的家族定性，外挂 ASS 文档批的缺口见 §3.13 的家族定性，外挂文本轨画布批的缺口见 §3.14 的家族定性，内嵌轨选择语义批的缺口见 §3.15 的家族定性，分支短板推进轮的甄别与残余弧家族定性见 §3.17，`Event` 结构冻结政策与其伴随噪声见 §3.8）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
 
@@ -319,4 +318,4 @@ todo.md 无可做项后按派发 fallback 转覆盖率最大缺口模块（`ffmp
 
 - **open 只为选中的流建 decoder**：因此“默认轨健康、非默认轨损坏”的容器能正常打开，把损坏的影响推到 selectTrack 时刻——双 AAC 轨只 patch 第二轨 CodecID（A_AAC→A_XXX）即可分别覆盖 open 失败与 selectTrack 失败两种契约（Error 态+事件 vs fail+旧 decoder 保留）。
 - **seek 有两条路径，状态翻转只在同步路径**：Playing/Paused 态的 seek 委托给解码线程、由它播报状态；只有 Stopped 态（无解码线程）走调用线程上的同步 seekToTimestamp，才有“seek 精确 duration 翻转 Ended、从 Ended seek 回翻转 Paused”的重播报。测 seek 的状态语义必须选对路径。
-- **SDL 窗口块的三条无头路径**：`SDL_VIDEODRIVER=dummy` 永远不提供加速渲染器，而产品代码显式请求 `SDL_RENDERER_ACCELERATED`——渲染器失败分支因此全平台确定性可达（干净退出，gcov 落盘）；真正的渲染循环用 Xvfb + python-xlib 驱动到干净退出，出口有两种，都不需要窗口管理器：XTEST 注入 Escape（需显式 `XSetInputFocus` 补上缺失的输入焦点），或直接向窗口发 `WM_DELETE_WINDOW` ClientMessage——SDL 自己监听 WM_PROTOCOLS 并把它转成 `SDL_QUIT`，这曾是文档里"QUIT 无法从进程外注入"的错误结论，后被本地 Xvfb 实证推翻并用例覆盖。“无头环境覆盖不了 GUI 代码”不成立，成立的只是“覆盖不了需要真实交互语义的分支”。
+- **SDL 窗口块的三条无头路径**：`SDL_VIDEODRIVER=dummy` 不提供加速渲染器，而产品代码显式请求 `SDL_RENDERER_ACCELERATED`——渲染器失败分支因此全平台确定性可达（干净退出，gcov 落盘）；真正的渲染循环用 Xvfb + python-xlib 驱动到干净退出，出口有两种，都不需要窗口管理器：XTEST 注入 Escape（需显式 `XSetInputFocus` 补上缺失的输入焦点），或直接向窗口发 `WM_DELETE_WINDOW` ClientMessage——SDL 自己监听 WM_PROTOCOLS 并把它转成 `SDL_QUIT`，这曾是文档里"QUIT 无法从进程外注入"的错误结论，后被本地 Xvfb 实证推翻并用例覆盖。“无头环境覆盖不了 GUI 代码”不成立，成立的只是“覆盖不了需要真实交互语义的分支”。

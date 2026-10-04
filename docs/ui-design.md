@@ -1,10 +1,10 @@
 # UI 设计（v0.1 桌面版）
 
-> 目标：给现有"核心播放抽象 + FFmpeg 后端"补上第一版可用桌面 UI——能打开、播放、暂停、seek、切轨、显示媒体信息。本文先沉淀对成熟播放器的调研结论，再给出信息架构、控件交互、视觉风格与技术选型，作为实现依据；v0.2+ 的扩展（播放列表页、缩略图预览、迷你模式）只画边界不展开。
+> 目标：给现有"核心播放抽象 + FFmpeg 后端"补上第一版可用桌面 UI——能打开、播放、暂停、seek、切轨、显示媒体信息。本文先沉淀对既有播放器的调研结论，再给出信息架构、控件交互、视觉风格与技术选型，作为实现依据；v0.2+ 的扩展（播放列表页、缩略图预览、迷你模式）只画边界不展开。
 
 ## 1. 调研结论
 
-调研对象：IINA（macOS 现代播放器标杆）、mpv.net（Windows 桌面现代 GUI）、vidstack / plyr（现代 Web 播放器）、awesome-mpv 收录的 OSC 生态、Qt6+QML 播放器实现参考。以下均为从仓库 README/手册/源码默认值中提取的**可核实事实**，不是臆测。
+调研对象：IINA（macOS 现代播放器）、mpv.net（Windows 桌面播放器）、vidstack / plyr（Web 播放器）、awesome-mpv 收录的 OSC 脚本、Qt6+QML 播放器实现参考。以下均为从仓库 README/手册/源码默认值中提取的**可核实事实**，不是臆测。
 
 复核入口（默认值都在源码里，改版即失效，值得复查）：IINA 的 `iina/Preference.swift`（`defaultValue` 字典与各 `defaultValue` 静态成员，如 `controlBarAutoHideTimeout: Float(2.5)`、`thumbnailWidth: 120`、`maxThumbnailPreviewCacheSize: 500`）与 `develop` 分支；mpv.net 的 `src/MpvNet/App.cs`（`RecentCount = 15`）与 `src/MpvNet.Windows/WinForms/MainForm.cs`；vidstack/plyr 的默认 layout 源码与主题令牌（`--plyr-*` / `--media-*`）。
 
@@ -26,12 +26,12 @@
 - OSC 死区：拖拽窗口/呼出菜单/隐藏鼠标只在窗口**中心区域**生效（四周留 10%/底部 22% 给 OSC），避免与控件抢事件。
 - 配置用**可搜索的 GUI 配置编辑器**替代手改 conf 文件。
 
-### 1.3 mpv 生态 OSC（awesome-mpv 收录）
+### 1.3 mpv 的 OSC 脚本（awesome-mpv 收录）
 
-- 事实上的"现代 OSC"标准形态由 **uosc / ModernX / ModernZ / osc-modern** 系列确立：底部悬浮条 + 大 seek 条 + 左传输右设置，条上按钮可配置。
+- **uosc / ModernX / ModernZ / osc-modern** 四个脚本形态一致：底部悬浮条 + 大 seek 条 + 左传输右设置，条上按钮可配置。
 - seek 条增强的通用做法：**悬停时间提示**（几乎所有 OSC）、**章节刻度**（chapters 脚本）、**悬停缩略图**（tethys、thumbnail_script、thumbfast 高性能缩略图服务）。
 - 极简派用**常驻细进度条**（progressbar、mfpbar——小、不挡画面、可拖动），说明"信息密度可降级"是有效形态。
-- uosc 生态还有 history 菜单、暂停指示器（pause-indicator）等配套，验证了"浮层 + 菜单"组合的扩展模型。
+- uosc 还配套有 history 菜单、暂停指示器（pause-indicator），印证"浮层 + 菜单"组合可扩展。
 
 ### 1.4 Web 播放器（vidstack / plyr）
 
@@ -39,7 +39,7 @@
 - seek 条交互细节：**悬停显示目标时间、拖动实时预览、松手才提交**（vidstack scrub-preview）；键盘步进为 `keyStep` + Shift×5 倍乘（vidstack slider 默认）；vidstack 默认 seek 步长 10s，plyr `seekTime` 也是 10s。
 - 设置菜单组织：vidstack 单一齿轮菜单，内含**倍速 → 画质 → 无障碍 → 音轨 → 字幕**五个子菜单（单选组）；plyr 设置面板为"字幕/画质/倍速"分组 + 返回上一级。当前值打勾标注，均不超过一级嵌套。
 - 快捷键高度趋同（YouTube 系）：`K/Space` 播放暂停、`J/L` ∓seekStep（vidstack）、`←/→` 短 seek、`↑/↓` 音量、`M` 静音、`F` 全屏、`C` 字幕、`0–9` 百分比跳转（plyr 语义；mpv 把 1–8 留给画质调整，对普通用户反直觉）、`</>`倍速增减（vidstack）。
-- 无障碍被当作一等公民：slider 暴露 `aria-valuemin/max/now/text`；开关按钮带 `aria-pressed` 与成对的按下/未按下图标+标签（plyr "Play"/"Pause"）；菜单按钮带 `aria-label`；焦点可见态（focus-visible）与专用焦点环 token（vidstack `--media-focus-ring`）；快捷键自动镜像到控件 `aria-keyshortcuts`。
+- 两者都把无障碍当一等公民：slider 暴露 `aria-valuemin/max/now/text`；开关按钮带 `aria-pressed` 与成对的按下/未按下图标+标签（plyr "Play"/"Pause"）；菜单按钮带 `aria-label`；焦点可见态（focus-visible）与专用焦点环 token（vidstack `--media-focus-ring`）；快捷键自动镜像到控件 `aria-keyshortcuts`。
 - 主题全部走设计令牌：vidstack 每个令牌有 `--media-*` 语义名 + `--video-*` 布局覆盖两层；plyr 是平铺 `--plyr-*` 属性（含 `--plyr-color-main`、`--plyr-focus-visible-color`、控件尺寸/间距/圆角等全套）。控制按钮的悬停提示默认只给读屏器（视觉提示仅 seek 时间）——保持界面安静。
 
 ### 1.5 Qt6+QML 桌面实现参考
@@ -152,7 +152,7 @@ soar 主窗口
   - 背景/留黑 `#0A0B0E`；面板 `rgba(16,18,24,0.92)`（半透明压在视频上）；描边 `rgba(255,255,255,0.08)`。
   - 文本主 `#E8EAF0` / 次 `rgba(232,234,240,0.55)`；强调（进度、选中、悬停）`#4C8DFF`；危险/错误 `#FF5D5D`。
   - 对比度：文本主对背景 > 12:1，次文本 > 4.5:1（WCAG AA）。
-- **布局栅格**：4px 基准网格；OSC 高 ~52px、内边距 8×6、控件间距 8；浮层宽上限 720px、行高 24。视频区永远信箱式等比（黑边即背景色）。
+- **布局栅格**：4px 基准网格；OSC 高 ~52px、内边距 8×6、控件间距 8；浮层宽上限 720px、行高 24。视频区恒信箱式等比（黑边即背景色）。
 - **动效**：OSC 显隐与 Toast 用 160ms 透明度过渡（帧循环内线性插值，`disableAnimations` 不设开关，v0.1 常开）；无位移类动画（视频上方的 UI 不遮挡观看是第一原则）。暂停/缓冲指示 1s 淡出。
 - **字体**：优先加载系统 UI 字体（每平台候选路径列表：Linux `Noto Sans CJK`/`DejaVu Sans`、macOS `PingFang`、Windows `Microsoft YaHei`），失败回退 ImGui 内嵌位图字体（仅 ASCII）——不捆绑字体文件，保持零新增分发物。
 
@@ -184,7 +184,7 @@ soar 主窗口
 - **无障碍弱**是 ImGui 的硬伤（无平台 a11y 协议）。缓解：全功能键盘化（§3.2 全表可盲操作）、焦点可见、对比度达标；**当项目需要真实屏幕阅读器支持时迁移 Qt**——核心/UI 已分层（§1.5），迁移不动 `soar_core`。
 - **立即模式每帧重绘**：与视频帧率同频（≤60fps），相比保留模式多耗的 CPU 在可接受范围；后续可加"无输入且无新帧时跳过呈现"的脏矩形节流（v0.2 优化项，不阻塞）。
 - **Qt 是 v1.0 的备选而非 v0.1 的选择**：播放列表管理、设置面板、真无障碍到来时，若立即模式的代码组织开始别扭，整体迁移到 Qt6 QML（IINA 式桌面形态），届时 UI 层只重写视图，事件模型与 Player 门面不变。
-- **Web 壳否决**：为本地媒体播放引入浏览器运行时（体积、启动、本地文件安全策略、IPC 桥）全是负收益，其优势（Web 生态控件）对本项目无用武之地。
+- **Web 壳否决**：为本地媒体播放引入浏览器运行时（体积、启动、本地文件安全策略、IPC 桥）全是负收益，其优势（Web 控件库）对本项目用不上。
 
 ### 5.3 代码结构（实现的落点）
 
