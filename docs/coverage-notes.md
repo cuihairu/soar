@@ -304,6 +304,15 @@ todo.md 无可做项后按派发 fallback 转覆盖率最大缺口模块（`ffmp
 
 验证口径：本地 cov3 完整跑（8/8 绿、X11 用例 0 跳过）+ 系统 gcovr 7.2 门禁 **GATE_EXIT=0**（行 95.54%、支 85.15%）。
 
+### 3.18 启动语义批：GUI 入口分叉 + 空主界面 + 默认后端 ffmpeg + 文件关联（BUGS.md #3）
+
+安装版双击 soarw.exe 弹「No media source given / Usage」对话框（BUGS.md #3，与 #2 同根的续集）——「双击是启动，不是命令行」这一边界此前从未被编码，且文件关联链路两端（安装器无任何注册、`.desktop` 无参无 MimeType）都没接线。产品改动五项与验证细节见 BUGS.md #3（入口分叉 `soarAppMain(…, gui_entry)`、空主界面三入口、默认后端 `SOAR_WITH_FFMPEG`→ffmpeg、Windows `Soar.Media` ProgId + 18 扩展 OpenWithProgids、`.desktop` `Exec=soar --gui` + MimeType），此处记测试面与读数：
+
+- **测试增量（纯 cli TU，+4 用例）**：`--help/-h` 退出 0、`--gui --headless` 无源保持 usage 退出 2（headless 是显式命令行语义，不分叉）、默认后端解析为 FFmpeg（fixture 门控）、X11 空窗端到端——injector 新增 `empty` 模式（O 键 → 中心点击 → Escape → 轮询窗口消失，exit 4/5 失败路径），宿侧断言 exit 0 且输出无 Usage / No media source。控制台无参行为逐字不变（exit 2 + Usage），既有用例零改动全绿。
+- **CI 契约同步**：ci.yml / daily-build 的 Windows 冒烟「soarw 无参退出 2」断言换成「无参空启动 8 秒存活」（唯一豁免仍是 exit 1 + SDL_ 日志的渲染器缺失干净失败）；daily-build 安装器走查增装后/卸后注册表断言（`Soar.Media\shell\open\command` 指向 soarw.exe、`.mp4\OpenWithProgids` 含候选、卸后无痕）。
+- **读数**：CI run 37231910426 七腿绿，行 5686/5980=95.1%、支 5829/6845=85.2%——分母较上批 run 37191653811（5660/5954、5795/6811）+26 行/+34 支即本批新代码，门禁 95.0/84.6 双过（余量 0.1/0.6）。本地 cov4 全量 8/8 + 系统 gcovr 7.2 门禁 GATE_EXIT=0（行 95.2% 5691/5981、支 84.6% 5899/6974）。
+- **走查注意（可复用教训）**：Xvfb 四帧验收（空窗海报 / O 键 toast / help `O` 行 / Esc 退出）中 toast 首拍 0.8s 恰好过期——`Toast::kDuration` 800ms（ui_state.h），进程外驱动截图须在 0.3s 内拍；短命 UI 状态的断言窗口要按常量倒推。
+
 ## 4. 测试纪律
 
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。
