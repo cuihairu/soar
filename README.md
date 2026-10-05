@@ -173,6 +173,7 @@ ctest --preset default
 | `soar_subtitle_tests` | 外挂字幕核心：SRT/WebVTT 解析、sidecar 提供器、下载/翻译客户端 | 纯逻辑，无需媒体与网络 |
 | `soar_ass_tests` | ASS 渲染器：libass 薄封装、直 alpha 合成、内嵌轨流式喂入 | 无 libass 时构建为空壳并跳过；渲染用仓库内附测试字体 |
 | `soar_ui_tests` | 窗口 UI 的纯逻辑（OSC 自动隐藏状态机、最近打开存储、Toast、时间格式化） | 无需显示器 |
+| `soar_p2p_tests` | P2P 桥接：TorrentStream 启停契约、本地 HTTP 服务（Range/多文件/超时） | 进程内建种自足（libtorrent 哈希校验预填充），无 swarm；POSIX socket，Windows 跳过 |
 | `soar_cli_tests` | `soar` 子进程冒烟（`--headless` 退出码与报错路径） | 仅当应用目标被构建时注册；Xvfb 用例额外需 `SOAR_TEST_X11=1` |
 
 FFmpeg 媒体测试的媒体文件全部由 `scripts/generate_test_media.sh` 现场合成（纯 lavfi，无网络、无外部素材），脚本打印 `KEY=VALUE` 形式的环境变量供测试定位文件：

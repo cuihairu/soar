@@ -313,6 +313,15 @@ todo.md 无可做项后按派发 fallback 转覆盖率最大缺口模块（`ffmp
 - **读数**：CI run 37231910426 七腿绿，行 5686/5980=95.1%、支 5829/6845=85.2%——分母较上批 run 37191653811（5660/5954、5795/6811）+26 行/+34 支即本批新代码，门禁 95.0/84.6 双过（余量 0.1/0.6）。本地 cov4 全量 8/8 + 系统 gcovr 7.2 门禁 GATE_EXIT=0（行 95.2% 5691/5981、支 84.6% 5899/6974）。
 - **走查注意（可复用教训）**：Xvfb 四帧验收（空窗海报 / O 键 toast / help `O` 行 / Esc 退出）中 toast 首拍 0.8s 恰好过期——`Toast::kDuration` 800ms（ui_state.h），进程外驱动截图须在 0.3s 内拍；短命 UI 状态的断言窗口要按常量倒推。
 
+### 3.19 P2P 桥接测试收编批：src/p2p 撤 exclude 进门禁
+
+P4 特性批（docs/mvp.md §5）按「功能先落地、测试后补」登记过 exclude（ci.yml 注释原话 "the follow-up test batch brings it back under this gate"），本批兑现：新套件 `soar_p2p_tests`（tests/test_p2p.cpp，20 用例）+ ci.yml 撤两处 `--exclude '^src/p2p/'`，`torrent_stream.cpp` 分母 +368 行/+417 支进门槛。
+
+- **测试设计（自足链，无 swarm/无第二进程）**：payload 写进临时 store、用 vendored libtorrent 与 seed_torrent 工具同款 API 建 v1 种、`store_dir` 取 payload 的父目录—— TorrentStream 的本地哈希校验在 add 后即发现所有 piece 就位，HTTP 层直接服务真字节。覆盖面：失败契约（零参/缺 store/坏 .torrent/坏 magnet/五种坏 peer 形态）、成功链（200 全文件、Range 三形态 206+Content-Range、416 八种畸形、HEAD 无体、405、同连接 keep-alive、`file_base>0` 的多文件条目——走查期抓过的读偏 bug 的回归位）、越界 index 的错误表两臂（带/不带 on_files）、空文件条目（混合种）、single-flight 与 stop 幂等、startAsync 三态（Serving 快达 / Connecting 被 stop 打断不落 Failed / 尾失败落 Failed）、**缺片请求被 stop 释放**（unlink 后 waitForPiece 停在 deadline 上，stop 不许等满 60s）、**metadata 60s 超时的显式错误契约**（套件最贵的用例——磁铁卡死的对外承诺本身就是这 60 秒）。
+- **建种枚举序不可断言（首轮红的根因）**：`add_files(目录)` 的文件顺序是 OS 枚举序（实测 b 先于 a）——断言 `files[0]` 的用例全部改显式 `fs.add_file(rel, size)` 保序。同族：0 字节单文件在 libtorrent 层直接拒（"invalid length of torrent"，零 piece），产品侧 `file is empty` 守卫须用「0 字节 + 正常文件」混合种才可达。
+- **读数**：`torrent_stream.cpp` 行 96%（354/368）、支 90%（379/417）；整体门禁（撤 exclude 口径）本地系统 gcovr 7.2 **GATE-EXIT=0** 行 95.2%（6051/6355）、支 84.9%（6278/7391）。CI 读数待该提交的首轮 ci run 回填（本批 commit 时出境网络中断，push 与 CI 验证延后）。
+- **残余定性（14 行，全部防御弧）**：90+496-498+509-512 = listen socket 创建/绑定的系统调用失败臂——试过 rlimit 造 socket() 失败，但 `session` 创建先于 listen socket，限值先打爆 session（未捕获异常），无法隔离到目标臂；466-469 = `add_torrent` throw（库级防御，本地参数域造不出）；415 = acceptLoop 的非停机失败 continue（EINTR 类）；381 = `makeCtx` 闭括号的 gcov 归属噪声（调用点 417 已覆盖，行本身无可执行语义）。
+
 ## 4. 测试纪律
 
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。

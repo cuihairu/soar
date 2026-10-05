@@ -81,6 +81,25 @@ target_compile_definitions(soar_ass_tests PRIVATE
 
 add_test(NAME soar_ass_tests COMMAND soar_ass_tests)
 
+# P2P streaming bridge tests (docs/mvp.md §5 P4): TorrentStream's start/
+# stop contract and the local HTTP server behind playbackUrl() (Range
+# semantics, method handling, multi-file indexing). Payload files and the
+# .torrent are built in-process with the vendored libtorrent (same API the
+# seed_torrent tool uses) so the store doubles as pre-seeded pieces — no
+# swarm, no tracker, no second process. POSIX sockets; on Windows the
+# suite reports a skip like the cache tests.
+add_executable(soar_p2p_tests
+  test_p2p.cpp
+)
+
+target_compile_features(soar_p2p_tests PRIVATE cxx_std_17)
+target_link_libraries(soar_p2p_tests PRIVATE soar_p2p doctest::doctest)
+
+add_test(NAME soar_p2p_tests COMMAND soar_p2p_tests)
+# Sessions + a local hash check per case: seconds normally, low minutes
+# under coverage instrumentation.
+set_tests_properties(soar_p2p_tests PROPERTIES TIMEOUT 600)
+
 # Pure UI logic unit tests (docs/ui-design.md §5.3): auto-hide state
 # machine, recent store, toast, time formatting. No display needed.
 add_executable(soar_ui_tests
