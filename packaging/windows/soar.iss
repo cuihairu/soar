@@ -53,6 +53,7 @@ Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; Flags: uncheck
 ; HKCU，与 PrivilegesRequired=admin 的机器级安装对齐。命令行走 soarw.exe
 ; （GUI 前端），路径参数经 WinMain→CommandLineToArgvW→UTF-8 进原有播放
 ; 流程；卸载时 ProgId 整键删除、各扩展只删自己的候选值。
+[Registry]
 Root: HKA; Subkey: "Software\Classes\Soar.Media"; ValueType: string; ValueData: "Soar media file"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Soar.Media\DefaultIcon"; ValueType: string; ValueData: "{app}\soar.ico,0"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Soar.Media\shell\open\command"; ValueType: string; ValueData: """{app}\soarw.exe"" ""%1"""; Flags: uninsdeletekey
