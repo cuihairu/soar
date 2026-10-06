@@ -19,6 +19,7 @@
 #include <libtorrent/create_torrent.hpp>
 #include <libtorrent/file_storage.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -710,8 +711,10 @@ TEST_CASE("startAsync publishes Serving and stop cancels a pending start") {
   // peer endpoint also exercises the success half of the peer loop — a
   // well-formed host:port is contacted before the wait begins.
   p2p::TorrentStream magnet;
-  int magnet_ticks = 0;
-  bool tick_had_metadata = true;
+  // The metadata loop ticks from the worker thread; the counters below are
+  // read from this thread, so they are atomics (tsan enforces this).
+  std::atomic<int> magnet_ticks{0};
+  std::atomic<bool> tick_had_metadata{true};
   p2p::TorrentStream::Params mp;
   mp.magnet_uri = kDeadMagnet;
   mp.store_dir = s.dir;

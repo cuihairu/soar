@@ -648,13 +648,18 @@ void TorrentStream::stop() {
   // behind a 60s timeout.
   impl->stopped->store(true, std::memory_order_relaxed);
   if (impl->worker.joinable()) impl->worker.join();
-  if (impl->listen_fd >= 0) {
+  const bool had_listener = impl->listen_fd >= 0;
+  if (had_listener) {
+    // shutdown() first: it is what wakes a blocked accept() so the join
+    // below returns. The fd value itself is dropped only once the accept
+    // thread is joined — acceptLoop() re-reads listen_fd on every
+    // iteration, so clearing it while that thread still runs would race.
     sockShutdown(impl->listen_fd);
     sockClose(impl->listen_fd);
-    impl->listen_fd = -1;
   }
   if (impl->accept_thread.joinable()) impl->accept_thread.join();
   if (impl->monitor_thread.joinable()) impl->monitor_thread.join();
+  if (had_listener) impl->listen_fd = -1;
   // Connection threads hold their own copies (ConnCtx::session); libtorrent
   // dies when the last of them is done with it.
   impl->session.reset();
