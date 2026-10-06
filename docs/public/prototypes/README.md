@@ -18,7 +18,9 @@
 
 `desktop-main / playlist / settings / library / translate-panel` 五页 HTML
 可视稿由仓库设计（1280×800 桌面视口，共享设计语言见 `assets/proto.css`），
-**总览与逐页设计说明（布局/交互/状态）见 [index.html](index.html)**。
+**总览与逐页设计说明（布局/交互/状态）见同目录 `index.html`**
+（站点部署后为 `/prototypes/index.html`；本文件与 PNG 均为静态原样拷贝，
+不进 VitePress 页面路由，故不设站内链接）。
 `playlist.png` / `library.png` 不在走马灯合同内，随批投放供审核与文档引用。
 
 如实说明：品牌位为中性占位（「S」字标示意位，非 logo 设计）；媒体库为
