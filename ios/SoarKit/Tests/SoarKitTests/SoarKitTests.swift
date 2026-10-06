@@ -90,16 +90,23 @@ final class NullEngineTests: XCTestCase {
     }
 
     func testEventsFollowTransitions() {
-        let engine = openedEngine()
+        // onEvent must be attached BEFORE open — the engine emits
+        // synchronously, so a late subscriber misses those events.
+        let engine = NullEngine()
         var events: [SoarEvent] = []
         engine.onEvent = { events.append($0) }
+
+        XCTAssertTrue(engine.open(MediaSource(uri: "file:///tmp/clip.mp4")))
+        engine.setDuration(10_000)
 
         XCTAssertTrue(engine.play())
         engine.advance(by: 500)
 
-        // open (stopped + mediaInfo) + play (stateChanged) + positionChanged
+        // open → mediaInfoChanged only (init is already .stopped, and
+        // transition() skips no-op transitions); play → stateChanged;
+        // advance below duration → positionChanged.
         XCTAssertEqual(events.map(\.type),
-                       [.stateChanged, .mediaInfoChanged, .stateChanged, .positionChanged])
+                       [.mediaInfoChanged, .stateChanged, .positionChanged])
     }
 }
 
