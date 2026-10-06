@@ -1,0 +1,152 @@
+/* ============================================================
+   Soar — 桌面播放器原型图 v1 共享设计语言
+   （设计稿，非产品代码；品牌位为中性占位，不伪造 logo）
+   ============================================================ */
+
+:root {
+  /* 面板层级（近黑分层，视频窗暗于面板） */
+  --bg0: #08090b;   /* 窗口/画布外底 */
+  --bg1: #0e1013;   /* 视频黑框或深层 */
+  --bg2: #13161b;   /* 面板 */
+  --bg3: #1a1e25;   /* 卡片/浮层 */
+  --bg4: #22272f;   /* 悬停/按压 */
+  --line: #242b35;  /* 发丝分隔 */
+  --line-strong: #323b48;
+
+  /* 文本 */
+  --t1: #eef1f5;
+  --t2: #a2abb8;
+  --t3: #6e7886;
+  --t4: #4d5560;
+
+  /* 强调：信号橙（主播放/交互），天蓝（网络/P2P/下载 语义） */
+  --accent: #ff6b35;
+  --accent-hi: #ff8554;
+  --accent-soft: rgba(255, 107, 53, 0.14);
+  --sky: #6cb1ff;
+  --sky-soft: rgba(108, 177, 255, 0.13);
+  --ok: #3ecf6e;
+  --warn: #ffb224;
+  --danger: #ff5560;
+
+  --r-lg: 14px;
+  --r-md: 10px;
+  --r-sm: 7px;
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC",
+          Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.55), 0 4px 14px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--bg0);
+  color: var(--t1);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 通用控件 ---------- */
+.icon { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.6;
+         stroke-linecap: round; stroke-linejoin: round; fill: none; flex: none; }
+.icon.sm { width: 14px; height: 14px; }
+.pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 9px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--bg3);
+  color: var(--t2); font-size: 11px; white-space: nowrap;
+}
+.pill.on { background: var(--accent-soft); border-color: rgba(255,107,53,.45); color: var(--accent-hi); }
+.pill.sky { background: var(--sky-soft); border-color: rgba(108,177,255,.4); color: var(--sky); }
+.pill.ok { background: rgba(62,207,110,.12); border-color: rgba(62,207,110,.4); color: var(--ok); }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 18px;
+  padding: 0 7px; border-radius: 5px; background: var(--bg4);
+  color: var(--t3); font-size: 10.5px; white-space: nowrap;
+}
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 30px; padding: 0 12px; border-radius: var(--r-sm);
+  border: 1px solid var(--line); background: var(--bg3); color: var(--t1);
+  font-size: 12px; cursor: pointer; user-select: none;
+}
+.btn:hover { background: var(--bg4); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #140a04; font-weight: 600; }
+.btn.primary:hover { background: var(--accent-hi); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ---------- 帧（每页的主设计框） ---------- */
+.frame {
+  width: 1280px; height: 800px; overflow: hidden; position: relative;
+  background: var(--bg0); color: var(--t1);
+}
+
+/* 渲染提示条：页面顶部的作者说明（截图取 #primary 元素时不可见） */
+.docbar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 8px 14px; background: #000a; color: var(--t2);
+  font-size: 11.5px; border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+}
+.docbar b { color: var(--t1); font-weight: 600; }
+.docbar a { color: var(--sky); text-decoration: none; }
+.page { padding-top: 36px; }  /* 给 docbar 让位 */
+
+/* 标注角标（帧内解释性注解，设计稿专用） */
+.note {
+  position: absolute; z-index: 20;
+  display: flex; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: 6px;
+  background: rgba(13, 15, 18, 0.82);
+  border: 1px solid var(--line);
+  color: var(--t3); font-size: 10.5px;
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+.note kbd {
+  font-family: var(--mono); font-size: 9.5px; color: var(--t2);
+  background: var(--bg4); border: 1px solid var(--line-strong);
+  border-radius: 4px; padding: 0 4px;
+}
+.note .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--sky); }
+
+/* ---------- 状态变体区（每页底部） ---------- */
+.states {
+  width: 1280px; margin: 10px auto 60px; padding: 0 4px;
+  display: grid; gap: 8px;
+}
+.states h2 {
+  font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--t3); font-weight: 600; margin: 14px 0 2px;
+}
+.state {
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  overflow: hidden; background: var(--bg1); position: relative;
+}
+.state-cap {
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 6px 10px 2px; font-size: 11px; color: var(--t3);
+}
+.state-cap b { color: var(--t2); font-weight: 600; }
+
+/* 媒体缩略占位（视频画面/海报）——中性抽象图形，非素材 */
+.thumb {
+  display: block; width: 100%;
+  background:
+    radial-gradient(120% 90% at 30% 20%, #22304a 0%, #10151f 52%, #0a0d12 100%);
+  position: relative; overflow: hidden;
+}
+.thumb::after {  /* 抽象的“画面”云带 */
+  content: ""; position: absolute; inset: 0;
+  background:
+    radial-gradient(60% 45% at 72% 62%, rgba(108,177,255,.16) 0%, transparent 62%),
+    radial-gradient(70% 55% at 18% 78%, rgba(255,107,53,.10) 0%, transparent 60%);
+}

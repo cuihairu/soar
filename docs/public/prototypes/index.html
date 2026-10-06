@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Soar 原型 · 总览与设计说明</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/proto.css">
+<style>
+/* ===== 总览页：设计语言 + 逐页设计说明 ===== */
+.page { width: 1280px; margin: 0 auto; padding: 52px 4px 60px; }
+
+.hero { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; }
+.hero h1 { font-size:26px; font-weight:700; letter-spacing:-.01em; }
+.hero .sub { margin-top:8px; color:var(--t2); font-size:13px; max-width:640px; }
+.hero .meta { text-align:right; color:var(--t3); font-size:11px; line-height:1.9; font-family:var(--mono); white-space:nowrap; }
+
+.band {
+  margin-top:18px; padding:14px 16px;
+  border:1px solid var(--line); border-radius:var(--r-lg); background:var(--bg2);
+  display:flex; gap:10px; align-items:flex-start;
+}
+.band .tag {
+  flex:none; height:22px; padding:0 9px; border-radius:999px; font-size:11px;
+  display:inline-flex; align-items:center;
+}
+.band p { color:var(--t2); font-size:12px; }
+.band b { color:var(--t1); }
+
+.sect { margin-top:34px; }
+.sect > h2 {
+  font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--t3); font-weight:600; margin-bottom:12px;
+}
+
+/* 设计语言 tokens */
+.lang { display:grid; grid-template-columns: 1.15fr .85fr; gap:8px; }
+.card {
+  border:1px solid var(--line); border-radius:var(--r-lg); background:var(--bg2);
+  padding:14px 16px;
+}
+.card h3 { font-size:12.5px; font-weight:600; color:var(--t1); margin-bottom:10px; }
+.swatches { display:grid; grid-template-columns:repeat(8, 1fr); gap:8px; }
+.sw { text-align:center; font-family:var(--mono); font-size:9.5px; color:var(--t3); }
+.sw i { display:block; height:44px; border-radius:8px; border:1px solid var(--line); margin-bottom:5px; }
+.langrow { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:4px; }
+.langrow .lbl { color:var(--t3); font-size:11px; width:100%; margin-top:8px; }
+
+/* 逐页说明卡 */
+.toc { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.toc .card { display:flex; flex-direction:column; gap:8px; }
+.toc .head { display:flex; align-items:center; gap:9px; }
+.toc .no {
+  width:24px; height:24px; border-radius:8px; flex:none;
+  background:var(--accent-soft); color:var(--accent-hi);
+  display:flex; align-items:center; justify-content:center;
+  font-family:var(--mono); font-size:11.5px; font-weight:700;
+}
+.toc .head b { font-size:13.5px; }
+.toc .head a { margin-left:auto; color:var(--sky); font-size:11px; text-decoration:none; font-family:var(--mono); }
+.spec { display:grid; gap:5px; font-size:11.5px; color:var(--t2); }
+.spec .row { display:flex; gap:8px; }
+.spec .k { flex:none; width:34px; color:var(--t4); font-family:var(--mono); font-size:10.5px; padding-top:1px; }
+.spec .st { display:flex; flex-wrap:wrap; gap:5px; }
+.foot { margin-top:22px; color:var(--t3); font-size:11px; line-height:1.9; }
+.foot b { color:var(--t2); }
+</style>
+</head>
+<body>
+
+<div class="docbar">
+  <b>Soar 原型 · 总览与设计说明</b>
+  <span>桌面播放器五页可视稿（1280×800 帧）· 品牌位为中性占位，不伪造 logo</span>
+  <a href="desktop-main.html">01 主播放窗</a>
+  <a href="playlist.html">02 播放列表</a>
+  <a href="settings.html">03 设置面板</a>
+  <a href="library.html">04 媒体库</a>
+  <a href="translate-panel.html">05 字幕翻译</a>
+</div>
+
+<div class="page">
+
+  <div class="hero">
+    <div>
+      <h1>Soar 桌面播放器 · 原型总览</h1>
+      <div class="sub">五页可视稿覆盖核心界面：主播放窗 / 播放列表 / 设置面板 / 媒体库 / 字幕翻译面板。
+      设计语言与既有实现同源（悬浮 OSC、事件驱动状态、零默认网络），媒体库为 v1.0 前瞻设计、其余四页对应已落地能力。</div>
+    </div>
+    <div class="meta">
+      视口 1280×800（桌面）<br>
+      设计稿 · 非产品代码<br>
+      2026-10 · v1
+    </div>
+  </div>
+
+  <div class="band">
+    <span class="tag pill">如实说明</span>
+    <p><b>品牌位为中性占位</b>——「S」字标与翅膀图形仅示意位置与尺寸，不是 logo 设计；
+    <b>媒体库为前瞻设计</b>（路线图 v1.0，未开始实现），其余四页描述的能力均已在桌面端落地，
+    原型中的交互文案与实现语义一致（快捷键、Loop 三态、MRU×15、P2P 桥、零默认网络）。</p>
+  </div>
+
+  <div class="sect">
+    <h2>设计语言</h2>
+    <div class="lang">
+      <div class="card">
+        <h3>色彩 · 近黑分层 + 双语义强调</h3>
+        <div class="swatches">
+          <div class="sw"><i style="background:#08090b"></i>bg0</div>
+          <div class="sw"><i style="background:#0e1013"></i>bg1</div>
+          <div class="sw"><i style="background:#13161b"></i>bg2</div>
+          <div class="sw"><i style="background:#1a1e25"></i>bg3</div>
+          <div class="sw"><i style="background:#22272f"></i>bg4</div>
+          <div class="sw"><i style="background:#eef1f5"></i>text</div>
+          <div class="sw"><i style="background:#a2abb8"></i>text-2</div>
+          <div class="sw"><i style="background:#6e7886"></i>text-3</div>
+        </div>
+        <div class="langrow" style="margin-top:10px;">
+          <span class="lbl">语义色——橙只给播放/主操作，天蓝只给网络行为（http / P2P / 下载 / 翻译），状态色（绿/黄/红）只给系统事实：</span>
+          <span class="pill on">信号橙 · 播放/主操作</span>
+          <span class="pill sky">天蓝 · 网络/P2P/翻译</span>
+          <span class="pill ok">绿 · 播放中</span>
+          <span class="pill">黄 · 缓冲</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>几何与排版</h3>
+        <div class="langrow">
+          <span class="pill">pill 圆角 999</span>
+          <span class="btn">按钮 r7</span>
+          <span class="chip">chip r5</span>
+          <span class="pill">卡片 r14</span>
+        </div>
+        <div class="langrow">
+          <span class="lbl">系统字体栈（UI）+ 等宽（时码/路径/快捷键）；发丝分隔线 #242b35；
+          浮层统一 backdrop-blur + 重阴影； OSC 浮于视频面，不占布局。</span>
+        </div>
+        <div class="langrow">
+          <span class="note"><kbd>Space</kbd> <kbd>←→</kbd> <kbd>F</kbd> 快捷键一律 kbd 样式，与实现键位一致</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sect">
+    <h2>逐页设计说明</h2>
+    <div class="toc">
+
+      <div class="card">
+        <div class="head"><span class="no">01</span><b>主播放窗</b><a href="desktop-main.html">打开 →</a></div>
+        <div class="spec">
+          <div class="row"><span class="k">布局</span><span>全幅视频面；顶部渐变元信息条（logo/片名/状态 pill/工具钮）；底部悬浮 OSC = 整宽 seek 条（缓冲段可视）+ 按钮行（传输控制 · 音量 · 倍速 · A-B · 字幕 · 截图）。</span></div>
+          <div class="row"><span class="k">交互</span><span>OSC 2.5s 无输入自动隐藏，悬停/拖动/浮层/暂停时钉住；seek 悬停预览、松手提交；全部操作有等价快捷键（与实现一致）。</span></div>
+          <div class="row"><span class="k">状态</span><span class="st"><span class="pill on">播放中</span><span class="pill">暂停 · 中央大播放键</span><span class="pill">缓冲 · 事件驱动</span><span class="pill">空态 · Open a file</span></span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="head"><span class="no">02</span><b>播放列表</b><a href="playlist.html">打开 →</a></div>
+        <div class="spec">
+          <div class="row"><span class="k">布局</span><span>右滑入浮层：左导航（队列/循环/随机）+ 队列视图；当前行橙色高亮 + EQ 动画，行尾时长与行操作。</span></div>
+          <div class="row"><span class="k">交互</span><span><kbd>P</kbd> 呼出；点选即播、<kbd>x</kbd> 移除、悬停浮现「下一首播放/移除」、拖拽排序；<kbd>N</kbd>/<kbd>Shift+N</kbd> 步进，越界只 Toast。</span></div>
+          <div class="row"><span class="k">状态</span><span class="st"><span class="pill on">播放中 · EQ 动画</span><span class="pill">暂停中 · EQ 停止+徽标</span><span class="pill">空态 · 入队引导海报</span></span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="head"><span class="no">03</span><b>设置面板</b><a href="settings.html">打开 →</a></div>
+        <div class="spec">
+          <div class="row"><span class="k">布局</span><span>居中模态：左 tab 导航（通用/播放/字幕/网络/关于）+ 右内容区；字幕组含字体·字号·同步偏移与下载/翻译端点。</span></div>
+          <div class="row"><span class="k">交互</span><span>改动即写本地偏好，无「应用」概念；<kbd>esc</kbd>/遮罩关闭；字号按屏幕高度缩放（多 DPI 等观感）；密钥仅存本机。</span></div>
+          <div class="row"><span class="k">状态</span><span class="st"><span class="pill on">通用 · 启动/外观</span><span class="pill">网络 · 本地优先无源=默认</span><span class="pill">端点未配置 · 中性提示不臆造</span></span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="head"><span class="no">04</span><b>媒体库 <span class="pill">前瞻 · v1.0</span></b><a href="library.html">打开 →</a></div>
+        <div class="spec">
+          <div class="row"><span class="k">布局</span><span>侧栏分类（续播/已看完按进度自动归位）+ 海报网格 + 搜索框；P2P 条目额外标注下载态。</span></div>
+          <div class="row"><span class="k">交互</span><span>点击卡片即插入队首播放；搜索即时过滤；空态保留完整导航不弹窗导流。</span></div>
+          <div class="row"><span class="k">状态</span><span class="st"><span class="pill on">有库 · 网格浏览</span><span class="pill">无结果 · 保留语境给出口</span><span class="pill">空库 · 引导加库</span></span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="head"><span class="no">05</span><b>字幕翻译面板</b><a href="translate-panel.html">打开 →</a></div>
+        <div class="spec">
+          <div class="row"><span class="k">布局</span><span>主窗 + 可拖动翻译浮层：语言选择 · 整轨进度 · 译文预览（在线/队列/失败三态）。</span></div>
+          <div class="row"><span class="k">交互</span><span>按需翻译：未到行不预译，拖动跳转即补译该行；服务由用户显式配置端点（OpenAI 兼容）。</span></div>
+          <div class="row"><span class="k">状态</span><span class="st"><span class="pill on">已配置 · 进度可视</span><span class="pill">未配置端点 · 配置引导</span></span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="head"><span class="no">＋</span><b>投放与走马灯</b></div>
+        <div class="spec">
+          <div class="row"><span class="k">合同</span><span>首页「界面预览」走马灯按固定文件名取图：<span class="chip">desktop-main.png</span> <span class="chip">translate-panel.png</span> <span class="chip">settings.png</span> <span class="chip">mobile.png</span>（本批缺 mobile——移动端不在桌面批范围，占位卡保留）。</span></div>
+          <div class="row"><span class="k">格式</span><span>PNG · 1280×800 主帧（截 #primary，docbar 不入画）。</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="foot">
+    <b>审核口径</b>：每页页内注解（note/kbd）为设计稿说明，非产品 UI 的一部分；截图为去除注解前的整帧（含注解），
+    便于评审时对照交互语义。设计语言 token（色板/几何/阴影）见 <span style="font-family:var(--mono)">assets/proto.css</span> 头部注释。
+  </div>
+
+</div>
+
+</body>
+</html>

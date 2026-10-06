@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Soar 原型 · 字幕翻译面板</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="assets/proto.css">
+<style>
+/* ===== 主播放窗 + 字幕翻译浮层 ===== */
+.surface { position:absolute; inset:0; }
+.vid {
+  position:absolute; inset:0;
+  background:
+    radial-gradient(120% 90% at 28% 20%, #23304a 0%, #10151f 55%, #08090b 100%);
+  overflow:hidden;
+}
+.vid::after {
+  content:""; position:absolute; inset:0;
+  background:
+    radial-gradient(55% 42% at 74% 58%, rgba(108,177,255,.18) 0%, transparent 62%),
+    radial-gradient(80% 60% at 16% 82%, rgba(255,107,53,.14) 0%, transparent 58%);
+}
+
+/* 顶栏 */
+.topbar {
+  position:absolute; top:0; left:0; right:0; z-index:10;
+  display:flex; align-items:center; justify-content:space-between;
+  padding:16px 22px;
+  background:linear-gradient(180deg, rgba(0,0,0,.55), transparent);
+}
+.app-title { display:flex; align-items:center; gap:8px; }
+.wing {
+  width:22px; height:22px; border-radius:7px; flex:none;
+  background: linear-gradient(140deg, #ff8f5f, #ff5a2a);
+  display:flex; align-items:center; justify-content:center;
+  color:#140a04; font-weight:700; font-size:13px; letter-spacing:-.5px;
+}
+.topbar .title { font-size:13.5px; font-weight:600; }
+
+/* 字幕渲染（原字幕 + 译文并存） */
+.sublines {
+  position:absolute; left:50%; transform:translateX(-50%); bottom:96px; z-index:11;
+  display:flex; flex-direction:column; align-items:center; gap:5px;
+  width:min(70%, 780px); text-align:center;
+}
+.sublines .orig {
+  font-size:17px; color:rgba(238,241,245,.92); text-shadow:0 2px 8px rgba(0,0,0,.85);
+}
+.sublines .trans {
+  font-size:15px; color:var(--accent-hi); text-shadow:0 2px 8px rgba(0,0,0,.85);
+}
+.sublines .tag {
+  font-size:9.5px; letter-spacing:.1em; color:var(--t3); text-transform:uppercase;
+  display:flex; align-items:center; gap:6px;
+}
+
+/* 翻译浮层（面板主体） */
+.tpanel {
+  position:absolute; right:22px; top:118px; bottom:110px; z-index:14;
+  width:374px; border-radius:var(--r-lg); overflow:hidden;
+  background:rgba(17,19,24,.92); border:1px solid rgba(255,255,255,.08);
+  box-shadow:var(--shadow); backdrop-filter: blur(12px);
+  display:flex; flex-direction:column;
+  animation: panel-in .26s cubic-bezier(.2,.8,.3,1);
+}
+@keyframes panel-in { from { opacity:0; transform:translateX(14px); } to { opacity:1; transform:translateX(0); } }
+
+.ph {
+  display:flex; align-items:center; gap:10px; padding:13px 16px 11px;
+  border-bottom:1px solid var(--line);
+}
+.ph .pt { font-size:13.5px; font-weight:600; }
+.ph .psub { font-size:10.5px; color:var(--t3); }
+.ph .spacer { flex:1; }
+.iconbtn {
+  width:26px; height:26px; border-radius:7px; border:none; background:transparent;
+  color:var(--t3); cursor:pointer; display:flex; align-items:center; justify-content:center;
+}
+.iconbtn:hover { background:var(--bg4); color:var(--t1); }
+
+.pbody { flex:1; overflow:hidden; padding:14px 16px; display:flex; flex-direction:column; gap:14px; }
+
+/* 语言选择 */
+.langrow { display:flex; align-items:center; gap:8px; }
+.langrow .arrow { color:var(--t4); }
+.select {
+  flex:1; height:30px; padding:0 10px; border-radius:var(--r-sm); font-size:12px;
+  border:1px solid var(--line-strong); background:var(--bg3); color:var(--t1); outline:none;
+}
+.swap {
+  width:30px; height:30px; border-radius:8px; border:1px solid var(--line);
+  background:var(--bg3); color:var(--t2); cursor:pointer; display:flex; align-items:center; justify-content:center;
+}
+.swap:hover { color:var(--accent-hi); }
+
+/* 端点态（如实标注） */
+.endpoint {
+  display:flex; align-items:center; gap:8px; padding:9px 12px;
+  border:1px solid var(--line); border-radius:var(--r-md); background:var(--bg2);
+}
+.endpoint .etag { font-size:10px; letter-spacing:.05em; color:var(--t3); font-family:var(--mono); }
+.endpoint .val { flex:1; font-size:11px; color:var(--t4); font-family:var(--mono); }
+.endpoint .set {
+  background:rgba(62,207,110,.12); border-color:rgba(62,207,110,.35); color:var(--ok);
+}
+.endpoint .set .val { color:var(--t2); }
+
+/* 进度条 */
+.prog { display:flex; flex-direction:column; gap:6px; }
+.prog .pl {
+  display:flex; justify-content:space-between; font-size:11px; color:var(--t3);
+}
+.prog .pl b { color:var(--t2); font-weight:600; font-family:var(--mono); }
+.rail { height:4px; border-radius:99px; background:#2c333e; position:relative; }
+.rail b { position:absolute; left:0; top:0; bottom:0; border-radius:99px; background:var(--accent); width:68%; }
+.rail b::after { content:""; position:absolute; right:-4px; top:50%; transform:translateY(-50%); width:8px; height:8px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 3px rgba(255,107,53,.2); }
+
+/* 译文预览区 */
+.preview {
+  flex:1; min-height:0; display:flex; flex-direction:column;
+  border:1px solid var(--line); border-radius:var(--r-md);
+  background:var(--bg1); overflow:hidden;
+}
+.preview .pvh {
+  display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--line);
+  font-size:10.5px; color:var(--t3); letter-spacing:.04em;
+}
+.preview .pvh .onair { width:6px; height:6px; border-radius:50%; background:var(--ok); }
+.preview .pvbody { flex:1; overflow:hidden; padding:12px; display:flex; flex-direction:column; gap:9px; }
+.pvrow { padding:8px 10px; border-radius:8px; background:var(--bg2); border:1px solid transparent; font-size:11.5px; color:var(--t2); }
+.pvrow.now { border-color:rgba(255,107,53,.4); background:var(--accent-soft); color:var(--t1); }
+.pvrow .or { font-size:10.5px; color:var(--t4); margin-bottom:2px; }
+.pvrow .tr { color:var(--accent-hi); font-size:12px; }
+
+/* OSC（保留以标明浮层与主控的并置） */
+.osc {
+  position:absolute; left:50%; transform:translateX(-50%); bottom:24px; z-index:12;
+  width:min(97%, 1240px); border-radius:16px;
+  background:rgba(12,13,16,.85); border:1px solid rgba(255,255,255,.07);
+  box-shadow:var(--shadow); backdrop-filter: blur(10px); padding:9px 14px 7px;
+}
+.seek { display:flex; align-items:center; gap:12px; }
+.rail-line { flex:1; height:4px; border-radius:99px; background:#2c333e; position:relative; }
+.rail-line .played { position:absolute; left:0; top:0; bottom:0; width:63%; border-radius:99px; background:var(--accent); }
+.rail-line .played::after { content:""; position:absolute; right:-5px; top:50%; transform:translateY(-50%); width:10px; height:10px; border-radius:50%; background:var(--accent); }
+.timecode { font-family:var(--mono); font-size:11px; color:var(--t2); white-space:nowrap; }
+.btns { display:flex; align-items:center; gap:10px; margin-top:3px; }
+.btns .spacer { flex:1; }
+.tplay {
+  width:38px; height:38px; border-radius:50%; border:none; cursor:pointer;
+  background:var(--accent); color:#140a04; display:flex; align-items:center; justify-content:center;
+}
+.tplay svg { width:17px; height:17px; }
+.tsmall {
+  width:28px; height:28px; border-radius:50%; border:none; cursor:pointer;
+  background:transparent; color:var(--t2); display:flex; align-items:center; justify-content:center;
+}
+.seg {
+  display:inline-flex; align-items:center; gap:5px; height:24px; padding:0 10px;
+  border-radius:999px; border:1px solid var(--line); background:rgba(255,255,255,.04);
+  color:var(--t2); font-size:11px;
+}
+.seg.on { border-color:rgba(255,107,53,.5); background:var(--accent-soft); color:var(--accent-hi); }
+
+/* 缩小帧 */
+.mini { height:440px; }
+.mini .osc { bottom:18px; }
+.mini .tpanel { top:96px; bottom:96px; width:330px; }
+.mini .sublines { bottom:86px; }
+</style>
+</head>
+<body>
+
+<div class="docbar">
+  <b>Soar 原型 · 05 字幕翻译面板</b>
+  <span>主窗 + 翻译浮层（可独立拖动）：语言选择 · 进度 · 译文预览 · 端点态</span>
+  <a href="index.html">← 返回全部原型</a>
+</div>
+
+<div class="page">
+
+  <!-- ================= 主状态：翻译进行中 ================= -->
+  <div class="frame" id="primary">
+    <div class="surface vid"></div>
+
+    <div class="topbar">
+      <div class="meta" style="display:flex; align-items:center; gap:10px;">
+        <div class="app-title"><span class="wing">S</span><span class="title">soar</span></div>
+        <span class="pill sky">译 · EN → 中</span>
+        <span class="pill">Tears of Steel (2012) — 1080p</span>
+      </div>
+      <div class="tools" style="display:flex; gap:6px;">
+        <button class="iconbtn" title="隐藏浮层 (T/双击字幕)"><svg class="icon" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></svg></button>
+        <button class="iconbtn" title="全屏 (F)"><svg class="icon" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M20 15v5h-5M4 15v5h5"/></svg></button>
+      </div>
+    </div>
+
+    <!-- 双行字幕：原文 + 译文 -->
+    <div class="sublines">
+      <span class="tag"><span class="dot" style="width:5px; height:5px; border-radius:50%; background:var(--sky); display:inline-block;"></span>译文跟随 · 自动滚行</span>
+      <div class="orig">The MagNov Project was a bold experiment.</div>
+      <div class="trans">MagNov 计划是一场大胆的实验。</div>
+    </div>
+
+    <!-- 翻译浮层 -->
+    <div class="tpanel">
+      <div class="ph">
+        <div>
+          <div class="pt">字幕翻译</div>
+          <div class="psub">逐行译文 · 原文轨保持可见</div>
+        </div>
+        <span class="spacer"></span>
+        <button class="iconbtn" title="固定浮层"><svg class="icon sm" viewBox="0 0 24 24"><path d="M5 12H3l9-9 9 9h-2v9a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1z"/></svg></button>
+        <button class="iconbtn" title="关闭 (Esc)"><svg class="icon sm" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+
+      <div class="pbody">
+        <!-- 语言选择 -->
+        <div class="langrow">
+          <select class="select">
+            <option>English（原始）</option>
+            <option>中文（简体）</option>
+            <option>日本語</option>
+            <option>한국어</option>
+            <option>Français</option>
+          </select>
+          <button class="swap" title="交换语言"><svg class="icon sm" viewBox="0 0 24 24"><path d="M7 9h11l-3-3M17 15H6l3 3"/></svg></button>
+          <select class="select">
+            <option>中文（简体）</option>
+            <option>English</option>
+            <option>日本語</option>
+          </select>
+        </div>
+
+        <!-- 端点态（如实标注） -->
+        <div class="endpoint set">
+          <span class="etag">端点</span>
+          <span class="val">本地翻译代理 · 127.0.0.1:18080（用户自配）</span>
+          <span class="pill ok" style="height:20px; font-size:9.5px;">在线</span>
+        </div>
+
+        <!-- 进度 -->
+        <div class="prog">
+          <div class="pl"><span>整轨翻译进度</span><b>152 / 224 行</b></div>
+          <div class="rail"><b></b></div>
+          <div class="pl" style="font-size:10.5px;"><span>按需翻译：未到行不预译；拖动跳转即补译该行</span><span style="color:var(--accent-hi);">预计 42s</span></div>
+        </div>
+
+        <!-- 译文预览 -->
+        <div class="preview">
+          <div class="pvh"><span class="onair"></span>译文预览 · 当前行高亮，点击行即跳转（已译部分）</div>
+          <div class="pvbody">
+            <div class="pvrow">
+              <div class="or">We chose a future seen through a screen.</div>
+              <div class="tr">我们选择了一个透过屏幕看到的未来。</div>
+            </div>
+            <div class="pvrow now">
+              <div class="or">The MagNov Project was a bold experiment.</div>
+              <div class="tr">MagNov 计划是一场大胆的实验。</div>
+            </div>
+            <div class="pvrow">
+              <div class="or">They promised us they would be back.</div>
+              <div class="tr">他们承诺会回来。</div>
+            </div>
+            <div class="pvrow">
+              <div class="or">And yet — the city was quiet that morning.</div>
+              <div class="tr">然而那天早晨，城市一片寂静。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OSC -->
+    <div class="osc">
+      <div class="seek">
+        <span class="timecode"><b>01:23:30</b></span>
+        <div class="rail-line"><div class="played"></div></div>
+        <span class="timecode">−00:02:14</span>
+      </div>
+      <div class="btns">
+        <button class="tsmall"><svg class="icon" viewBox="0 0 24 24"><path d="M6 5v14M19 6.5v11l-8-5.5z"/></svg></button>
+        <button class="tplay"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M8 6h2.6v12H8zM13.4 6H16v12h-2.6z"/></svg></button>
+        <button class="tsmall"><svg class="icon" viewBox="0 0 24 24"><path d="M18 5v14M5 6.5v11l8-5.5z"/></svg></button>
+        <span class="spacer"></span>
+        <span class="seg on">译</span><span class="seg">CC</span><span class="seg">1.0×</span>
+      </div>
+    </div>
+
+    <div class="note" style="top:64px; left:22px;"><kbd>T</kbd> 开合翻译浮层；浮层可拖动、可固定，不抢 OSC 焦点</div>
+    <div class="note" style="top:96px; left:22px;">译文「在线/队列/失败」为真实端点态；端点未配置时面板内直接给配置入口</div>
+  </div>
+
+  <!-- ================= 状态变体 ================= -->
+  <div class="states">
+    <h2>状态设计 · 端点未配置（如实标注零默认）</h2>
+
+    <!-- 未配置端点 -->
+    <div class="state">
+      <div class="state-cap"><b>未配置端点</b> 翻译是可选增强：无端点时不臆造，面板变为配置引导</div>
+      <div class="frame mini">
+        <div class="surface vid"></div>
+        <div class="topbar">
+          <div class="meta" style="display:flex; gap:10px;">
+            <div class="app-title"><span class="wing">S</span><span class="title">soar</span></div>
+            <span class="pill">Tears of Steel (2012) — 1080p</span>
+          </div>
+        </div>
+        <div class="tpanel">
+          <div class="ph">
+            <div><div class="pt">字幕翻译</div><div class="psub">需要先配置翻译端点</div></div>
+            <span class="spacer"></span>
+            <button class="iconbtn" title="关闭"><svg class="icon sm" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+          </div>
+          <div class="pbody" style="justify-content:center; text-align:center;">
+            <div style="width:64px; height:64px; margin:0 auto; border-radius:20px; border:1.5px dashed var(--line-strong); display:flex; align-items:center; justify-content:center; color:var(--t3);">
+              <svg viewBox="0 0 24 24" class="icon" style="width:26px; height:26px;"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>
+            </div>
+            <div style="font-size:14px; font-weight:600; color:var(--t1);">未配置翻译端点</div>
+            <div style="font-size:11.5px; color:var(--t3); line-height:1.7; max-width:280px; margin:0 auto;">
+              默认零外联：应用不内置第三方翻译服务。<br>填入自备端点（本地代理 / 自建服务）后立即生效，密钥仅存本机。
+            </div>
+            <button class="btn primary" style="width:200px;">去网络设置配置端点</button>
+            <div style="font-size:10.5px; color:var(--t4);">URL 格式：<span style="font-family:var(--mono);">http://127.0.0.1:18080/v1/translate</span></div>
+          </div>
+        </div>
+        <div class="note" style="top:96px; left:22px;">未配置 ≠ 功能缺失：面板如实说明，不模拟在线效果</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
