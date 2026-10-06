@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "Soar 主模块（UI 壳）" },
+    { "name": "ability_desc", "value": "Soar 播放页" },
+    { "name": "app_name", "value": "Soar" }
+  ]
+}

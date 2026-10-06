@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "Soar entry module (UI shell).",
+  "main": "",
+  "author": "cuihairu",
+  "license": "Apache-2.0",
+  "dependencies": {}
+}
