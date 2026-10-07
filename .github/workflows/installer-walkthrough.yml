@@ -98,6 +98,17 @@ jobs:
               }
               return best;
             }
+            // 诊断：全部顶层可见窗口（class/title/pid），向导找不到时全量
+            // 打印——UAC 提示、解压窗、别的 pid 混淆一目了然。
+            public static bool CollectAll(IntPtr h, IntPtr lp) {
+              if (!IsWindowVisible(h)) return true;
+              uint pid; GetWindowThreadProcessId(h, out pid);
+              StringBuilder cls = new StringBuilder(256); GetClassName(h, cls, 256);
+              StringBuilder t = new StringBuilder(256); GetWindowText(h, t, 256);
+              System.Console.WriteLine("visible hwnd=" + h + " pid=" + pid + " class=" + cls + " title=" + t);
+              return true;
+            }
+            public static void DumpAll() { EnumWindows(CollectAll, IntPtr.Zero); }
             // 向导按钮表：class TNewButton + 文本（& 助记符归一后匹配）
             public static List<IntPtr> FindButtons(IntPtr wizard, string[] names) {
               Found.Clear(); EnumChildWindows(wizard, CollectChild, IntPtr.Zero);
@@ -149,15 +160,21 @@ jobs:
 
           $inst = (Get-Item "$PWD\soar-setup.exe").FullName
           $proc = Start-Process -FilePath $inst -PassThru
-          Start-Sleep -Seconds 6
-          if ($proc.HasExited) {
-            $code = try { $proc.ExitCode } catch { 'unavailable' }
-            Write-Host "::error::installer exited immediately, code $code"
-            exit 1
+          # 向导窗轮询（Inno 先解压到临时目录再出窗，60s 上限）
+          $wizard = [IntPtr]::Zero
+          for ($i = 0; $i -lt 120; $i++) {
+            if ($proc.HasExited) {
+              $code = try { $proc.ExitCode } catch { 'unavailable' }
+              Write-Host "::error::installer exited before showing wizard, code $code"
+              exit 1
+            }
+            $wizard = [Win32]::FindMainWindow([uint32]$proc.Id)
+            if ($wizard -ne [IntPtr]::Zero) { break }
+            Start-Sleep -Milliseconds 500
           }
-          $wizard = [Win32]::FindMainWindow([uint32]$proc.Id)
           if ($wizard -eq [IntPtr]::Zero) {
-            Write-Host "::error::wizard window not found for pid $($proc.Id)"
+            Write-Host "::error::wizard window not found for pid $($proc.Id) after 60s; visible top-level windows:"
+            [Win32]::DumpAll()
             exit 1
           }
 
