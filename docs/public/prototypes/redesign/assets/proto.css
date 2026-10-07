@@ -7,8 +7,9 @@
    - 单强调色锁：信号橙只作播放/交互强调；天蓝仅保留「网络/P2P」语义
    - 字号地板 11px：废除 10/10.5px 小字，层级改由 字号+字重 承担
    - 圆角体系成文：面板 10 / 控件 7 / 徽标 pill / 图标钮圆形
-   - 亮暗双主题：html[data-theme] 切换；视频画面与悬浮 OSC 属内容层，
-     两主题下恒为深色（与真实播放器一致）
+   - 亮暗双主题：html[data-theme] 切换；视频画布属内容层两主题恒黑，
+     外壳（顶栏/控制栏/浮层底/进度槽）随主题，亮色版外壳真浅色
+     （v2.1 复审拍板：亮色版整面深色打回重做）
    - 动效守卫：所有无限动画包 prefers-reduced-motion
    - 可见分隔符配额：每行中点 · ≤1 个；全文无 em-dash
    ============================================================ */
@@ -182,6 +183,14 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 4px; padding: 0 4px;
 }
 .note .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--net); }
+/* 合并块：两行纵向排布（左上密度收敛，一次不糊四块） */
+.note.col { flex-direction: column; align-items: flex-start; gap: 3px; }
+/* 亮色下浮层底真浅色（v2.1 复审拍板）；暗色维持暗 scrim */
+:root[data-theme="light"] .note {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: var(--line-strong);
+  color: var(--text-2);
+}
 
 /* ---------- 状态变体区 ---------- */
 .states {

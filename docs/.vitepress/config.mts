@@ -16,6 +16,7 @@ export default defineConfig({
     siteTitle: 'Soar',
     nav: [
       { text: '指南', link: '/build', activeMatch: '/^/(build|mvp|licensing)/' },
+      { text: '原型', link: '/prototypes', activeMatch: '/^\\/prototypes/' },
       { text: '开发', link: '/coverage-notes', activeMatch: '/coverage-notes/' }
     ],
     sidebar: {
@@ -24,7 +25,8 @@ export default defineConfig({
           text: '指南',
           items: [
             { text: '构建', link: '/build' },
-            { text: '项目边界与路线图', link: '/mvp' }
+            { text: '项目边界与路线图', link: '/mvp' },
+            { text: '原型展示', link: '/prototypes' }
           ]
         },
         {

@@ -33,26 +33,33 @@
   white-space:nowrap;
 }
 
-/* ---- 顶栏 ---- */
+/* ---- 顶栏：外壳随主题（暗=透明浮在黑画面上，亮=真浅色条） ---- */
 .topbar {
+  --tb1:#eef1f5; --tb2:#cdd3dc; --tb3:#aeb6c2;
+  --tbh:rgba(255,255,255,.08); --tbbg:transparent; --tbline:transparent;
   position:absolute; top:0; left:0; right:0; z-index:10;
   display:flex; align-items:center; justify-content:space-between;
   padding:16px 22px;
+  background:var(--tbbg); border-bottom:1px solid var(--tbline);
+}
+:root[data-theme="light"] .topbar {
+  --tb1:#171a1f; --tb2:#454e5c; --tb3:#626c7d;
+  --tbh:rgba(23,26,31,.06); --tbbg:rgba(255,255,255,.92); --tbline:var(--line);
 }
 .topbar .meta { display:flex; align-items:center; gap:10px; min-width:0; }
-.topbar .title { font-size:13.5px; font-weight:600; letter-spacing:.01em; color:#eef1f5; }
+.topbar .title { font-size:13.5px; font-weight:600; letter-spacing:.01em; color:var(--tb1); }
 .topbar .film {
   position:absolute; left:50%; transform:translateX(-50%);
-  font-size:12.5px; color:#cdd3dc; white-space:nowrap;
+  font-size:12.5px; color:var(--tb2); white-space:nowrap;
 }
 .tools { display:flex; align-items:center; gap:6px; }
 .toolbtn {
   width:30px; height:30px; border-radius:var(--r-ctl); border:none; cursor:pointer;
-  background:transparent; color:#aeb6c2; display:flex; align-items:center; justify-content:center;
+  background:transparent; color:var(--tb3); display:flex; align-items:center; justify-content:center;
 }
-.toolbtn:hover { background:rgba(255,255,255,.08); color:#eef1f5; }
+.toolbtn:hover { background:var(--tbh); color:var(--tb1); }
 
-/* ---- 状态徽标：单处集中，不再顶栏/OSC 重复 ---- */
+/* ---- 状态徽标/浮层 pill：外壳随主题 ---- */
 .statechip {
   position:absolute; top:60px; left:50%; transform:translateX(-50%); z-index:11;
   display:flex; align-items:center; gap:7px; padding:5px 12px;
@@ -61,31 +68,49 @@
 }
 .statechip svg { width:12px; height:12px; fill:var(--ok); }
 .statechip.buffering svg { fill:var(--warn); }
+:root[data-theme="light"] .statechip {
+  background:rgba(255,255,255,.92); border-color:var(--line); color:var(--text-2);
+}
+.floatpill {
+  display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 12px;
+  border-radius:999px; background:rgba(9,10,12,.72);
+  border:1px solid rgba(255,255,255,.10); color:#b9c0cb; font-size:12px;
+}
+:root[data-theme="light"] .floatpill {
+  background:rgba(255,255,255,.92); border-color:var(--line); color:var(--text-2);
+}
 
-/* ---- 悬浮 OSC（内容层，恒深） ---- */
+/* ---- 悬浮控制栏 OSC：外壳随主题（暗=深玻璃，亮=真浅色面板） ---- */
 .osc {
   --ot1:#eef1f5; --ot2:#aeb6c2; --ot3:#7d8593;
   --oline:rgba(255,255,255,.10); --ofill:rgba(255,255,255,.06);
   --otrack:#2e3540; --obuf:#3d4653;
+  --oscbg:rgba(10,11,14,.88); --octhumb:rgba(10,11,14,.9);
   position:absolute; left:50%; transform:translateX(-50%); bottom:26px; z-index:12;
   width:min(97%, 1240px);
-  border-radius:var(--r-panel); background:rgba(10,11,14,.88);
+  border-radius:var(--r-panel); background:var(--oscbg);
   border:1px solid var(--oline);
   box-shadow:var(--shadow-pop);
   backdrop-filter: blur(10px);
   padding:10px 14px 8px;
 }
+:root[data-theme="light"] .osc {
+  --ot1:#171a1f; --ot2:#454e5c; --ot3:#626c7d;
+  --oline:#dfe3ea; --ofill:rgba(23,26,31,.05);
+  --otrack:#d5dae2; --obuf:#b9c0cb;
+  --oscbg:rgba(255,255,255,.94); --octhumb:rgba(255,255,255,.95);
+}
 .seekrow { display:flex; align-items:center; gap:12px; }
 .seek-rail { flex:1; height:14px; display:flex; align-items:center; cursor:pointer; }
-.rail-line { position:relative; width:100%; height:4px; border-radius:99px; background:var(--otrack); }
+.rail-line { position:relative; width:100%; height:6px; border-radius:99px; background:var(--otrack); }
 .rail-line .played {
   position:absolute; left:0; top:0; bottom:0; width:63%;
   border-radius:99px; background:var(--accent);
 }
 .rail-line .played::after {
-  content:""; position:absolute; right:-5px; top:50%; transform:translateY(-50%);
-  width:10px; height:10px; border-radius:50%; background:var(--accent);
-  border:2px solid rgba(10,11,14,.9);
+  content:""; position:absolute; right:-6px; top:50%; transform:translateY(-50%);
+  width:12px; height:12px; border-radius:50%; background:var(--accent);
+  border:2px solid var(--octhumb);
 }
 .rail-line .buffer { position:absolute; left:63%; top:0; bottom:0; width:22%; border-radius:0 99px 99px 0; background:var(--obuf); }
 .timecode { font-family:var(--mono); font-size:12px; color:var(--ot2); white-space:nowrap; font-variant-numeric:tabular-nums; }
@@ -113,8 +138,8 @@
   border-radius:999px; border:1px solid var(--oline); background:var(--ofill);
   color:var(--ot2); font-size:11.5px; cursor:pointer;
 }
-.seg.on { background:var(--accent-soft); color:var(--orange-400); border-color:transparent; font-weight:600; }
-.seg.net { background:var(--net-soft); color:var(--sky-net); border-color:transparent; }
+.seg.on { background:var(--accent-soft); color:var(--accent-text); border-color:transparent; font-weight:600; }
+.seg.net { background:var(--net-soft); color:var(--net); border-color:transparent; }
 
 /* ---- 状态变体缩小帧 ---- */
 .mini { height:440px; }
@@ -163,7 +188,7 @@
 
     <div class="statechip">
       <svg viewBox="0 0 24 24"><path d="M7 5v14l12-7z"/></svg>
-      正在播放 01:23:30 / 01:25:44 <span style="color:var(--sky-net)">P2P 45%</span>
+      正在播放 01:23:30 / 01:25:44 <span style="color:var(--net)">P2P 45%</span>
     </div>
 
     <!-- 悬浮控制栏 OSC -->
@@ -174,7 +199,7 @@
           <div class="played"></div><div class="buffer"></div>
         </div></div>
         <span class="timecode">-00:02:14</span>
-        <span class="chip" style="background:rgba(255,255,255,.08); color:#aeb6c2;">1080p 60</span>
+        <span class="chip" style="background:var(--ofill); color:var(--ot2);">1080p 60</span>
       </div>
       <div class="brow">
         <button class="tsmall" title="上一首 (Shift+N)" aria-label="上一首">
@@ -201,8 +226,10 @@
     </div>
 
     <!-- 设计注解 -->
-    <div class="note" style="top:64px; left:22px;">OSC 2.5s 无输入自动隐藏 · 悬停/拖动/浮层/暂停时钉住</div>
-    <div class="note" style="top:94px; left:22px;"><kbd>Space</kbd> 播放/暂停 <kbd>←→</kbd> ±5s <kbd>F</kbd> 全屏</div>
+    <div class="note col" style="top:64px; left:22px;">
+      <span>OSC 2.5s 无输入自动隐藏 · 悬停/拖动/浮层/暂停时钉住</span>
+      <span><kbd>Space</kbd> 播放/暂停 <kbd>←→</kbd> ±5s <kbd>F</kbd> 全屏</span>
+    </div>
     <div class="note" style="bottom:170px; left:22px;"><span class="dot"></span>P2P 桥：下载/播放并行，种子离场本地续播</div>
     <div class="note" style="bottom:148px; right:22px;"><kbd>P</kbd> 队列 / <kbd>I</kbd> 信息 / <kbd>S</kbd> 截图</div>
   </div>
@@ -228,7 +255,7 @@
           <button style="width:64px; height:64px; border-radius:50%; border:none; cursor:pointer; background:var(--accent); color:var(--ink-on-accent); display:flex; align-items:center; justify-content:center;" aria-label="继续播放">
             <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><path d="M8 5.6v12.8L19 12z"/></svg>
           </button>
-          <span class="pill" style="background:rgba(9,10,12,.72); border-color:rgba(255,255,255,.10); color:#b9c0cb; height:24px; font-size:12px;">已暂停 · Space 或点击继续</span>
+          <span class="pill floatpill">已暂停 · Space 或点击继续</span>
         </div>
         <div class="osc" style="bottom:20px;">
           <div class="seekrow">
