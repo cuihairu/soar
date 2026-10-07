@@ -165,3 +165,30 @@
   （CI runner 无交互桌面，文件对话框与关联双击无法自动化）；
   Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）
   未在真桌面环境走查。
+
+## 4. CLI 播放自然结束后进程偶发不退出（未修复，watchdog 含住）
+
+- **现象**：CI 集成测试里 `soar --headless` 子进程播完流媒体后不退出，
+  被 `runCli` 的 `timeout` watchdog 杀成 exit 124，断言失败。三起：
+  1. run 37575751946 tsan 腿（ab1cddf）：DASH case（test_cli.cpp:3998），
+     44/45 过；
+  2. run 37586409981 no-imgui fallback 腿（9d6ede5）：多变体 HLS case
+     （test_cli.cpp:3937），有完整踪迹——事件流走到 `download 100%`、
+     `event: state=3`（PlaybackState::Ended）之后进程未退出，挂到
+     600s watchdog；
+  3. run 37575751946 asan 腿同 run 的 `soar_p2p_tests` 600s 超时零踪迹
+     （进程被杀时输出全在未 flush 的缓冲里）——是否同族（线程收尾挂死）
+     无法归因，行缓冲 main 落地后下次复现有踪迹可判。
+- **已知事实**：state=3=Ended 后主循环已按 main.cpp:322 break，挂的
+  是循环后的进程收尾段（后端/解码线程 join、libtorrent session 销毁、
+  SDL quit 之一，未定位）；与 sanitizer 无关（第 2 起在无 sanitizer 的
+  fallback 腿）；与本批改动无关（两 commit 分别只动 docs、测试日志
+  缓冲、workflow）。间歇性：同 case 在多数 run 秒级干净退出。
+- **排查**：`--log-failed` 三起对比，第 2 起的完整事件流坐实「已 Ended
+  未退出」；本地多次重放 HLS/DASH case 未复现（runner 特定时序）。
+- **缓解**：watchdog 按设计把挂死转成干净断言失败（exit 124 带完整
+  输出），套件不再整段超时；p2p 套件自定义 main 行缓冲 stdout
+  （14226b2），下次挂死日志保底有 banner 与最后开始的 test case。
+- **残余（如实）**：根因未修，方向是收尾段的线程 join 与销毁顺序
+  排查；runner 上间歇复现、本地未复现，需要先拿到挂死时子进程的
+  堆栈（下次复现可考虑 watchdog 杀前先 gcore 或打 SIGABRT 留栈）。
