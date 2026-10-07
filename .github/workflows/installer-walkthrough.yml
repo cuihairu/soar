@@ -38,10 +38,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          gh release download nightly --repo "$env:GITHUB_REPOSITORY" `
-            --pattern "soar-setup-windows-x64.exe" --output "$PWD\soar-setup.exe" --clobber
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::gh release download failed (exit $LASTEXITCODE); nightly Release 缺 soar-setup-windows-x64.exe?"
+          # Daily Build 收尾是「删 tag 再重建」的清旧传新流程，重建后的
+          # ref 在 API 边缘副本上有秒级不可见窗口（37614859185 实证
+          # release not found）；带重试轮询等它稳定。
+          $dl = $false
+          for ($i = 1; $i -le 5; $i++) {
+            gh release download nightly --repo "$env:GITHUB_REPOSITORY" `
+              --pattern "soar-setup-windows-x64.exe" --output "$PWD\soar-setup.exe" --clobber
+            if ($LASTEXITCODE -eq 0) { $dl = $true; break }
+            Write-Host "::warning::download attempt $i failed (nightly tag 重建后副本窗口?), retrying in 30s"
+            Start-Sleep -Seconds 30
+          }
+          if (-not $dl) {
+            Write-Host "::error::gh release download failed after 5 attempts; nightly Release 缺 soar-setup-windows-x64.exe?"
             exit 1
           }
           Write-Host "installer: $((Get-Item "$PWD\soar-setup.exe").Length) bytes"
