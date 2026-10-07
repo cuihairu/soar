@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Soar 原型 v2 · 主播放窗</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+(function(){
+  var q = new URLSearchParams(location.search);
+  document.documentElement.dataset.theme = q.get("theme") === "light" ? "light" : "dark";
+  if (q.get("shot") === "1") addEventListener("DOMContentLoaded", function(){
+    var d = document.querySelector(".docbar"); if (d) d.style.display = "none";
+    var p = document.querySelector(".page"); if (p) p.style.paddingTop = "0";
+    document.documentElement.style.overflow = "hidden";
+  });
+})();
+</script>
+<link rel="stylesheet" href="assets/proto.css">
+<style>
+/* ===== 主播放窗：视频面 + 悬浮 OSC ===== */
+/* 视频画面与 OSC 属内容层：两主题下恒深，与真实播放器一致 */
+
+.app-title { display:flex; align-items:center; gap:8px; }
+.wing { width:22px; height:22px; font-size:13px; letter-spacing:-.5px; }
+.wing svg { width:13px; height:13px; }
+
+/* ---- 视频面：纯黑画面 + 字幕行（占位即内容，不做假画面） ---- */
+.surface { position:absolute; inset:0; background:#000; }
+.subtitle {
+  position:absolute; left:50%; bottom:118px; transform:translateX(-50%); z-index:8;
+  max-width:72%; text-align:center;
+  font-size:17px; color:#f2f4f7; text-shadow:0 1px 3px rgba(0,0,0,.85);
+  white-space:nowrap;
+}
+
+/* ---- 顶栏 ---- */
+.topbar {
+  position:absolute; top:0; left:0; right:0; z-index:10;
+  display:flex; align-items:center; justify-content:space-between;
+  padding:16px 22px;
+}
+.topbar .meta { display:flex; align-items:center; gap:10px; min-width:0; }
+.topbar .title { font-size:13.5px; font-weight:600; letter-spacing:.01em; color:#eef1f5; }
+.topbar .film {
+  position:absolute; left:50%; transform:translateX(-50%);
+  font-size:12.5px; color:#cdd3dc; white-space:nowrap;
+}
+.tools { display:flex; align-items:center; gap:6px; }
+.toolbtn {
+  width:30px; height:30px; border-radius:var(--r-ctl); border:none; cursor:pointer;
+  background:transparent; color:#aeb6c2; display:flex; align-items:center; justify-content:center;
+}
+.toolbtn:hover { background:rgba(255,255,255,.08); color:#eef1f5; }
+
+/* ---- 状态徽标：单处集中，不再顶栏/OSC 重复 ---- */
+.statechip {
+  position:absolute; top:60px; left:50%; transform:translateX(-50%); z-index:11;
+  display:flex; align-items:center; gap:7px; padding:5px 12px;
+  border-radius:999px; background:rgba(9,10,12,.72); border:1px solid rgba(255,255,255,.10);
+  color:#b9c0cb; font-size:12px;
+}
+.statechip svg { width:12px; height:12px; fill:var(--ok); }
+.statechip.buffering svg { fill:var(--warn); }
+
+/* ---- 悬浮 OSC（内容层，恒深） ---- */
+.osc {
+  --ot1:#eef1f5; --ot2:#aeb6c2; --ot3:#7d8593;
+  --oline:rgba(255,255,255,.10); --ofill:rgba(255,255,255,.06);
+  --otrack:#2e3540; --obuf:#3d4653;
+  position:absolute; left:50%; transform:translateX(-50%); bottom:26px; z-index:12;
+  width:min(97%, 1240px);
+  border-radius:var(--r-panel); background:rgba(10,11,14,.88);
+  border:1px solid var(--oline);
+  box-shadow:var(--shadow-pop);
+  backdrop-filter: blur(10px);
+  padding:10px 14px 8px;
+}
+.seekrow { display:flex; align-items:center; gap:12px; }
+.seek-rail { flex:1; height:14px; display:flex; align-items:center; cursor:pointer; }
+.rail-line { position:relative; width:100%; height:4px; border-radius:99px; background:var(--otrack); }
+.rail-line .played {
+  position:absolute; left:0; top:0; bottom:0; width:63%;
+  border-radius:99px; background:var(--accent);
+}
+.rail-line .played::after {
+  content:""; position:absolute; right:-5px; top:50%; transform:translateY(-50%);
+  width:10px; height:10px; border-radius:50%; background:var(--accent);
+  border:2px solid rgba(10,11,14,.9);
+}
+.rail-line .buffer { position:absolute; left:63%; top:0; bottom:0; width:22%; border-radius:0 99px 99px 0; background:var(--obuf); }
+.timecode { font-family:var(--mono); font-size:12px; color:var(--ot2); white-space:nowrap; font-variant-numeric:tabular-nums; }
+.timecode b { color:var(--ot1); font-weight:600; }
+
+.brow { display:flex; align-items:center; gap:10px; margin-top:2px; }
+.brow .spacer { flex:1; }
+.tplay {
+  width:38px; height:38px; border-radius:50%; border:none; cursor:pointer;
+  background:var(--accent); color:var(--ink-on-accent);
+  display:flex; align-items:center; justify-content:center;
+}
+.tsmall {
+  width:28px; height:28px; border-radius:50%; border:none; cursor:pointer;
+  background:transparent; color:var(--ot2); display:flex; align-items:center; justify-content:center;
+}
+.tsmall:hover { background:var(--ofill); color:var(--ot1); }
+.vol { display:flex; align-items:center; gap:7px; width:110px; color:var(--ot2); }
+.vol input[type=range] { flex:1; appearance:none; height:3px; border-radius:99px; background:var(--otrack); }
+.vol input[type=range]::-webkit-slider-thumb {
+  appearance:none; width:10px; height:10px; border-radius:50%; background:var(--ot1); cursor:pointer;
+}
+.seg {
+  display:inline-flex; align-items:center; gap:5px; height:24px; padding:0 10px;
+  border-radius:999px; border:1px solid var(--oline); background:var(--ofill);
+  color:var(--ot2); font-size:11.5px; cursor:pointer;
+}
+.seg.on { background:var(--accent-soft); color:var(--orange-400); border-color:transparent; font-weight:600; }
+.seg.net { background:var(--net-soft); color:var(--sky-net); border-color:transparent; }
+
+/* ---- 状态变体缩小帧 ---- */
+.mini { height:440px; }
+.mini .osc { bottom:20px; }
+</style>
+</head>
+<body>
+
+<div class="docbar">
+  <b>Soar 原型 v2 · 01 主播放窗</b>
+  <span>视频面 + 悬浮 OSC；底部为 暂停 / 缓冲中 / 空态 三变体；右上按钮切换亮暗主题</span>
+  <button class="themebtn" onclick="const d=document.documentElement;d.dataset.theme=d.dataset.theme==='light'?'dark':'light'">theme</button>
+  <a href="../desktop-main.html">旧稿对照</a>
+  <a href="index.html">← v2 总览</a>
+</div>
+
+<div class="page">
+  <!-- ================= 主状态：播放中 ================= -->
+  <div class="frame" id="primary">
+    <div class="surface"></div>
+    <div class="subtitle">The trail ends here.</div>
+
+    <div class="topbar">
+      <div class="meta">
+        <div class="app-title">
+          <span class="wing">S</span>
+          <span class="title">soar</span>
+        </div>
+      </div>
+      <span class="film">Tears of Steel (2012) 1080p</span>
+      <div class="tools">
+        <button class="toolbtn" title="媒体信息 (I)" aria-label="媒体信息">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+        </button>
+        <button class="toolbtn" title="最近 (R)" aria-label="最近播放">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 1.8"/></svg>
+        </button>
+        <button class="toolbtn" title="帮助 (H)" aria-label="帮助">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.6 2.6 0 1 1 3.4 2.5c-.8.3-1 .7-1 1.5M12 16.6h.01"/></svg>
+        </button>
+        <button class="toolbtn" title="全屏 (F)" aria-label="全屏">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M20 15v5h-5M4 15v5h5"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="statechip">
+      <svg viewBox="0 0 24 24"><path d="M7 5v14l12-7z"/></svg>
+      正在播放 01:23:30 / 01:25:44 <span style="color:var(--sky-net)">P2P 45%</span>
+    </div>
+
+    <!-- 悬浮控制栏 OSC -->
+    <div class="osc">
+      <div class="seekrow">
+        <span class="timecode"><b>01:23:30</b></span>
+        <div class="seek-rail"><div class="rail-line">
+          <div class="played"></div><div class="buffer"></div>
+        </div></div>
+        <span class="timecode">-00:02:14</span>
+        <span class="chip" style="background:rgba(255,255,255,.08); color:#aeb6c2;">1080p 60</span>
+      </div>
+      <div class="brow">
+        <button class="tsmall" title="上一首 (Shift+N)" aria-label="上一首">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M6 5v14M19 6.5v11l-8-5.5z"/></svg>
+        </button>
+        <button class="tplay" title="暂停 (Space)" aria-label="暂停">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><path d="M8 6h2.6v12H8zM13.4 6H16v12h-2.6z"/></svg>
+        </button>
+        <button class="tsmall" title="下一首 (N)" aria-label="下一首">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M18 5v14M5 6.5v11l8-5.5z"/></svg>
+        </button>
+        <span class="spacer"></span>
+        <span class="vol">
+          <svg class="icon sm" viewBox="0 0 24 24"><path d="M5 9.5v5h3.6L13 19V5L8.6 9.5H5z"/><path d="M16 9.2a4 4 0 0 1 0 5.6M18.4 6.8a7.4 7.4 0 0 1 0 10.4"/></svg>
+          <input type="range" value="64" aria-label="音量">
+        </span>
+        <span class="seg">1.0×</span>
+        <span class="seg on" title="A-B 循环">A-B</span>
+        <span class="seg" title="字幕显隐 (V)">CC</span>
+        <span class="seg net" title="截图 (S)">
+          <svg class="icon sm" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="m9 7 1.5-2.5h3L15 7"/><circle cx="12" cy="13.5" r="3.2"/></svg>
+        </span>
+      </div>
+    </div>
+
+    <!-- 设计注解 -->
+    <div class="note" style="top:64px; left:22px;">OSC 2.5s 无输入自动隐藏 · 悬停/拖动/浮层/暂停时钉住</div>
+    <div class="note" style="top:94px; left:22px;"><kbd>Space</kbd> 播放/暂停 <kbd>←→</kbd> ±5s <kbd>F</kbd> 全屏</div>
+    <div class="note" style="bottom:170px; left:22px;"><span class="dot"></span>P2P 桥：下载/播放并行，种子离场本地续播</div>
+    <div class="note" style="bottom:148px; right:22px;"><kbd>P</kbd> 队列 / <kbd>I</kbd> 信息 / <kbd>S</kbd> 截图</div>
+  </div>
+
+  <!-- ================= 状态变体 ================= -->
+  <div class="states">
+    <h2>状态设计 · 暂停 / 缓冲 / 空态</h2>
+
+    <!-- 暂停 -->
+    <div class="state">
+      <div class="state-cap"><b>暂停</b> 画面保留 + 中央大播放键；字幕、进度、音轨信息不变</div>
+      <div class="frame mini">
+        <div class="surface"></div>
+        <div class="topbar">
+          <div class="meta">
+            <div class="app-title"><span class="wing">S</span><span class="title">soar</span></div>
+          </div>
+          <span class="film">Tears of Steel (2012) 1080p</span>
+        </div>
+        <!-- 暂停遮罩与中央播放键 -->
+        <div style="position:absolute; inset:0; background:rgba(4,5,7,.38); z-index:9;"></div>
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-58%); z-index:10; display:flex; flex-direction:column; align-items:center; gap:14px;">
+          <button style="width:64px; height:64px; border-radius:50%; border:none; cursor:pointer; background:var(--accent); color:var(--ink-on-accent); display:flex; align-items:center; justify-content:center;" aria-label="继续播放">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><path d="M8 5.6v12.8L19 12z"/></svg>
+          </button>
+          <span class="pill" style="background:rgba(9,10,12,.72); border-color:rgba(255,255,255,.10); color:#b9c0cb; height:24px; font-size:12px;">已暂停 · Space 或点击继续</span>
+        </div>
+        <div class="osc" style="bottom:20px;">
+          <div class="seekrow">
+            <span class="timecode"><b>01:23:30</b></span>
+            <div class="seek-rail"><div class="rail-line"><div class="played" style="width:63%;"></div></div></div>
+            <span class="timecode">-00:02:14</span>
+          </div>
+          <div class="brow">
+            <button class="tsmall" aria-label="上一首"><svg class="icon" viewBox="0 0 24 24"><path d="M6 5v14M19 6.5v11l-8-5.5z"/></svg></button>
+            <button class="tplay" style="background:#eef1f5; color:#101216;">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><path d="M8 5.6v12.8L19 12z"/></svg>
+            </button>
+            <button class="tsmall" aria-label="下一首"><svg class="icon" viewBox="0 0 24 24"><path d="M18 5v14M5 6.5v11l8-5.5z"/></svg></button>
+            <span class="spacer"></span>
+            <span class="seg">1.0×</span><span class="seg on">A-B</span><span class="seg">CC</span>
+          </div>
+        </div>
+        <div class="note" style="top:64px; right:22px;">暂停不中断解码线程；音轨/字幕可运行时切换</div>
+      </div>
+    </div>
+
+    <!-- 缓冲 -->
+    <div class="state">
+      <div class="state-cap"><b>缓冲中</b> 网络停顿超过 10s 上报 Buffering；事件驱动，UI 只订回调解耦</div>
+      <div class="frame mini">
+        <div class="surface"></div>
+        <div class="topbar">
+          <div class="meta"><div class="app-title"><span class="wing">S</span><span class="title">soar</span></div></div>
+          <span class="film">bunny_hls.m3u8</span>
+        </div>
+        <div style="position:absolute; inset:0; background:rgba(4,5,7,.30); z-index:9;"></div>
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-58%); z-index:10; display:flex; flex-direction:column; align-items:center; gap:12px;">
+          <span class="spin" style="width:26px; height:26px;"></span>
+          <span style="color:#b9c0cb; font-size:12.5px;">缓冲中 · 已下载 73%</span>
+        </div>
+        <div class="statechip buffering" style="top:18px;">
+          <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9" fill="none" stroke="currentColor" stroke-width="2.4" class="icon" style="stroke:var(--warn)"/></svg>
+          网络读取暂停 · 缓冲恢复后自动续播
+        </div>
+        <!-- 缓冲期 OSC 隐藏 -->
+        <div class="note" style="bottom:20px; left:22px;"><span class="dot"></span>读停顿 10s 上报，60s 才中止；慢源同连接自愈</div>
+      </div>
+    </div>
+
+    <!-- 空态 -->
+    <div class="state">
+      <div class="state-cap"><b>空态</b> 无源启动进空主界面：「打开文件」引导 + 拖放区 + 最近播放</div>
+      <div class="frame mini" style="background:var(--surface-0);">
+        <div class="surface" style="background:var(--surface-0);"></div>
+        <div class="topbar">
+          <div class="meta"><div class="app-title"><span class="wing">S</span><span class="title">soar</span></div></div>
+        </div>
+        <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; z-index:10; text-align:center;">
+          <div style="width:96px; height:96px; border-radius:26px; border:1.5px dashed var(--line-strong); display:flex; align-items:center; justify-content:center; color:var(--text-3);">
+            <svg class="icon" viewBox="0 0 24 24" style="width:34px; height:34px;"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 20h14"/></svg>
+          </div>
+          <div>
+            <div style="font-size:17px; font-weight:600; color:var(--text-1);">将媒体拖到窗口，或按 <span style="font-family:var(--mono); color:var(--accent-text);">O</span> 打开文件</div>
+            <div style="margin-top:6px; font-size:12.5px; color:var(--text-3);">本地文件、http(s)/HLS/DASH/RTSP、.torrent / magnet 链接</div>
+          </div>
+          <div style="font-size:12px; color:var(--text-3);">最近播放：<span style="color:var(--text-1);">sintel_trailer.mp4</span>、<span style="color:var(--text-1);">Plan9Demo.ogv</span>、<span style="color:var(--text-1);">bunny.mp4</span></div>
+        </div>
+        <div class="note" style="bottom:22px; right:22px;"><kbd>O</kbd> 打开 / <kbd>R</kbd> 最近 / 拖放即播（MRU×15 持久化）</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

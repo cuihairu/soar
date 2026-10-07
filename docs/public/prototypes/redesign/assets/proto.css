@@ -1,0 +1,229 @@
+/* ============================================================
+   Soar 桌面播放器原型图 v2 共享设计语言（重设计稿）
+   （设计稿，非产品代码；品牌位为中性占位，不伪造 logo）
+
+   与 v1 的差异（redesign-preserve 口径）：
+   - 渐变清零：无渐变 logo / 渐变占位图 / 渐变字，媒体占位一律纯色块
+   - 单强调色锁：信号橙只作播放/交互强调；天蓝仅保留「网络/P2P」语义
+   - 字号地板 11px：废除 10/10.5px 小字，层级改由 字号+字重 承担
+   - 圆角体系成文：面板 10 / 控件 7 / 徽标 pill / 图标钮圆形
+   - 亮暗双主题：html[data-theme] 切换；视频画面与悬浮 OSC 属内容层，
+     两主题下恒为深色（与真实播放器一致）
+   - 动效守卫：所有无限动画包 prefers-reduced-motion
+   - 可见分隔符配额：每行中点 · ≤1 个；全文无 em-dash
+   ============================================================ */
+
+/* ---------- 原始层（primitive） ---------- */
+:root {
+  --orange-500: #ff6b35;   /* 品牌强调，两主题共用（按钮恒配深墨字） */
+  --orange-400: #ff8355;   /* 暗底上的强调文字档 */
+  --orange-700: #c2481a;   /* 亮底上的强调文字档（4.9:1） */
+  --ink-on-accent: #1c0d04;
+  --sky-net: #6cb1ff;      /* 网络语义，暗底 */
+  --sky-net-ink: #2f6fb8;  /* 网络语义，亮底文字档（4.6:1） */
+  --ok-500: #3ecf6e;  --ok-ink: #1e8e4e;
+  --warn-500: #ffb224; --warn-ink: #9a6700;
+  --red-500: #ff5c66;  --red-ink: #c93540;
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC",
+          Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+/* ---------- 语义层（dark 默认 / light 覆盖） ---------- */
+:root,
+:root[data-theme="dark"] {
+  --surface-0: #0b0c0f;    /* 窗口底 */
+  --surface-1: #111318;    /* 面板/侧栏 */
+  --surface-2: #161920;    /* 卡片/行 */
+  --surface-3: #1d212a;    /* 悬停/浮层 */
+  --line: #262c36;
+  --line-strong: #363e4b;
+  --text-1: #eef1f5;
+  --text-2: #b9c0cb;
+  --text-3: #8b94a3;       /* 元信息档，暗底 6.0:1 */
+  --accent: var(--orange-500);
+  --accent-hover: #ff7d4d;
+  --accent-text: var(--orange-400);
+  --accent-soft: rgba(255, 107, 53, 0.13);
+  --net: var(--sky-net);
+  --net-soft: rgba(108, 177, 255, 0.12);
+  --ok: var(--ok-500);
+  --ok-soft: rgba(62, 207, 110, 0.11);
+  --warn: var(--warn-500);
+  --danger: var(--red-500);
+  --danger-soft: rgba(255, 92, 102, 0.10);
+  --shadow-pop: 0 16px 44px rgba(0, 0, 0, 0.5);
+  --scrim: rgba(4, 5, 7, 0.42);
+}
+:root[data-theme="light"] {
+  --surface-0: #eef0f4;
+  --surface-1: #f7f8fa;
+  --surface-2: #ffffff;
+  --surface-3: #e7eaf0;
+  --line: #dfe3ea;
+  --line-strong: #c3cad5;
+  --text-1: #171a1f;
+  --text-2: #454e5c;
+  --text-3: #626c7d;       /* 亮底 4.8:1 */
+  --accent: var(--orange-500);
+  --accent-hover: #ff7d4d;
+  --accent-text: var(--orange-700);
+  --accent-soft: rgba(255, 107, 53, 0.12);
+  --net: var(--sky-net-ink);
+  --net-soft: rgba(47, 111, 184, 0.10);
+  --ok: var(--ok-ink);
+  --ok-soft: rgba(30, 142, 78, 0.10);
+  --warn: var(--warn-ink);
+  --danger: var(--red-ink);
+  --danger-soft: rgba(201, 53, 64, 0.08);
+  --shadow-pop: 0 16px 40px rgba(23, 26, 31, 0.16);
+  --scrim: rgba(10, 12, 16, 0.38);
+}
+
+/* ---------- 组件层 ---------- */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--surface-0);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.icon { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.6;
+        stroke-linecap: round; stroke-linejoin: round; fill: none; flex: none; }
+.icon.sm { width: 14px; height: 14px; }
+
+/* 圆角体系：面板 10 / 控件 7 / 徽标 pill / 图标钮圆形 */
+:root { --r-panel: 10px; --r-ctl: 7px; }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 9px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface-2);
+  color: var(--text-2); font-size: 11px; white-space: nowrap;
+}
+.pill.net { background: var(--net-soft); border-color: transparent; color: var(--net); }
+.pill.ok  { background: var(--ok-soft);  border-color: transparent; color: var(--ok); }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 20px;
+  padding: 0 7px; border-radius: var(--r-ctl); background: var(--surface-3);
+  color: var(--text-3); font-size: 11px; white-space: nowrap;
+}
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 30px; padding: 0 12px; border-radius: var(--r-ctl);
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--text-1);
+  font-size: 12px; cursor: pointer; user-select: none;
+}
+.btn:hover { background: var(--surface-3); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--ink-on-accent); font-weight: 600; }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:focus-visible, .toolbtn:focus-visible, .iconbtn:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+/* 品牌位：纯色橙块 + 深墨 S，任何主题无渐变 */
+.wing {
+  display: flex; align-items: center; justify-content: center; flex: none;
+  background: var(--accent); color: var(--ink-on-accent);
+  font-weight: 700; border-radius: var(--r-ctl);
+}
+
+/* 滑杆统一中性 thumb（防默认蓝） */
+input[type="range"] { appearance: none; -webkit-appearance: none; }
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--text-1); cursor: pointer;
+}
+
+/* ---------- 帧与注解 ---------- */
+.frame {
+  width: 1280px; height: 800px; overflow: hidden; position: relative;
+  background: var(--surface-0); color: var(--text-1);
+}
+
+.docbar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 8px 14px; background: var(--surface-1); color: var(--text-2);
+  font-size: 12px; border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+}
+.docbar b { color: var(--text-1); font-weight: 600; }
+.docbar a { color: var(--accent-text); text-decoration: none; }
+.docbar .themebtn {
+  height: 22px; padding: 0 8px; border-radius: var(--r-ctl); font-size: 11px;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--text-2);
+  cursor: pointer; font-family: var(--mono);
+}
+.page { padding-top: 36px; }
+
+.note {
+  position: absolute; z-index: 20;
+  display: flex; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: 6px;
+  background: var(--scrim); border: 1px solid var(--line);
+  color: var(--text-2); font-size: 11px;
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+.note kbd {
+  font-family: var(--mono); font-size: 11px; color: var(--text-1);
+  background: var(--surface-3); border: 1px solid var(--line-strong);
+  border-radius: 4px; padding: 0 4px;
+}
+.note .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--net); }
+
+/* ---------- 状态变体区 ---------- */
+.states {
+  width: 1280px; margin: 10px auto 60px; padding: 0 4px;
+  display: grid; gap: 8px;
+}
+.states h2 {
+  font-size: 12px; letter-spacing: .06em;
+  color: var(--text-3); font-weight: 600; margin: 14px 0 2px;
+}
+.state {
+  border: 1px solid var(--line); border-radius: var(--r-panel);
+  overflow: hidden; background: var(--surface-1); position: relative;
+}
+.state-cap {
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 6px 10px 2px; font-size: 11.5px; color: var(--text-3);
+}
+.state-cap b { color: var(--text-2); font-weight: 600; }
+
+/* ---------- 媒体占位：纯色块（内容层，两主题恒深） ---------- */
+.thumb {
+  display: block; width: 100%; position: relative; overflow: hidden;
+  background: #14171e;
+}
+.thumb .ph-glyph {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #3a4250;
+}
+.thumb.t2 { background: #171b23; }
+.thumb.t3 { background: #12151b; }
+
+/* ---------- 动效守卫 ---------- */
+.spin { border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--warn); animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.eq { display: flex; align-items: flex-end; gap: 2px; height: 12px; }
+.eq i { width: 2.5px; background: var(--accent); border-radius: 2px; animation: eq 1s ease-in-out infinite; }
+.eq i:nth-child(1) { height: 6px; animation-delay: -.2s }
+.eq i:nth-child(2) { height: 12px; animation-delay: -.5s }
+.eq i:nth-child(3) { height: 8px; animation-delay: -.8s }
+@keyframes eq { 0%, 100% { transform: scaleY(.6) } 50% { transform: scaleY(1.15) } }
+@media (prefers-reduced-motion: reduce) {
+  .spin, .eq i { animation: none; }
+  * { transition-duration: 0.01ms !important; }
+}

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Soar 原型 v2 · 重设计总览</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "light" ? "light" : "dark";</script>
+<link rel="stylesheet" href="assets/proto.css">
+<style>
+.wrap { max-width:980px; margin:0 auto; padding:56px 20px 80px; }
+.wrap > h1 { font-size:20px; font-weight:700; margin-bottom:4px; }
+.read {
+  font-size:13px; color:var(--text-2); background:var(--surface-2);
+  border:1px solid var(--line); border-left:3px solid var(--accent);
+  border-radius:var(--r-panel); padding:10px 14px; margin:14px 0 6px; line-height:1.7;
+}
+.dials { font-size:12px; color:var(--text-3); font-family:var(--mono); margin-bottom:26px; }
+.wrap h2 { font-size:15px; font-weight:600; margin:30px 0 10px; }
+.wrap p.lead { font-size:13px; color:var(--text-2); line-height:1.7; }
+
+.ugly { border:1px solid var(--line); border-radius:var(--r-panel); overflow:hidden; }
+.ugly ol { margin:0; padding:0; list-style:none; counter-reset:u; }
+.ugly li {
+  counter-increment:u; display:flex; gap:10px; padding:8px 14px;
+  font-size:12.5px; color:var(--text-2); line-height:1.65;
+  border-top:1px solid var(--line); background:var(--surface-2);
+}
+.ugly li:first-child { border-top:none; }
+.ugly li::before {
+  content:counter(u, decimal-leading-zero); font-family:var(--mono);
+  color:var(--danger); font-size:11.5px; flex:none; padding-top:2px;
+}
+.ugly li b { color:var(--text-1); font-weight:600; }
+
+table.cmp { width:100%; border-collapse:collapse; font-size:12.5px; }
+table.cmp th, table.cmp td {
+  text-align:left; padding:9px 12px; border:1px solid var(--line); vertical-align:top; line-height:1.65;
+}
+table.cmp th { background:var(--surface-2); color:var(--text-1); font-weight:600; font-size:12px; }
+table.cmp td { color:var(--text-2); background:var(--surface-1); }
+table.cmp td a { color:var(--accent-text); text-decoration:none; margin-right:8px; white-space:nowrap; }
+table.cmp td.pg { color:var(--text-1); font-weight:600; white-space:nowrap; }
+
+.why { border:1px solid var(--line); border-radius:var(--r-panel); background:var(--surface-2); padding:14px 16px; margin-bottom:12px; }
+.why h3 { font-size:13.5px; font-weight:600; margin-bottom:6px; }
+.why ul { margin:0; padding-left:18px; font-size:12.5px; color:var(--text-2); line-height:1.8; }
+.why ul b { color:var(--text-1); }
+</style>
+</head>
+<body>
+
+<div class="docbar">
+  <b>Soar 原型 v2 · 重设计总览</b>
+  <span>丑点清单 + 逐页旧稿对照；四页均支持亮暗双主题（?theme=light 或页内按钮）</span>
+  <button class="themebtn" onclick="const d=document.documentElement;d.dataset.theme=d.dataset.theme==='light'?'dark':'light'">theme</button>
+  <a href="../index.html">← v1 原型总览</a>
+</div>
+
+<div class="wrap">
+  <h1>桌面播放器原型 v2：重设计说明</h1>
+
+  <div class="read">
+    Design Read：以 redesign-preserve 口径重读四页桌面应用稿（受众 = 本地优先播放器的桌面用户；语境 = 深色媒体应用），
+    语言收敛为「克制原生的桌面应用感」：中性分层 + 单一信号橙强调 + tabular 等宽时间码；铬层零渐变、零发光。
+  </div>
+  <div class="dials">DESIGN_VARIANCE 5（match existing）/ MOTION 4（match+1，hover 与状态反馈 150ms）/ VISUAL_DENSITY 6（应用密度，字号地板 11px）</div>
+
+  <h2>旧稿丑点清单（重设计依据）</h2>
+  <div class="ugly">
+    <ol>
+      <li><b>渐变字与渐变标：</b>wing 品牌位 linear-gradient 橙色渐变在四页与关于位共 5 处，主播放窗另有顶栏渐变遮罩叠加三层 radial 渐变「光带」。</li>
+      <li><b>占位媒体全是渐变：</b>视频面、列表缩略图、海报卡全部用 radial-gradient 云带伪装画面，一屏可叠 6 个渐变图块。</li>
+      <li><b>em-dash 入文案：</b>「Tears of Steel (2012) — 1080p」（播放列表行、nowbar、媒体库卡）与「未配置 — 默认不下载」等端点行共 7 处。</li>
+      <li><b>字符当图标：</b>「▶ 播放中」pill 用几何字符代替图标。</li>
+      <li><b>中点分隔过密：</b>「MP4 · 1080p · 52.0 MB」一行 3 至 5 个 ·，元数据行几乎全靠中点串。</li>
+      <li><b>发光与光晕：</b>主播放键 4px 橙色光环、搜索框蓝色外光晕、进度手柄光晕。</li>
+      <li><b>字号过小、层级靠灰度：</b>大量 10/10.5px 文本低于 12px 正文地板；标题与正文同字号，层级几乎全靠颜色深浅。</li>
+      <li><b>危险色语义错位：</b>红色 dangerbtn 用于「编辑/添加」中性操作共 7 处，销毁语义被稀释。</li>
+      <li><b>操作仅悬停可达：</b>播放列表行操作 hover 才 display，键盘用户触达不了。</li>
+      <li><b>无限动画无守卫：</b>EQ 三柱循环动画未包 prefers-reduced-motion。</li>
+      <li><b>圆角不成体系：</b>14/10/7/999/5/26px 混用且无成文规则。</li>
+      <li><b>状态信息重复堆叠：</b>播放窗同屏出现顶栏三 pill、顶部状态条、OSC 分辨率 chip 共五处状态，互相抢注意。</li>
+      <li><b>仅暗色一版：</b>没有亮色主题，无法覆盖亮环境使用。</li>
+      <li><b>强调色边界模糊：</b>天蓝既是网络语义又当 docbar 链接、快捷键着色，装饰性扩散。</li>
+    </ol>
+  </div>
+
+  <h2>逐页对照（旧稿 vs 新稿）</h2>
+  <table class="cmp">
+    <tr><th style="width:90px;">页面</th><th>旧稿</th><th>新稿（暗）</th><th>新稿（亮）</th></tr>
+    <tr>
+      <td class="pg">主播放窗</td>
+      <td><a href="../desktop-main.html">页面</a><a href="../desktop-main.png">截图</a></td>
+      <td><a href="desktop-main.html">页面</a><a href="desktop-main-dark.png">截图</a></td>
+      <td><a href="desktop-main.html?theme=light">页面</a><a href="desktop-main-light.png">截图</a></td>
+    </tr>
+    <tr>
+      <td class="pg">播放列表</td>
+      <td><a href="../playlist.html">页面</a><a href="../playlist.png">截图</a></td>
+      <td><a href="playlist.html">页面</a><a href="playlist-dark.png">截图</a></td>
+      <td><a href="playlist.html?theme=light">页面</a><a href="playlist-light.png">截图</a></td>
+    </tr>
+    <tr>
+      <td class="pg">设置面板</td>
+      <td><a href="../settings.html">页面</a><a href="../settings.png">截图</a></td>
+      <td><a href="settings.html">页面</a><a href="settings-dark.png">截图</a></td>
+      <td><a href="settings.html?theme=light">页面</a><a href="settings-light.png">截图</a></td>
+    </tr>
+    <tr>
+      <td class="pg">媒体库</td>
+      <td><a href="../library.html">页面</a><a href="../library.png">截图</a></td>
+      <td><a href="library.html">页面</a><a href="library-dark.png">截图</a></td>
+      <td><a href="library.html?theme=light">页面</a><a href="library-light.png">截图</a></td>
+    </tr>
+  </table>
+
+  <h2>改了什么，为什么</h2>
+
+  <div class="why">
+    <h3>全局（assets/proto.css v2）</h3>
+    <ul>
+      <li><b>渐变清零：</b>wing 改纯色橙块深墨字；媒体占位改纯色块 + 细线胶片字形。旧稿的渐变都在伪装「质感」，纯色块反而更接近真实播放器的内容占位。</li>
+      <li><b>token 三层重建：</b>原始层（橙/蓝/语义色档）到语义层（surface/line/text 0-3）到组件层，组件不吃裸 hex；亮暗两主题同一套语义 token 翻转。</li>
+      <li><b>对比度按 AA 校过：</b>元信息档暗底 6.0:1、亮底 4.8:1；主按钮恒为橙底深墨字（6.5:1），亮色主题不换白字（白字对橙只有 2.6:1）。</li>
+      <li><b>字号地板 11px：</b>废除 10/10.5px；层级改由「13px/500 标题 + 12px 正文 + 12px tabular 等宽数字」承担，不再全靠灰度。</li>
+      <li><b>圆角成文：</b>面板 10 / 控件 7 / 徽标 pill / 图标钮圆形，写进 token 注释。</li>
+      <li><b>动效守卫：</b>EQ 与 spinner 包 prefers-reduced-motion，减少动效下立即静止。</li>
+    </ul>
+  </div>
+
+  <div class="why">
+    <h3>主播放窗</h3>
+    <ul>
+      <li><b>假画面改真占位：</b>三层渐变「光带」改为纯黑画面 + 字幕行。播放器的视频区本该是内容，占位阶段一块纯黑加一行字幕比伪造的渐变画面更诚实，也更像播放器。</li>
+      <li><b>状态归一处：</b>顶栏三 pill + 状态条 + OSC 分辨率 chip 五处收敛为两处：顶栏居中只放片名，状态条集中「正在播放 + 时间 + P2P 45%」，分辨率留在 OSC（它本来就是播放参数）。</li>
+      <li><b>去光环：</b>主播放键删 4px 光环，播放/暂停态用底色翻转表达；进度手柄删光晕，改 2px 深色描边保证在任何画面上可见。</li>
+      <li><b>OSC 定为内容层：</b>亮色主题下悬浮在视频上的控制条保持深色，与 IINA/mpv 等真实播放器一致。</li>
+    </ul>
+  </div>
+
+  <div class="why">
+    <h3>播放列表</h3>
+    <ul>
+      <li><b>文案去 dash、中点限流：</b>「Tears of Steel (2012) — 1080p」改空格连接；「MP4 · 1080p · 52.0 MB」改「MP4 1080p · 52.0 MB」，每行至多一个中点。</li>
+      <li><b>行操作可达：</b>hover-only display 改为 opacity 过渡 + focus-within 同样浮现，键盘 Tab 进行即出操作钮。</li>
+      <li><b>当前行高亮降噪：</b>去掉 28% 透明橙描边，改亮一档表面色 + 加强分隔线，EQ 保留为播放语义（唯一保留的循环动画，已加守卫）。</li>
+      <li><b>时长码 tabular：</b>等宽表宽数字，列表扫读时纵向对齐。</li>
+    </ul>
+  </div>
+
+  <div class="why">
+    <h3>设置面板</h3>
+    <ul>
+      <li><b>危险色还给销毁：</b>「编辑/添加」全部改中性 ghost 按钮；红色只留给真正的销毁动作。设置页里编辑端点是高频中性操作，用红色既吓退用户又稀释了危险语义。</li>
+      <li><b>如实标注保形：</b>「未配置：默认不下载」冒号替换 dash，零默认的诚实口径原样保留。</li>
+      <li><b>分组标签正常化：</b>10px 大字距全大写 eyebrow 改 12px/600 正常中文标签；顶栏「完成」从行内样式收进按钮体系。</li>
+      <li><b>离线卡改语义底：</b>绿色 ok-soft 底 + 透明边替代自配的绿描边，色值走 token。</li>
+    </ul>
+  </div>
+
+  <div class="why">
+    <h3>媒体库</h3>
+    <ul>
+      <li><b>搜索去光晕：</b>蓝色 3px 外发光改 1px 品牌色聚焦边；聚焦态用边框颜色表达足够，光晕只是噪音。</li>
+      <li><b>卡片减动效：</b>hover 上浮 2px 改仅边框加深；play-badge 同步支持 focus-within 触达。</li>
+      <li><b>下载态信息升级：</b>「已下载 · 种子离场可续播」从 10px 标题混排改为独立 11.5px 网络语义行；进度「45%」从 sup 角标改为正文行。</li>
+      <li><b>海报占位纯色：</b>三档深浅纯色 + 细线胶片字形，网格整体节奏靠色块深浅交替，不再靠渐变云带。</li>
+    </ul>
+  </div>
+
+</div>
+</body>
+</html>

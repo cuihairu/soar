@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Soar 原型 v2 · 设置面板</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+(function(){
+  var q = new URLSearchParams(location.search);
+  document.documentElement.dataset.theme = q.get("theme") === "light" ? "light" : "dark";
+  if (q.get("shot") === "1") addEventListener("DOMContentLoaded", function(){
+    var d = document.querySelector(".docbar"); if (d) d.style.display = "none";
+    var p = document.querySelector(".page"); if (p) p.style.paddingTop = "0";
+    document.documentElement.style.overflow = "hidden";
+  });
+})();
+</script>
+<link rel="stylesheet" href="assets/proto.css">
+<style>
+/* ===== 设置面板：左导航 tabs + 分区内容 ===== */
+.app { position:absolute; inset:0; display:flex; background:var(--surface-1); }
+
+/* 左 nav tabs */
+.nav {
+  width:196px; flex:none; background:var(--surface-0); border-right:1px solid var(--line);
+  display:flex; flex-direction:column; padding:16px 10px;
+}
+.nav .wing { width:26px; height:26px; margin:0 8px 16px; font-size:14px; }
+.nav .grp { font-size:12px; font-weight:600; color:var(--text-3); margin:10px 8px 4px; }
+.nav a {
+  display:flex; align-items:center; gap:10px; height:32px; padding:0 10px;
+  border-radius:var(--r-ctl); color:var(--text-2); font-size:13px; text-decoration:none; cursor:pointer;
+}
+.nav a:hover { background:var(--surface-3); color:var(--text-1); }
+.nav a.on { background:var(--accent-soft); color:var(--accent-text); font-weight:600; }
+.nav a svg { width:16px; height:16px; flex:none; }
+
+/* 内容区 */
+.main { flex:1; display:flex; flex-direction:column; min-width:0; }
+.chead {
+  display:flex; align-items:center; gap:10px; padding:14px 24px 12px;
+  border-bottom:1px solid var(--line);
+}
+.chead h1 { font-size:15px; font-weight:600; }
+.chead p { font-size:12px; color:var(--text-3); }
+.chead .spacer { flex:1; }
+.ghostbtn {
+  height:28px; padding:0 12px; border-radius:var(--r-ctl); border:1px solid var(--line);
+  background:var(--surface-2); color:var(--text-2); font-size:12px; cursor:pointer;
+}
+.ghostbtn:hover { background:var(--surface-3); color:var(--text-1); }
+
+.body { flex:1; overflow:hidden; padding:18px 24px 24px; }
+
+.sect { max-width:760px; }
+.sect h2 {
+  font-size:12px; color:var(--text-2); font-weight:600; margin:18px 0 8px;
+}
+.sect h2:first-child { margin-top:0; }
+
+/* 设置行 */
+.set {
+  display:flex; align-items:center; gap:16px; min-height:42px; padding:7px 12px;
+  border:1px solid var(--line); border-radius:var(--r-panel); background:var(--surface-2);
+  margin-bottom:7px;
+}
+.set .slabel { flex:1; min-width:0; }
+.set .slabel .t { font-size:13px; color:var(--text-1); }
+.set .slabel .d { font-size:12px; color:var(--text-3); margin-top:1px; }
+.set .ctl { flex:none; display:flex; align-items:center; gap:8px; }
+
+/* 开关 */
+.switch { position:relative; width:34px; height:20px; flex:none; cursor:pointer; }
+.switch input { display:none; }
+.switch i {
+  position:absolute; inset:0; border-radius:99px; background:var(--surface-3);
+  border:1px solid var(--line-strong); transition:.15s;
+}
+.switch i::after {
+  content:""; position:absolute; top:2px; left:2px; width:14px; height:14px;
+  border-radius:50%; background:var(--text-3); transition:.15s;
+}
+.switch input:checked + i { background:var(--accent); border-color:var(--accent); }
+.switch input:checked + i::after { left:16px; background:var(--ink-on-accent); }
+
+/* 选择框 / 数字输入 */
+.select {
+  height:28px; padding:0 8px; border-radius:var(--r-ctl); font-size:12px;
+  border:1px solid var(--line-strong); background:var(--surface-2); color:var(--text-1);
+  outline:none; font-family:var(--font);
+}
+.stepper { display:inline-flex; align-items:center; gap:2px; }
+.stepper button {
+  width:24px; height:24px; border-radius:6px; border:1px solid var(--line);
+  background:var(--surface-2); color:var(--text-2); cursor:pointer; font-size:13px; line-height:1;
+}
+.stepper button:hover { color:var(--text-1); background:var(--surface-3); }
+.stepper .val {
+  min-width:44px; text-align:center; font-size:12px; color:var(--text-1);
+  font-family:var(--mono); padding:0 4px;
+}
+.textinput {
+  height:28px; padding:0 9px; border-radius:var(--r-ctl); font-size:12px;
+  border:1px solid var(--line-strong); background:var(--surface-2); color:var(--text-1);
+  outline:none; width:220px; font-family:var(--mono);
+}
+
+/* 网络节：端点列表（零默认如实标注）；
+   「编辑/添加」是中性操作，用中性 ghost 按钮，危险红只留给销毁性动作 */
+.ep {
+  display:flex; align-items:center; gap:10px; padding:8px 12px;
+  border:1px solid var(--line); border-radius:var(--r-panel); background:var(--surface-2); margin-bottom:7px;
+}
+.ep .tag { flex:none; width:52px; font-size:11.5px; color:var(--text-3); font-family:var(--mono); }
+.ep .val { flex:1; font-size:12px; color:var(--text-2); font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ep .val.dim { color:var(--text-3); }
+</style>
+</head>
+<body>
+
+<div class="docbar">
+  <b>Soar 原型 v2 · 03 设置面板</b>
+  <span>左 tab 导航：通用 / 播放 / 字幕 / 网络 / 关于；字幕含字体、字号、同步偏移与下载/翻译端点</span>
+  <button class="themebtn" onclick="const d=document.documentElement;d.dataset.theme=d.dataset.theme==='light'?'dark':'light'">theme</button>
+  <a href="../settings.html">旧稿对照</a>
+  <a href="index.html">← v2 总览</a>
+</div>
+
+<div class="page">
+
+  <!-- ================= 主状态：字幕分区 ================= -->
+  <div class="frame" id="primary">
+    <div class="app">
+      <div class="nav">
+        <div class="wing">S</div>
+        <a title="通用"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8"/></svg>通用</a>
+        <a title="播放"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 5.6v12.8L19 12z"/><path d="M4 5v14"/></svg>播放</a>
+        <a class="on" title="字幕"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 13h4M13 13h4M7 16h7"/></svg>字幕</a>
+        <div class="grp">网络</div>
+        <a title="网络与下载"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>网络与下载</a>
+        <div class="grp">关于</div>
+        <a title="关于"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>关于</a>
+      </div>
+
+      <div class="main">
+        <div class="chead">
+          <h1>字幕</h1>
+          <p>轨道渲染、时长对齐、下载与翻译</p>
+          <span class="spacer"></span>
+          <button class="ghostbtn">恢复默认</button>
+          <button class="ghostbtn" style="background:var(--accent); border-color:var(--accent); color:var(--ink-on-accent); font-weight:600;">完成</button>
+        </div>
+
+        <div class="body">
+          <div class="sect" style="display:grid; grid-template-columns:1fr 1fr; gap:7px 14px;">
+
+            <div>
+              <h2>渲染</h2>
+              <div class="set">
+                <div class="slabel"><div class="t">显示字幕</div><div class="d">渲染到画面下沿；全屏/窗口同规格</div></div>
+                <span class="ctl">
+                  <label class="switch"><input type="checkbox" checked><i></i></label>
+                </span>
+              </div>
+              <div class="set">
+                <div class="slabel"><div class="t">首字幕自动开启</div><div class="d">打开后直接显示，不打断播放</div></div>
+                <span class="ctl">
+                  <label class="switch"><input type="checkbox" checked><i></i></label>
+                </span>
+              </div>
+              <div class="set">
+                <div class="slabel"><div class="t">字幕字体</div><div class="d">系统字体回退；Lato / Noto Sans SC</div></div>
+                <span class="ctl"><select class="select"><option>Noto Sans SC</option><option>PingFang SC</option><option>Lato</option></select></span>
+              </div>
+              <div class="set">
+                <div class="slabel"><div class="t">字号</div><div class="d">相对窗口高度缩放（2% 至 8%）</div></div>
+                <span class="ctl">
+                  <span class="stepper">
+                    <button aria-label="减小">−</button><span class="val">4.0%</span><button aria-label="增大">+</button>
+                  </span>
+                </span>
+              </div>
+            </div>
+
+            <div>
+              <h2>时长对齐</h2>
+              <div class="set">
+                <div class="slabel"><div class="t">全局同步偏移</div><div class="d">+ 提前 / − 延后，实时预览</div></div>
+                <span class="ctl">
+                  <span class="stepper">
+                    <button aria-label="减小">−</button><span class="val">0.0s</span><button aria-label="增大">+</button>
+                  </span>
+                </span>
+              </div>
+              <div class="set">
+                <div class="slabel"><div class="t">渲染风格</div><div class="d">纯文本优先；ass 特效轨按需降级</div></div>
+                <span class="ctl"><select class="select"><option>简化（纯文本）</option><option>完整（ass 特效）</option></select></span>
+              </div>
+
+              <h2>获取</h2>
+              <div class="set">
+                <div class="slabel"><div class="t">外挂字幕目录</div><div class="d">扫描 .srt / .ass / .vtt 同名匹配</div></div>
+                <span class="ctl"><input class="textinput" value="~/.local/share/soar/subtitles" style="width:236px;"></span>
+              </div>
+              <div class="set">
+                <div class="slabel"><div class="t">自动下载</div><div class="d">按版次+语言匹配；找不到则不挂载不打扰</div></div>
+                <span class="ctl">
+                  <label class="switch"><input type="checkbox" checked><i></i></label>
+                </span>
+              </div>
+            </div>
+
+            <div style="grid-column:1 / -1;">
+              <h2>端点（网络语义 · 如实标注：默认留空不填）</h2>
+              <div class="ep">
+                <span class="tag">下载</span>
+                <span class="val dim">未配置：默认不下载；填入 URL 后按轨道自动抓取（示例：opensubtitles API 自建代理）</span>
+                <button class="ghostbtn" style="height:24px; font-size:11.5px;">编辑</button>
+              </div>
+              <div class="ep">
+                <span class="tag">翻译</span>
+                <span class="val dim">未配置：默认无翻译；仅当用户自带/填入翻译服务端点后才出现「译文」轨</span>
+                <button class="ghostbtn" style="height:24px; font-size:11.5px;">编辑</button>
+              </div>
+              <div class="note" style="position:static; display:flex; width:fit-content; margin-top:4px;">翻译端点为可选增强：不联网优先于不越权；密钥仅存本机钥匙串</div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note" style="bottom:96px; left:214px;">esc / 遮罩关闭设置窗；改动即写本地偏好，无「应用」概念</div>
+    <div class="note" style="bottom:66px; left:214px;">字号按所用字幕字号 × 屏幕高度缩放：多屏不同 DPI 均等观感</div>
+  </div>
+
+  <!-- ================= 状态变体 ================= -->
+  <div class="states">
+    <h2>状态设计 · 通用小节 / 网络小节（零默认如实标注）</h2>
+
+    <!-- 通用 -->
+    <div class="state">
+      <div class="state-cap"><b>通用</b> 启动行为与外观；改动细分即写盘</div>
+      <div class="frame mini">
+        <div class="app">
+          <div class="nav">
+            <div class="wing">S</div>
+            <a class="on" title="通用"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8"/></svg>通用</a>
+            <a title="播放"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 5.6v12.8L19 12z"/><path d="M4 5v14"/></svg>播放</a>
+            <a title="字幕"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 13h4M13 13h4M7 16h7"/></svg>字幕</a>
+            <div class="grp">网络</div>
+            <a title="网络与下载"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>网络与下载</a>
+          </div>
+          <div class="main">
+            <div class="chead"><h1>通用</h1><span class="spacer"></span><button class="ghostbtn">恢复默认</button></div>
+            <div class="body">
+              <div class="sect">
+                <h2>启动与界面</h2>
+                <div class="set">
+                  <div class="slabel"><div class="t">记住上次媒体</div><div class="d">启动恢复到上次打开的文件与进度</div></div>
+                  <span class="ctl"><label class="switch"><input type="checkbox" checked><i></i></label></span>
+                </div>
+                <div class="set">
+                  <div class="slabel"><div class="t">ESC 退出全屏</div><div class="d">仅全屏时生效，窗口内 ESC 关闭设置</div></div>
+                  <span class="ctl"><label class="switch"><input type="checkbox" checked><i></i></label></span>
+                </div>
+                <div class="set">
+                  <div class="slabel"><div class="t">界面语言</div><div class="d">跟随系统，重启不重置</div></div>
+                  <span class="ctl"><select class="select"><option>简体中文</option><option>English</option></select></span>
+                </div>
+                <div class="set">
+                  <div class="slabel"><div class="t">最近播放保留数</div><div class="d">MRU 列表上限（O 键打开）</div></div>
+                  <span class="ctl">
+                    <span class="stepper"><button aria-label="减小">−</button><span class="val">15</span><button aria-label="增大">+</button></span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 网络 -->
+    <div class="state">
+      <div class="state-cap"><b>网络</b> 透明度优先：本地优先无源 = 默认状态；端点全部显式配置</div>
+      <div class="frame mini">
+        <div class="app">
+          <div class="nav">
+            <div class="wing">S</div>
+            <a title="通用"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8"/></svg>通用</a>
+            <a title="播放"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 5.6v12.8L19 12z"/><path d="M4 5v14"/></svg>播放</a>
+            <a title="字幕"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 13h4M13 13h4M7 16h7"/></svg>字幕</a>
+            <div class="grp">网络</div>
+            <a class="on" title="网络与下载"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>网络与下载</a>
+          </div>
+          <div class="main">
+            <div class="chead"><h1>网络与下载</h1><span class="spacer"></span><button class="ghostbtn">恢复默认</button></div>
+            <div class="body">
+              <div class="sect">
+                <h2>本地优先（默认态，无任何外部依赖）</h2>
+                <div class="set">
+                  <div class="slabel"><div class="t">P2P / DHT 追踪器</div><div class="d">留空 = 仅本地文件与直连 URL；填 tracker 才做 swarm 种子</div></div>
+                  <span class="ctl"><span class="pill net">0 个 tracker</span><button class="ghostbtn" style="height:24px; font-size:11.5px;">添加</button></span>
+                </div>
+                <div class="set">
+                  <div class="slabel"><div class="t">入站端口</div><div class="d">默认 0 = 随机高位；NAT 穿透不可用时不硬要求</div></div>
+                  <span class="ctl"><span class="stepper"><button aria-label="减小">−</button><span class="val">0</span><button aria-label="增大">+</button></span></span>
+                </div>
+                <h2>端点（如实标注：默认一律不联网）</h2>
+                <div class="ep"><span class="tag">字幕</span><span class="val dim">未配置：不自动拉取字幕</span><button class="ghostbtn" style="height:24px; font-size:11.5px;">编辑</button></div>
+                <div class="ep"><span class="tag">翻译</span><span class="val dim">未配置：无译文轨</span><button class="ghostbtn" style="height:24px; font-size:11.5px;">编辑</button></div>
+                <div class="ep"><span class="tag">统计</span><span class="val dim">未配置：无任何遥测，全部本地</span><button class="ghostbtn" style="height:24px; font-size:11.5px;">编辑</button></div>
+                <div class="set" style="border-color:transparent; background:var(--ok-soft);">
+                  <div class="slabel"><div class="t" style="color:var(--ok);">当前为零外联配置</div><div class="d">播放器运行所需网络 = 你打开资源本身的 URL；不存在后台静默请求</div></div>
+                  <span class="ctl"><span class="pill ok">离线可用</span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
