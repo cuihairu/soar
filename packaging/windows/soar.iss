@@ -15,7 +15,9 @@
 ; 验证：/VERYSILENT 静默安装 → 装后实跑 → 快捷方式断言 → 卸载走查
 ;       由 daily-build 的 Verify 步骤在真 Windows 上执行；向导逐屏
 ;       截图走查（文字不截断 + 图标三处可见）由 installer-walkthrough
-;       workflow 执行。
+;       workflow 执行，覆盖目录/任务/就绪/进度/完成五页——Inno 6 默认
+;       隐藏 Welcome 页（DisableWelcomePage 默认 yes，官方文档实证），
+;       不显式打开，走查清单即向导完整页序。
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
