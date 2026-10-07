@@ -50,6 +50,31 @@ int main(int argc, char** argv) {
   return doctest::Context(argc, argv).run();
 }
 
+// Case-start breadcrumb: doctest keeps passing cases silent, so the asan
+// hangs (runs 37575751946, 37594148794: 600s timeout, banner only — while
+// the green run of the same suite takes 88s, so those were hangs, not
+// slowness) left no way to tell which case they stuck in. A listener rides
+// along with the console reporter and prints every case as it starts; with
+// ctest -V the next timeout names its own case in the captured log.
+struct CaseStartListener : doctest::IReporter {
+  explicit CaseStartListener(const doctest::ContextOptions&) {}
+  void report_query(const doctest::QueryData&) override {}
+  void test_run_start() override {}
+  void test_run_end(const doctest::TestRunStats&) override {}
+  void test_case_start(const doctest::TestCaseData& in) override {
+    std::printf("[case] %s:%u %s\n", in.m_file.c_str(), in.m_line, in.m_name);
+  }
+  void test_case_reenter(const doctest::TestCaseData&) override {}
+  void test_case_end(const doctest::CurrentTestCaseStats&) override {}
+  void test_case_exception(const doctest::TestCaseException&) override {}
+  void subcase_start(const doctest::SubcaseSignature&) override {}
+  void subcase_end() override {}
+  void log_assert(const doctest::AssertData&) override {}
+  void log_message(const doctest::MessageData&) override {}
+  void test_case_skipped(const doctest::TestCaseData&) override {}
+};
+DOCTEST_REGISTER_LISTENER("case_start", 0, CaseStartListener);
+
 namespace lt = libtorrent;
 namespace p2p = soar::p2p;
 
