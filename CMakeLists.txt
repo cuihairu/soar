@@ -299,6 +299,28 @@ if(SOAR_BUILD_APP)
   endif()
 endif()
 
+# Windows exe resource: app icon + version info embedded into both
+# soar.exe and soarw.exe. One .rc shared by the two frontends; the icon
+# is the same assets/icons/soar.ico the installer (SetupIconFile /
+# UninstallDisplayIcon) and the file-association ProgId (DefaultIcon)
+# use, so all three icon surfaces move together. configure_file expands
+# the absolute icon path (see packaging/windows/app.rc.in for why).
+if(WIN32 AND TARGET soar)
+  enable_language(RC)
+  set(SOAR_ICO "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/soar.ico")
+  string(REPLACE "." "," SOAR_VER_COMMA "${PROJECT_VERSION}")
+  set(SOAR_VER_FILE "${SOAR_VER_COMMA},0")
+  configure_file(
+    packaging/windows/app.rc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/soar_app.rc
+    @ONLY
+  )
+  target_sources(soar PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/soar_app.rc)
+  if(TARGET soarw)
+    target_sources(soarw PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/soar_app.rc)
+  endif()
+endif()
+
 # Tests come last: the CLI integration tests need the soar app target to
 # exist so they can invoke the freshly built executable.
 if(SOAR_BUILD_TESTS)

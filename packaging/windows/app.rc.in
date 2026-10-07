@@ -1,0 +1,35 @@
+// Application icon + version resource for soar.exe / soarw.exe (one shared
+// copy). The icon is assets/icons/soar.ico, the orange "S" placeholder mark;
+// swap that single file when the final logo lands and installer, Explorer and
+// shortcuts all follow.
+//
+// @SOAR_ICO@ / @SOAR_VER_FILE@ / @PROJECT_VERSION@ are expanded by CMake
+// configure_file(@ONLY). The icon path is absolute with forward slashes
+// because rc.exe (MSVC) and windres (mingw) resolve relative paths against
+// different working directories; a literal absolute path sidesteps both.
+
+1 ICON "@SOAR_ICO@"
+
+1 VERSIONINFO
+FILEVERSION @SOAR_VER_FILE@
+PRODUCTVERSION @SOAR_VER_FILE@
+FILEOS 0x40004L
+FILETYPE 0x1L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "Soar media player"
+      VALUE "FileVersion", "@PROJECT_VERSION@"
+      VALUE "InternalName", "soar"
+      VALUE "ProductName", "Soar"
+      VALUE "ProductVersion", "@PROJECT_VERSION@"
+      VALUE "LegalCopyright", "MIT License"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 0x04B0
+  END
+END

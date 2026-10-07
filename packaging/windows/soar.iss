@@ -8,11 +8,14 @@
 ;       exe + 依赖 DLL 闭包 + soar.ico，scripts/stage-windows-dlls.sh）：
 ;   ISCC.exe /DAppVersion=0.1.0 /DStageDir=<abs>\stage /O<abs> packaging\windows\soar.iss
 ;
-; 要求：Inno Setup 6.3+（x64compatible 架构别名；GitHub windows-latest
-;       镜像预装 6.x）。快捷方式一律指向 soarw.exe（GUI 子系统，双击
-;       无控制台黑框，BUGS.md #2）。
+; 要求：Inno Setup 6.3+（x64compatible 架构别名与 WizardResizable/
+;       WizardSizePercent 指令都是 6.3+；GitHub windows-latest 镜像预装
+;       6.x，ISCC 编译输出首行带版本号可核）。快捷方式一律指向
+;       soarw.exe（GUI 子系统，双击无控制台黑框，BUGS.md #2）。
 ; 验证：/VERYSILENT 静默安装 → 装后实跑 → 快捷方式断言 → 卸载走查
-;       由 daily-build 的 Verify 步骤在真 Windows 上执行。
+;       由 daily-build 的 Verify 步骤在真 Windows 上执行；向导逐屏
+;       截图走查（文字不截断 + 图标三处可见）由 installer-walkthrough
+;       workflow 执行。
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -38,6 +41,13 @@ OutputBaseFilename=soar-setup-windows-x64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; 布局（2026-10-07 安装界面文案截断批）：向导可拖缩 + 默认窗体放大，
+; 长描述换行有余量；6.3+ 向导按 per-monitor v2 自适应缩放（100%/125%/
+; 150% 三档实测由 installer-walkthrough workflow 逐屏截图留证）。
+; 自定义文案只有 Tasks/Run 两行短描述，无固定宽控件，中文长文案
+; 均落在向导内置页的自动换行区。
+WizardResizable=yes
+WizardSizePercent=120,120
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible

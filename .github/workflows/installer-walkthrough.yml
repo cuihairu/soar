@@ -1,0 +1,194 @@
+# 安装器逐屏走查（2026-10-07 安装包修复批）：真 Windows 上把安装向导
+# 一页页点过去并截图，落证「文案不截断 + 图标三处可见」。
+#
+# - 对象：滚动 nightly Release 里的 soar-setup-windows-x64.exe（手动触发
+#   前先确认 Daily Build 已出含本次修复的安装器）。
+# - 驱动方式：EnumWindows 找到向导主窗（Inno TSetupForm），EnumChildWindows
+#   找 TNewButton 按 Next/Install/Finish 文本 PostMessage(BM_CLICK) 翻页
+#   ——不依赖键盘焦点，规避 SetForegroundWindow 的前台锁。
+# - 截图面：welcome/dir/tasks/ready/installing/finished 六页 + 安装器
+#   exe 图标、装后 soar.exe/soarw.exe 图标（ExtractAssociatedIcon）+
+#   文件关联 DefaultIcon 注册表值。
+# - DPI 口径（如实）：runner 桌面只有 100% 一档；125%/150% 依赖 Inno
+#   6.3+ 的 per-monitor v2 自适应（WizardResizable 已开），真机三档
+#   走查挂残余项，等有真实缩放显示器的环境补。
+# - pwsh 四陷阱防护：GUI 子系统 exe 一律 Start-Process -PassThru；
+#   原生命令逐个核 $LASTEXITCODE；失败路径 ::error:: + 截图后显式
+#   exit 1（截图先落 artifact 再失败，诊断不丢）。
+name: installer-walkthrough
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-walkthrough-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  walkthrough:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Fetch nightly installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release download nightly --repo "$env:GITHUB_REPOSITORY" `
+            --pattern "soar-setup-windows-x64.exe" --output "$PWD\soar-setup.exe" --clobber
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::gh release download failed (exit $LASTEXITCODE); nightly Release 缺 soar-setup-windows-x64.exe?"
+            exit 1
+          }
+          Write-Host "installer: $((Get-Item "$PWD\soar-setup.exe").Length) bytes"
+
+      - name: Walk wizard page by page with screenshots
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path "$PWD\shots" | Out-Null
+
+          Add-Type -AssemblyName System.Drawing
+          Add-Type @"
+          using System;
+          using System.Text;
+          using System.Collections.Generic;
+          using System.Runtime.InteropServices;
+          public static class Win32 {
+            public delegate bool EnumProc(IntPtr h, IntPtr lp);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lp);
+            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr lp);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder sb, int max);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder sb, int max);
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+            [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
+            public struct RECT { public int L, T, R, B; }
+            public static List<IntPtr> Found = new List<IntPtr>();
+            public static uint TargetPid;
+            public static bool CollectMain(IntPtr h, IntPtr lp) {
+              uint pid; GetWindowThreadProcessId(h, out pid);
+              StringBuilder cls = new StringBuilder(256); GetClassName(h, cls, 256);
+              if (pid == TargetPid && IsWindowVisible(h) && cls.ToString().StartsWith("T")) { Found.Add(h); }
+              return true;
+            }
+            public static bool CollectChild(IntPtr h, IntPtr lp) { Found.Add(h); return true; }
+            public static IntPtr FindMainWindow(uint pid) {
+              TargetPid = pid; Found.Clear();
+              EnumWindows(CollectMain, IntPtr.Zero);
+              IntPtr best = IntPtr.Zero; int bestLen = -1;
+              foreach (IntPtr h in Found) {
+                StringBuilder t = new StringBuilder(256); GetWindowText(h, t, 256);
+                if (t.Length > bestLen) { bestLen = t.Length; best = h; }
+              }
+              return best;
+            }
+            // 向导按钮表：class TNewButton + 文本（& 助记符归一后匹配）
+            public static List<IntPtr> FindButtons(IntPtr wizard, string[] names) {
+              Found.Clear(); EnumChildWindows(wizard, CollectChild, IntPtr.Zero);
+              List<IntPtr> hits = new List<IntPtr>();
+              foreach (IntPtr h in Found) {
+                StringBuilder cls = new StringBuilder(256); GetClassName(h, cls, 256);
+                if (cls.ToString() != "TNewButton") continue;
+                StringBuilder t = new StringBuilder(256); GetWindowText(h, t, 256);
+                string norm = t.ToString().Replace("&", "").TrimEnd(' ', '>').Trim();
+                foreach (string n in names) { if (string.Equals(norm, n, StringComparison.OrdinalIgnoreCase)) { hits.Add(h); } }
+              }
+              return hits;
+            }
+          }
+          "@
+
+          function Save-Shot([string]$Name, [IntPtr]$Hwnd) {
+            [Win32+RECT]$r = New-Object 'Win32+RECT'
+            [Win32]::GetWindowRect($Hwnd, [ref]$r) | Out-Null
+            $w = $r.R - $r.L; $h = $r.B - $r.T
+            if ($w -le 0 -or $h -le 0) { Write-Host "::warning::$Name window rect empty"; return }
+            $bmp = New-Object System.Drawing.Bitmap($w, $h)
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($r.L, $r.T, 0, 0, (New-Object System.Drawing.Size($w, $h)))
+            $g.Dispose()
+            $bmp.Save("$PWD\shots\$Name.png", [System.Drawing.Imaging.ImageFormat]::Png)
+            $bmp.Dispose()
+            Write-Host "shot: $Name.png ($w x $h)"
+          }
+
+          function Step-Wizard([IntPtr]$Wizard, [string]$Action, [string]$ShotName) {
+            # 轮询等按钮出现（Install 翻页受安装耗时影响，60s 上限）；
+            # 超时把向导子窗文本全量倒出来再失败，诊断不丢
+            $buttons = $null
+            for ($i = 0; $i -lt 120; $i++) {
+              $buttons = [Win32]::FindButtons($Wizard, @($Action))
+              if ($buttons.Count -gt 0) { break }
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $buttons -or $buttons.Count -eq 0) {
+              Write-Host "::error::button '$Action' not found on wizard after 60s"
+              Save-Shot "ZZ-stuck-$ShotName" $Wizard
+              exit 1
+            }
+            [Win32]::PostMessage($buttons[0], 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null  # BM_CLICK
+            Start-Sleep -Milliseconds 2500
+            Save-Shot $ShotName $Wizard
+          }
+
+          $inst = (Get-Item "$PWD\soar-setup.exe").FullName
+          $proc = Start-Process -FilePath $inst -PassThru
+          Start-Sleep -Seconds 6
+          if ($proc.HasExited) {
+            $code = try { $proc.ExitCode } catch { 'unavailable' }
+            Write-Host "::error::installer exited immediately, code $code"
+            exit 1
+          }
+          $wizard = [Win32]::FindMainWindow([uint32]$proc.Id)
+          if ($wizard -eq [IntPtr]::Zero) {
+            Write-Host "::error::wizard window not found for pid $($proc.Id)"
+            exit 1
+          }
+
+          Save-Shot "01-welcome" $wizard
+          Step-Wizard $wizard "Next" "02-install-location"
+          Step-Wizard $wizard "Next" "03-additional-tasks"
+          Step-Wizard $wizard "Next" "04-ready-to-install"
+          Step-Wizard $wizard "Install" "05-installing"
+          Step-Wizard $wizard "Finish" "06-finished"
+          if (-not $proc.WaitForExit(20000)) {
+            Write-Host "::warning::installer still running after Finish, killing"
+            Stop-Process -Id $proc.Id -Force
+          }
+
+          # 图标三处：安装器 exe / 应用 exe（ExtractAssociatedIcon 32px 位图）
+          # / 文件关联 DefaultIcon（注册表值断言；同一份 assets/icons/soar.ico）
+          foreach ($pair in @(@("icon-installer", $inst), @("icon-soar-exe", "C:\Program Files\Soar\soar.exe"), @("icon-soarw-exe", "C:\Program Files\Soar\soarw.exe"))) {
+            $label = $pair[0]; $path = $pair[1]
+            if (Test-Path $path) {
+              $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($path)
+              $bmp2 = $ico.ToBitmap()
+              $bmp2.Save("$PWD\shots\$label.png", [System.Drawing.Imaging.ImageFormat]::Png)
+              $bmp2.Dispose(); $ico.Dispose()
+              Write-Host "icon: $label.png from $path"
+            } else {
+              Write-Host "::error::expected file missing: $path"
+              exit 1
+            }
+          }
+          $deficon = (Get-ItemProperty 'HKLM:\SOFTWARE\Classes\Soar.Media\DefaultIcon' -ErrorAction Stop).'(default)'
+          Write-Host "file-association DefaultIcon: $deficon"
+          if ($deficon -notlike 'C:\Program Files\Soar\soar.ico*') {
+            Write-Host "::error::DefaultIcon does not point at the installed soar.ico: $deficon"
+            exit 1
+          }
+          Get-ChildItem "$PWD\shots" | ForEach-Object { Write-Host "artifact: $($_.Name) $($_.Length) bytes" }
+
+      - name: Upload walkthrough screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: walkthrough-screenshots
+          path: shots/
+          if-no-files-found: error
