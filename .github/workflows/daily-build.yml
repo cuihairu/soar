@@ -768,7 +768,11 @@ jobs:
         run: |
           set -e
           if gh release view nightly > /dev/null 2>&1; then
-            gh release edit nightly --title "Nightly Build (nightly)" --prerelease
+            # --draft=false：兜底链 DELETE tag 会把 release 自动转 draft
+            # （10-07 walkthrough 37615642594 实证：draft 对 contents:read
+            # 的 token 不可见，gh release download 报 release not found），
+            # 每轮 publish 顺手把它翻回 published。
+            gh release edit nightly --title "Nightly Build (nightly)" --draft=false --prerelease
             # gh release edit 不支持 --target：移动固定 tag 指向本次 commit
             # （PATCH 失败兜底删重建，秒级窗口内完成）。PATCH 失败原因
             # 留痕再兜底：run 37581325647 里 PATCH 静默失败、DELETE 把
