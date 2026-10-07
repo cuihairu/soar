@@ -10,7 +10,13 @@
 // tracker or second process is involved. POSIX sockets only: like the
 // cache suite, Windows builds report a skip and return.
 
-#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+// Custom main, only to line-buffer stdout: under ctest the capture pipe
+// flips libc to 4KB full buffering, and this suite's total output never
+// reaches that, so a suite killed at the CTest timeout leaves zero trace —
+// the 2026-10-07 asan CI run 37575751946 timed out after 600s with not even
+// the doctest banner in the log. Line buffering keeps the banner and the
+// last-started test case in the captured output of the next hang.
+#define DOCTEST_CONFIG_IMPLEMENT
 #include <doctest/doctest.h>
 
 #include "torrent_stream.h"
@@ -38,6 +44,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+
+int main(int argc, char** argv) {
+  setvbuf(stdout, nullptr, _IOLBF, 1024);
+  return doctest::Context(argc, argv).run();
+}
 
 namespace lt = libtorrent;
 namespace p2p = soar::p2p;
