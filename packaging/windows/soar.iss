@@ -48,6 +48,10 @@ WizardStyle=modern
 ; 均落在向导内置页的自动换行区。
 WizardResizable=yes
 WizardSizePercent=120,120
+; 目录页显式打开：默认 auto 在本安装器上实测被跳过（37621807282 页序
+; Welcome→Tasks→Ready 无 Dir 页）。目录页是文案最密的页之一，逐屏走查
+; 要覆盖到；覆盖安装时用户也能改目录。
+DisableDirPage=no
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible

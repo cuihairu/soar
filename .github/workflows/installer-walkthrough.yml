@@ -177,6 +177,10 @@ jobs:
             exit 1
           }
 
+          # 首页绘制等待：找到窗立刻截会拍到白屏早帧（37621807282 实证
+          # 01-before-next 全白、按钮只有轮廓），先给 WM_PAINT 留 2s。
+          Start-Sleep -Seconds 2
+
           # 通用翻页循环：截图当前页 → 点「优先 Finish > Install > Next」
           # 里存在的第一个按钮 → 等下一页稳定。页面序自适应（多页/少页
           # 都不崩），Install 点击后额外补一张安装进度页。
