@@ -80,17 +80,18 @@ jobs:
             [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
             public struct RECT { public int L, T, R, B; }
             public static List<IntPtr> Found = new List<IntPtr>();
-            public static uint TargetPid;
-            public static bool CollectMain(IntPtr h, IntPtr lp) {
-              uint pid; GetWindowThreadProcessId(h, out pid);
+            // Inno 是 stub 架构：下载的 exe 自解压后由 %TEMP% 里的新进程
+            // 持向导（37617497762 实证 pid 对不上）——按窗口类找，不按 pid。
+            public static bool CollectWizard(IntPtr h, IntPtr lp) {
+              if (!IsWindowVisible(h)) return true;
               StringBuilder cls = new StringBuilder(256); GetClassName(h, cls, 256);
-              if (pid == TargetPid && IsWindowVisible(h) && cls.ToString().StartsWith("T")) { Found.Add(h); }
+              if (cls.ToString() == "TWizardForm") { Found.Add(h); }
               return true;
             }
             public static bool CollectChild(IntPtr h, IntPtr lp) { Found.Add(h); return true; }
-            public static IntPtr FindMainWindow(uint pid) {
-              TargetPid = pid; Found.Clear();
-              EnumWindows(CollectMain, IntPtr.Zero);
+            public static IntPtr FindWizard() {
+              Found.Clear();
+              EnumWindows(CollectWizard, IntPtr.Zero);
               IntPtr best = IntPtr.Zero; int bestLen = -1;
               foreach (IntPtr h in Found) {
                 StringBuilder t = new StringBuilder(256); GetWindowText(h, t, 256);
@@ -160,20 +161,22 @@ jobs:
 
           $inst = (Get-Item "$PWD\soar-setup.exe").FullName
           $proc = Start-Process -FilePath $inst -PassThru
-          # 向导窗轮询（Inno 先解压到临时目录再出窗，60s 上限）
+          # 向导窗轮询（Inno 先解压到临时目录再出窗，60s 上限；stub 先退
+          # 不算失败，以向导窗为准）
           $wizard = [IntPtr]::Zero
           for ($i = 0; $i -lt 120; $i++) {
-            if ($proc.HasExited) {
+            $wizard = [Win32]::FindWizard()
+            if ($wizard -ne [IntPtr]::Zero) { break }
+            if ($proc.HasExited -and $i -gt 20) {
               $code = try { $proc.ExitCode } catch { 'unavailable' }
-              Write-Host "::error::installer exited before showing wizard, code $code"
+              Write-Host "::error::installer stub exited and no wizard window, stub code $code"
+              [Win32]::DumpAll()
               exit 1
             }
-            $wizard = [Win32]::FindMainWindow([uint32]$proc.Id)
-            if ($wizard -ne [IntPtr]::Zero) { break }
             Start-Sleep -Milliseconds 500
           }
           if ($wizard -eq [IntPtr]::Zero) {
-            Write-Host "::error::wizard window not found for pid $($proc.Id) after 60s; visible top-level windows:"
+            Write-Host "::error::wizard window (TWizardForm) not found after 60s; visible top-level windows:"
             [Win32]::DumpAll()
             exit 1
           }
