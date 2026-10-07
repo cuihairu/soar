@@ -17,6 +17,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  actions: write # 清理上一 attempt 残留的 pages artifact（见上传前自清步骤）
 
 concurrency:
   group: pages
@@ -44,6 +45,20 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
+      # 重跑（含重跑失败任务）会在同一 run 里再传一个同名 artifact：
+      # upload-pages-artifact 跨 attempt 不去重，deploy-pages 查到 2 个
+      # "github-pages" 就直接红（run 37575751947 的教训）。上传前清掉
+      # 上一 attempt 的残留，保证本次 deploy 恰好面对一个。
+      - name: Drop stale pages artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '.artifacts[] | select(.name == "github-pages") | .id' \
+          | while read -r id; do
+              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id"
+            done
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
