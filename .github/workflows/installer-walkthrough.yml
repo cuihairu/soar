@@ -3,10 +3,11 @@
 #
 # - 对象：滚动 nightly Release 里的 soar-setup-windows-x64.exe（手动触发
 #   前先确认 Daily Build 已出含本次修复的安装器）。
-# - 驱动方式：EnumWindows 找到向导主窗（Inno TSetupForm），EnumChildWindows
-#   找 TNewButton 按 Next/Install/Finish 文本 PostMessage(BM_CLICK) 翻页
-#   ——不依赖键盘焦点，规避 SetForegroundWindow 的前台锁。
-# - 截图面：welcome/dir/tasks/ready/installing/finished 六页 + 安装器
+# - 驱动方式：EnumWindows 按窗口类 TWizardForm 找向导主窗（Inno 是 stub
+#   架构，向导归 %TEMP% 新进程，不能按 pid 找），EnumChildWindows 找
+#   TNewButton 按 Finish/Install/Next 优先序 PostMessage(BM_CLICK) 翻页
+#   ——不依赖键盘焦点，规避 SetForegroundWindow 的前台锁；页面序自适应。
+# - 截图面：每页一张 before-*、Install 点击后补 installing 页 + 安装器
 #   exe 图标、装后 soar.exe/soarw.exe 图标（ExtractAssociatedIcon）+
 #   文件关联 DefaultIcon 注册表值。
 # - DPI 口径（如实）：runner 桌面只有 100% 一档；125%/150% 依赖 Inno
@@ -110,7 +111,7 @@ jobs:
               return true;
             }
             public static void DumpAll() { EnumWindows(CollectAll, IntPtr.Zero); }
-            // 诊断：向导全部子窗（class=text），按钮找不到时全量打印
+            // 诊断：向导全部子窗（class+text），按钮找不到时全量打印
             public static void DumpChildren(IntPtr wizard) {
               Found.Clear(); EnumChildWindows(wizard, CollectChild, IntPtr.Zero);
               foreach (IntPtr h in Found) {
@@ -150,8 +151,30 @@ jobs:
           }
 
           function Dump-Buttons([IntPtr]$Wizard) {
-            Write-Host "wizard children (class=text):"
+            Write-Host "wizard children (all, for button hunt):"
             [Win32]::DumpChildren($Wizard)
+          }
+
+          # 先起 stub、再等向导窗（Inno 先解压到临时目录再出窗，60s 上限；
+          # stub 先退不算失败，以向导窗为准——stub 与向导分属两个进程）。
+          $inst = (Get-Item "$PWD\soar-setup.exe").FullName
+          $proc = Start-Process -FilePath $inst -PassThru
+          $wizard = [IntPtr]::Zero
+          for ($i = 0; $i -lt 120; $i++) {
+            $wizard = [Win32]::FindWizard()
+            if ($wizard -ne [IntPtr]::Zero) { break }
+            if ($proc.HasExited -and $i -gt 20) {
+              $code = try { $proc.ExitCode } catch { 'unavailable' }
+              Write-Host "::error::installer stub exited and no wizard window, stub code $code"
+              [Win32]::DumpAll()
+              exit 1
+            }
+            Start-Sleep -Milliseconds 500
+          }
+          if ($wizard -eq [IntPtr]::Zero) {
+            Write-Host "::error::wizard window (TWizardForm) not found after 60s; visible top-level windows:"
+            [Win32]::DumpAll()
+            exit 1
           }
 
           # 通用翻页循环：截图当前页 → 点「优先 Finish > Install > Next」
@@ -187,28 +210,6 @@ jobs:
           if ($page -lt 3) {
             Write-Host "::error::walk ended after only $page pages, wizard flow unexpected"
             Dump-Buttons $wizard
-            exit 1
-          }
-
-          $inst = (Get-Item "$PWD\soar-setup.exe").FullName
-          $proc = Start-Process -FilePath $inst -PassThru
-          # 向导窗轮询（Inno 先解压到临时目录再出窗，60s 上限；stub 先退
-          # 不算失败，以向导窗为准）
-          $wizard = [IntPtr]::Zero
-          for ($i = 0; $i -lt 120; $i++) {
-            $wizard = [Win32]::FindWizard()
-            if ($wizard -ne [IntPtr]::Zero) { break }
-            if ($proc.HasExited -and $i -gt 20) {
-              $code = try { $proc.ExitCode } catch { 'unavailable' }
-              Write-Host "::error::installer stub exited and no wizard window, stub code $code"
-              [Win32]::DumpAll()
-              exit 1
-            }
-            Start-Sleep -Milliseconds 500
-          }
-          if ($wizard -eq [IntPtr]::Zero) {
-            Write-Host "::error::wizard window (TWizardForm) not found after 60s; visible top-level windows:"
-            [Win32]::DumpAll()
             exit 1
           }
 
