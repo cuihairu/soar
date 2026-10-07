@@ -770,14 +770,24 @@ jobs:
           if gh release view nightly > /dev/null 2>&1; then
             gh release edit nightly --title "Nightly Build (nightly)" --prerelease
             # gh release edit 不支持 --target：移动固定 tag 指向本次 commit
-            # （PATCH 失败兜底删重建，秒级窗口内完成）
+            # （PATCH 失败兜底删重建，秒级窗口内完成）。PATCH 失败原因
+            # 留痕再兜底：run 37581325647 里 PATCH 静默失败、DELETE 把
+            # tag 删掉后 POST 撞瞬时 403（"Resource not accessible by
+            # integration"，同 token 十小时前刚成功过，GitHub authz 层
+            # 抖动），tag 从此缺失、后续构建全在 POST 上红。兜底链对
+            # POST 重试一轮；再失败把原因打出来再死，不留无头案。
             if ! gh api -X PATCH \
                 "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
-                -f sha="$GITHUB_SHA" -F force=true > /dev/null 2>&1; then
+                -f sha="$GITHUB_SHA" -F force=true > /tmp/patch-ref.log 2>&1; then
+              cat /tmp/patch-ref.log >&2 || true
+              sleep 5
               gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
                 || true
               gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-                -f ref=refs/tags/nightly -f sha="$GITHUB_SHA"
+                -f ref=refs/tags/nightly -f sha="$GITHUB_SHA" \
+              || { sleep 8;
+                   gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                     -f ref=refs/tags/nightly -f sha="$GITHUB_SHA"; }
             fi
           else
             gh release create nightly --target "$GITHUB_SHA" \
