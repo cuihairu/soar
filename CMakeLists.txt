@@ -156,8 +156,12 @@ target_link_libraries(soar_p2p PUBLIC torrent-rasterbar)
 
 # Pure UI logic (auto-hide state machine, recent store, toast, time format:
 # docs/ui-design.md §5.3) — no SDL/ImGui dependency, shared by the app and
-# the unit-test suite.
-add_library(soar_app_ui STATIC src/app/ui/ui_state.cpp)
+# the unit-test suite. dir_scan.cpp is the folder-import half of the same
+# contract: directory listing/grouping for open-folder + the playlist tree.
+add_library(soar_app_ui STATIC
+  src/app/ui/ui_state.cpp
+  src/app/ui/dir_scan.cpp
+)
 target_compile_features(soar_app_ui PUBLIC cxx_std_17)
 target_include_directories(soar_app_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/app)
 
