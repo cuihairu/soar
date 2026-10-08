@@ -1992,29 +1992,72 @@ class PlayerHud {
       // vectors, and iterating the very vectors those calls mutate leaves
       // the loop's index dangling (the Recent overlay learned this first).
       const std::vector<std::string> entries = playlist_.entries();
-      for (std::size_t i = 0; i < entries.size(); ++i) {
-        std::string label = i == playlist_.current() ? "> " : "   ";
-        label += displayName(entries[i]);
-        // AllowOverlap: the Selectable fills the row width and would
-        // otherwise hold the hover over the SameLine "x" button, whose
-        // clicks would never land (hover goes to the first claimant).
-        if (ImGui::Selectable(label.c_str(), i == playlist_.current(),
-                              ImGuiSelectableFlags_AllowOverlap)) {
-          openPlaylistEntry(i, nowMs());
-        }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", entries[i].c_str());
-        ImGui::SameLine();
-        ImGui::PushID(static_cast<int>(i));
-        if (ImGui::SmallButton("x")) {
-          if (playlist_.remove(i)) {
-            st_.toast.show("Removed " + displayName(entries[i]), nowMs());
+      const std::vector<DirGroup> groups = groupByDirectory(entries);
+      if (groups.size() > 1) {
+        // Folder tree (v0.2.1): one node per parent directory, first
+        // occurrence order, expanded on first sight (Cond_Once — the user
+        // can collapse nodes and the choice sticks for the session). A
+        // node title shows the folder name with its queue count; the full
+        // path is the tooltip. "Play group" starts at the group's first
+        // queue entry, which walks the rest of the group in order.
+        for (std::size_t g = 0; g < groups.size(); ++g) {
+          const DirGroup& group = groups[g];
+          ImGui::PushID(static_cast<int>(g));
+          const std::string title =
+              (group.directory.empty() ? std::string("Other sources")
+                                       : baseName(group.directory)) +
+              "  (" + std::to_string(group.indices.size()) + ")";
+          ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+          const bool opened = ImGui::TreeNode(title.c_str());
+          if (ImGui::IsItemHovered() && !group.directory.empty()) {
+            ImGui::SetTooltip("%s", group.directory.c_str());
           }
+          if (opened) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Play group")) {
+              openPlaylistEntry(group.indices[0], nowMs());
+            }
+            for (const std::size_t idx : group.indices) {
+              drawPlaylistRow(entries, idx);
+            }
+            ImGui::TreePop();
+          }
+          ImGui::PopID();
         }
-        ImGui::PopID();
+      } else {
+        // Zero or one folder: a tree node would only add a click between
+        // the user and the single run of entries, so keep the flat list.
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+          drawPlaylistRow(entries, i);
+        }
       }
     }
     ImGui::End();
     if (!open) st_.overlay = Overlay::None;
+  }
+
+  // One queue row: current marker, display name, full-source tooltip, and
+  // the trailing remove button. A row click jumps to the entry (the
+  // overlay stays open so the list can be stepped through).
+  void drawPlaylistRow(const std::vector<std::string>& entries, std::size_t i) {
+    std::string label = i == playlist_.current() ? "> " : "   ";
+    label += displayName(entries[i]);
+    // AllowOverlap: the Selectable fills the row width and would otherwise
+    // hold the hover over the SameLine "x" button, whose clicks would never
+    // land (hover goes to the first claimant).
+    if (ImGui::Selectable(label.c_str(), i == playlist_.current(),
+                          ImGuiSelectableFlags_AllowOverlap)) {
+      openPlaylistEntry(i, nowMs());
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", entries[i].c_str());
+    ImGui::SameLine();
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::SmallButton("x")) {
+      if (playlist_.remove(i)) {
+        st_.toast.show("Removed " + displayName(entries[i]), nowMs());
+      }
+    }
+    ImGui::PopID();
   }
 
   void drawHelpOverlay() {
