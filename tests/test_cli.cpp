@@ -997,7 +997,19 @@ if mode == "playlist":
     # queue and the current entry untouched. Keys only until the overlay
     # buttons are needed; the Playlist overlay (P) stays open the whole
     # run — overlay windows do not swallow keys, only combo popups do.
-    # Coordinates probed under SOAR_UI_BITMAP_FONT=1. Expected media-info
+    # Coordinates probed under SOAR_UI_BITMAP_FONT=1, re-probed for v0.2.1
+    # with hover-band scans and label-hash click checks on a live Xvfb:
+    # the header is [Open folder...][Loop][Shuffle] with the button band at
+    # y~131-147 and Loop spanning x~383-462 (center 422,139 — the slot
+    # Loop occupied before v0.2.1 now belongs to "Open folder...", and
+    # anything above y~130 is the overlay title bar, which eats clicks).
+    # Each row's trailing "x" button follows the row text (SameLine), so
+    # its x moves with the entry name and with the "> " current marker
+    # (one character narrower): for these siblings it sits at
+    # ~(343/352/379, 165/182/203). A click landing just right of the
+    # button hits the row Selectable instead (jump semantics), which is
+    # why the x is probed per row.
+    # Expected media-info
     # trail, launch included, each step tagged with the gesture that
     # produced it (the two fixtures are told apart by track count, so the
     # trail needs no screenshots):
@@ -1013,42 +1025,74 @@ if mode == "playlist":
     # why every n here either targets a real entry or an empty queue.
     time.sleep(2.2)
     focus()
-    key(d.keysym_to_keycode(0x6e))  # n: jump to the queued entry
+    # The beat is events-driven: the CLI tees its output to a file (the
+    # caller passes its path as argv[4]) and every gesture that must land
+    # inside a playback window polls that trail for the exact open
+    # markers instead of trusting a hard-coded sleep budget — fixture
+    # open latency and long coverage-build frames made every fixed
+    # budget a coin flip (clicks routinely landed after the EOF they
+    # were supposed to precede). Exit code 5 = a marker never arrived;
+    # the test's own assertions would flag the run anyway, this just
+    # says the injector is the one that saw it.
+    tee = sys.argv[4] if len(sys.argv) > 4 else ""
+
+    def marker_count(marker):
+        try:
+            with open(tee) as f:
+                return f.read().count(marker)
+        except OSError:
+            return 0
+
+    def wait_marker(marker, want, timeout=45.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if marker_count(marker) >= want:
+                return True
+            time.sleep(0.25)
+        return False
+
+    n = d.keysym_to_keycode(0x6e)
+    p = d.keysym_to_keycode(0x70)
+    i = d.keysym_to_keycode(0x69)
+    key(n)                          # n: jump to the queued entry
     time.sleep(1.0)
-    key(d.keysym_to_keycode(0x70))  # p: open the Playlist overlay
+    key(p)                          # p: open the Playlist overlay
     time.sleep(0.8)
-    key(d.keysym_to_keycode(0x6e))  # n onto the dead entry: open fails,
+    key(n)                          # n onto the dead entry: open fails,
     time.sleep(0.8)                 # current entry and queue stay untouched
-    key(d.keysym_to_keycode(0x6e))  # n again: the failed open is
+    key(n)                          # n again: the failed open is
     time.sleep(0.8)                 # idempotent, so a repeat only re-fails
     sh = d.keysym_to_keycode(0xFFE1)  # Shift_L
     xtest.fake_input(d, X.KeyPress, sh); d.sync()
-    key(d.keysym_to_keycode(0x6e))  # Shift+N: back to the first entry
+    key(n)                          # Shift+N: back to the first entry
     xtest.fake_input(d, X.KeyRelease, sh); d.sync()
     time.sleep(0.8)
-    moved(383, 204); time.sleep(0.15)
-    button(1); time.sleep(0.5)      # "x" on row 3 ("   missing.mp4"):
+    moved(379, 203); time.sleep(0.15)
+    holdclick(1); time.sleep(0.5)   # "x" on row 3 ("   missing.mp4"):
                                     # drop the dead entry from the queue
-    time.sleep(6.5)  # across the first entry's natural EOF: auto-advance
-    moved(300, 140); time.sleep(0.15)
-    button(1); time.sleep(0.5)      # Loop button: off -> all
-    time.sleep(6.5)  # across the queued entry's EOF: Loop::All wraps
-    key(d.keysym_to_keycode(0x69))  # i: info overlay reads "Loop all"
+    if not wait_marker("tracks=3 selected", 2):
+        sys.exit(5)                 # one EOF auto-advanced into two
+    moved(422, 139); time.sleep(0.15)
+    holdclick(1); time.sleep(0.5)   # Loop button: off -> all (two mid-play)
+    if not wait_marker("tracks=1 selected", 3):
+        sys.exit(5)                 # two EOF wrapped into one under All
+    key(i)                          # i: info overlay reads "Loop all"
     time.sleep(0.9)
-    key(d.keysym_to_keycode(0x69))  # ... and close it (overlays are
+    key(i)                          # ... and close it (overlays are
     time.sleep(0.4)                 # single-valued, so re-open the queue)
-    key(d.keysym_to_keycode(0x70))  # p: Playlist overlay again
+    key(p)                          # p: Playlist overlay again
     time.sleep(0.6)
-    moved(300, 140); time.sleep(0.15)
-    button(1); time.sleep(0.5)      # Loop button: all -> one
-    time.sleep(4.6)  # across the wrapped entry's EOF: One replays it
-    moved(400, 184); time.sleep(0.15)
-    button(1); time.sleep(0.7)      # "x" on row 2: drop the queued entry
-    moved(393, 165); time.sleep(0.15)
-    button(1); time.sleep(0.7)      # "x" on row 1: queue is empty, hint
+    moved(422, 139); time.sleep(0.15)
+    holdclick(1); time.sleep(0.5)   # Loop button: all -> one (one mid-play)
+    if not wait_marker("tracks=1 selected", 4):
+        sys.exit(5)                 # one EOF replayed under One
+    moved(352, 182); time.sleep(0.15)
+    holdclick(1); time.sleep(0.7)   # "x" on row 2: drop the queued entry
+    moved(343, 165); time.sleep(0.15)
+    holdclick(1); time.sleep(0.7)   # "x" on row 1: queue is empty, hint
                                     # shows (removing the playing entry
                                     # only re-points, playback runs on)
-    key(d.keysym_to_keycode(0x6e))  # n on an empty queue: toast, no crash
+    key(n)                          # n on an empty queue: toast, no crash
     time.sleep(0.8)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -1259,7 +1303,8 @@ while time.monotonic() < deadline:
 sys.exit(4)
 )PY";
 
-RunResult runCli(const std::vector<std::string>& args, int child_timeout_secs = 600) {
+RunResult runCli(const std::vector<std::string>& args, int child_timeout_secs = 600,
+                const std::string& tee_path = {}) {
   // Windows _popen routes through `cmd.exe /C`, which (for lines with more
   // than two quotes) strips the first and the last quote character:
   // `"exe" "a" "b"` becomes `exe" "a" "b` and fails to run at all. Quoting
@@ -1300,11 +1345,22 @@ RunResult runCli(const std::vector<std::string>& args, int child_timeout_secs = 
   RunResult result;
   FILE* pipe = SOAR_POPEN(cmd.c_str(), "r");
   REQUIRE(pipe != nullptr);
+  // Optional tee: the same captured bytes, flushed line-by-line to a file
+  // so a concurrently running injector (the X11 playlist walkthrough)
+  // can poll the CLI's event trail and drive its clicks off observed
+  // playback state instead of a fixed sleep budget — open latency and
+  // long coverage frames made every hard-coded budget a coin flip.
+  FILE* tee = tee_path.empty() ? nullptr : std::fopen(tee_path.c_str(), "w");
   char buffer[512];
   std::size_t n = 0;
   while ((n = fread(buffer, 1, sizeof(buffer), pipe)) > 0) {
     result.output.append(buffer, n);
+    if (tee != nullptr) {
+      std::fwrite(buffer, 1, n, tee);
+      std::fflush(tee);
+    }
   }
+  if (tee != nullptr) std::fclose(tee);
 
 #ifdef _WIN32
   result.exit_code = SOAR_PCLOSE(pipe);
@@ -3289,11 +3345,34 @@ TEST_CASE("windowed FFmpeg run walks the play queue end to end") {
     return;
   }
 
+  // All three queue entries are staged as siblings in one scratch
+  // directory. The overlay's folder tree view (v0.2.1) kicks in as soon
+  // as the queue spans two parent directories, and its extra tree-node
+  // rows would move every row the injector clicks (probed against the
+  // flat layout). One parent keeps that layout; symlinks keep the
+  // fixtures' track-count identities, and the dead sibling is simply a
+  // path that does not exist. The CLI also tees its output to a file so
+  // the injector can drive its clicks off observed playback state
+  // (docs note in the injector's playlist branch) — hence this block
+  // lives before the fork.
+  const std::string queue_dir = "/tmp/soar_playlist_queue_" + std::to_string(::getpid());
+  std::error_code queue_ec;
+  std::filesystem::remove_all(queue_dir, queue_ec);
+  REQUIRE(std::filesystem::create_directories(queue_dir, queue_ec));
+  const std::string first_q = queue_dir + "/one.mkv";
+  const std::string second_q = queue_dir + "/two.mkv";
+  const std::string dead_q = queue_dir + "/missing.mp4";
+  std::filesystem::create_symlink(first, first_q, queue_ec);
+  REQUIRE(!queue_ec);
+  std::filesystem::create_symlink(second, second_q, queue_ec);
+  REQUIRE(!queue_ec);
+  const std::string cli_log = queue_dir + "/cli.log";
+
   pid_t injector = ::fork();
   REQUIRE(injector >= 0);
   if (injector == 0) {
     ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
-             "soar", "playlist", static_cast<char*>(nullptr));
+             "soar", "playlist", cli_log.c_str(), static_cast<char*>(nullptr));
     _exit(127);
   }
 
@@ -3312,8 +3391,7 @@ TEST_CASE("windowed FFmpeg run walks the play queue end to end") {
   // without any screenshots. The third path does not exist: it only gives
   // the queue a dead entry, whose failed open (n onto it) and removal are
   // part of the scripted tour.
-  const auto run =
-      runCli({"--backend=ffmpeg", first, second, "/nonexistent-dir/missing.mp4"});
+  const auto run = runCli({"--backend=ffmpeg", first_q, second_q, dead_q}, 600, cli_log);
 
   std::printf("x11 playlist window test: cli exit=%d, output:\n%s\n", run.exit_code,
               run.output.c_str());
@@ -3362,6 +3440,7 @@ TEST_CASE("windowed FFmpeg run walks the play queue end to end") {
     CHECK(run.output.find(kT3, after_replay) == std::string::npos);
     CHECK(run.output.find(kT1, after_replay) == std::string::npos);
   }
+  std::filesystem::remove_all(queue_dir, queue_ec);
 #endif
 #endif
 #endif
