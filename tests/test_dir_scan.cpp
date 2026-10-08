@@ -12,7 +12,14 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
 #include <vector>
+
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 using soar::app::groupByDirectory;
@@ -51,11 +58,20 @@ struct ScratchTree {
 
 const std::string& scratchBase() {
   static const std::string base = [] {
-    std::string tmpl = "/tmp/soar_dir_scan_XXXXXX";
-    std::vector<char> buf(tmpl.begin(), tmpl.end());
-    buf.push_back('\0');
-    const char* dir = ::mkdtemp(buf.data());
-    return std::string(dir ? dir : "/tmp");
+    // mkdtemp is POSIX-only (MSVC has none): the standard temp directory
+    // plus the pid keeps concurrent test processes out of each other's
+    // trees just as well.
+    std::error_code ec;
+    fs::path dir = fs::temp_directory_path(ec);
+    if (ec) dir = fs::path("/tmp");
+#ifdef _WIN32
+    dir /= "soar_dir_scan_" + std::to_string(::GetCurrentProcessId());
+#else
+    dir /= "soar_dir_scan_" + std::to_string(::getpid());
+#endif
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    return dir.string();
   }();
   return base;
 }
