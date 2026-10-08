@@ -17,6 +17,7 @@
 #include "soar/core/player.h"
 #include "soar/core/subtitle_provider.h"
 #include "startup_report.h"
+#include "ui/dir_scan.h"
 #include "ui_state.h"
 
 #include <fmt/format.h>
@@ -90,11 +91,34 @@ const char* trackTypeName(TrackType t) {
 }
 
 // Which overlay page is open; at most one at a time (docs/ui-design.md §2).
-enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist };
+enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist, DirPick };
 
 std::string baseName(const std::string& uri) {
   const std::size_t slash = uri.find_last_of("/\\");
   return slash == std::string::npos ? uri : uri.substr(slash + 1);
+}
+
+// Nearest strict ancestor of a browsed directory, or "" once the walk hits
+// a filesystem root ("C:\", "/") or a top-level relative name — the picker
+// hides its ".." row there. Trailing separators are cosmetic only.
+std::string parentOfDir(const std::string& dir) {
+  if (dir.size() <= 1) return "";
+  std::size_t end = dir.size();
+  while (end > 0 && (dir[end - 1] == '/' || dir[end - 1] == '\\')) --end;
+  if (end == 0) return "";
+  const std::size_t slash = dir.find_last_of("/\\", end - 1);
+  if (slash == std::string::npos) return "";
+  std::size_t keep = slash;
+  while (keep > 0 && (dir[keep - 1] == '/' || dir[keep - 1] == '\\')) --keep;
+  // "/a" -> "/" stays the root form; "C:/x" collapses onto "C:".
+  return keep == 0 ? dir.substr(0, slash + 1) : dir.substr(0, keep);
+}
+
+// Joins a picked subdirectory name onto the browsed directory. Internal
+// paths use '/' uniformly; Windows APIs accept it too.
+std::string joinDir(const std::string& dir, const std::string& name) {
+  if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') return dir + "/" + name;
+  return dir + name;
 }
 
 // Letterbox destination: the frame scaled to fit, centered (docs §4 — the
@@ -355,8 +379,10 @@ class PlayerHud {
       : player_(player), cfg_(cfg), window_(window), recent_(cfg.recent_path),
         current_uri_(cfg.initial_uri), source_label_(cfg.source_label),
         torrent_(cfg.torrent), torrent_pending_(cfg.torrent != nullptr),
+        recent_dirs_(defaultRecentDirsPath(), 8),
         subtitle_fonts_(loadSubtitleFonts()) {
     recent_.load();
+    recent_dirs_.load();
     if (cfg.torrent == nullptr) {
       recordOpen(cfg.initial_uri);
       // Playlist seeding (docs/mvp.md §2): the CLI-opened source plays
@@ -511,9 +537,15 @@ class PlayerHud {
             playlistStep(shift, now);
             return;
           case SDLK_o:
-            // Open-a-file entry (BUGS.md #3): the Windows common dialog;
+            // Ctrl+O is the open-a-folder entry (v0.2.1): the in-app picker
+            // with the recursive toggle and the recent-dirs list. Plain O
+            // stays open-a-file (BUGS.md #3): the Windows common dialog;
             // elsewhere the attempt degrades to a toast saying what works.
-            openFilePicker();
+            if ((e.key.keysym.mod & KMOD_CTRL) != 0) {
+              openDirPicker();
+            } else {
+              openFilePicker();
+            }
             return;
           // Subtitle keys (v0.2), back on since the X11 drive scripts
           // pin every coordinate they used to disturb (subsdrive presses
@@ -1155,6 +1187,51 @@ class PlayerHud {
 #endif
   }
 
+  // Open-a-folder entry (v0.2.1): the in-app directory picker. Starts at
+  // the most recent folder, falling back to $HOME (then the cwd) so the
+  // first use still lands somewhere browsable.
+  void openDirPicker() {
+    if (dirpick_path_.empty()) {
+      const std::vector<std::string>& dirs = recent_dirs_.entries();
+      if (!dirs.empty()) {
+        dirpick_path_ = dirs.front();
+      } else if (const char* home = std::getenv("HOME"); home && *home) {
+        dirpick_path_ = home;
+      } else {
+        dirpick_path_ = ".";
+      }
+    }
+    toggleOverlay(Overlay::DirPick);
+  }
+
+  // Folder import: every media file under `dir` (recursive per the picker
+  // toggle) joins the queue; an empty queue starts playing the first one —
+  // importing into a fresh window should leave something on screen, while
+  // importing into a running session is append-only. The folder joins the
+  // recent-dirs MRU either way (it was picked, even if it held no media).
+  void importDirectory(const std::string& dir, milliseconds now) {
+    const std::vector<std::string> files = listMediaFiles(dir, dirpick_recursive_);
+    if (recent_dirs_.add(dir)) recent_dirs_.save();
+    if (files.empty()) {
+      st_.toast.show("No media files in " + baseName(dir), now);
+      return;
+    }
+    const bool was_empty = playlist_.empty() || playlist_.current() == PlaylistStore::kNone;
+    for (const std::string& f : files) playlist_.add(f);
+    st_.overlay = Overlay::None;
+    // Playing into a fresh queue happens first; on an open failure the
+    // backend's "Open failed" toast is the thing that must stay up, so the
+    // success line is skipped entirely. Otherwise the import toast runs
+    // second on purpose: which fact matters more ("5 files imported") is
+    // the import, not the "Playlist i/n" position line beneath it.
+    if (was_empty && !openPlaylistEntry(playlist_.size() - files.size(), now)) return;
+    st_.toast.show((was_empty ? "Imported " : "Added ") +
+                       std::to_string(files.size()) + " file" +
+                       (files.size() == 1 ? "" : "s") +
+                       (was_empty ? "" : " to queue"),
+                   now);
+  }
+
   // Reopen path for Recent/DnD; Player::open closes existing media first
   // (the FFmpeg backend re-enters cleanly — verified in its open()). Both
   // are user-initiated opens, so the source also joins the playlist as the
@@ -1174,12 +1251,14 @@ class PlayerHud {
 
   // Playlist navigation (docs/mvp.md §2). Opens entry `index` from the
   // queue without re-adding it — add() is for user-initiated opens.
-  void openPlaylistEntry(std::size_t index, milliseconds now) {
+  // Returns whether the entry actually opened (the import flow needs to
+  // know so its success toast does not bury an "Open failed").
+  bool openPlaylistEntry(std::size_t index, milliseconds now) {
     const std::vector<std::string> entries = playlist_.entries();
-    if (index >= entries.size()) return;
+    if (index >= entries.size()) return false;
     if (!player_.open(soar::MediaSource{entries[index], cfg_.cache_dir})) {
       st_.toast.show("Open failed: " + player_.lastError(), now);
-      return;
+      return false;
     }
     recordOpen(entries[index]);
     playlist_.setCurrent(index);
@@ -1189,6 +1268,7 @@ class PlayerHud {
                        displayName(entries[index]),
                    now);
     player_.play();
+    return true;
   }
 
   void playlistStep(bool backward, milliseconds now) {
@@ -1526,9 +1606,10 @@ class PlayerHud {
         ImGui::TextDisabled("%s", stateName(player_.state()));
         ImGui::Spacing();
 #ifdef _WIN32
-        ImGui::TextDisabled("%s", "Click, press O, or drop a file here");
+        ImGui::TextDisabled("%s",
+                            "Click, press O (file) or Ctrl+O (folder), or drop");
 #else
-        ImGui::TextDisabled("%s", "Drop a file here - R recent - H shortcuts");
+        ImGui::TextDisabled("%s", "Drop a file here - Ctrl+O folder - R recent - H shortcuts");
 #endif
       } else {
         ImGui::TextUnformatted(displayName(current_uri_).c_str());
@@ -1543,7 +1624,7 @@ class PlayerHud {
           ImGui::TextDisabled("%s", stateName(player_.state()));
         }
         ImGui::Spacing();
-        ImGui::TextDisabled("%s", "Drop a file here - R recent - H shortcuts");
+        ImGui::TextDisabled("%s", "Drop a file here - Ctrl+O folder - R recent - H shortcuts");
       }
     }
     ImGui::End();
@@ -1714,6 +1795,7 @@ class PlayerHud {
       case Overlay::Help: drawHelpOverlay(); return;
       case Overlay::Subtitle: drawSubtitleOverlay(); return;
       case Overlay::Playlist: drawPlaylistOverlay(); return;
+      case Overlay::DirPick: drawDirPickOverlay(); return;
     }
   }
 
@@ -1811,6 +1893,67 @@ class PlayerHud {
     if (!open) st_.overlay = Overlay::None;
   }
 
+  // The open-folder picker (v0.2.1). In-app on purpose: it carries the
+  // recursive-import toggle and the recent-dirs shortcuts, which native
+  // dialogs cannot, and it renders identically on every platform. A click
+  // on a row descends into that subdirectory, ".." climbs out, and the
+  // import button acts on the browsed directory itself. The media count
+  // under the browsed directory is cached per (path, recursive) pair — a
+  // deep tree must not be re-walked on every frame while the dialog is up.
+  void drawDirPickOverlay() {
+    bool open = true;
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_Appearing);
+    if (ImGui::Begin("Open folder", &open, ImGuiWindowFlags_NoSavedSettings)) {
+      ImGui::TextDisabled("%s", dirpick_path_.c_str());
+      ImGui::Checkbox("Include subfolders", &dirpick_recursive_);
+      ImGui::Separator();
+
+      const std::vector<std::string>& dirs = recent_dirs_.entries();
+      if (!dirs.empty() && ImGui::CollapsingHeader("Recent folders")) {
+        const std::vector<std::string> snapshot = dirs;  // pick rewrites it
+        for (const std::string& d : snapshot) {
+          if (ImGui::Selectable(baseName(d).c_str())) dirpick_path_ = d;
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.c_str());
+        }
+      }
+
+      // Directory rows. The child region keeps the import button pinned
+      // below the scrollable list.
+      if (ImGui::BeginChild("dirs", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()))) {
+        const std::string up = parentOfDir(dirpick_path_);
+        if (!up.empty() && ImGui::Selectable("..")) dirpick_path_ = up;
+        const std::vector<std::string> subs = listSubdirectories(dirpick_path_);
+        for (const std::string& s : subs) {
+          if (ImGui::Selectable((s + "/").c_str())) dirpick_path_ = joinDir(dirpick_path_, s);
+        }
+        if (up.empty() && subs.empty()) ImGui::TextDisabled("%s", "No subfolders");
+      }
+      ImGui::EndChild();
+
+      if (dirpick_count_valid_ && dirpick_counted_path_ == dirpick_path_ &&
+          dirpick_counted_recursive_ == dirpick_recursive_) {
+        // cache hit — the walk below is skipped
+      } else {
+        dirpick_count_ = listMediaFiles(dirpick_path_, dirpick_recursive_).size();
+        dirpick_counted_path_ = dirpick_path_;
+        dirpick_counted_recursive_ = dirpick_recursive_;
+        dirpick_count_valid_ = true;
+      }
+      ImGui::BeginDisabled(dirpick_count_ == 0);
+      char label[128];
+      std::snprintf(label, sizeof(label), "Import this folder (%zu media file%s%s)",
+                    dirpick_count_, dirpick_count_ == 1 ? "" : "s",
+                    dirpick_recursive_ ? ", with subfolders" : "");
+      if (ImGui::Button(label)) importDirectory(dirpick_path_, nowMs());
+      ImGui::EndDisabled();
+    }
+    ImGui::End();
+    if (!open) st_.overlay = Overlay::None;
+  }
+
   // The play queue (docs/mvp.md §2). Rows show the playing entry with a
   // ">" marker; a row click jumps to it (the overlay stays open so the
   // list can be stepped through), the trailing "x" removes the entry —
@@ -1824,6 +1967,10 @@ class PlayerHud {
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(460, 340), ImGuiCond_Appearing);
     if (ImGui::Begin("Playlist", &open, ImGuiWindowFlags_NoSavedSettings)) {
+      if (ImGui::SmallButton("Open folder...")) {
+        openDirPicker();
+      }
+      ImGui::SameLine();
       const char* loop_label = playlist_.loop() == PlaylistStore::Loop::Off
                                    ? "Loop: off"
                                    : playlist_.loop() == PlaylistStore::Loop::All
@@ -1880,6 +2027,7 @@ class PlayerHud {
       static const char* const kRows[][2] = {
           {"Space / K", "Play / pause"},
           {"O", "Open a file (Windows dialog)"},
+          {"Ctrl+O", "Open a folder into the queue"},
           {"Left / Right", "Seek -5s / +5s"},
           {"Shift+Left / Right", "Seek -1s / +1s"},
           {"PgUp / PgDn", "Seek -60s / +60s"},
@@ -2064,6 +2212,18 @@ class PlayerHud {
   // polls phase() each frame and opens the bridge URL on Serving.
   soar::p2p::TorrentStream* torrent_ = nullptr;
   bool torrent_pending_ = false;
+  // Open-folder flow (v0.2.1): recent directories MRU (smaller cap than
+  // files), the picker's browse position, and the recursive-import choice
+  // (kept for the session so repeated imports share one setting).
+  RecentStore recent_dirs_;
+  std::string dirpick_path_;
+  bool dirpick_recursive_ = false;
+  // Cached "how many media files are under the browsed folder" — re-walked
+  // only when the picker's path or recursive toggle changes, never per frame.
+  std::size_t dirpick_count_ = 0;
+  bool dirpick_count_valid_ = false;
+  std::string dirpick_counted_path_;
+  bool dirpick_counted_recursive_ = false;
   SubtitleFonts subtitle_fonts_;
   // Enumerates sidecar subtitle files next to the media (§6). Stateless and
   // cheap, so it lives with the HUD rather than in the backend: the directory

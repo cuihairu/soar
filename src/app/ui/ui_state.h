@@ -91,20 +91,23 @@ class Toast {
 // MRU list of opened sources (docs/ui-design.md §2): mpv.net remembers 15
 // (its --recent-count default), IINA records recent files by default — the
 // v0.1 cap matches. Persisted as one URI per line via tmp+rename (the same
-// atomic-write shape as the HttpCache meta file).
+// atomic-write shape as the HttpCache meta file). The same class also
+// stores recent *folders* for the open-directory flow (v0.2.1): same file
+// shape, smaller cap via the constructor argument.
 class RecentStore {
  public:
   static constexpr std::size_t kMaxEntries = 15;
 
-  explicit RecentStore(std::string path) : path_(std::move(path)) {}
+  explicit RecentStore(std::string path, std::size_t max_entries = kMaxEntries)
+      : path_(std::move(path)), max_entries_(max_entries) {}
 
   // Reads the file if present. A missing file is an empty list, not an
   // error; corrupt content degrades to whatever prefix parses (empty lines
   // and whitespace-only entries are dropped).
   void load();
 
-  // Adds `uri` at the front (moving an existing entry), trims to
-  // kMaxEntries, returns whether the stored list changed.
+  // Adds `uri` at the front (moving an existing entry), trims to the cap,
+  // returns whether the stored list changed.
   bool add(const std::string& uri);
 
   const std::vector<std::string>& entries() const { return entries_; }
@@ -113,6 +116,7 @@ class RecentStore {
 
  private:
   std::string path_;
+  std::size_t max_entries_;
   std::vector<std::string> entries_;
 };
 
@@ -203,6 +207,9 @@ class PlaylistStore {
 
 // XDG state dir on POSIX (APPDATA on Windows): <dir>/soar/recent.txt.
 std::string defaultRecentPath();
+
+// Same directory, recent-dirs.txt — the open-folder MRU (v0.2.1).
+std::string defaultRecentDirsPath();
 
 }  // namespace soar::app
 

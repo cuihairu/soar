@@ -92,7 +92,7 @@ void RecentStore::load() {
     if (std::find(entries_.begin(), entries_.end(), line) == entries_.end()) {
       entries_.push_back(line);
     }
-    if (entries_.size() >= kMaxEntries) break;
+    if (entries_.size() >= max_entries_) break;
   }
 }
 
@@ -103,8 +103,8 @@ bool RecentStore::add(const std::string& uri) {
   const bool already_first = it != entries_.end() && it == entries_.begin();
   if (it != entries_.end()) entries_.erase(it);
   entries_.insert(entries_.begin(), uri);
-  if (entries_.size() > kMaxEntries) {
-    entries_.resize(kMaxEntries);
+  if (entries_.size() > max_entries_) {
+    entries_.resize(max_entries_);
   }
   return !already_first;
 }
@@ -126,6 +126,21 @@ bool RecentStore::save() const {
   std::remove(path_.c_str());
 #endif
   return std::rename(tmp.c_str(), path_.c_str()) == 0;
+}
+
+std::string defaultRecentDirsPath() {
+  const char* dir = nullptr;
+#ifdef _WIN32
+  dir = std::getenv("APPDATA");
+  if (dir && *dir) return std::string(dir) + "\\soar\\recent-dirs.txt";
+  return "soar-recent-dirs.txt";
+#else
+  dir = std::getenv("XDG_STATE_HOME");
+  if (dir && *dir) return std::string(dir) + "/soar/recent-dirs.txt";
+  const char* home = std::getenv("HOME");
+  if (home && *home) return std::string(home) + "/.local/state/soar/recent-dirs.txt";
+  return "soar-recent-dirs.txt";
+#endif
 }
 
 std::string defaultRecentPath() {

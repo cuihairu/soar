@@ -174,6 +174,24 @@ TEST_CASE("recent store caps at 15 and keeps the newest first") {
   CHECK(store.entries().back() == "uri-5");  // the six oldest fell off
 }
 
+TEST_CASE("recent store honors a constructor-set smaller cap") {
+  // The open-folder MRU (v0.2.1) reuses this store with a cap of 8.
+  RecentStore store(kScratch + "/recent_dirs_cap.txt", 8);
+  for (int i = 0; i < 12; ++i) {
+    store.add("dir-" + std::to_string(i));
+  }
+  REQUIRE(store.entries().size() == 8);
+  CHECK(store.entries().front() == "dir-11");
+  CHECK(store.entries().back() == "dir-4");  // the four oldest fell off
+  store.save();
+
+  // load() applies the same cap to an over-long file instead of trusting it.
+  RecentStore reloaded(kScratch + "/recent_dirs_cap.txt", 8);
+  reloaded.load();
+  REQUIRE(reloaded.entries().size() == 8);
+  CHECK(reloaded.entries().front() == "dir-11");
+}
+
 TEST_CASE("recent store load tolerates hand-edited files") {
   const std::string path = kScratch + "/recent_manual.txt";
   // Windows CRLF, blank lines, padded entries, duplicates — the loader
