@@ -297,6 +297,31 @@ TEST_CASE("defaultRecentPath follows XDG_STATE_HOME then HOME") {
   // Not a fixture leak: restore nothing — XDG_STATE_HOME unset is the
   // default state for the next test binary run.
 }
+
+TEST_CASE("defaultRecentDirsPath follows the same XDG-then-HOME ladder") {
+  // The directory MRU (v0.2.1) reuses the file store's path ladder with a
+  // different leaf name; the folder picker's recent shortcuts live here.
+  const std::string scratch = kScratch + "/xdgdirs";
+
+  ::setenv("XDG_STATE_HOME", scratch.c_str(), 1);
+  CHECK(soar::app::defaultRecentDirsPath() == scratch + "/soar/recent-dirs.txt");
+
+  ::unsetenv("XDG_STATE_HOME");
+  const char* home = std::getenv("HOME");
+  REQUIRE(home != nullptr);
+  CHECK(soar::app::defaultRecentDirsPath() ==
+        std::string(home) + "/.local/state/soar/recent-dirs.txt");
+
+  ::unsetenv("HOME");
+  CHECK(soar::app::defaultRecentDirsPath() == "soar-recent-dirs.txt");
+  ::setenv("HOME", home, 1);
+
+  // An empty value counts as unset here too, exactly like the file path.
+  ::setenv("XDG_STATE_HOME", "", 1);
+  CHECK(soar::app::defaultRecentDirsPath() ==
+        std::string(home) + "/.local/state/soar/recent-dirs.txt");
+  ::unsetenv("XDG_STATE_HOME");
+}
 #endif
 
 //=============================================================================
@@ -676,4 +701,44 @@ TEST_CASE("PlaylistStore cycleLoop walks off -> all -> one -> off") {
   CHECK(ps.loop() == Loop::Off);
   // Keeps cycling, never sticks.
   CHECK(ps.cycleLoop() == Loop::All);
+}
+
+TEST_CASE("path name helpers split and join both separator styles") {
+  using soar::app::baseName;
+  // baseName: text after the last separator, whichever style it is.
+  CHECK(baseName("http://host/media/a/file.mp4") == "file.mp4");
+  CHECK(baseName("/media/a/file.mp4") == "file.mp4");
+  CHECK(baseName("C:\\media\\b.mkv") == "b.mkv");
+  CHECK(baseName("plain.mkv") == "plain.mkv");  // no separator at all
+  CHECK(baseName("dir/") == "");                // separator is the last char
+
+  // joinDir: internal paths use '/', never a doubled separator.
+  CHECK(soar::app::joinDir("C:/media", "sub") == "C:/media/sub");
+  CHECK(soar::app::joinDir("C:/media/", "sub") == "C:/media/sub");
+  CHECK(soar::app::joinDir("C:\\media\\", "sub") == "C:\\media\\sub");
+  CHECK(soar::app::joinDir("", "sub") == "sub");  // empty base stays bare
+}
+
+TEST_CASE("parentOfDir walks up and stops at roots") {
+  using soar::app::parentOfDir;
+  // The picker hides its ".." row for all of these: no strict ancestor.
+  CHECK(parentOfDir("") == "");
+  CHECK(parentOfDir("/") == "");
+  CHECK(parentOfDir("x") == "");   // top-level relative name
+  CHECK(parentOfDir("///") == ""); // separators only
+  CHECK(parentOfDir("C:\\") == "");  // drive root keeps no parent path
+
+  // Ordinary climbs, trailing separators stripped on the way.
+  CHECK(parentOfDir("/a/b") == "/a");
+  CHECK(parentOfDir("/a/b/") == "/a");
+  CHECK(parentOfDir("/a//b") == "/a");  // doubled separator collapses
+  CHECK(parentOfDir("a/b") == "a");     // relative parent
+  CHECK(parentOfDir("C:/x/y") == "C:/x");
+  CHECK(parentOfDir("C:/x/y\\") == "C:/x");
+
+  // Root forms: "/a" climbs onto "/" itself; "C:/x" collapses onto the
+  // drive prefix — both stay addressable, unlike the pure-root cases.
+  CHECK(parentOfDir("/a") == "/");
+  CHECK(parentOfDir("/a///") == "/");
+  CHECK(parentOfDir("C:/x") == "C:");
 }

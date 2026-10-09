@@ -61,6 +61,33 @@ std::string formatClock(std::chrono::milliseconds t) {
   return buf;
 }
 
+// Pure path/name helpers: moved here from the window layer so the suite can
+// exercise the Windows-separator arms without a display (player_window.cpp
+// calls them through the ui_state.h declarations).
+
+std::string baseName(const std::string& uri) {
+  const std::size_t slash = uri.find_last_of("/\\");
+  return slash == std::string::npos ? uri : uri.substr(slash + 1);
+}
+
+std::string parentOfDir(const std::string& dir) {
+  if (dir.size() <= 1) return "";
+  std::size_t end = dir.size();
+  while (end > 0 && (dir[end - 1] == '/' || dir[end - 1] == '\\')) --end;
+  if (end == 0) return "";
+  const std::size_t slash = dir.find_last_of("/\\", end - 1);
+  if (slash == std::string::npos) return "";
+  std::size_t keep = slash;
+  while (keep > 0 && (dir[keep - 1] == '/' || dir[keep - 1] == '\\')) --keep;
+  // "/a" -> "/" stays the root form; "C:/x" collapses onto "C:".
+  return keep == 0 ? dir.substr(0, slash + 1) : dir.substr(0, keep);
+}
+
+std::string joinDir(const std::string& dir, const std::string& name) {
+  if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') return dir + "/" + name;
+  return dir + name;
+}
+
 bool HudVisibility::visible(std::chrono::milliseconds now, bool pointer_over_hud,
                             bool seek_drag, bool overlay_open,
                             bool playback_paused) const {

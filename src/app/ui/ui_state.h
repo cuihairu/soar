@@ -21,6 +21,21 @@ namespace soar::app {
 // input clamps to zero; anything past 99h keeps growing the hour digits.
 std::string formatClock(std::chrono::milliseconds t);
 
+// Pure path/name helpers the window layer uses across its overlays (the
+// dir picker, the playlist tree, recent lists). Windows-style separators
+// are inputs on every platform — the picker must parse them uniformly —
+// so these take raw strings and make no filesystem calls.
+std::string baseName(const std::string& uri);  // text after the last / or \.
+
+// Nearest strict ancestor of a browsed directory, or "" once the walk hits
+// a filesystem root ("C:\", "/") or a top-level relative name — the picker
+// hides its ".." row there. Trailing separators are cosmetic only.
+std::string parentOfDir(const std::string& dir);
+
+// Joins a picked subdirectory name onto the browsed directory. Internal
+// paths use '/' uniformly; Windows APIs accept it too.
+std::string joinDir(const std::string& dir, const std::string& name);
+
 // OSC auto-hide semantics (docs/ui-design.md §3.1): the bar is visible from
 // the first frame, resets its idle timer on every input, hides after
 // kHideDelay of quiet, and stays pinned while any instantaneous pin

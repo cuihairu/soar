@@ -93,34 +93,6 @@ const char* trackTypeName(TrackType t) {
 // Which overlay page is open; at most one at a time (docs/ui-design.md §2).
 enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist, DirPick };
 
-std::string baseName(const std::string& uri) {
-  const std::size_t slash = uri.find_last_of("/\\");
-  return slash == std::string::npos ? uri : uri.substr(slash + 1);
-}
-
-// Nearest strict ancestor of a browsed directory, or "" once the walk hits
-// a filesystem root ("C:\", "/") or a top-level relative name — the picker
-// hides its ".." row there. Trailing separators are cosmetic only.
-std::string parentOfDir(const std::string& dir) {
-  if (dir.size() <= 1) return "";
-  std::size_t end = dir.size();
-  while (end > 0 && (dir[end - 1] == '/' || dir[end - 1] == '\\')) --end;
-  if (end == 0) return "";
-  const std::size_t slash = dir.find_last_of("/\\", end - 1);
-  if (slash == std::string::npos) return "";
-  std::size_t keep = slash;
-  while (keep > 0 && (dir[keep - 1] == '/' || dir[keep - 1] == '\\')) --keep;
-  // "/a" -> "/" stays the root form; "C:/x" collapses onto "C:".
-  return keep == 0 ? dir.substr(0, slash + 1) : dir.substr(0, keep);
-}
-
-// Joins a picked subdirectory name onto the browsed directory. Internal
-// paths use '/' uniformly; Windows APIs accept it too.
-std::string joinDir(const std::string& dir, const std::string& name) {
-  if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') return dir + "/" + name;
-  return dir + name;
-}
-
 // Letterbox destination: the frame scaled to fit, centered (docs §4 — the
 // video area is always aspect-correct on the theme background).
 SDL_Rect letterboxRect(SDL_Renderer* renderer, SDL_Texture* texture) {
