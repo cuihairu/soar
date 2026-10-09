@@ -323,6 +323,14 @@ P4 特性批（docs/mvp.md §5）按「功能先落地、测试后补」登记�
 - **tsan 抓出产品真竞争（run 37264111925 tsan 腿红，本地同码复现 11 条报告）**：`stop()` 在 join accept 线程**之前**写 `listen_fd = -1`，而 `acceptLoop()` 每轮循环重读 `listen_fd`——裸 int 无同步。修法：`sockShutdown` 留在 join 前（它是唤醒阻塞 accept 的那一手），socket 关闭与 `listen_fd = -1` 挪到 `accept_thread.join()` 之后——acceptor 死透前 fd 生命周期完整，也杜绝了 close 后 fd 号被并发 socket 复用、accept 误用他人连接的窗口。测试侧同 run 报出的第二类竞争：`magnet_ticks`/`tick_had_metadata`（worker 的 on_progress 写、主线程断言读）改 `std::atomic`。验证：build-tsan（-O1）两连跑 + build-tsan-o0（-O0）一跑，三条全部 EXIT=0、零 `WARNING: ThreadSanitizer`（修复前同口径 EXIT=8）；修复随 719c974 落地，CI 终证（run 37540311536）tsan 腿绿。
 - **残余定性（14 行，全部防御弧）**：90+496-498+509-512 = listen socket 创建/绑定的系统调用失败臂——试过 rlimit 造 socket() 失败，但 `session` 创建先于 listen socket，限值先打爆 session（未捕获异常），无法隔离到目标臂；466-469 = `add_torrent` throw（库级防御，本地参数域造不出）；415 = acceptLoop 的非停机失败 continue（EINTR 类）；381 = `makeCtx` 闭括号的 gcov 归属噪声（调用点 417 已覆盖，行本身无可执行语义）。
 
+### 3.20 BUGS.md #4 留栈探针批：SIGABRT 处理体的结构性不可计
+
+BUGS.md #4（CLI 播放 Ended 后偶发不退出）的排查批落地两件测试设施：runCli 看门狗改 `timeout -s ABRT --kill-after=10`（timeout 仍退 124，重试逻辑不变），`soarAppMain` 在 `SOAR_HANG_DUMP=1` 时装 SIGABRT 处理器（打印当前线程 backtrace + tid 归属后按默认处置终止，`runHeadlessOverHttpDir` 为子进程设该 env）。挂死的 CLI 子进程从此自带堆栈进 CI 日志。
+
+- **结构性不可计（如实定性）**：SIGABRT 处理 lambda 体（`src/app/main.cpp`，约 15 行 + 1-2 支）只在真被 ABRT 时执行。测试进程内不可达（处理器装在应用二进制里）；CLI 子进程里即便 `kill -ABRT` 驱动它执行，子进程按默认处置死于信号——gcov 的计数器经 atexit 刷盘，信号死亡不刷，执行了也不计数。与 §3.8 的异常清理弧同族：不是没测到，是计数结构上不可达。
+- **可达部分全部可计**：`installHangDumpProbe` 本体（getenv 早退臂 + sigaction 装配臂）由 CLI 用例两态覆盖（`runHeadlessOverHttpDir` 设 env / 其余用例不设）。
+- **读数**：落账时 CI 实测（run 37994863406 @ 294d3dc）行 6256/6551 = 95.49%、支 6534/7616 = 85.79%。探针净增不可计约 15 行/2 支 → 预计 行 ≈95.3%、支 ≈85.8%，门禁 95.0/84.6 双过但行余量收窄到 ~20 行量级。下次门禁抬批须把这笔结构性余量算进去。
+
 ## 4. 测试纪律
 
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。

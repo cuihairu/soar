@@ -1493,7 +1493,13 @@ RunResult runCli(const std::vector<std::string>& args, int child_timeout_secs = 
   // up to 600s by default so heavy UI-scripted cases don't time out under
   // instrumentation. Cases whose child outlives even that (measured, see
   // the call sites) pass a bigger budget instead of everyone sharing one.
-  cmd.insert(0, "timeout " + std::to_string(child_timeout_secs) + " ");
+  // BUGS.md #4: the kill signal is ABRT, not TERM — a hung child carries
+  // the in-binary hang dump (SOAR_HANG_DUMP, installed in soarAppMain)
+  // that prints the stuck thread's backtrace before dying. timeout still
+  // exits 124 either way, so the retry-on-124 logic is unchanged;
+  // --kill-after escalates to KILL only if a child ever survives ABRT.
+  cmd.insert(0, "timeout -s ABRT --kill-after=10 " +
+                    std::to_string(child_timeout_secs) + " ");
 #endif
 
   RunResult result;
@@ -1582,6 +1588,9 @@ HttpCliRun runHeadlessOverHttpDir(const std::string& dir, const std::string& url
   // 180s per child: these streams end in single-digit seconds on CI and
   // stay far under it under coverage instrumentation. The default 600 is
   // sized for the UI-scripted cases, not needed here.
+  // BUGS.md #4: arm the in-binary hang dump so a watchdog-killed child
+  // prints its stack instead of dying silently.
+  const ScopedEnv hang_dump("SOAR_HANG_DUMP", "1");
   auto play = [&]() {
     return runCli({"--headless", "--backend=ffmpeg",
                    "http://127.0.0.1:" + port + url_path}, 180);

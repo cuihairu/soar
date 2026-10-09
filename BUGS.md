@@ -186,9 +186,18 @@
   缓冲、workflow）。间歇性：同 case 在多数 run 秒级干净退出。
 - **排查**：`--log-failed` 三起对比，第 2 起的完整事件流坐实「已 Ended
   未退出」；本地多次重放 HLS/DASH case 未复现（runner 特定时序）。
+  2026-10-10 复查：headless 收尾链逐环审计（Player 薄封装、stop()/
+  close() 先 join 后关 SDLAudio、SDLAudio 自带互斥、torrent_stream
+  声明序先于 player 析构）未找到确定性缺陷；本地 70 次重放（hls_hi/
+  master/dash，per-run server 复刻测试生命周期）零挂死。
 - **缓解**：watchdog 按设计把挂死转成干净断言失败（exit 124 带完整
   输出），套件不再整段超时；p2p 套件自定义 main 行缓冲 stdout
   （14226b2），下次挂死日志保底有 banner 与最后开始的 test case。
+- **留栈探针（2026-10-10 落地）**：runCli 看门狗改 `timeout -s ABRT
+  --kill-after=10`（timeout 仍退 124，重试逻辑不变）；soarAppMain 在
+  `SOAR_HANG_DUMP=1` 时装 SIGABRT 处理器，打印当前线程 backtrace
+  （带 tid 归属，进程向信号可能投递到任一线程）后按默认处置终止，
+  runHeadlessOverHttpDir 为子进程设置该 env。下次 CI 挂死日志自带
+  挂死线程的栈，可直接定位收尾段挂点。
 - **残余（如实）**：根因未修，方向是收尾段的线程 join 与销毁顺序
-  排查；runner 上间歇复现、本地未复现，需要先拿到挂死时子进程的
-  堆栈（下次复现可考虑 watchdog 杀前先 gcore 或打 SIGABRT 留栈）。
+  排查；runner 上间歇复现、本地未复现，等探针在下次挂死时交出堆栈。

@@ -20,11 +20,23 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <string>
 #include <vector>
+
+// The hang-dump probe is Linux-only: execinfo.h is glibc, gettid() is
+// glibc 2.30+, and the ABRT sender (the test watchdog, tests/test_cli.cpp
+// runCli) is coreutils timeout — also Linux-only.
+#ifdef __linux__
+#  include <csignal>
+#  include <execinfo.h>
+#  include <sys/types.h>
+#  include <unistd.h>
+#endif
 
 #ifndef SOAR_APP_VERSION
 #  define SOAR_APP_VERSION "dev"
@@ -78,12 +90,60 @@ static void notice_usage(const char* argv0) {
           "Run soar from a terminal for the full usage text.");
 }
 
+// BUGS.md #4 hang probe: the test watchdog kills a hung child with
+// SIGABRT (`timeout -s ABRT`, tests/test_cli.cpp runCli). With
+// SOAR_HANG_DUMP in the environment this handler prints the stuck
+// thread's backtrace to stderr before dying the default way, so a CI
+// hang carries its own stack in the captured output. Async-signal-safe
+// calls only (backtrace/backtrace_symbols_fd/write — the same calls
+// glibc's own abort path makes); the handler re-raises with the default
+// disposition so the watchdog's --kill-after escalation never fires.
+#ifdef __linux__
+static void installHangDumpProbe() {
+  if (std::getenv("SOAR_HANG_DUMP") == nullptr) {
+    return;
+  }
+  struct sigaction sa{};
+  sa.sa_handler = [](int) {
+    static constexpr char kBanner[] =
+        "\n=== SOAR HANG DUMP (SIGABRT) backtrace, tid=";
+    static constexpr char kMid[] = " ===\n";
+    static constexpr char kTail[] = "=== end SOAR HANG DUMP ===\n";
+    // The kernel delivers a process-directed signal to an arbitrary
+    // thread: attribute the stack to its owner so a decode-thread dump is
+    // not misread as the joiner's.
+    char tid_buf[32];
+    const int tid_len = std::snprintf(tid_buf, sizeof(tid_buf), "%ld",
+                                      static_cast<long>(gettid()));
+    void* frames[64];
+    const int n = backtrace(frames, 64);
+    write(STDERR_FILENO, kBanner, sizeof(kBanner) - 1);
+    if (tid_len > 0) write(STDERR_FILENO, tid_buf, static_cast<size_t>(tid_len));
+    write(STDERR_FILENO, kMid, sizeof(kMid) - 1);
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    write(STDERR_FILENO, kTail, sizeof(kTail) - 1);
+    struct sigaction def{};
+    def.sa_handler = SIG_DFL;
+    sigemptyset(&def.sa_mask);
+    sigaction(SIGABRT, &def, nullptr);
+    raise(SIGABRT);
+  };
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sigaction(SIGABRT, &sa, nullptr);
+}
+#endif  // __linux__
+
 int soarAppMain(int argc, char** argv, bool gui_entry) {
   // No up-front argc check: the no-source exit below covers it (no
   // arguments means no positional, and nothing in between can have parse
   // side effects), and the GUI entry must not take it at all — the
   // installed shortcuts launch with no arguments and expect the empty
   // window, not the CLI usage exit (BUGS.md #3).
+
+#ifdef __linux__
+  installHangDumpProbe();
+#endif
 
   bool headless = false;
   std::string backend_type;  // empty until --backend=; resolved below
