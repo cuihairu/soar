@@ -35,3 +35,15 @@
   PLATFORM-NOTES.txt）。AppImage 载荷与 zip 同源，底线相同；AppImage
   直跑需系统 FUSE2（libfuse.so.2，缺则走 APPIMAGE_EXTRACT_AND_RUN
   免安装运行面）。
+
+## 挂账项拍板（2026-10-10）
+
+- **Welcome 页 / DPI 三档 / 亮色四页复审：不追（关闭）**。DPI 125%/150%
+  需真机（runner 桌面仅 100%，RDP/多会话接管风险评估后已放弃盲写）；
+  Welcome 页为 Inno 内置英文页（限制已登记，自定义文案仅 Tasks/Run
+  两短行已实现）；亮色四页 v2.1 已随 e5f9bf6 发货并有截图证据链，
+  无新重设计待复审。
+- **鸿蒙内核路线：维持留用户拍板**（055ecdb 记录 + README 登记 + 一律
+  后置令继续生效），本轮不改码。
+- BUGS #3（Windows 真机复测）/ BUGS #4（watchdog 挂账，根因位
+  player_window.cpp 退出路径 stop/join 次序）维持挂账，留待专门批。
