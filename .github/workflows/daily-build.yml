@@ -525,7 +525,9 @@ jobs:
       # zip 二次打包——单一事实源，包内布局与 zip 解包即用一致（
       # /opt/soar + /usr/bin/soar + .desktop + hicolor 图标）。自包含口径
       # 不声明 Depends，目标机 glibc/libstdc++ 底线与 zip 相同。
-      - name: Package (Linux deb/rpm)
+      # AppImage（todo.md ④）：同一 zip 第三种二次打包形态，单文件
+      # 即用（squashfs + AppImageKit runtime 前置拼接）。
+      - name: Package (Linux deb/rpm/AppImage)
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -535,12 +537,13 @@ jobs:
           # 输出到 workspace 根：upload 步的 pattern 在根上匹配
           bash scripts/package-linux-pkg.sh deb "$ARCH" "soar-${{ matrix.name }}.zip" . "$VERSION"
           bash scripts/package-linux-pkg.sh rpm "$ARCH" "soar-${{ matrix.name }}.zip" . "$VERSION"
-          ls -la soar-*.deb soar-*.rpm
+          bash scripts/package-linux-appimage.sh "$ARCH" "soar-${{ matrix.name }}.zip" .
+          ls -la soar-*.deb soar-*.rpm soar-*.AppImage
 
       # 安装包真装走查（memex 同款口径）：deb 装上 → 入口实跑 → 卸载；
-      # rpm 同一载荷再走一遍。安装包的价值在「装完就能跑」，走查必须
-      # 是真安装而不是解包检查。
-      - name: Verify packages (Linux dpkg/rpm install walk)
+      # rpm 同一载荷再走一遍；AppImage 三种启动面各跑一遍。安装包的
+      # 价值在「装完就能跑」，走查必须是真安装/真启动而不是解包检查。
+      - name: Verify packages (Linux dpkg/rpm/AppImage walk)
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -556,7 +559,41 @@ jobs:
           sudo rpm -ivh --replacepkgs soar-${{ matrix.name }}.rpm
           /usr/bin/soar --version
           sudo rpm -e soar
-          echo "deb/rpm install walk passed (${{ matrix.name }})"
+
+          # —— AppImage（todo.md ④）——
+          # ① 直跑 = 用户双击/命令行的真实启动面：type-2 runtime 挂载
+          #    需要 FUSE2（libfuse.so.2）。ubuntu-24.04 包名是
+          #    libfuse2t64（t64 过渡改名），旧代号是 libfuse2。
+          # ② APPIMAGE_EXTRACT_AND_RUN=1 = runtime 内建解包执行面，
+          #    不需要 FUSE——也是裸容器验证同款口径。
+          # ③ --appimage-extract = 纯用户空间解包面。
+          ARCH=x64; case "${{ matrix.name }}" in linux-arm64) ARCH=arm64;; esac
+          APPIMG="soar-linux-$ARCH.AppImage"
+          chmod +x "$APPIMG"
+          # 魔数在 offset 8：运行时拼接的 squashfs 才被 runtime 认
+          magic=$(od -An -tx1 -j8 -N2 "$APPIMG" | tr -d ' ')
+          if [ "$magic" != "4149" ]; then
+            echo "::error::$APPIMG missing AppImage magic at offset 8 (got $magic)"
+            exit 1
+          fi
+          sudo apt-get install -y libfuse2t64 2>/dev/null || sudo apt-get install -y libfuse2
+          # FUSE2 是直跑的前置；装不上就明说，别让用户对上下面那条
+          # runtime 的「require FUSE」提示猜原因
+          if ! ldconfig -p | grep -q 'libfuse\.so\.2'; then
+            echo "::error::libfuse.so.2 (FUSE2) unavailable; direct-run check cannot proceed"
+            exit 1
+          fi
+          "./$APPIMG" --version
+          set +e; "./$APPIMG" > /dev/null 2>&1; code=$?; set -e
+          if [ "$code" != "2" ]; then
+            echo "::error::$APPIMG without args should exit 2, got $code"
+            exit 1
+          fi
+          APPIMAGE_EXTRACT_AND_RUN=1 "./$APPIMG" --version
+          "./$APPIMG" --appimage-extract > /dev/null
+          ./squashfs-root/soar --version
+          rm -rf squashfs-root
+          echo "deb/rpm/AppImage walk passed (${{ matrix.name }})"
 
       - name: Upload platform package
         uses: actions/upload-artifact@v4
@@ -568,6 +605,7 @@ jobs:
             soar-*.zip
             soar-*.deb
             soar-*.rpm
+            soar-*.AppImage
             soar-setup-*.exe
           retention-days: 1
           if-no-files-found: error
@@ -625,6 +663,10 @@ jobs:
             ldd /w/x/soar | grep -i 'not found'
             exit 1
           fi
+          # AppImage（todo.md ④）：裸容器无 FUSE，走 runtime 内建
+          # 解包执行面——恰好覆盖「包自身（runtime+载荷）不缺件」的
+          # 口径，与 runner 侧直跑形成互补。
+          APPIMAGE_EXTRACT_AND_RUN=1 /w/x/soar-linux-*.AppImage --version
           EOF
           for img in ubuntu:24.04 ubuntu:latest; do
             echo "== $img =="
@@ -691,8 +733,10 @@ jobs:
             echo "  soar-macos-arm64.zip       macOS Apple Silicon: soar + lib/（FFmpeg 等动态库已捆绑，SDL2 静态链接）"
             echo "  soar-linux-x64.zip         Linux x64 便携: soar + lib/（运行时已捆绑，仅依赖系统 glibc/libstdc++，见包内说明）"
             echo "  soar-linux-x64.deb / .rpm  Linux x64 安装包（/opt/soar + /usr/bin/soar + 菜单项/图标）"
+            echo "  soar-linux-x64.AppImage    Linux x64 AppImage 单文件（内含同源 zip 的 soar + lib/，chmod +x 后直接运行）"
             echo "  soar-linux-arm64.zip       Linux arm64 便携: 同上 arm64 构建"
             echo "  soar-linux-arm64.deb / .rpm Linux arm64 安装包"
+            echo "  soar-linux-arm64.AppImage  Linux arm64 AppImage 单文件"
           } > BUILD_INFO.txt
           cat > VERIFY.md <<'VERIFY'
           # 最简验证
@@ -733,17 +777,24 @@ jobs:
             rpm 系 `sudo rpm -ivh soar-linux-<arch>.rpm`，装完
             `soar --version`（菜单项在 AudioVideo 分类）。重装/升级 =
             再装一次（包管理器幂等）。
+          - AppImage: `chmod +x soar-linux-<arch>.AppImage` 后直接
+            运行（载荷与 zip 同源：soar + lib/ 已捆绑，glibc/libstdc++
+            要求同上）。系统缺 FUSE2（libfuse.so.2）时用
+            `APPIMAGE_EXTRACT_AND_RUN=1 ./soar-linux-<arch>.AppImage`
+            照常运行（runtime 内建解包面，无需安装任何东西）。
           VERIFY
           # 打总包：全部平台产物平铺 + 顶层说明（artifact 解开即见）
-          mv pkgs/soar-*.zip pkgs/soar-*.deb pkgs/soar-*.rpm pkgs/soar-setup-*.exe .
-          # SHA256 清单覆盖全部产物（自身与说明文件除外）
+          mv pkgs/soar-*.zip pkgs/soar-*.deb pkgs/soar-*.rpm \
+             pkgs/soar-*.AppImage pkgs/soar-setup-*.exe .
+          # SHA256 清单覆盖全部产物（自身与说明文件除外）——AppImage
+          # 自动进清单，无需单列
           find . -maxdepth 1 -type f \
             ! -name 'SHA256SUMS.txt' ! -name 'VERIFY.md' ! -name 'BUILD_INFO.txt' \
             -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS.txt
           zip -q "soar-daily-${BUILD_DATE}-${GITHUB_SHA::8}.zip" \
             soar-windows-x64.zip soar-setup-windows-x64.exe soar-macos-arm64.zip \
-            soar-linux-x64.zip soar-linux-x64.deb soar-linux-x64.rpm \
-            soar-linux-arm64.zip soar-linux-arm64.deb soar-linux-arm64.rpm \
+            soar-linux-x64.zip soar-linux-x64.deb soar-linux-x64.rpm soar-linux-x64.AppImage \
+            soar-linux-arm64.zip soar-linux-arm64.deb soar-linux-arm64.rpm soar-linux-arm64.AppImage \
             BUILD_INFO.txt VERIFY.md SHA256SUMS.txt
           # 供后续步骤引用的输出
           echo "daily_zip=soar-daily-${BUILD_DATE}-${GITHUB_SHA::8}.zip" >> "$GITHUB_ENV"
@@ -818,7 +869,8 @@ jobs:
           | macOS Apple Silicon | \`soar-macos-arm64.zip\` | soar + 捆绑动态库 lib/（SDL2 静态链接），\`xattr -cr .\` 后运行，解压即用 |
           | Linux x64 | \`soar-linux-x64.deb\` / \`.rpm\` | 安装包（/opt/soar + /usr/bin/soar + 菜单项/图标；运行时自包含） |
           | Linux x64 | \`soar-linux-x64.zip\` | 便携: soar + 捆绑运行时 lib/，免装 SDL2/FFmpeg，仅依赖系统 glibc/libstdc++ |
-          | Linux arm64 | \`soar-linux-arm64.deb\` / \`.rpm\` / \`.zip\` | 同上（arm64 原生构建） |
+          | Linux x64 | \`soar-linux-x64.AppImage\` | AppImage 单文件: 载荷与 zip 同源（soar + lib/ 已捆绑），\`chmod +x\` 后直接运行；缺 FUSE2 时 \`APPIMAGE_EXTRACT_AND_RUN=1\` 照常运行 |
+          | Linux arm64 | \`soar-linux-arm64.deb\` / \`.rpm\` / \`.zip\` / \`.AppImage\` | 同上（arm64 原生构建） |
           | 全部 + 校验 | \`${daily_zip}\` | 上列全部产物 + SHA256SUMS.txt + BUILD_INFO.txt + VERIFY.md |
 
           一键安装（Linux/macOS）: \`curl -fsSL https://raw.githubusercontent.com/cuihairu/soar/main/install.sh | sh\`
@@ -838,8 +890,8 @@ jobs:
           gh release edit nightly --notes-file release-notes.md
           gh release upload nightly "$daily_zip" \
             soar-windows-x64.zip soar-setup-windows-x64.exe soar-macos-arm64.zip \
-            soar-linux-x64.zip soar-linux-x64.deb soar-linux-x64.rpm \
-            soar-linux-arm64.zip soar-linux-arm64.deb soar-linux-arm64.rpm \
+            soar-linux-x64.zip soar-linux-x64.deb soar-linux-x64.rpm soar-linux-x64.AppImage \
+            soar-linux-arm64.zip soar-linux-arm64.deb soar-linux-arm64.rpm soar-linux-arm64.AppImage \
             BUILD_INFO.txt VERIFY.md SHA256SUMS.txt --clobber
           echo "nightly release updated: ${daily_zip}"
 
@@ -853,7 +905,7 @@ jobs:
             echo "| 更新时间 | ${utc_time} / ${bj_time} |"
             echo "| Commit | \`${GITHUB_SHA}\` |"
             echo "| 产物 | artifact **daily-build**（唯一最新版，历史已清理）+ Release **Nightly Build (nightly)** 同步发布 |"
-            echo "| 平台 | windows-x64（zip+setup.exe 安装器）/ macos-arm64（soar+lib/ 捆绑）/ linux-x64·arm64（zip + deb/rpm 安装包） |"
+            echo "| 平台 | windows-x64（zip+setup.exe 安装器）/ macos-arm64（soar+lib/ 捆绑）/ linux-x64·arm64（zip + deb/rpm 安装包 + AppImage） |"
             echo ""
             echo "下载: 本 run 页面底部 Artifacts 区 \`daily-build\`，或 <https://github.com/${GITHUB_REPOSITORY}/releases/tag/nightly>（匿名可下）。"
             echo "验证方式见包内 VERIFY.md。发布面: 本 artifact + 滚动 nightly Release（固定 tag nightly，非版本发布）。"

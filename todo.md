@@ -15,14 +15,23 @@
       `packaging/windows/soar.iss`；zip 照旧保留
 - [x] ③ 全部进滚动 nightly Release + SHA256 清单
       （SHA256SUMS.txt 随 Release 发布）
+- [x] ④ Linux 补 **AppImage**（上批如实回报的缺口，2026-10-10 单开
+      一批收口）——`scripts/package-linux-appimage.sh` 从同源 zip
+      二次打包（单一事实源，AppDir 根 = zip 内容原样，RUNPATH 零
+      改写），AppImageKit continuous runtime 前置拼接 + squashfs
+      （gzip，最大兼容面）；CI 走查三启动面：FUSE2 直跑（
+      libfuse2t64）+ APPIMAGE_EXTRACT_AND_RUN + --appimage-extract，
+      另进裸容器冒烟（无 FUSE，验证包自含 runtime+载荷）；
+      x64/arm64 双架构进 nightly 与 SHA256 清单
 - [x] 并案收口：安装包里带上依赖 DLL（闭包捆绑，装完就能跑——
       缺 DLL 缺陷见 BUGS.md #1，黑框闪退见 BUGS.md #2）
 
 ### 如实说明
 
-- 用户消息预设 nightly 已有 AppImage，实际现状只有 zip（此前从未
-  打过 AppImage）。本批交付点名的 deb/rpm/setup.exe；AppImage 缺口
-  如实回报，未擅自扩面。若后续要做，单开一批。
+- ①②③ 交付时 nightly 实际只有 zip（AppImage 从未打过），缺口如实
+  回报未擅自扩面；④ AppImage 于 2026-10-10 按上批约定单开一批补齐。
 - Linux deb/rpm 不声明 Depends（运行库随包在 /opt/soar/lib，自包含
   口径与 zip 一致；目标机只需 glibc/libstdc++ 底线，同包内
-  PLATFORM-NOTES.txt）。
+  PLATFORM-NOTES.txt）。AppImage 载荷与 zip 同源，底线相同；AppImage
+  直跑需系统 FUSE2（libfuse.so.2，缺则走 APPIMAGE_EXTRACT_AND_RUN
+  免安装运行面）。
