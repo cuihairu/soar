@@ -644,6 +644,10 @@ jobs:
           set -e
           mkdir x
           unzip -q soar-*.zip -d x
+          # artifact 上传会把 AppImage 的 exec 位落成 644：裸容器要
+          # 直接执行它，挂载是 ro，位必须在 runner 侧补回来（zip 内
+          # 的 soar 不吃这个亏——unzip 会按 zip 记录的 mode 恢复 755）
+          chmod +x soar-*.AppImage 2>/dev/null || true
 
       - name: Smoke in bare containers (24.04 same-gen + latest cross-gen)
         run: |
