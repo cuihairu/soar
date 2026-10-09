@@ -1112,6 +1112,160 @@ if mode == "playlist":
             sys.exit(0)
     sys.exit(4)
 
+if mode == "dirpick":
+    # The folder-import round trip (v0.2.1 dir picker + playlist tree) over
+    # a staged scratch HOME: Ctrl+O opens the picker there, "Include
+    # subfolders" flips on (load-bearing — media_a keeps one of its two
+    # files a level down, so a flat import would starve the tour), a
+    # subdirectory is entered and imported, and its two files queue with
+    # the first auto-playing. The second Ctrl+O reopens on the persisted
+    # path with a Recent folders section; every click of the second tour
+    # stays on the collapsed layout (the header toggle is ImGui state —
+    # racing it shifts every row below and once turned the ".." click into
+    # a whole-HOME import that the trail could not tell apart), climbing
+    # via ".." to HOME and importing the sibling folder mid-playback
+    # (append-only, no restart). The third open exists for the section's
+    # own arms — expand, recent-entry jump — placed after the imports so a
+    # lagged click there cannot corrupt anything (overlays are
+    # single-valued, so the P right after also dismisses the picker). P
+    # shows the playlist: the queue now spans two directories, so the tree
+    # view groups them; "Play group" on the second group opens its file,
+    # and the first group's folder node collapses last. With the overlay
+    # closed again, the wheel tour drives the scroll handler's arms over
+    # the clear video area (volume up/down, Shift+wheel seek, horizontal
+    # seek — all silent, none of them print a marker). Then the quit
+    # storm ends the run.
+    #
+    # Coordinates probed under SOAR_UI_BITMAP_FONT=1 on a live Xvfb
+    # (hover-band scans, label-hash click checks, once against the -O0
+    # coverage build's slow frames): the picker is a ~520x420 window at
+    # (220,62) — checkbox (243,126), ".." (240,160), subdirectory rows
+    # from y~177 with ~17.5 spacing (the staged HOME pre-creates a
+    # ".cache" sibling, and a dot-directory always sorts first, so
+    # "media_a"/"media_b" always land at ~192/~212 whatever the app itself
+    # drops into HOME), Import bottom-left at (359,459) (left-anchored, so
+    # the label-length difference between the two imports is free). On a
+    # reopen the collapsed Recent folders header sits at (240,162) and
+    # pushes the rows to ".." ~188, .cache ~205, media_a ~223, media_b
+    # ~243; expanded, its first entry is at (259,187) regardless of entry
+    # count. In the playlist tree view the group headers are at y~164
+    # (media_a) and ~222 (media_b) with "Play group" at x~428, member rows
+    # ~20.5 below their header; clicking the folder-node label (310,164)
+    # collapses the group.
+    # The trail tells the fixtures apart by track count, so every step is
+    # asserted from the teed media-info lines alone:
+    #   1 (recursive import auto-plays a1) 3 (a1 EOF advanced into the
+    #   deeper a2 — both files really queued) 1 (media_b "Play group"
+    #   opened b1). The waits gate the gestures: the second import must
+    #   land while a player is up (the append branch), and the "Play
+    #   group" click must beat a2's own EOF (it does — the click runs
+    #   ~2.5s after the a2-open marker, a2 runs 6s).
+    time.sleep(2.2)
+    focus()
+    tee = sys.argv[4] if len(sys.argv) > 4 else ""
+
+    def marker_count(marker):
+        try:
+            with open(tee) as f:
+                return f.read().count(marker)
+        except OSError:
+            return 0
+
+    def wait_marker(marker, want, timeout=45.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if marker_count(marker) >= want:
+                return True
+            time.sleep(0.25)
+        return False
+
+    ctrl = d.keysym_to_keycode(0xffe3)  # Control_L
+
+    def ctrl_key(ch):
+        # Hold Ctrl across the letter: a combo only registers when the
+        # modifier and the key straddle a frame boundary, the same race
+        # holdclick() solves for mouse clicks.
+        if not focus():
+            sys.exit(4)
+        xtest.fake_input(d, X.KeyPress, ctrl)
+        d.sync()
+        time.sleep(0.06)
+        key(d.keysym_to_keycode(ord(ch)))
+        time.sleep(0.06)
+        xtest.fake_input(d, X.KeyRelease, ctrl)
+        d.sync()
+        time.sleep(0.9)
+
+    def pick(x, y):
+        moved(x, y); time.sleep(0.15)
+        holdclick(1); time.sleep(0.5)
+
+    ctrl_key('o')                    # picker at the staged HOME (no recents)
+    pick(243, 126)                   # "Include subfolders" on — the a2
+                                     # marker below is the proof it took
+    pick(259, 192)                   # enter media_a/
+    pick(359, 459)                   # Import: 2 files queue, a1 auto-plays
+    if not wait_marker("tracks=1 selected", 1):
+        sys.exit(5)
+    ctrl_key('o')                    # reopen on media_a, section collapsed
+    pick(240, 188)                   # ".." climbs to the staged HOME
+    pick(259, 243)                   # enter media_b/ (collapsed rows)
+    pick(359, 459)                   # Import mid-playback: appends only
+    if not wait_marker("tracks=3 selected", 1):
+        sys.exit(5)                  # a1 EOF advanced into a2 (both queued)
+    ctrl_key('o')                    # third open at media_b: 2 recents
+    pick(240, 162)                   # expand the Recent folders section
+    pick(259, 187)                   # its first entry (media_b, already
+                                     # current — jump arm, no-op here)
+    key(d.keysym_to_keycode(0x70))   # P: two directories -> tree view
+    time.sleep(0.9)
+    pick(428, 222)                   # media_b "Play group": b1 opens
+    if not wait_marker("tracks=1 selected", 2):
+        sys.exit(5)
+    pick(310, 164)                   # collapse the media_a folder node
+    time.sleep(0.8)
+
+    # Wheel dial tour (IINA scroll-action defaults): the playlist overlay
+    # still covers the video, so close it first — with an ImGui window
+    # under the pointer the events die in the WantCaptureMouse early
+    # return instead of reaching the volume/seek handler. Then, over the
+    # clear video area: buttons 4/5 are volume up/down, Shift+wheel is
+    # the seek variant, 6/7 the horizontal one — every arm of the
+    # SDL_MOUSEWHEEL case in one pass. The seeks may run b1 to its end;
+    # the tour's markers are all consumed by then and EOF stops quietly.
+    key(d.keysym_to_keycode(0x70))   # P: playlist overlay closed again
+    time.sleep(0.9)
+    if not focus():
+        sys.exit(4)
+    moved(480, 300); time.sleep(0.4)
+    sh = d.keysym_to_keycode(0xffe1)
+    for btn, shift in ((4, False), (5, False), (4, True), (5, True),
+                       (6, False), (7, False)):
+        if shift:
+            xtest.fake_input(d, X.KeyPress, sh); d.sync(); time.sleep(0.06)
+        xtest.fake_input(d, X.ButtonPress, btn); d.sync()
+        time.sleep(0.15)
+        xtest.fake_input(d, X.ButtonRelease, btn); d.sync()
+        if shift:
+            xtest.fake_input(d, X.KeyRelease, sh); d.sync()
+        time.sleep(0.45)
+
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        if moved(200, 400):
+            button(1)
+        time.sleep(0.7)
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
 if mode == "audiodrive":
     # Real-backend window run over the dual-audio fixture: two audio
     # streams and no subtitle stream at all. That combination is where
@@ -1690,6 +1844,164 @@ TEST_CASE("a malformed magnet in window mode fails before the window opens") {
   CHECK(run.exit_code == 1);
   CHECK(run.output.find("torrent: cannot parse magnet URI") != std::string::npos);
 }
+
+#if defined(SOAR_SEED_TORRENT)
+namespace {
+
+// Forks the dev seeder (tools/seed_torrent) over a payload directory and
+// waits until both the .torrent file exists and the seeding port accepts
+// connections. The seeder runs forever; the caller kills it. The .torrent
+// carries the metadata locally, so the listing case below never needs a
+// swarm transfer — only the playback case does.
+struct Seeder {
+  pid_t pid = -1;
+  std::string torrent;
+  int port = 0;
+
+  bool start(const std::string& payload_dir, const std::string& out_torrent, int port_) {
+    port = port_;
+    torrent = out_torrent;
+    pid = ::fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+      ::execlp(SOAR_SEED_TORRENT, SOAR_SEED_TORRENT,
+               ("--file=" + payload_dir).c_str(),
+               ("--out=" + out_torrent).c_str(),
+               ("--port=" + std::to_string(port)).c_str(),
+               static_cast<char*>(nullptr));
+      _exit(127);
+    }
+    for (int attempt = 0; attempt < 60; ++attempt) {
+      std::error_code ec;
+      if (std::filesystem::exists(out_torrent, ec)) {
+        const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (fd >= 0) {
+          sockaddr_in addr{};
+          addr.sin_family = AF_INET;
+          addr.sin_port = htons(static_cast<uint16_t>(port));
+          addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+          const bool up = ::connect(fd, reinterpret_cast<sockaddr*>(&addr),
+                                    sizeof(addr)) == 0;
+          ::close(fd);
+          if (up) return true;
+        }
+      }
+      ::usleep(100 * 1000);
+    }
+    return false;
+  }
+
+  void stop() {
+    if (pid > 0) {
+      ::kill(pid, SIGTERM);
+      ::waitpid(pid, nullptr, 0);
+      pid = -1;
+    }
+  }
+};
+
+}  // namespace
+
+TEST_CASE("headless --torrent-list prints the file table of a seeded multi-file torrent") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  std::string tmpl = "/tmp/soar_cli_tlist_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const std::string payload = std::string(tmp) + "/payload";
+  REQUIRE(std::filesystem::create_directories(payload));
+  // 40 files: past the 32-row table bound, so the truncation arm runs.
+  for (int i = 0; i < 40; ++i) {
+    std::ofstream out(payload + "/f" + std::to_string(i) + ".bin", std::ios::binary);
+    out << std::string(64, 'x');
+  }
+  const int port = 24400 + (::getpid() % 400);
+  Seeder seeder;
+  if (!seeder.start(payload, std::string(tmp) + "/x.torrent", port)) {
+    MESSAGE("seed_torrent did not come up; skipping");
+    std::filesystem::remove_all(tmp);
+    return;
+  }
+  const auto run = runCli({"--headless",
+                           "--torrent-list",
+                           std::string("--torrent-store=") + tmp + "/store",
+                           "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                           std::string(tmp) + "/x.torrent"},
+                          120);
+  seeder.stop();
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("torrent: 40 files") != std::string::npos);
+  // --torrent-list is the whole-output path: unlike the in-playback stderr
+  // table it prints every row (no 32-row bound), in the seeder's sorted
+  // order, so the media-less payload's first and last dummies are present.
+  CHECK(run.output.find("[0]") != std::string::npos);
+  CHECK(run.output.find("[39]") != std::string::npos);
+  std::filesystem::remove_all(tmp);
+#endif
+}
+
+TEST_CASE("headless run plays a seeded multi-file torrent through the bridge") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the torrent playback test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the torrent playback test");
+    return;
+  }
+  std::string tmpl = "/tmp/soar_cli_tplay_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const std::string payload = std::string(tmp) + "/payload";
+  REQUIRE(std::filesystem::create_directories(payload));
+  // The seeder sorts the payload, so names decide the torrent indices: the
+  // media file sorts first, so it is index 0 — the default selection the
+  // bridge serves (without the seeder's sort, ext4's readdir hash order put
+  // a dummy file at 0 and this case played 64 bytes of filler). The rest
+  // are dummies that only exist to make the table multi-file.
+  REQUIRE(std::filesystem::copy_file(media, payload + "/00_media.mkv"));
+  for (int i = 0; i < 39; ++i) {
+    std::ofstream out(payload + "/f" + std::to_string(i) + ".bin", std::ios::binary);
+    out << std::string(64, 'x');
+  }
+  const int port = 24800 + (::getpid() % 400);
+  Seeder seeder;
+  if (!seeder.start(payload, std::string(tmp) + "/x.torrent", port)) {
+    MESSAGE("seed_torrent did not come up; skipping");
+    std::filesystem::remove_all(tmp);
+    return;
+  }
+  const auto run = runCli({"--headless",
+                           std::string("--torrent-store=") + tmp + "/store",
+                           "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                           std::string(tmp) + "/x.torrent"},
+                          240);
+  seeder.stop();
+  CHECK(run.exit_code == 0);
+  // The stderr table names the file count and the index hint, and truncates
+  // at 32 rows (the sorted payload's first 32 files).
+  CHECK(run.output.find("torrent: 40 files (pick with --torrent-index=N)") !=
+        std::string::npos);
+  CHECK(run.output.find("  ...") != std::string::npos);
+  // The bridge URL opened and played the selected file to its end.
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  CHECK(run.output.find("event: media-info") != std::string::npos);
+  std::filesystem::remove_all(tmp);
+#endif
+#endif
+}
+#endif  // SOAR_SEED_TORRENT
 
 TEST_CASE("headless run over the null backend succeeds") {
   const auto run = runCli({"--headless", "--backend=null", "asset://sample"});
@@ -3441,6 +3753,177 @@ TEST_CASE("windowed FFmpeg run walks the play queue end to end") {
     CHECK(run.output.find(kT1, after_replay) == std::string::npos);
   }
   std::filesystem::remove_all(queue_dir, queue_ec);
+#endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run imports folders through the dir picker and plays a tree group") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // The dir picker and the playlist tree are ImGui widgets; the bare-SDL
+  // build has neither, so there is nothing to drive.
+  MESSAGE("app built without the ImGui overlay; skipping the dir-picker window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the dir-picker window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the dir-picker window test");
+  return;
+#else
+  std::string first;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", first)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the dir-picker window test");
+    return;
+  }
+  std::string second;
+  if (!envMediaPath("SOAR_TEST_SUBS_MEDIA", second)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping the dir-picker window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the dir-picker window test");
+    return;
+  }
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the dir-picker window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  // The picker browses $HOME, so the tour stages one. ".cache" pins the
+  // sorted row order (a dot-directory always sorts first, so whatever the
+  // app itself drops into HOME cannot shift the rows the injector clicks).
+  // media_a keeps one fixture at its top and the other a level down: the
+  // "Include subfolders" toggle is load-bearing, a flat import would queue
+  // only a1 and starve the a2 marker. media_b holds one fixture for the
+  // sibling-folder import and the tree view's second group. The state
+  // home starts empty, so the first Ctrl+O lands on HOME (no recents yet)
+  // and the second one shows the section the imports grew.
+  const std::string home_dir = "/tmp/soar_dirpick_home_" + std::to_string(::getpid());
+  const std::string state_home = "/tmp/soar_dirpick_xdg_" + std::to_string(::getpid());
+  std::error_code fs_ec;
+  std::filesystem::remove_all(home_dir, fs_ec);
+  std::filesystem::remove_all(state_home, fs_ec);
+  // state_home must exist before runCli: the tee file lands there and the
+  // fopen is silent when the directory is missing (the app only creates
+  // the soar/ subtree later, on its first recents save).
+  REQUIRE(std::filesystem::create_directories(state_home, fs_ec));
+  REQUIRE(std::filesystem::create_directories(home_dir + "/.cache", fs_ec));
+  REQUIRE(std::filesystem::create_directories(home_dir + "/media_a/deep", fs_ec));
+  REQUIRE(std::filesystem::create_directories(home_dir + "/media_b", fs_ec));
+  std::filesystem::create_symlink(first, home_dir + "/media_a/a1.mkv", fs_ec);
+  REQUIRE(!fs_ec);
+  std::filesystem::create_symlink(second, home_dir + "/media_a/deep/a2.mkv", fs_ec);
+  REQUIRE(!fs_ec);
+  std::filesystem::create_symlink(first, home_dir + "/media_b/b1.mkv", fs_ec);
+  REQUIRE(!fs_ec);
+  const std::string cli_log = state_home + "/cli.log";
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "dirpick", cli_log.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  // The picker's start-directory ladder reads HOME and the recents write
+  // under XDG_STATE_HOME — both must point into the scratch tree (and the
+  // run's writes must stay out of the real user state).
+  const ScopedEnv home_env("HOME", home_dir.c_str());
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // No positional: the run starts on the poster, and the first content
+  // open comes from the folder import itself.
+  const auto run = runCli({"--gui", "--backend=ffmpeg"}, 600, cli_log);
+
+  std::printf("x11 dir-picker window test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(home_dir, fs_ec);
+    std::filesystem::remove_all(state_home, fs_ec);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  // The tour's media-info trail — the fixtures are told apart by track
+  // count (audio_only=1, subs_media=3), so the import semantics read
+  // straight off it:
+  //   1  the recursive import of media_a auto-played a1.mkv
+  //   3  a1's EOF advanced into the deeper a2.mkv — the recursive import
+  //      really queued both files
+  //   1  "Play group" on the media_b tree group opened b1.mkv
+  // Nothing may follow: the second import was append-only (a restart
+  // would have opened b1 right there, adding a fourth marker), and the
+  // final folder-node collapse click must not have landed on a row.
+  // Each find resumes past the previous match so no step aliases the
+  // previous occurrence (same shape as the queue-walk case above).
+  const std::string kT1 = "tracks=1 selected";
+  const std::string kT3 = "tracks=3 selected";
+  const std::size_t import_open = run.output.find(kT1);
+  CHECK(import_open != std::string::npos);
+  const std::size_t advance = run.output.find(kT3, import_open + kT1.size());
+  CHECK(advance != std::string::npos);
+  const std::size_t group_open = run.output.find(kT1, advance + kT3.size());
+  CHECK(group_open != std::string::npos);
+  if (group_open != std::string::npos) {
+    const std::size_t after = group_open + kT1.size();
+    CHECK(run.output.find(kT3, after) == std::string::npos);
+    CHECK(run.output.find(kT1, after) == std::string::npos);
+  }
+  // Both imports recorded their folder in the recent-dirs MRU under the
+  // redirected state home (the import records even when nothing plays).
+  std::ifstream recents(state_home + "/soar/recent-dirs.txt");
+  if (!recents.good()) {
+    FAIL("recent-dirs.txt was not written under XDG_STATE_HOME");
+  } else {
+    const std::string recents_txt((std::istreambuf_iterator<char>(recents)),
+                                  std::istreambuf_iterator<char>());
+    CHECK(recents_txt.find("/media_a") != std::string::npos);
+    CHECK(recents_txt.find("/media_b") != std::string::npos);
+  }
+  std::filesystem::remove_all(home_dir, fs_ec);
+  std::filesystem::remove_all(state_home, fs_ec);
 #endif
 #endif
 #endif

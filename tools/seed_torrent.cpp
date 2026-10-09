@@ -8,7 +8,10 @@
 //   seed_torrent --file=<path> --out=<file.torrent> [--port=6881] [--rate-kb=N]
 //     [--require-encryption]
 // --file takes a regular file or a directory (directory => multi-file
-// torrent rooted at the directory's base name).
+// torrent rooted at the directory's base name). Directory entries are added
+// name-sorted, so --torrent-index=N names the same file on every machine
+// (libtorrent's own add_files follows the platform's readdir order, which
+// differs per filesystem).
 // --rate-kb caps the upload rate (bytes/s = N*1024), simulating a slow peer
 // so the stream-while-downloading behavior is observable at all.
 // --require-encryption sets the torrent's incoming *and* outgoing policy to
@@ -30,13 +33,69 @@
 #include <libtorrent/torrent_handle.hpp>
 #include <libtorrent/torrent_info.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace lt = libtorrent;
+namespace fs = std::filesystem;
+
+namespace {
+
+// Recursively collects the payload under `root`, sorting each directory's
+// entries by name so the resulting file_storage (and therefore the torrent's
+// file indices) is identical on every machine. Only regular files are added
+// — the payload dirs hold nothing else, and add_files' predicate defaults
+// would include a stray symlink/socket the same way, which the walkthrough
+// never creates.
+void collectSorted(const fs::path& root, const fs::path& base,
+                   std::vector<fs::path>* out) {
+  std::vector<fs::path> entries;
+  std::error_code ec;
+  for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    entries.push_back(it->path());
+  }
+  std::sort(entries.begin(), entries.end());
+  for (const fs::path& p : entries) {
+    std::error_code kind_ec;
+    if (fs::is_directory(p, kind_ec) && !kind_ec) {
+      collectSorted(p, base, out);
+    } else if (fs::is_regular_file(p, kind_ec) && !kind_ec) {
+      out->push_back(fs::relative(p, base));
+    }
+  }
+}
+
+// add_files, but with a deterministic (name-sorted) traversal instead of the
+// platform's readdir order. The payload root's parent is the torrent root, so
+// stored paths are relative to `file`'s parent — matching add_files' layout.
+void addFilesSorted(lt::file_storage& fs, const std::string& file) {
+  const fs::path path(file);
+  const fs::path base = path.parent_path();
+  std::vector<fs::path> rels;
+  std::error_code ec;
+  if (fs::is_directory(path, ec)) {
+    collectSorted(path, base, &rels);
+  } else {
+    rels.push_back(fs::relative(path, base));
+  }
+  for (const fs::path& rel : rels) {
+    const std::string rel_str = rel.generic_string();
+    const std::uintmax_t size = fs::file_size(base / rel, ec);
+    if (ec) {
+      std::fprintf(stderr, "seed_torrent: cannot stat %s\n", (base / rel).c_str());
+      std::exit(1);
+    }
+    fs.add_file(rel_str, static_cast<std::int64_t>(size));
+  }
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
   std::string file, out;
@@ -68,7 +127,13 @@ int main(int argc, char** argv) {
   }
 
   lt::file_storage fs;
-  lt::add_files(fs, file);
+  // libtorrent's add_files walks with the platform's raw readdir order,
+  // which is filesystem-dependent (hash order on ext4) — the same directory
+  // yields a different file table on different machines, so --torrent-index
+  // would name an arbitrary file. Sort the walk so a given directory always
+  // produces the same indices; the walkthrough (and the tests driving it)
+  // can then point at a file by name and know its index.
+  addFilesSorted(fs, file);
   if (fs.num_files() < 1) {
     std::fprintf(stderr, "seed_torrent: --file has no seedable content\n");
     return 1;

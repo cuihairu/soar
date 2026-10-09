@@ -42,7 +42,7 @@ libtorrent（P2P 下载内核，docs/mvp.md §5 P4）vendor 在 `third_party/lib
 - `--backend=`：选择后端（`ffmpeg`、`null`），默认 `ffmpeg`（编译包含 FFmpeg 时；未编入则 `null`）；请求的后端不可用时回退并提示
 - `--cache-dir=`：把 `http://` 下载落盘缓存（同一 URL 离线可重播、断点续播、Range 补洞；https 直通不走缓存，docs/mvp.md §5 P3）
 - `.torrent` 位置参数或 `magnet:` URI 即 P2P 源（docs/mvp.md §5 P4）：本地 libtorrent 会话顺序下载，桥接成 `http://127.0.0.1:<port>/` 交给普通播放链路；`--torrent-store=`（数据落盘目录，默认 `<tmp>/soar-torrent`）、`--torrent-peer=host:port`（直连种子，可重复）、`--torrent-index=N`（多文件种子选第几个文件）、`--torrent-list`（打印种子的文件表即退出，magnet 会先向 swarm 取元数据；配合 `--torrent-index` 先看表再选）。magnet 取 `xt=urn:btih:`（40 位十六进制或 32 位 base32 均可），tracker 走 magnet 内 `tr=`、peer 可用 `x.pe=` 内置或 `--torrent-peer=` 直连，公网 DHT bootstrap 自动进行；swarm 送不来元数据 60 秒后显式报错退出。多文件种子播放时，窗口标题与海报显示所选文件的文件名（而非 `127.0.0.1:<port>` 桥地址）。窗口模式下 P2P 源自动走异步 open（P4b-4）：启动即开窗，海报显示 `connecting to swarm - N peers` 直至元数据就绪自动起播（`Downloading N%` 徽标同期可观测）、标题栏切为 `soar - <文件名>`；取不到元数据 60 秒后 toast 报错、窗口留下；`--headless` 与 `--torrent-list` 保持同步阻塞契约（即打印表/报错即退出）。
-- 本地 P2P 走查工具：`./build/seed_torrent --file=<媒体或目录> --out=<x.torrent> [--port=6881] [--rate-kb=N]`（目录即多文件种子，root 取目录名；限速模拟慢 peer），然后 `soar --torrent-peer=127.0.0.1:6881 <x.torrent>`，或等价 magnet：`soar 'magnet:?xt=urn:btih:<seeder 打印的 info hash>&x.pe=127.0.0.1:6881'`
+- 本地 P2P 走查工具：`./build/seed_torrent --file=<媒体或目录> --out=<x.torrent> [--port=6881] [--rate-kb=N]`（目录即多文件种子，root 取目录名；目录内条目按名称排序入表，`--torrent-index=N` 在任何机器上指向同一个文件——libtorrent 的 add_files 走平台 readdir 顺序，不同文件系统结果不同；限速模拟慢 peer），然后 `soar --torrent-peer=127.0.0.1:6881 <x.torrent>`，或等价 magnet：`soar 'magnet:?xt=urn:btih:<seeder 打印的 info hash>&x.pe=127.0.0.1:6881'`
 
 ## 4) 测试
 

@@ -137,6 +137,14 @@ if(TARGET soar)
   target_compile_definitions(soar_cli_tests PRIVATE
     SOAR_CLI_EXECUTABLE="$<TARGET_FILE:soar>"
   )
+  # The positive-path torrent cases fork the dev seeder (tools/seed_torrent)
+  # so the CLI can pull a real swarm's metadata and bytes; the tool only
+  # exists when the app is built, which is exactly when this target exists.
+  if(TARGET seed_torrent)
+    target_compile_definitions(soar_cli_tests PRIVATE
+      SOAR_SEED_TORRENT="$<TARGET_FILE:seed_torrent>"
+    )
+  endif()
   if(FFMPEG_FOUND)
     target_compile_definitions(soar_cli_tests PRIVATE SOAR_WITH_FFMPEG=1)
   endif()
@@ -153,6 +161,9 @@ if(TARGET soar)
   endif()
 
   add_dependencies(soar_cli_tests soar)
+  if(TARGET seed_torrent)
+    add_dependencies(soar_cli_tests seed_torrent)
+  endif()
   add_test(NAME soar_cli_tests COMMAND soar_cli_tests)
 
 # A subprocess that hangs (e.g. an SDL window loop on a runner where
