@@ -272,27 +272,33 @@ TEST_CASE("defaultRecentPath follows XDG_STATE_HOME then HOME") {
   CHECK(soar::app::defaultRecentPath() == scratch + "/soar/recent.txt");
 
   ::unsetenv("XDG_STATE_HOME");
-  const char* home = std::getenv("HOME");
-  REQUIRE(home != nullptr);
+  // Copy before any unsetenv: BSD libc frees the string getenv points at,
+  // so the raw pointer would dangle across the ::unsetenv below (glibc
+  // leaks the entry instead — the divergence once left HOME="" on macOS).
+  const std::string home = [] {
+    const char* h = std::getenv("HOME");
+    return h != nullptr ? h : "";
+  }();
+  REQUIRE(!home.empty());
   CHECK(soar::app::defaultRecentPath() ==
-        std::string(home) + "/.local/state/soar/recent.txt");
+        home + "/.local/state/soar/recent.txt");
 
   // Neither variable set: the bare relative fallback keeps the UI usable
   // (the list just lives next to the working directory).
   ::unsetenv("HOME");
   CHECK(soar::app::defaultRecentPath() == "soar-recent.txt");
-  ::setenv("HOME", home, 1);
+  ::setenv("HOME", home.c_str(), 1);
 
   // Set but empty: a shell that exports XDG_STATE_HOME= (or a CI runner
   // with HOME=) must not produce a path rooted at the working directory,
   // so an empty value counts as unset and the next source is tried.
   ::setenv("XDG_STATE_HOME", "", 1);
   CHECK(soar::app::defaultRecentPath() ==
-        std::string(home) + "/.local/state/soar/recent.txt");
+        home + "/.local/state/soar/recent.txt");
   ::unsetenv("XDG_STATE_HOME");
   ::setenv("HOME", "", 1);
   CHECK(soar::app::defaultRecentPath() == "soar-recent.txt");
-  ::setenv("HOME", home, 1);
+  ::setenv("HOME", home.c_str(), 1);
 
   // Not a fixture leak: restore nothing — XDG_STATE_HOME unset is the
   // default state for the next test binary run.
@@ -307,19 +313,24 @@ TEST_CASE("defaultRecentDirsPath follows the same XDG-then-HOME ladder") {
   CHECK(soar::app::defaultRecentDirsPath() == scratch + "/soar/recent-dirs.txt");
 
   ::unsetenv("XDG_STATE_HOME");
-  const char* home = std::getenv("HOME");
-  REQUIRE(home != nullptr);
+  // Same copy-first rule as the file-path ladder above: the raw getenv
+  // pointer dies with unsetenv on BSD libc.
+  const std::string home = [] {
+    const char* h = std::getenv("HOME");
+    return h != nullptr ? h : "";
+  }();
+  REQUIRE(!home.empty());
   CHECK(soar::app::defaultRecentDirsPath() ==
-        std::string(home) + "/.local/state/soar/recent-dirs.txt");
+        home + "/.local/state/soar/recent-dirs.txt");
 
   ::unsetenv("HOME");
   CHECK(soar::app::defaultRecentDirsPath() == "soar-recent-dirs.txt");
-  ::setenv("HOME", home, 1);
+  ::setenv("HOME", home.c_str(), 1);
 
   // An empty value counts as unset here too, exactly like the file path.
   ::setenv("XDG_STATE_HOME", "", 1);
   CHECK(soar::app::defaultRecentDirsPath() ==
-        std::string(home) + "/.local/state/soar/recent-dirs.txt");
+        home + "/.local/state/soar/recent-dirs.txt");
   ::unsetenv("XDG_STATE_HOME");
 }
 #endif
