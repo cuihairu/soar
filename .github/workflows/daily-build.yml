@@ -665,8 +665,9 @@ jobs:
           fi
           # AppImage（todo.md ④）：裸容器无 FUSE，走 runtime 内建
           # 解包执行面——恰好覆盖「包自身（runtime+载荷）不缺件」的
-          # 口径，与 runner 侧直跑形成互补。
-          APPIMAGE_EXTRACT_AND_RUN=1 /w/x/soar-linux-*.AppImage --version
+          # 口径，与 runner 侧直跑形成互补。注意 AppImage 在 workspace
+          # 根（artifact 下载面），不在解压出的 x/ 里。
+          APPIMAGE_EXTRACT_AND_RUN=1 /w/soar-linux-*.AppImage --version
           EOF
           for img in ubuntu:24.04 ubuntu:latest; do
             echo "== $img =="
