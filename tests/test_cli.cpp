@@ -1846,6 +1846,10 @@ TEST_CASE("a malformed magnet in window mode fails before the window opens") {
 }
 
 #if defined(SOAR_SEED_TORRENT)
+// The seeder harness is POSIX-only (fork/execlp/waitpid, like the RTSP
+// helper below); the two seeded-torrent cases skip on Windows before they
+// reach it.
+#ifndef _WIN32
 namespace {
 
 // Forks the dev seeder (tools/seed_torrent) over a payload directory and
@@ -1901,6 +1905,7 @@ struct Seeder {
 };
 
 }  // namespace
+#endif  // !_WIN32
 
 TEST_CASE("headless --torrent-list prints the file table of a seeded multi-file torrent") {
 #ifdef _WIN32
