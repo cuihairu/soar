@@ -1266,6 +1266,106 @@ if mode == "dirpick":
             sys.exit(0)
     sys.exit(4)
 
+if mode == "library":
+    # The media-library round trip (docs/mvp.md §3): B opens the overlay,
+    # "Add folder..." starts the picker in watch mode (no subfolders toggle
+    # — a library watches a tree), the media_a row enters it, and "Watch
+    # this folder" records + scans + saves, landing back on the Library
+    # overlay with the folder and its two files. Click order is
+    # load-bearing: a row click navigates, only the bottom button watches
+    # the ENTERED folder.
+    # Coordinates probed under SOAR_UI_BITMAP_FONT=1 on a 1280x800 Xvfb
+    # against the -O0 coverage build, in the injector's own frame: the
+    # SDL window is 960x540 centred at (160,130), and moved() warps
+    # window-relative. The overlay window centres at (381,190) 520x420
+    # root — "Add folder..." at (287,100) here; the watch-mode picker
+    # (checkbox hidden, rows one pitch higher than the import layout)
+    # shows ".." ~127, ".cache/" ~144, "media_a/" ~161, with "Watch
+    # this folder (2 media files, with subfolders)" bottom-left anchored
+    # at (418,459). argv[4] is the store path; the mode polls it for the
+    # "f " line so a lagged click cannot slip past the quit storm
+    # unnoticed (the test side re-asserts the full contents).
+    time.sleep(2.2)
+    focus()
+    store = sys.argv[4] if len(sys.argv) > 4 else ""
+
+    def has_folder_line():
+        if not store:
+            return True
+        try:
+            with open(store) as f:
+                return any(line.startswith("f ") for line in f)
+        except OSError:
+            return False
+
+    def sclick(x, y):
+        moved(x, y); time.sleep(0.15)
+        holdclick(1); time.sleep(0.5)
+
+    key(d.keysym_to_keycode(0x62))  # B -> the Library overlay
+    time.sleep(0.9)
+    sclick(287, 100)   # "Add folder..." -> the picker in watch mode
+    time.sleep(0.9)
+    sclick(250, 161)   # enter media_a/
+    time.sleep(0.7)
+    sclick(418, 459)   # "Watch this folder" -> record + scan + save
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline and not has_folder_line():
+        time.sleep(0.25)
+
+    def wait_no(match, timeout=8.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with open(store) as f:
+                    if match not in f.read():
+                        return True
+            except OSError:
+                return True
+            time.sleep(0.25)
+        return False
+
+    # The folder row's "x" sits after the row label, and the label is the
+    # watched path itself — pid-dependent in length. Compute the x from
+    # the label (text starts at ~233, ~7 px/char in the bitmap font, plus
+    # the SameLine gap and half a small button ~15) instead of pinning a
+    # coordinate that only fits one pid width.
+    home = sys.argv[5] if len(sys.argv) > 5 else ""
+    folder_x = 233 + len(home + "/media_a") * 7 + 15
+
+    # Back on the Library overlay, folder row on top, the two entries
+    # below (a1 carries the test's seeded history, so its row renders the
+    # resume marker). Park the pointer on the folder row, then the a1 row
+    # (its tooltip shows path + duration + play count), Rescan, then the
+    # "x" buttons: a2's entry row, then the folder row — each step is
+    # confirmed from the store before the next click.
+    moved(245, 136)
+    time.sleep(0.8)
+    moved(245, 161)
+    time.sleep(0.8)
+    sclick(375, 100)   # "Rescan" -> scan + save again (store unchanged)
+    time.sleep(0.6)
+    sclick(291, 181)   # a2.mkv row's "x" -> removeEntry + save
+    wait_no("a2.mkv")
+    sclick(folder_x, 136)   # folder row's "x" -> removeFolder + save
+    wait_no("\nf ")
+    time.sleep(0.4)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        if moved(200, 400):
+            button(1)
+        time.sleep(0.7)
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
 if mode == "audiodrive":
     # Real-backend window run over the dual-audio fixture: two audio
     # streams and no subtitle stream at all. That combination is where
@@ -2499,6 +2599,365 @@ TEST_CASE("windowed null-backend run exits cleanly on WM_DELETE_WINDOW") {
     return;
   }
   CHECK(run.exit_code == 0);
+#endif
+}
+
+// Media-library helpers for the window cases below: the largest position
+// event a run produced (a range check, not a substring probe — "321000"
+// and "3210" share prefixes and the probe would lie), and the library
+// record line of one URI parsed out of the store file.
+namespace {
+long long maxPositionMs(const std::string& output) {
+  long long max_ms = -1;
+  std::size_t at = 0;
+  while ((at = output.find("event: position=", at)) != std::string::npos) {
+    long long v = -1;
+    if (std::sscanf(output.c_str() + at, "event: position=%lldms", &v) == 1) {
+      if (v > max_ms) max_ms = v;
+    }
+    at += 16;
+  }
+  return max_ms;
+}
+
+// e <size> <mtime> <pos_ms> <dur_ms> <last_played> <plays> <path>
+bool libraryRecord(const std::string& store, const std::string& uri,
+                   long long& position_ms, long long& plays) {
+  std::ifstream in(store);
+  if (!in.good()) return false;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.rfind("e ", 0) != 0) continue;
+    if (line.find(uri) == std::string::npos) continue;
+    long long size = 0, mtime = 0, pos_ms = 0, dur = 0, played = 0;
+    unsigned play_count = 0;
+    if (std::sscanf(line.c_str(), "e %lld %lld %lld %lld %lld %u", &size,
+                    &mtime, &pos_ms, &dur, &played, &play_count) != 6) {
+      return false;
+    }
+    position_ms = pos_ms;
+    plays = play_count;
+    return true;
+  }
+  return false;
+}
+}  // namespace
+
+TEST_CASE("windowed run resumes a library source; --no-resume declines the jump") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // The resume jump and the progress writes live in the HUD (constructor,
+  // frame loop, destructor); the bare-SDL build has no HUD at all.
+  MESSAGE("app built without the ImGui overlay; skipping the library test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the X11 window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the X11 window test");
+    return;
+  }
+
+  // Same private-display scheme as the other X11 cases; both runs below
+  // share this one server, sequentially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "640x480x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the X11 window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  // State scratch. The seeded record points at the null backend's
+  // simulated 10-minute media with 5:21 on the clock: past the resume
+  // policy's noise floor, and a position no seconds-long session can
+  // reach by simply playing.
+  const std::string state_home =
+      "/tmp/soar_library_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const std::string seed_dir = state_home + "/soar";
+  ::mkdir(seed_dir.c_str(), 0755);
+  const std::string store = seed_dir + "/library.txt";
+  const char* seed_line = "e 0 0 321000 600000 1700000000 3 asset://sample\n";
+  const auto seed_store = [&] {
+    std::ofstream out(store, std::ios::trunc);
+    out << seed_line;
+  };
+
+  // The embedded font pins HUD metrics; audio stays off-pulse; the state
+  // dir keeps the run's writes out of the real user store.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+
+  // Run 1: the saved position is jumped to and the session re-records it.
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "escape", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  seed_store();
+  const auto run1 = runCli({"--backend=null", "asset://sample"});
+  std::printf("x11 library resume test: cli exit=%d, output:\n%s\n",
+              run1.exit_code, run1.output.c_str());
+  ::waitpid(injector, nullptr, 0);
+
+  if (run1.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+  REQUIRE(run1.exit_code == 0);
+  CHECK(maxPositionMs(run1.output) >= 321000);
+  long long pos = 0;
+  long long plays = 0;
+  REQUIRE(libraryRecord(store, "asset://sample", pos, plays));
+  CHECK(pos >= 321000);   // the jump happened and progress kept recording
+  CHECK(pos < 340000);    // the session advanced seconds, not minutes
+  CHECK(plays == 4);      // seeded 3, this open counted
+
+  // Run 2: --no-resume declines the jump but not the bookkeeping.
+  injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "escape", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  seed_store();
+  const auto run2 = runCli({"--backend=null", "--no-resume", "asset://sample"});
+  std::printf("x11 library no-resume test: cli exit=%d, output:\n%s\n",
+              run2.exit_code, run2.output.c_str());
+  ::waitpid(injector, nullptr, 0);
+
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run2.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    return;
+  }
+  REQUIRE(run2.exit_code == 0);
+  CHECK(maxPositionMs(run2.output) < 60000);
+  REQUIRE(libraryRecord(store, "asset://sample", pos, plays));
+  CHECK(pos < 60000);     // progress from this session, no 5:21 jump
+  CHECK(plays == 4);      // recording continued under --no-resume
+#endif
+#endif
+}
+
+TEST_CASE("headless runs never touch the media library store") {
+  // The state-free contract headless tests lean on: no window session, no
+  // state writes — the store file must not even come into existence.
+  const std::string state_home =
+      "/tmp/soar_library_headless_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);
+  const std::string store = state_home + "/soar/library.txt";
+  struct stat st;
+  {
+    const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+    const auto run = runCli({"--headless", "--backend=null", "asset://sample"});
+    CHECK(run.exit_code == 0);
+    CHECK(::stat(store.c_str(), &st) != 0);
+    // --no-resume parses on the headless path too (accepted, no-op there).
+    const auto run2 = runCli(
+        {"--headless", "--backend=null", "--no-resume", "asset://sample"});
+    CHECK(run2.exit_code == 0);
+    CHECK(::stat(store.c_str(), &st) != 0);
+  }
+  ::remove(state_home.c_str());
+}
+
+TEST_CASE("windowed run watches a folder into the library through the overlay") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // The library overlay, the picker's watch mode and the B key are all
+  // HUD-side; the bare-SDL build has none of them.
+  MESSAGE("app built without the ImGui overlay; skipping the library overlay test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the library overlay test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the library overlay test");
+    return;
+  }
+
+  // 1280x800: the overlay coordinates the injector clicks were probed on
+  // exactly this geometry (the picker centres on the display).
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the library overlay test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  // Same staged-HOME scheme as the dir-picker case: ".cache" pins the
+  // sorted row order (a dot-directory always sorts first), media_a holds
+  // one file at its top and one a level down — the watch-mode picker's
+  // recursive count ("2 media files, with subfolders") and the scan's
+  // tree walk both read that layout. The files are bare 0-byte names:
+  // the scan is extension-based, no media is opened, so the run needs no
+  // fixtures and no FFmpeg (the backend stays null behind the poster).
+  const std::string home_dir = "/tmp/soar_lib_home_" + std::to_string(::getpid());
+  const std::string state_home = "/tmp/soar_lib_xdg_" + std::to_string(::getpid());
+  std::error_code fs_ec;
+  std::filesystem::remove_all(home_dir, fs_ec);
+  std::filesystem::remove_all(state_home, fs_ec);
+  REQUIRE(std::filesystem::create_directories(state_home + "/soar", fs_ec));
+  REQUIRE(std::filesystem::create_directories(home_dir + "/.cache", fs_ec));
+  REQUIRE(std::filesystem::create_directories(home_dir + "/media_a/deep", fs_ec));
+  { std::ofstream(home_dir + "/media_a/a1.mkv").put('\n'); }
+  { std::ofstream(home_dir + "/media_a/deep/a2.mkv").put('\n'); }
+  // a1 also carries an NFO sidecar: the scan picks it up and the overlay
+  // shows the scraped title instead of the file name (its hover tooltip
+  // gains the plot). Only a1 gets one — a2's row label must stay
+  // "a2.mkv" for the drive's x-button coordinate to mean the same thing.
+  {
+    std::ofstream nfo(home_dir + "/media_a/a1.nfo");
+    nfo << "<movie><title>Sample Movie</title><plot>Calibration plot.</plot>"
+          "</movie>\n";
+  }
+  const std::string store = state_home + "/soar/library.txt";
+  // a1 carries seeded history (5:21 of a 10-minute file, played 3x): the
+  // watch's scan merge keeps it, so the overlay renders the resume marker
+  // and the tooltip's duration/play-count arms — and the final assertions
+  // can prove the history survived the whole round trip untouched.
+  {
+    std::ofstream seed(store);
+    seed << "e 1 0 321000 600000 1700000000 3 " << home_dir << "/media_a/a1.mkv\n";
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "library", store.c_str(), home_dir.c_str(),
+             static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  // The picker's start-directory ladder reads HOME; the store and the
+  // recent-dirs write under XDG_STATE_HOME — both must stay in the
+  // scratch tree.
+  const ScopedEnv home_env("HOME", home_dir.c_str());
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // No positional, null backend: the run lives on the poster the whole
+  // time; every state change comes from the overlay clicks.
+  const auto run = runCli({"--gui", "--backend=null"}, 600);
+
+  std::printf("x11 library overlay test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(home_dir, fs_ec);
+    std::filesystem::remove_all(state_home, fs_ec);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+
+  // The drive's tail end, asserted from the store it left behind: the
+  // injector watched media_a, rescanned, then "x"-ed a2's entry row and
+  // the folder row — each confirmed against the store before the next
+  // click. What remains proves the wiring end to end:
+  //   - a1 survives with its seeded history intact (the scan merge keeps
+  //     it, removeFolder must not touch non-watched entries, nothing
+  //     played so nothing re-recorded);
+  //   - a2 is gone (removeEntry) and the folder line is gone
+  //     (removeFolder).
+  std::ifstream lib(store);
+  if (!lib.good()) {
+    FAIL("library.txt was not written under XDG_STATE_HOME");
+  } else {
+    const std::string lib_txt((std::istreambuf_iterator<char>(lib)),
+                              std::istreambuf_iterator<char>());
+    CHECK(lib_txt.find("f ") == std::string::npos);
+    CHECK(lib_txt.find("a2.mkv") == std::string::npos);
+    long long pos = 0, plays = 0;
+    REQUIRE(libraryRecord(store, home_dir + "/media_a/a1.mkv", pos, plays));
+    CHECK(pos == 321000);
+    CHECK(plays == 3);
+    CHECK(lib_txt.find(" 321000 600000 ") != std::string::npos);
+  }
+  // The watch also lands in the recent-dirs MRU, like an import would
+  // (the later unwatch does not unwind it — same as an import).
+  std::ifstream recents(state_home + "/soar/recent-dirs.txt");
+  if (!recents.good()) {
+    FAIL("recent-dirs.txt was not written under XDG_STATE_HOME");
+  } else {
+    const std::string recents_txt((std::istreambuf_iterator<char>(recents)),
+                                  std::istreambuf_iterator<char>());
+    CHECK(recents_txt.find("/media_a") != std::string::npos);
+  }
+  // Nothing opened: the run never leaves the poster, so no media-info
+  // markers may appear (the store entries were written by the scan, not
+  // by playback).
+  CHECK(run.output.find("tracks=") == std::string::npos);
+
+  std::filesystem::remove_all(home_dir, fs_ec);
+  std::filesystem::remove_all(state_home, fs_ec);
+#endif
 #endif
 }
 

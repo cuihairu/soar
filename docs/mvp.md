@@ -61,7 +61,7 @@
 
 - 硬件解码与 HDR 色彩链路（跨平台差异大）**（硬件解码第一步已落地，2026-10-10）**：`--hwdec=`（CLI）/ `MediaSource::hwdec`——`none`（默认，行为与从未加过该选项完全一致）、`auto`（按平台常规顺序试：Linux vaapi→vdpau、Windows d3d11va→dxva2、macOS videotoolbox）、或指定设备名（vaapi/vdpau/d3d11/dxva2/videotoolbox/cuda/nvdec）。接线全在 FFmpeg 后端：setupDecoders 按 `avcodec_get_hw_config` 确认编解码器支持该 hwaccel 后 `av_hwdevice_ctx_create` 挂设备上下文（编解码器与本实例各持一份引用，仿 hw_decode.c 示例的双引用形状），`get_format` 回调经 `AVCodecContext::opaque` 读本实例的协商格式（per-instance，并发 open 不串台）；decodeLoop 把到达的 hwaccel 帧经 `av_hwframe_transfer_data` 下载成 YUV420P 再入队——渲染/转换/显示路径零改动。任何一环失败（编解码器无该 hwaccel、设备打不开、open2 拒收）都静默退回全软件解码。窗口内后续打开（播放列表/对话框/拖放）沿用会话的 `--hwdec` 设置。CI 侧由测试专用接缝 `SOAR_TEST_HWACCEL_ARM`（saveScreenshot `forceFailEncoder` 先例）驱动武装路径：以流编码格式协商、open2 后对齐解码器实际输出格式，真实 libavcodec 跑通 get_format 协商/帧下载/拆除全链（docs/coverage-notes.md §3.21）。**边界（如实）**：真实硬件解码只在真 GPU 上可观测——无 GPU 的 CI 上设备创建恒失败、走软件回退臂，`--hwdec=auto` 的用例验证的是「干净回退照常播」，硬解本身的帧路径待真机验证批；HDR 色彩链路未动。
 - 投屏（AirPlay/Chromecast/DLNA）与远程控制
-- 媒体库与刮削、历史/同步、多端一致性
+- 媒体库与刮削、历史/同步、多端一致性（**基础库层已落地，2026-10-10**：本地媒体库 `src/app/ui/library.{h,cpp}`——监视文件夹扫描（递归、mtime 令牌、消失文件剪枝、非监视路径不动）、行式存储（XDG_STATE_HOME/APPDATA 下 `library.txt`）、播放历史（位置/次数/时间戳，续播策略：≥5s 且离尾 ≥5s 才跳回，看完清位）；窗口侧 B 键浮层 + 监视模式 DirPick（递归数显式标注），历史只记窗口会话（headless 零状态写入），`--no-resume` 拒跳但照记账；torrent 桥 URL 不记历史（每会话换端口，Recent 条目保留）。**边界（如实）**：刮削只做离线 NFO 边车（扫描时读 `<名>.nfo` 的 title/plot，浮层行标题优先显示刮削名、悬停提示带 plot；边车内容不落持久化——磁盘文件是唯一真相，重扫刷新、直接打开的源无刮削）；网络刮削（TMDB 等外部服务）与多端同步未做——两者需协议决策另立批）
 - 插件体系（输入源/解码/字幕/渲染/扩展协议）
 - 边下载边看：本地缓存下载 + 字幕下载 + AI 翻译（见 §5 的 P3–P4 与 §6）
 

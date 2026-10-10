@@ -18,6 +18,7 @@
 #include "soar/core/subtitle_provider.h"
 #include "startup_report.h"
 #include "ui/dir_scan.h"
+#include "ui/library.h"
 #include "ui_state.h"
 
 #include <fmt/format.h>
@@ -42,6 +43,7 @@
 #  include <cmath>
 #  include <cstdio>
 #  include <cstdlib>
+#  include <ctime>
 #  include <filesystem>
 #  include <fstream>
 #  include <iterator>
@@ -91,7 +93,7 @@ const char* trackTypeName(TrackType t) {
 }
 
 // Which overlay page is open; at most one at a time (docs/ui-design.md §2).
-enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist, DirPick };
+enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist, DirPick, Library };
 
 // Letterbox destination: the frame scaled to fit, centered (docs §4 — the
 // video area is always aspect-correct on the theme background).
@@ -352,15 +354,22 @@ class PlayerHud {
         current_uri_(cfg.initial_uri), source_label_(cfg.source_label),
         torrent_(cfg.torrent), torrent_pending_(cfg.torrent != nullptr),
         recent_dirs_(defaultRecentDirsPath(), 8),
+        library_(cfg.library),
         subtitle_fonts_(loadSubtitleFonts()) {
     recent_.load();
     recent_dirs_.load();
+    if (library_ != nullptr) library_->load();
     if (cfg.torrent == nullptr) {
       recordOpen(cfg.initial_uri);
       // Playlist seeding (docs/mvp.md §2): the CLI-opened source plays
       // first; further positionals queue behind it (mpv's multi-argument
       // semantics).
       if (!cfg.initial_uri.empty()) playlist_.add(cfg.initial_uri);
+      // Resume bookkeeping (docs/mvp.md §3): the source is already open and
+      // playing (main.cpp opened it before the window exists), so a saved
+      // position applies now — a few ms of from-zero playback precede the
+      // jump, the honest cost of the synchronous open contract.
+      applyResume(cfg.initial_uri, nowMs());
     } else {
       // Async P2P source (P4b-4): the magnet/.torrent URI is not openable
       // by the player until the metadata lands — handlePendingTorrent
@@ -409,6 +418,28 @@ class PlayerHud {
     }
     translate_ready_ = !tr_cfg.endpoint.empty() && !tr_cfg.model.empty();
     translator_.configure(std::move(tr_cfg));
+  }
+
+  // Watched-to-end bookkeeping: the final record before the window goes
+  // away. The player is still open here (runPlayerWindow stops it after
+  // the HUD block ends), so position()/state() are live.
+  ~PlayerHud() {
+    if (library_ == nullptr) return;
+    if (!current_uri_.empty() && !isTorrentBridge(current_uri_)) {
+      switch (player_.state()) {
+        case PlaybackState::Playing:
+        case PlaybackState::Paused:
+          library_->recordProgress(current_uri_, player_.position().count(),
+                                   player_.mediaInfo().duration.count());
+          break;
+        case PlaybackState::Ended:
+          library_->clearPosition(current_uri_);
+          break;
+        default:
+          break;  // Stopped/Error: nothing honest to write
+      }
+    }
+    library_->save();
   }
 
   // App-level input (docs §3). `quit` is set on the exit paths. The UI's
@@ -504,6 +535,9 @@ class PlayerHud {
             return;
           case SDLK_p:
             toggleOverlay(Overlay::Playlist);
+            return;
+          case SDLK_b:  // 'b' - browse the media library (docs/mvp.md §3)
+            openLibrary();
             return;
           case SDLK_n:  // mpv binding: next / previous queue entry
             playlistStep(shift, now);
@@ -666,6 +700,7 @@ class PlayerHud {
     const bool hud_shown = st_.hud.visible(now, /*pointer_over_hud=*/io.WantCaptureMouse,
                                            st_.seek_dragging,
                                            st_.overlay != Overlay::None, paused);
+    maybeRecordProgress(now);
     maybeAdvancePlaylist(now);
     const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
     const float target = hud_shown ? 1.0f : 0.0f;
@@ -683,7 +718,65 @@ class PlayerHud {
   void recordOpen(const std::string& uri) {
     if (uri.empty()) return;
     current_uri_ = uri;
+    library_end_cleared_ = false;  // the new source starts a fresh resume book
     if (recent_.add(uri)) recent_.save();
+    if (library_ != nullptr && !isTorrentBridge(uri)) {
+      // Torrent bridge URLs change port every session (P4b-4): recording
+      // one would plant a history row that can never replay. They keep
+      // their Recent entry — that contract predates the library.
+      library_->recordOpen(uri, std::time(nullptr));
+      library_->save();
+    }
+  }
+
+  // Jumps back to the saved position of `uri` when the resume policy
+  // (resumePositionMs in library.h) says it is worth it. True when the
+  // jump happened — the caller lets a "Resumed at m:ss" toast replace its
+  // own, the jump is the more informative story.
+  bool applyResume(const std::string& uri, milliseconds now) {
+    if (!cfg_.resume_playback || library_ == nullptr) return false;
+    const LibraryEntry* entry = library_->find(uri);
+    if (entry == nullptr) return false;
+    const std::int64_t pos = resumePositionMs(*entry);
+    if (pos <= 0) return false;
+    // An unseekable source refuses the jump and stays at zero — the
+    // policy function only knows the recorded numbers, the backend has
+    // the final say (the same asymmetry as the seek bar).
+    if (!player_.seek(std::chrono::milliseconds(pos))) return false;
+    st_.toast.show("Resumed at " +
+                       formatClock(std::chrono::milliseconds(pos)),
+                   now);
+    return true;
+  }
+
+  // Torrent bridge URLs are session-scoped: display-labeled, never
+  // history-keyed.
+  bool isTorrentBridge(const std::string& uri) const {
+    return torrent_ != nullptr && uri == torrent_->playbackUrl();
+  }
+
+  // The library's write half of the frame loop (the read half is
+  // applyResume at open time): a throttled progress write while playing,
+  // and the watched-to-end clear when a source runs into Ended. Ordered
+  // before the playlist advance in drawUi so the clearing frame still
+  // knows the finished source as current.
+  void maybeRecordProgress(milliseconds now) {
+    if (library_ == nullptr || current_uri_.empty()) return;
+    if (isTorrentBridge(current_uri_)) return;
+    if (player_.state() == PlaybackState::Ended) {
+      if (!library_end_cleared_) {
+        library_end_cleared_ = true;
+        library_->clearPosition(current_uri_);
+        library_->save();
+      }
+      return;
+    }
+    if (player_.state() != PlaybackState::Playing) return;
+    if (now - last_progress_write_ < kProgressInterval) return;
+    last_progress_write_ = now;
+    library_->recordProgress(current_uri_, player_.position().count(),
+                             player_.mediaInfo().duration.count());
+    library_->save();
   }
 
   // Source name as displayed (poster, toasts, playlist): P2P sources stream
@@ -1163,6 +1256,7 @@ class PlayerHud {
   // the most recent folder, falling back to $HOME (then the cwd) so the
   // first use still lands somewhere browsable.
   void openDirPicker() {
+    dirpick_for_library_ = false;  // a plain open imports into the queue
     if (dirpick_path_.empty()) {
       const std::vector<std::string>& dirs = recent_dirs_.entries();
       if (!dirs.empty()) {
@@ -1174,6 +1268,44 @@ class PlayerHud {
       }
     }
     toggleOverlay(Overlay::DirPick);
+  }
+
+  // Same picker, library mode: the action button becomes "Watch this
+  // folder" (docs/mvp.md §3) and the pick lands back in the Library
+  // overlay instead of the queue.
+  void openDirPickerWatch() {
+    openDirPicker();
+    dirpick_for_library_ = true;
+  }
+
+  // Watch action from the picker's library mode: the folder joins the
+  // watched set, an immediate scan lands its files in the store, and the
+  // user is handed back to the Library overlay that sent them here.
+  void watchDirectory(const std::string& dir, milliseconds now) {
+    if (library_ == nullptr) return;
+    library_->addFolder(dir);
+    library_->scan();
+    library_->save();
+    if (recent_dirs_.add(dir)) recent_dirs_.save();
+    library_scanned_ = true;
+    st_.overlay = Overlay::Library;
+    st_.toast.show("Watching " + baseName(dir) + " - " +
+                       std::to_string(library_->entries().size()) +
+                       " file" + (library_->entries().size() == 1 ? "" : "s") +
+                       " in library",
+                   now);
+  }
+
+  // Media library browse (docs/mvp.md §3): the first open of a session
+  // walks the watched folders once — a big tree must not be re-scanned on
+  // every toggle; after that the Rescan button owns the refresh.
+  void openLibrary() {
+    if (library_ != nullptr && !library_scanned_) {
+      library_->scan();
+      library_->save();
+      library_scanned_ = true;
+    }
+    toggleOverlay(Overlay::Library);
   }
 
   // Folder import: every media file under `dir` (recursive per the picker
@@ -1214,8 +1346,12 @@ class PlayerHud {
       playlist_.add(uri);
       playlist_.setCurrent(playlist_.size() - 1);
       st_.loop_a_set = false;  // a fresh source starts without a pending A
-      st_.toast.show("Opened " + displayName(uri), nowMs());
       player_.play();
+      // Resume first: when the jump happens, "Resumed at m:ss" replaces
+      // the plain "Opened" toast (the jump is the story).
+      if (!applyResume(uri, nowMs())) {
+        st_.toast.show("Opened " + displayName(uri), nowMs());
+      }
     } else {
       st_.toast.show("Open failed: " + player_.lastError(), nowMs());
     }
@@ -1235,11 +1371,13 @@ class PlayerHud {
     recordOpen(entries[index]);
     playlist_.setCurrent(index);
     st_.loop_a_set = false;
-    st_.toast.show("Playlist " + std::to_string(index + 1) + "/" +
-                       std::to_string(entries.size()) + ": " +
-                       displayName(entries[index]),
-                   now);
     player_.play();
+    if (!applyResume(entries[index], now)) {
+      st_.toast.show("Playlist " + std::to_string(index + 1) + "/" +
+                         std::to_string(entries.size()) + ": " +
+                         displayName(entries[index]),
+                     now);
+    }
     return true;
   }
 
@@ -1768,6 +1906,7 @@ class PlayerHud {
       case Overlay::Subtitle: drawSubtitleOverlay(); return;
       case Overlay::Playlist: drawPlaylistOverlay(); return;
       case Overlay::DirPick: drawDirPickOverlay(); return;
+      case Overlay::Library: drawLibraryOverlay(); return;
     }
   }
 
@@ -1880,7 +2019,12 @@ class PlayerHud {
     ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_Appearing);
     if (ImGui::Begin("Open folder", &open, ImGuiWindowFlags_NoSavedSettings)) {
       ImGui::TextDisabled("%s", dirpick_path_.c_str());
-      ImGui::Checkbox("Include subfolders", &dirpick_recursive_);
+      // Library watch mode is always recursive (a library watches a tree,
+      // not a folder shelf); the toggle only governs queue imports.
+      if (!dirpick_for_library_) {
+        ImGui::Checkbox("Include subfolders", &dirpick_recursive_);
+      }
+      const bool effective_recursive = dirpick_for_library_ || dirpick_recursive_;
       ImGui::Separator();
 
       const std::vector<std::string>& dirs = recent_dirs_.entries();
@@ -1906,20 +2050,27 @@ class PlayerHud {
       ImGui::EndChild();
 
       if (dirpick_count_valid_ && dirpick_counted_path_ == dirpick_path_ &&
-          dirpick_counted_recursive_ == dirpick_recursive_) {
+          dirpick_counted_recursive_ == effective_recursive) {
         // cache hit — the walk below is skipped
       } else {
-        dirpick_count_ = listMediaFiles(dirpick_path_, dirpick_recursive_).size();
+        dirpick_count_ = listMediaFiles(dirpick_path_, effective_recursive).size();
         dirpick_counted_path_ = dirpick_path_;
-        dirpick_counted_recursive_ = dirpick_recursive_;
+        dirpick_counted_recursive_ = effective_recursive;
         dirpick_count_valid_ = true;
       }
       ImGui::BeginDisabled(dirpick_count_ == 0);
-      char label[128];
-      std::snprintf(label, sizeof(label), "Import this folder (%zu media file%s%s)",
+      char label[160];
+      std::snprintf(label, sizeof(label), "%s this folder (%zu media file%s%s)",
+                    dirpick_for_library_ ? "Watch" : "Import",
                     dirpick_count_, dirpick_count_ == 1 ? "" : "s",
-                    dirpick_recursive_ ? ", with subfolders" : "");
-      if (ImGui::Button(label)) importDirectory(dirpick_path_, nowMs());
+                    effective_recursive ? ", with subfolders" : "");
+      if (ImGui::Button(label)) {
+        if (dirpick_for_library_) {
+          watchDirectory(dirpick_path_, nowMs());
+        } else {
+          importDirectory(dirpick_path_, nowMs());
+        }
+      }
       ImGui::EndDisabled();
     }
     ImGui::End();
@@ -2032,6 +2183,104 @@ class PlayerHud {
     ImGui::PopID();
   }
 
+  // The media library browse (docs/mvp.md §3): watched folders on top,
+  // the known sources below with the resume state each carries. A row
+  // click plays the source (openSource applies the resume jump); the
+  // trailing "x" forgets a source / unwatches a folder. Snapshots before
+  // iterating: a click rewrites the store (recordOpen re-sorts entries_,
+  // an unwatch mutates folders_) and the loop must not walk a vector
+  // being mutated — the Recent overlay learned this first.
+  void drawLibraryOverlay() {
+    bool open = true;
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_Appearing);
+    if (ImGui::Begin("Library", &open, ImGuiWindowFlags_NoSavedSettings)) {
+      if (library_ == nullptr) {
+        ImGui::TextDisabled("%s", "No library in this session.");
+      } else {
+        if (ImGui::SmallButton("Add folder...")) openDirPickerWatch();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Rescan")) {
+          library_->scan();
+          library_->save();
+        }
+        const std::vector<std::string> folders = library_->folders();
+        if (folders.empty()) {
+          ImGui::TextDisabled("%s", "No folders watched yet - add one to scan it.");
+        } else {
+          ImGui::TextDisabled("Watched folders (%zu)", folders.size());
+          for (std::size_t i = 0; i < folders.size(); ++i) {
+            ImGui::PushID(static_cast<int>(1000 + i));
+            // The row itself is not a pick target — only the "x" acts on a
+            // folder row (unwatch); the full path is the tooltip.
+            ImGui::Selectable(folders[i].c_str(), false,
+                              ImGuiSelectableFlags_AllowOverlap);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", folders[i].c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) {
+              library_->removeFolder(folders[i]);
+              library_->save();
+            }
+            ImGui::PopID();
+          }
+          ImGui::Separator();
+        }
+        const std::vector<LibraryEntry> entries = library_->entries();
+        if (entries.empty()) {
+          if (!folders.empty()) ImGui::TextDisabled("%s", "No media files found.");
+        }
+        for (const LibraryEntry& e : entries) {
+          ImGui::PushID(e.path.c_str());
+          // The NFO sidecar title wins the row when a scan picked one up
+          // (docs/mvp.md §3 offline scrape); the file name is the
+          // fallback. Sources outside every watched folder have no scrape.
+          const NfoInfo* nfo = library_->nfoFor(e.path);
+          std::string label =
+              (nfo != nullptr && !nfo->title.empty()) ? nfo->title
+                                                      : displayName(e.path);
+          const std::int64_t resume = resumePositionMs(e);
+          if (resume > 0) {
+            label += "  (at " + formatClock(std::chrono::milliseconds(resume)) + ")";
+          }
+          if (ImGui::Selectable(label.c_str(), e.path == current_uri_,
+                                ImGuiSelectableFlags_AllowOverlap)) {
+            openSource(e.path);
+            st_.overlay = Overlay::None;
+          }
+          if (ImGui::IsItemHovered()) {
+            std::string tip = e.path;
+            if (e.duration_ms > 0) {
+              tip += "\nduration " +
+                     formatClock(std::chrono::milliseconds(e.duration_ms));
+            }
+            if (e.play_count > 0) {
+              tip += "\nplayed " + std::to_string(e.play_count) + "x";
+            }
+            if (nfo != nullptr && !nfo->plot.empty()) {
+              tip += "\n" + nfo->plot;
+            }
+            ImGui::SetTooltip("%s", tip.c_str());
+          }
+          if (e.duration_ms > 0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled(
+                "%s", formatClock(std::chrono::milliseconds(e.duration_ms)).c_str());
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("x")) {
+            library_->removeEntry(e.path);
+            library_->save();
+          }
+          ImGui::PopID();
+        }
+      }
+    }
+    ImGui::End();
+    if (!open) st_.overlay = Overlay::None;
+  }
+
   void drawHelpOverlay() {
     bool open = true;
     const ImGuiIO& io = ImGui::GetIO();
@@ -2061,6 +2310,7 @@ class PlayerHud {
           {"I", "Media info"},
           {"R", "Recent files"},
           {"P", "Playlist queue"},
+          {"B", "Media library"},
           {"N / Shift+N", "Queue next / previous"},
           {"H", "This help"},
           {"Esc", "Leave fullscreen / quit"},
@@ -2214,6 +2464,8 @@ class PlayerHud {
     bool playlist_end_handled = false;
   };
 
+  static constexpr milliseconds kProgressInterval{5000};
+
   soar::Player& player_;
   const WindowUiConfig& cfg_;
   SDL_Window* window_ = nullptr;
@@ -2233,12 +2485,22 @@ class PlayerHud {
   RecentStore recent_dirs_;
   std::string dirpick_path_;
   bool dirpick_recursive_ = false;
+  // Picker mode: false imports the picked folder into the queue, true
+  // watches it into the media library (the "Add folder..." entry).
+  bool dirpick_for_library_ = false;
+  // The library's once-per-session auto-scan (first overlay open).
+  bool library_scanned_ = false;
   // Cached "how many media files are under the browsed folder" — re-walked
   // only when the picker's path or recursive toggle changes, never per frame.
   std::size_t dirpick_count_ = 0;
   bool dirpick_count_valid_ = false;
   std::string dirpick_counted_path_;
   bool dirpick_counted_recursive_ = false;
+  // Media library (docs/mvp.md §3): the resume-point store, the throttle
+  // clock for its progress writes, and the watched-to-end edge flag.
+  MediaLibrary* library_ = nullptr;
+  milliseconds last_progress_write_{-kProgressInterval};
+  bool library_end_cleared_ = false;
   SubtitleFonts subtitle_fonts_;
   // Enumerates sidecar subtitle files next to the media (§6). Stateless and
   // cheap, so it lives with the HUD rather than in the backend: the directory

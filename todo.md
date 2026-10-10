@@ -1,5 +1,42 @@
 # todo
 
+## 媒体库批（2026-10-10 登记，mvp.md §3「媒体库与刮削、历史/同步、多端一致性」）
+
+范围：媒体库核心（监视文件夹 + 扫描 + 持久化）、历史/断点续播、窗口库浮层。
+不在本批：HDR/真机硬解（卡硬件）、投屏、插件体系、ASR 语音翻译（用户令排除）；
+网络刮削（TMDB 等外部服务）与多端同步（需传输协议决策）留后续批，本批刮削
+只覆盖离线 NFO 边车（M4，视余量）。
+
+- [x] **M1 库组件**：`src/app/ui/library.{h,cpp}`（soar_app_ui 目标，纯逻辑无
+      SDL/ImGui，同 ui_state/dir_scan 契约）——`MediaLibrary`：监视文件夹
+      增删、递归扫描（复用 `listMediaFiles` + stat，合并/剪枝语义）、
+      历史 API（recordOpen/recordProgress/clearPosition/removeEntry）、
+      原子持久化（tmp+rename，行格式，容错解析）、`defaultLibraryPath()`
+      （XDG state 同 recent.txt）、`resumePositionMs()` 纯策略函数。
+      测试 `tests/test_library.cpp` + `soar_library_tests` 目标。
+- [x] **M2 窗口历史接线**：`WindowUiConfig::library` 指针（main.cpp 持有实例，
+      headless 不碰状态——沿用 RecentStore 既有契约）；构造器 load + 初始源
+      断点续播 seek；recordOpen 接线；播放中 5s 节流 recordProgress +
+      Ended 清位；析构器最终记录+保存；openSource/openPlaylistEntry 续播
+      seek+toast；torrent 桥 URL 跳过历史；`--no-resume` CLI 开关。
+      脚本化窗口用例：预置 library.txt 断言续播位置事件。
+- [x] **M3 库浮层 UI**：`b` 键 Overlay::Library——监视文件夹区（增：复用
+      DirPick「监视此文件夹」模式；删）、Rescan、条目列表（名/时长/续播
+      标记）、点击即播（带续播 seek）；帮助浮层补 `b` 行；ui-design.md
+      §1.6 键位表补 `B 媒体库`。脚本化用例：浮层开+条目点击+监视文件夹流。
+- [x] **M4（视余量）离线 NFO 刮削**：`<名>.nfo` 边车 title/plot 解析
+      （扫描时读取，内存缓存不落持久化——边车文件是唯一真相），库浮层行
+      标题优先显示刮削名、悬停提示带 plot。网络刮削与多端同步另立批。
+
+### 如实说明（本批边界）
+
+- 历史记录只走窗口会话（headless 保持无状态，与 RecentStore 既有契约一致；
+  所有窗口用例已按 XDG_STATE_HOME 隔离，库文件同路径同隔离）。
+- 续播策略：position ≥ 5s 且 duration 已知且 position ≤ duration−5s 才续播；
+  Ended 清位（看完即忘）。torrent 桥 URL 每会话换端口，不进历史。
+- 扫描语义：递归；条目按路径排序；监视文件夹内消失的文件被剪枝，非监视
+  路径（直接打开的 URL/文件）的条目永不被扫描剪枝。
+
 ## 安装包格式补全（2026-10-04 登记，本批收口）
 
 用户需求：soar 安装包缺格式——

@@ -22,6 +22,8 @@ class TorrentStream;  // opaque here; only player_window.cpp polls it
 
 namespace soar::app {
 
+class MediaLibrary;  // ui/library.h — owned by the caller, never by the window
+
 struct WindowUiConfig {
   std::string title = "soar";
   std::string initial_uri;     // the CLI-opened source; recorded + shown
@@ -35,6 +37,14 @@ struct WindowUiConfig {
   // (playlist, dialog, drop) keep the session's hwdec setting.
   std::string hwdec;
   std::string recent_path;     // RecentStore file (docs/ui-design.md §2)
+  // Media library (docs/mvp.md §3): the window records opens and playback
+  // progress into the caller-owned store and jumps back to a saved position
+  // on open (resume policy in library.h). Null keeps the window state-free;
+  // the store outlives the window like every other config pointer.
+  MediaLibrary* library = nullptr;
+  // Resume seek on open (cleared by --no-resume). Recording continues
+  // either way — declining the jump is not declining the books.
+  bool resume_playback = true;
   // Display-only override for the source name shown in the poster and the
   // window title (P2P: the streamed file's name instead of the bridge URL).
   // Empty = derive from the URI as before.
