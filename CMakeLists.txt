@@ -161,6 +161,7 @@ target_link_libraries(soar_p2p PUBLIC torrent-rasterbar)
 add_library(soar_app_ui STATIC
   src/app/ui/ui_state.cpp
   src/app/ui/dir_scan.cpp
+  src/app/ui/library.cpp
 )
 target_compile_features(soar_app_ui PUBLIC cxx_std_17)
 target_include_directories(soar_app_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/app)

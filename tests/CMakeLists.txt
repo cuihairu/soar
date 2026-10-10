@@ -123,6 +123,19 @@ target_link_libraries(soar_dir_scan_tests PRIVATE soar_app_ui doctest::doctest)
 
 add_test(NAME soar_dir_scan_tests COMMAND soar_dir_scan_tests)
 
+# Media library store tests (docs/mvp.md §3): watched folders, the scan
+# merge/prune semantics, the playback history API, and the persisted line
+# format. Pure std::filesystem over in-process scratch trees — no display,
+# no media fixtures, no network.
+add_executable(soar_library_tests
+  test_library.cpp
+)
+
+target_compile_features(soar_library_tests PRIVATE cxx_std_17)
+target_link_libraries(soar_library_tests PRIVATE soar_app_ui doctest::doctest)
+
+add_test(NAME soar_library_tests COMMAND soar_library_tests)
+
 # CLI integration tests run the real soar executable as a subprocess and
 # check exit codes / stderr reports for the headless and error paths.
 # They need the app target, so they only exist when the app is built;
@@ -171,7 +184,7 @@ if(TARGET soar)
 # job until its two-digit-minute timeout. CTest kills the test at the
 # 10-minute mark instead, so one wedged case costs minutes, not the job.
 set_tests_properties(soar_core_tests soar_backend_tests soar_ui_tests
-  soar_dir_scan_tests
+  soar_dir_scan_tests soar_library_tests
   soar_subtitle_tests soar_ass_tests PROPERTIES TIMEOUT 600)
 # soar_cli_tests needs its own, bigger budget. Under coverage
 # instrumentation (--coverage -O0 -g) the scripted window cases crawl: the
