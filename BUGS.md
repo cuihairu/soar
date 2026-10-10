@@ -190,6 +190,10 @@
   close() 先 join 后关 SDLAudio、SDLAudio 自带互斥、torrent_stream
   声明序先于 player 析构）未找到确定性缺陷；本地 70 次重放（hls_hi/
   master/dash，per-run server 复刻测试生命周期）零挂死。
+  同族窗口路径另查出一处确定性顺序缺陷：窗口事件循环退出后
+  `SDL_Quit()` 先于播放停止——解码/音频线程仍在跑时 SDL 音频子系统已拆。
+  已修：`runPlayerWindow` 在循环后、SDL 拆台之前先 `player.stop()`
+  （join 先于子系统拆台；空窗/无媒体两路 stop() 均有早退保护）。
 - **缓解**：watchdog 按设计把挂死转成干净断言失败（exit 124 带完整
   输出），套件不再整段超时；p2p 套件自定义 main 行缓冲 stdout
   （14226b2），下次挂死日志保底有 banner 与最后开始的 test case。

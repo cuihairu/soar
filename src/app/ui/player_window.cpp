@@ -2450,6 +2450,10 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
   }
 #endif  // SOAR_WITH_IMGUI
 
+  // 退出前先停播放：后端的解码/音频线程必须先 join，SDL_Quit 在函数末尾，
+  // 晚于 SDL 音频设备的销毁（BUGS.md #4 同族顺序问题，tsan 可见）。
+  player.stop();
+
   if (texture) SDL_DestroyTexture(texture);
   if (ass_texture) SDL_DestroyTexture(ass_texture);
   SDL_DestroyRenderer(renderer);
