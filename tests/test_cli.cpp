@@ -2777,23 +2777,25 @@ TEST_CASE("windowed run resumes a library source; --no-resume declines the jump"
 TEST_CASE("headless runs never touch the media library store") {
   // The state-free contract headless tests lean on: no window session, no
   // state writes — the store file must not even come into existence.
+  std::error_code fs_ec;
   const std::string state_home =
-      "/tmp/soar_library_headless_" + std::to_string(::getpid());
-  ::mkdir(state_home.c_str(), 0755);
+      (std::filesystem::temp_directory_path() /
+       ("soar_library_headless_" + std::to_string(::getpid())))
+          .string();
+  std::filesystem::create_directories(state_home, fs_ec);  // idempotent
   const std::string store = state_home + "/soar/library.txt";
-  struct stat st;
   {
     const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
     const auto run = runCli({"--headless", "--backend=null", "asset://sample"});
     CHECK(run.exit_code == 0);
-    CHECK(::stat(store.c_str(), &st) != 0);
+    CHECK_FALSE(std::filesystem::exists(store, fs_ec));
     // --no-resume parses on the headless path too (accepted, no-op there).
     const auto run2 = runCli(
         {"--headless", "--backend=null", "--no-resume", "asset://sample"});
     CHECK(run2.exit_code == 0);
-    CHECK(::stat(store.c_str(), &st) != 0);
+    CHECK_FALSE(std::filesystem::exists(store, fs_ec));
   }
-  ::remove(state_home.c_str());
+  std::filesystem::remove_all(state_home, fs_ec);
 }
 
 TEST_CASE("windowed run watches a folder into the library through the overlay") {
