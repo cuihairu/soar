@@ -622,7 +622,7 @@ class PlayerHud {
         source_label_ = torrent_->fileName();
         fmt::print(stderr, "torrent: {} ({} bytes) -> {}\n", source_label_,
                    torrent_->fileSize(), uri);
-        if (player_.open(soar::MediaSource{uri, cfg_.cache_dir})) {
+        if (player_.open(soar::MediaSource{uri, cfg_.cache_dir, cfg_.hwdec})) {
           if (!source_label_.empty()) {
             SDL_SetWindowTitle(window_, (cfg_.title + " - " + source_label_).c_str());
           }
@@ -1209,7 +1209,7 @@ class PlayerHud {
   // are user-initiated opens, so the source also joins the playlist as the
   // new current entry (mpv semantics: a dropped/queued file plays now).
   void openSource(const std::string& uri) {
-    if (player_.open(soar::MediaSource{uri, cfg_.cache_dir})) {
+    if (player_.open(soar::MediaSource{uri, cfg_.cache_dir, cfg_.hwdec})) {
       recordOpen(uri);
       playlist_.add(uri);
       playlist_.setCurrent(playlist_.size() - 1);
@@ -1228,7 +1228,7 @@ class PlayerHud {
   bool openPlaylistEntry(std::size_t index, milliseconds now) {
     const std::vector<std::string> entries = playlist_.entries();
     if (index >= entries.size()) return false;
-    if (!player_.open(soar::MediaSource{entries[index], cfg_.cache_dir})) {
+    if (!player_.open(soar::MediaSource{entries[index], cfg_.cache_dir, cfg_.hwdec})) {
       st_.toast.show("Open failed: " + player_.lastError(), now);
       return false;
     }

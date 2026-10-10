@@ -56,6 +56,9 @@ static void print_usage(const char* argv0) {
   fmt::print("  --help        Print this help and exit\n");
   fmt::print("  --backend=    Select backend (ffmpeg, null; default: ffmpeg when built in)\n");
   fmt::print("  --cache-dir=  Cache http:// downloads here for offline replay\n");
+  fmt::print("  --hwdec=     Hardware video decode: none (default), auto, or a\n");
+  fmt::print("                device (vaapi, vdpau, d3d11, dxva2, videotoolbox,\n");
+  fmt::print("                cuda, nvdec); falls back to software when unavailable\n");
   fmt::print("  --torrent-store=  Where torrent data lands (default: <tmp>/soar-torrent)\n");
   fmt::print("  --torrent-peer=   Seed endpoint host:port to connect to directly (repeatable)\n");
   fmt::print("  --torrent-index=  Which file of a multi-file torrent to stream (default 0)\n");
@@ -149,6 +152,7 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   std::string backend_type;  // empty until --backend=; resolved below
   bool backend_given = false;
   std::string cache_dir;
+  std::string hwdec;  // empty until --hwdec=; "" = software only
   std::string torrent_store;
   std::vector<std::string> torrent_peers;
   int torrent_index = 0;
@@ -176,6 +180,22 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
       backend_given = true;
     } else if (arg.rfind("--cache-dir=", 0) == 0) {
       cache_dir = arg.substr(12);  // after "--cache-dir="
+    } else if (arg.rfind("--hwdec=", 0) == 0) {
+      hwdec = lower_copy(arg.substr(8));  // after "--hwdec="
+      // Reject typos at launch instead of silently decoding in software
+      // (the backend treats unknown names as "no hwaccel").
+      static constexpr const char* kHwdecValues[] = {
+          "none", "auto", "vaapi", "vdpau", "d3d11", "d3d11va",
+          "dxva2", "videotoolbox", "cuda", "nvdec"};
+      if (std::find(std::begin(kHwdecValues), std::end(kHwdecValues), hwdec) ==
+          std::end(kHwdecValues)) {
+        fmt::print(stderr, "Unknown hwdec type: {}\n", hwdec);
+        fmt::print(stderr,
+                   "Available hwdec types: none, auto, vaapi, vdpau, d3d11,"
+                   " dxva2, videotoolbox, cuda, nvdec\n");
+        showStartupNotice("soar", "Unknown hwdec type: " + hwdec);
+        return 2;
+      }
     } else if (arg.rfind("--torrent-store=", 0) == 0) {
       torrent_store = arg.substr(16);
     } else if (arg.rfind("--torrent-peer=", 0) == 0) {
@@ -424,7 +444,7 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   // that were already openable at this point. A --gui start has no source
   // at all: the player stays closed until the UI opens one.
   if (uri_index >= 0 && !torrent_async) {
-    if (!player.open(soar::MediaSource{uri, cache_dir})) {
+    if (!player.open(soar::MediaSource{uri, cache_dir, hwdec})) {
       fmt::print(stderr, "Failed to open source: {}\n", uri);
       fmt::print(stderr, "Error: {}\n", player.lastError());
       reportFatalStartupError(
@@ -483,6 +503,7 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   }
   ui_cfg.backend_label = backend_type;
   ui_cfg.cache_dir = cache_dir;
+  ui_cfg.hwdec = hwdec;
   ui_cfg.recent_path = soar::app::defaultRecentPath();
   // P2P sources: show the streamed file's name instead of the bridge URL
   // (empty for ordinary sources — the window falls back to the URI).

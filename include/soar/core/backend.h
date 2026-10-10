@@ -16,6 +16,14 @@ struct MediaSource {
   // replayed offline (and P3b can resume partial downloads). Ignored for
   // local paths and https:// sources.
   std::string cache_dir;
+  // Hardware decode request for the video stream (docs/mvp.md §3). Empty
+  // or "none" keeps the all-software decoder; "auto" tries the platform's
+  // usual hwaccel devices (vaapi/vdpau on Linux, d3d11/dxva2 on Windows,
+  // videotoolbox on macOS) and falls back to software when none opens;
+  // a specific device name (vaapi, vdpau, d3d11, dxva2, videotoolbox,
+  // cuda) requests that one. Consumed by the FFmpeg backend only; the
+  // CLI wires it from --hwdec=.
+  std::string hwdec;
 };
 
 using TrackId = std::int32_t;

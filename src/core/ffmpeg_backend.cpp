@@ -13,6 +13,7 @@ extern "C" {
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
@@ -25,6 +26,7 @@ extern "C" {
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string_view>
@@ -47,6 +49,59 @@ constexpr auto kPositionEmitGranularity = std::chrono::milliseconds(200);
 // connection; a merely slow source recovers on the same socket.
 constexpr auto kNetworkStallReportMs = std::chrono::milliseconds(10'000);
 constexpr auto kNetworkStallLimitMs = std::chrono::milliseconds(60'000);
+
+// Hardware decode (docs/mvp.md §3). The get_format callback picks the
+// hwaccel pixel format the backend negotiated from the decoder's offered
+// list; which one is wanted is carried per-instance through
+// AVCodecContext::opaque (libavcodec never touches that field), so
+// concurrently opening backend instances cannot cross-talk.
+
+// The get_format callback installed on the video decoder: picks the
+// hwaccel pixel format the backend negotiated out of the decoder's offered
+// list. The wanted format rides in AVCodecContext::opaque as a pointer to
+// the instance's hw_pix_fmt_ (libavcodec never reads or writes that
+// field), so concurrently opening backend instances cannot cross-talk.
+enum AVPixelFormat hwGetFormat(AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts) {
+  const int* target = ctx ? static_cast<const int*>(ctx->opaque) : nullptr;
+  if (!target || *target < 0) {
+    return AV_PIX_FMT_NONE;
+  }
+  for (const enum AVPixelFormat* p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
+    if (static_cast<int>(*p) == *target) {
+      return *p;
+    }
+  }
+  return AV_PIX_FMT_NONE;
+}
+
+// Map a --hwdec= / MediaSource::hwdec value to the FFmpeg hwaccel device
+// types to try, in order. "auto" resolves to the platform's usual set; a
+// specific name maps to one device. Unknown names yield an empty list,
+// which the caller reads as "no hwaccel" (software only).
+std::vector<AVHWDeviceType> hwdecDevices(const std::string& hwdec) {
+  std::string v = hwdec;
+  for (char& c : v) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  if (v == "auto") {
+#if defined(__linux__)
+    return {AV_HWDEVICE_TYPE_VAAPI, AV_HWDEVICE_TYPE_VDPAU};
+#elif defined(_WIN32)
+    return {AV_HWDEVICE_TYPE_D3D11VA, AV_HWDEVICE_TYPE_DXVA2};
+#elif defined(__APPLE__)
+    return {AV_HWDEVICE_TYPE_VIDEOTOOLBOX};
+#else
+    return {};
+#endif
+  }
+  if (v == "vaapi") return {AV_HWDEVICE_TYPE_VAAPI};
+  if (v == "vdpau") return {AV_HWDEVICE_TYPE_VDPAU};
+  if (v == "d3d11" || v == "d3d11va") return {AV_HWDEVICE_TYPE_D3D11VA};
+  if (v == "dxva2") return {AV_HWDEVICE_TYPE_DXVA2};
+  if (v == "videotoolbox") return {AV_HWDEVICE_TYPE_VIDEOTOOLBOX};
+  if (v == "cuda" || v == "nvdec") return {AV_HWDEVICE_TYPE_CUDA};
+  return {};
+}
 
 std::string dictValue(AVDictionary* dict, const char* key) {
   if (!dict || !key) {
@@ -446,6 +501,9 @@ bool FFmpegBackend::open(const MediaSource& source) {
   // decode_mutex_ -> {state|info|error}_mutex_ everywhere. Events are
   // emitted after the lock is released so that user callbacks may safely
   // re-enter the public API.
+  // hwdec_ must be armed before setupDecoders reads it (opened_source_ is
+  // only assigned after the whole open path succeeds).
+  hwdec_ = source.hwdec;
   bool ok = false;
   {
     std::lock_guard<std::mutex> media_lock(decode_mutex_);
@@ -580,6 +638,7 @@ void FFmpegBackend::close() {
     // The export pass snapshots this under the same lock; a closed media
     // has no source to reopen.
     opened_source_ = MediaSource{};
+    hwdec_.clear();
 
     // Drop any audio-track switch that never reached the decode loop.
     {
@@ -2333,8 +2392,100 @@ bool FFmpegBackend::setupDecoders() {
       return fatal(fmt::format("setupDecoders: failed to copy video params: {}", avError(ret)), /*emit_event=*/false);
     }
 
+    // Hardware decode (docs/mvp.md §3): when the source asks for it, try
+    // to arm the decoder with a hwaccel device context. Every failure —
+    // codec without hwaccel support, device that won't open, open2 that
+    // rejects the hwaccel — falls through to the all-software decoder
+    // below; hwaccel is an optimization, never a requirement.
+    // CI and other GPU-less machines cannot open a hwaccel device, which
+    // would leave everything downstream of the arm (get_format
+    // negotiation, the open2 fallback, frame download, teardown)
+    // unobservable. SOAR_TEST_HWACCEL_ARM (any non-empty value) stands in
+    // for the codec config lookup and the device create with a plain
+    // ref-counted buffer (the saveScreenshot forceFailEncoder precedent):
+    // the real libavcodec machinery still runs everything downstream.
+    // Production runs never see the variable.
+    const char* arm_env = std::getenv("SOAR_TEST_HWACCEL_ARM");
+    if (!hwdec_.empty() && hwdec_ != "none") {
+      for (const AVHWDeviceType hw_type : hwdecDevices(hwdec_)) {
+        enum AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
+        if (arm_env && *arm_env) {
+          // The stream's encoded pixel format steers get_format toward what
+          // the decoder will output; the post-open alignment below makes
+          // the match exact whatever the decoder negotiates.
+          const int fmt = codecpar->format;
+          if (fmt >= 0) {
+            hw_pix_fmt = static_cast<enum AVPixelFormat>(fmt);
+          }
+        } else {
+          for (int i = 0;; ++i) {
+            const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
+            if (!config) {
+              break;
+            }
+            if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) &&
+                config->device_type == hw_type) {
+              hw_pix_fmt = config->pix_fmt;
+              break;
+            }
+          }
+        }
+        if (hw_pix_fmt == AV_PIX_FMT_NONE) {
+          continue;  // codec has no hwaccel for this device
+        }
+
+        AVBufferRef* device_ctx = nullptr;
+        if (arm_env && *arm_env) {
+          // Never dereferenced as a device by the paths the test drives: a
+          // software pixel format negotiated below keeps libavcodec off the
+          // hwaccel init that would read it.
+          device_ctx = av_buffer_alloc(1);
+        } else {
+          const int create_ret =
+              av_hwdevice_ctx_create(&device_ctx, hw_type, nullptr, nullptr, 0);
+          if (create_ret < 0) {
+            continue;  // no such device on this system
+          }
+        }
+        if (!device_ctx) continue;  // device allocation failed
+
+        // The decoder takes its OWN reference (the codec context is freed
+        // by avcodec_free_context in cleanupDecoders); hw_device_ctx_ keeps
+        // this instance's reference until the same teardown — mirroring
+        // doc/examples/hw_decode.c. Assignment without the extra ref would
+        // hand the codec our only one and double-unref it at teardown.
+        AVBufferRef* codec_ref = av_buffer_ref(device_ctx);
+        if (!codec_ref) { av_buffer_unref(&device_ctx); continue; }
+        hw_pix_fmt_ = static_cast<int>(hw_pix_fmt);
+        video_decoder_->opaque = &hw_pix_fmt_;
+        video_decoder_->get_format = &hwGetFormat;
+        video_decoder_->hw_device_ctx = codec_ref;
+        hw_device_ctx_ = device_ctx;
+        break;  // armed — stop trying further devices
+      }
+    }
+
     ret = avcodec_open2(video_decoder_, codec, nullptr);
+    if (ret >= 0 && arm_env && *arm_env) {
+      // Test-only alignment: the decoder's actual output format is the only
+      // format its frames can arrive in — sync the download-branch
+      // comparison to it (the pre-open stream format only steered
+      // get_format).
+      hw_pix_fmt_ = video_decoder_->pix_fmt;
+    }
+    if (ret < 0 && hw_device_ctx_) {
+      // The hwaccel armed but the decoder rejected it at open (driver
+      // mismatch, unsupported profile...). docs/mvp.md §3 makes hwaccel an
+      // optimization, never a requirement: drop it and open the plain
+      // software decoder instead of failing the whole source.
+      disarmHwAccel();
+      ret = avcodec_open2(video_decoder_, codec, nullptr);
+    }
     if (ret < 0) {
+      // A hwaccel that armed but failed to open needs no dedicated release
+      // here: the caller's failure branch runs cleanupDecoders(), which
+      // frees the video decoder (dropping the codec context's reference)
+      // and then this instance's device reference.
       return fatal(fmt::format("setupDecoders: failed to open video decoder: {}", avError(ret)), /*emit_event=*/false);
     }
 
@@ -2463,6 +2614,10 @@ bool FFmpegBackend::setupDecoders() {
 }
 
 void FFmpegBackend::cleanupDecoders() {
+  // Hardware decode teardown first, while the video decoder (which holds
+  // the codec's own device reference) is still available to disarmHwAccel.
+  disarmHwAccel();
+
   // Cleanup video decoder
   if (video_decoder_) {
     avcodec_free_context(&video_decoder_);
@@ -2500,6 +2655,30 @@ void FFmpegBackend::cleanupDecoders() {
   }
 
   video_convert_.reset();
+
+}
+
+// Drop a live hwaccel arm: release both references to the device context
+// (the video decoder's own and this instance's) and reset the negotiation
+// state, so the decoder can be re-opened as plain software (the open2
+// fallback in setupDecoders) or freed (cleanupDecoders) without a dangling
+// device reference. Safe both with the video decoder still alive and after
+// avcodec_free_context.
+void FFmpegBackend::disarmHwAccel() {
+  if (video_decoder_ && video_decoder_->hw_device_ctx) {
+    // The codec context holds its own reference; drop it through the field
+    // so neither the open2 retry nor avcodec_free_context sees it again.
+    av_buffer_unref(&video_decoder_->hw_device_ctx);
+  }
+  if (hw_device_ctx_) {
+    av_buffer_unref(&hw_device_ctx_);
+    hw_device_ctx_ = nullptr;
+  }
+  hw_pix_fmt_ = -1;
+  if (video_decoder_) {
+    video_decoder_->opaque = nullptr;
+    video_decoder_->get_format = nullptr;
+  }
 }
 
 //=============================================================================
@@ -2670,8 +2849,29 @@ void FFmpegBackend::decodeLoop() {
           format_ctx_->streams[video_stream_index_]->time_base.den
         );
 
-        queueVideoFrame(frame, pts);
-        av_frame_unref(frame);
+        if (hw_pix_fmt_ >= 0 && frame->format == hw_pix_fmt_) {
+          // Hardware frame: download to software YUV420P so the render path
+          // (queue, convert, present) stays the all-software one. The
+          // download target is the format the render path converts from
+          // natively; a transfer failure drops the frame rather than
+          // feeding the converter a format sws_scale cannot read.
+          AVFrame* sw_frame = av_frame_alloc();
+          if (sw_frame) {
+            sw_frame->format = AV_PIX_FMT_YUV420P;
+            sw_frame->width = frame->width;
+            sw_frame->height = frame->height;
+            if (av_hwframe_transfer_data(sw_frame, frame, 0) >= 0) {
+              sw_frame->pts = frame->pts;
+              sw_frame->best_effort_timestamp = frame->best_effort_timestamp;
+              queueVideoFrame(sw_frame, pts);
+            }
+            av_frame_free(&sw_frame);
+          }
+          av_frame_unref(frame);
+        } else {
+          queueVideoFrame(frame, pts);
+          av_frame_unref(frame);
+        }
       }
     } else if (packet->stream_index == audio_stream_index_) {
       // Send packet to audio decoder

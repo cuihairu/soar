@@ -22,6 +22,7 @@ struct AVSubtitle;
 struct SwrContext;
 struct SwsContext;
 struct AVRational;
+struct AVBufferRef;
 }
 
 namespace soar {
@@ -165,6 +166,12 @@ private:
   bool findStreamInfo();
   bool setupDecoders();
   void cleanupDecoders();
+  // Releases both references to the hwaccel device context (the video
+  // decoder's own and the instance's) and resets the negotiation state
+  // (docs/mvp.md §3). Called from cleanupDecoders — before the decoders
+  // are freed — and from the open2-reject fallback in setupDecoders, which
+  // re-opens the video decoder as plain software.
+  void disarmHwAccel();
 
   // Decoding
   void decodeLoop();
@@ -452,6 +459,23 @@ private:
   mutable std::mutex pending_subtitle_mutex_;
   AVCodecContext* pending_subtitle_decoder_{nullptr};
   int pending_subtitle_track_{-1};
+
+  // Hardware decode (docs/mvp.md §3). hwdec_ is the request from
+  // MediaSource::hwdec — set before setupDecoders runs, cleared on close().
+  // hw_device_ctx_ is non-null only while the negotiated hwaccel is live
+  // (unref'd by disarmHwAccel — cleanupDecoders and the open2-reject
+  // fallback in setupDecoders); hw_pix_fmt_ is the pixel format that
+  // hwaccel decodes
+  // into (AV_PIX_FMT_NONE while software-only) — decodeLoop downloads
+  // frames arriving in that format to YUV420P so the render path stays
+  // the all-software one. The get_format callback (a file-local function
+  // in the .cpp — the header stays free of FFmpeg enums) reads
+  // hw_pix_fmt_ through AVCodecContext::opaque, which setupDecoders aims
+  // at this member before avcodec_open2; per-instance state, so
+  // concurrent opens cannot cross-talk.
+  std::string hwdec_;
+  struct AVBufferRef* hw_device_ctx_{nullptr};
+  int hw_pix_fmt_{-1};
 };
 
 /**

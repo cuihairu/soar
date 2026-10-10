@@ -30,6 +30,10 @@ struct WindowUiConfig {
   std::vector<std::string> queued_uris;
   std::string backend_label;   // "ffmpeg" / "null", shown in the info overlay
   std::string cache_dir;       // shown in the info overlay when set
+  // Hardware decode request (docs/mvp.md §3), wired from --hwdec=. The
+  // window passes it to MediaSource on every open so sources opened later
+  // (playlist, dialog, drop) keep the session's hwdec setting.
+  std::string hwdec;
   std::string recent_path;     // RecentStore file (docs/ui-design.md §2)
   // Display-only override for the source name shown in the poster and the
   // window title (P2P: the streamed file's name instead of the bridge URL).

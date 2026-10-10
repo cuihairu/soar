@@ -1795,6 +1795,141 @@ TEST_CASE("unknown backend name exits with 2") {
   CHECK(run.output.find("Available backends: null") != std::string::npos);
 }
 
+TEST_CASE("unknown hwdec name exits with 2") {
+  // The CLI rejects typos at launch: the backend would silently decode in
+  // software, and an unnoticed fallback is exactly what the flag exists to
+  // avoid.
+  const auto run = runCli({"--hwdec=bogus", "asset://sample"});
+  CHECK(run.exit_code == 2);
+  CHECK(run.output.find("Unknown hwdec type: bogus") != std::string::npos);
+  CHECK(run.output.find("Available hwdec types:") != std::string::npos);
+}
+
+TEST_CASE("--hwdec auto with the null backend keeps the headless flow green") {
+  // The null backend ignores hwdec (MediaSource carries it, the backend
+  // doesn't act on it); the CLI must still accept the flag on that path.
+  const auto run =
+      runCli({"--headless", "--backend=null", "--hwdec=auto", "asset://sample"});
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("=== Media Info ===") != std::string::npos);
+}
+
+TEST_CASE("headless FFmpeg run with --hwdec=auto falls back to software") {
+  // On GPU-less CI the platform hwaccel devices (vaapi et al.) cannot
+  // open, so --hwdec=auto must degrade cleanly to the software decoder
+  // and play the fixture through — the hardware path itself is only
+  // observable on real hardware (docs/mvp.md §3).
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping");
+    return;
+  }
+  const auto run = runCli({"--headless", "--backend=ffmpeg", "--hwdec=auto", media});
+  if (run.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    return;
+  }
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("=== Media Info ===") != std::string::npos);
+  CHECK(run.output.find("Error:") == std::string::npos);
+}
+
+TEST_CASE("every named hwdec type opens headless and degrades to software") {
+  // GPU-less CI cannot open any hwaccel device, so every supported name
+  // must take the clean software fallback and play the fixture through —
+  // this drives the device mapping and the fallback loop for each value
+  // (docs/mvp.md §3). The armed-decoder path itself is driven by the
+  // SOAR_TEST_HWACCEL_ARM case below.
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping");
+    return;
+  }
+  const std::vector<std::string> names = {
+      "none",  "auto",  "vaapi",        "vdpau",      "d3d11",
+      "d3d11va", "dxva2", "videotoolbox", "cuda",     "nvdec",
+      "VAAPI", "Auto"};  // mixed case exercises the lowercasing too
+  for (const std::string& name : names) {
+    CAPTURE(name);
+    const auto run =
+        runCli({"--headless", "--backend=ffmpeg", "--hwdec=" + name, media});
+    if (run.output.find("Falling back to null backend") != std::string::npos) {
+      MESSAGE("FFmpeg support not compiled in; skipping");
+      return;
+    }
+    CHECK(run.exit_code == 0);
+    CHECK(run.output.find("=== Media Info ===") != std::string::npos);
+    CHECK(run.output.find("Error:") == std::string::npos);
+  }
+}
+
+TEST_CASE("test hwaccel arm drives the armed decoder path end to end") {
+  // SOAR_TEST_HWACCEL_ARM=1 stands in for the device create: the decoder
+  // arms with a device reference on its own first software pixel format,
+  // libavcodec runs the real get_format negotiation, and decodeLoop takes
+  // the hardware-frame download branch — where the transfer correctly
+  // fails (a software frame has no hw frames context) and the frame is
+  // dropped, keeping the run otherwise green. Only the transfer itself
+  // needs real hardware (docs/mvp.md §3). Close releases the armed device
+  // reference.
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping");
+    return;
+  }
+  ScopedEnv arm("SOAR_TEST_HWACCEL_ARM", "1");
+  const auto run = runCli({"--headless", "--backend=ffmpeg", "--hwdec=auto", media});
+  if (run.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    return;
+  }
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("=== Media Info ===") != std::string::npos);
+  CHECK(run.output.find("Error:") == std::string::npos);
+}
+
+TEST_CASE("--hwdec=none keeps the source on the software decoder even when armed") {
+  // The arm seam below sets a device reference up for every open; "none"
+  // must still gate the whole hwaccel path off (docs/mvp.md §3: the opt-out
+  // outranks the request).
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping");
+    return;
+  }
+  ScopedEnv arm("SOAR_TEST_HWACCEL_ARM", "0");
+  const auto run =
+      runCli({"--headless", "--backend=ffmpeg", "--hwdec=none", media});
+  if (run.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    return;
+  }
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("=== Media Info ===") != std::string::npos);
+  CHECK(run.output.find("Error:") == std::string::npos);
+}
+
+TEST_CASE("an empty SOAR_TEST_HWACCEL_ARM behaves as unset") {
+  // Guards the seam's own parse: an exported-but-empty variable must not
+  // arm anything (atoi("") would read as the software pixel format and
+  // silently arm every open).
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping");
+    return;
+  }
+  ScopedEnv arm("SOAR_TEST_HWACCEL_ARM", "");
+  const auto run =
+      runCli({"--headless", "--backend=ffmpeg", "--hwdec=auto", media});
+  if (run.output.find("Falling back to null backend") != std::string::npos) {
+    MESSAGE("FFmpeg support not compiled in; skipping");
+    return;
+  }
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("=== Media Info ===") != std::string::npos);
+  CHECK(run.output.find("Error:") == std::string::npos);
+}
+
 TEST_CASE("--version prints the build version and exits with 0") {
   const auto run = runCli({"--version"});
   CHECK(run.exit_code == 0);

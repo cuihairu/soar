@@ -331,6 +331,16 @@ BUGS.md #4（CLI 播放 Ended 后偶发不退出）的排查批落地两件测�
 - **可达部分全部可计**：`installHangDumpProbe` 本体（getenv 早退臂 + sigaction 装配臂）由 CLI 用例两态覆盖（`runHeadlessOverHttpDir` 设 env / 其余用例不设）。
 - **读数**：落账时 CI 实测（run 37994863406 @ 294d3dc）行 6256/6551 = 95.49%、支 6534/7616 = 85.79%。探针净增不可计约 15 行/2 支 → 预计 行 ≈95.3%、支 ≈85.8%，门禁 95.0/84.6 双过但行余量收窄到 ~20 行量级。下次门禁抬批须把这笔结构性余量算进去。
 
+### 3.21 硬件解码批：hwaccel 接线 + open2 拒收回退 + 测试武装接缝（mvp.md §3 第一步）
+
+`--hwdec=`（CLI 校验+解析）/ `MediaSource::hwdec` / 窗口会话设置经 `WindowUiConfig` 三处打通；FFmpeg 后端侧 `setupDecoders` 按 `avcodec_get_hw_config` 确认编解码器支持后 `av_hwdevice_ctx_create` 挂设备上下文（编解码器与实例各持一份引用，仿 hw_decode.c 双引用形状——直接赋值会把唯一引用交给编解码器、拆除时双 unref），`get_format` 回调经 `AVCodecContext::opaque` 读本实例协商格式（per-instance，并发 open 不串台），decodeLoop 把 hwaccel 帧 `av_hwframe_transfer_data` 下载成 YUV420P 再入队——渲染/转换/显示路径零改动。
+
+- **顺带修的真缺陷（open2 拒收不再整源失败）**：原实现里 hwaccel 已武装但 `avcodec_open2` 拒收时直接 `return fatal`——整源打不开，违背 §3「hwaccel 是优化不是 requirement」的契约。修法：open2 失败且已武装时 `disarmHwAccel()`（释放双引用+清协商态）后重开纯软件解码器；`cleanupDecoders` 改为在释放解码器**之前**调用 `disarmHwAccel`（解码器仍活着，codec 字段清空臂由此每次 close 都覆盖）。
+- **测试武装接缝（无 GPU 的 CI 也能驱动武装路径）**：`SOAR_TEST_HWACCEL_ARM`（任意非空值）替代配置查询与设备创建——以 `av_buffer_alloc(1)` 的裸引用顶替设备上下文（测试驱动的软件格式协商路径不会解引用它），协商格式取**流编码格式**（`codecpar->format`）引导 `get_format`，open2 成功后把 `hw_pix_fmt_` 对齐到 `video_decoder_->pix_fmt`（解码器实际输出格式）——下载分支的 `frame->format == hw_pix_fmt_` 比较由此对任何夹具都成立。先例是 saveScreenshot 的 `forceFailEncoder`（不 mock FFmpeg，真实 libavcodec  machinery 全跑；§3.2 mock-ban 不涉）。空值按未设处理（`*arm_env` 守卫）。
+- **用例**：全部 12 个 `--hwdec=` 取值（含大小写混合）逐个 headless 打开验证干净回退；`--hwdec=none` 在接缝设下仍走软件臂；空值守卫用例；CLI 与媒体播放两侧的武装端到端（后者轮询 `Ended`——下载丢帧跳过了呈现节流，解码线程毫秒级排空整条流到 EOF，`Ended` 是「循环跑完每个视频包」的确定信号）；后端直开 `hwdec="bogus"` 覆盖未知名回退臂。
+- **结构性不可计（约 10 行 + 8 支，全部硬件/驱动依赖）**：配置命中臂与 `av_hwdevice_ctx_create` 调用臂——本机与 CI 同族 ffmpeg 的 `avcodec_get_hw_config` 对任何编解码器都不返回 `HW_DEVICE_CTX` 方法配置，配置循环恒空转 `continue`，创建臂根本走不到（有 hwconfigs 的发行版上这两臂自然被覆盖）；open2 拒收回退臂——需要真设备创建成功而 open2 拒收（驱动不匹配类）；`av_hwframe_transfer_data` 成功子臂——软件帧无 hw frames context，传输恒失败（本机实测传输对软件帧返回错误，成功体只在真 hwframe 上可达）；OOM 类小臂（`av_buffer_ref` 失败、`fmt < 0` 守卫、`!device_ctx` 守卫的真臂）。与 §3.20 同族：不是没测到，是无 GPU 环境下计数结构上不可达。
+- **读数**：本地系统 gcovr 7.2（build-cov3，夹具媒体 + X11 窗口全量跑）行 **95.1%（6355/6680）**、支 **84.7%（6714/7929）**，门禁 95.0/84.6 双过（行余 ~4 行、支余 ~10 支）；全量 ctest 10/10 绿。批前门禁余量约 23 行，本批武装路径的可测部分全部落地后余量回到个位数——后续若再加硬件相关代码，须按 §3.20 的算法先算这笔结构性余量。
+
 ## 4. 测试纪律
 
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。

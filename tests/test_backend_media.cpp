@@ -377,6 +377,95 @@ TEST_CASE("media lifecycle drives events, position and seek") {
   CHECK(backend->position() == 0ms);
 }
 
+namespace {
+
+// SOAR_TEST_HWACCEL_ARM scopes: the backend's test-only hwaccel arm seam
+// (ffmpeg_backend.cpp, the saveScreenshot forceFailEncoder precedent). Runs
+// headless CI through the armed-decoder path — get_format negotiation, the
+// hardware-frame download branch, teardown — with real libavcodec. Restored
+// on exit so later cases are unaffected.
+struct ScopedArm {
+  explicit ScopedArm(const char* value) {
+    ::setenv("SOAR_TEST_HWACCEL_ARM", value, /*overwrite=*/1);
+  }
+  ~ScopedArm() { ::unsetenv("SOAR_TEST_HWACCEL_ARM"); }
+};
+
+}  // namespace
+
+TEST_CASE("armed hwaccel decode runs the hardware-frame path and closes clean") {
+  // SOAR_TEST_HWACCEL_ARM=1 stands in for the device create: the decoder
+  // arms with a device reference on its own first software pixel format,
+  // libavcodec runs the real get_format negotiation, and decodeLoop takes
+  // the hardware-frame download branch — where the transfer correctly
+  // fails (a software frame has no hw frames context) and the frame is
+  // dropped. Only the transfer itself needs real hardware (docs/mvp.md
+  // §3). The clock and audio stream run normally, so the playback clock
+  // below proves the decode loop is live.
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping hwaccel arm test");
+    return;
+  }
+
+  ScopedArm arm("1");
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  REQUIRE(backend->open(soar::MediaSource{media, /*cache_dir=*/"", /*hwdec=*/"auto"}));
+  REQUIRE(backend->play());
+
+  // The download drops every video frame (the transfer needs a real hw
+  // frames context), and the drop skips the presentation throttle — so
+  // the decode thread drains the whole stream within milliseconds and lands
+  // in Ended. Ended is the deterministic signal that the loop ran through
+  // every video packet (and the download branch with them).
+  bool drained = false;
+  for (int i = 0; i < 1000 && !drained; ++i) {
+    drained = backend->state() == soar::PlaybackState::Ended;
+    if (!drained) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(backend->state() == soar::PlaybackState::Ended);
+
+  CHECK(backend->stop());
+  backend->close();
+  CHECK(backend->mediaInfo().tracks.empty());
+}
+
+TEST_CASE("an unknown hwdec name opens the source in software") {
+  // Nothing validates hwdec below the CLI, so a typo reaching the backend
+  // must behave as the documented "no hwaccel" fallback: an empty device
+  // list leaves the decoder plain software.
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping unknown hwdec test");
+    return;
+  }
+
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  REQUIRE(backend->open(soar::MediaSource{media, /*cache_dir=*/"", /*hwdec=*/"bogus"}));
+  REQUIRE(backend->play());
+
+  bool clock_started = false;
+  for (int i = 0; i < 1000 && !clock_started; ++i) {
+    clock_started = backend->position() > 0ms;
+    if (!clock_started) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  CHECK(backend->position() > 0ms);
+
+  CHECK(backend->stop());
+  backend->close();
+  CHECK(backend->mediaInfo().tracks.empty());
+}
+
 TEST_CASE("subtitle selection state and disableSubtitles work while stopped") {
   std::string media;
   if (!mediaAvailable(media)) {
