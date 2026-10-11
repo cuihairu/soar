@@ -978,16 +978,29 @@ class FakeRenderer {
 
   ~FakeRenderer() {
     running_ = false;
-    if (lfd_ >= 0) {
-      ::shutdown(lfd_, SHUT_RDWR);
-      ::close(lfd_);
-    }
+    // Wake the blocked syscalls first; close each fd only after its reader
+    // thread is joined (close vs a live recvfrom/accept is a data race).
+    if (lfd_ >= 0) ::shutdown(lfd_, SHUT_RDWR);
     if (accept_thread_.joinable()) accept_thread_.join();
-    if (udp_fd_ >= 0) {
-      ::shutdown(udp_fd_, SHUT_RDWR);
-      ::close(udp_fd_);
-    }
+    if (lfd_ >= 0) ::close(lfd_);
+    if (udp_fd_ >= 0) wakeUdp();
     if (udp_thread_.joinable()) udp_thread_.join();
+    if (udp_fd_ >= 0) ::close(udp_fd_);
+  }
+
+  void wakeUdp() {
+    // A loopback datagram that is not an M-SEARCH: recvfrom returns, the
+    // loop sees running_ == false and exits. The 3s SO_RCVTIMEO bounds the
+    // join even if the datagram is lost.
+    int s = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) return;
+    sockaddr_in to{};
+    to.sin_family = AF_INET;
+    to.sin_port = htons(1900);
+    ::inet_pton(AF_INET, "127.0.0.1", &to.sin_addr);
+    ::sendto(s, "soar-wake", 9, 0, reinterpret_cast<const sockaddr*>(&to),
+             sizeof(to));
+    ::close(s);
   }
 
   std::string location() const {
