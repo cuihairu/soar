@@ -41,6 +41,22 @@ void ensureDir(const std::string& dir) {
   }
 }
 
+// Store keys fold to '/' separators: the scanner hands back native
+// separators (std::filesystem::path::string() — '\' on Windows), while
+// argv/dialog paths and hand-edited store lines may use either, and one
+// source must land on one key shape or the history splits in two. On
+// Windows a '\' is never a legal filename character, so the fold is
+// lossless there; on POSIX it is one — the scanner never emits one and a
+// literal backslash in a name must survive — so the fold compiles out.
+std::string normalizePath(std::string s) {
+#ifdef _WIN32
+  for (char& c : s) {
+    if (c == '\\') c = '/';
+  }
+#endif
+  return s;
+}
+
 // Case-folded (Windows only), separator-normalized prefix test with an
 // explicit boundary: folder "C:/Movies" must not swallow "C:/Movies-x".
 // The appended slash is the boundary — the folder itself is never "under"
@@ -212,14 +228,17 @@ void MediaLibrary::load() {
     trimTail(line);
     if (line.size() < 2 || line[1] != ' ') continue;
     if (line[0] == 'f') {
-      const std::string dir = line.substr(2);
+      const std::string dir = normalizePath(line.substr(2));
       if (dir.empty()) continue;
       if (std::find(folders_.begin(), folders_.end(), dir) == folders_.end()) {
         folders_.push_back(dir);
       }
     } else if (line[0] == 'e') {
       LibraryEntry e;
-      if (parseEntryLine(line, e)) by_path[e.path] = e;
+      if (parseEntryLine(line, e)) {
+        e.path = normalizePath(std::move(e.path));
+        by_path[e.path] = std::move(e);
+      }
     }
     if (by_path.size() >= kMaxEntries) break;
   }
@@ -253,14 +272,16 @@ bool MediaLibrary::save() const {
 }
 
 void MediaLibrary::addFolder(std::string dir) {
+  dir = normalizePath(std::move(dir));
   if (std::find(folders_.begin(), folders_.end(), dir) != folders_.end()) {
     return;
   }
   folders_.push_back(std::move(dir));
 }
 
-bool MediaLibrary::removeFolder(const std::string& dir) {
-  const auto it = std::find(folders_.begin(), folders_.end(), dir);
+bool MediaLibrary::removeFolder(const std::string& raw_dir) {
+  const auto it = std::find(folders_.begin(), folders_.end(),
+                            normalizePath(raw_dir));
   if (it == folders_.end()) return false;
   folders_.erase(it);
   return true;
@@ -292,7 +313,9 @@ void MediaLibrary::scan() {
       continue;
     }
     walked.push_back(dir);
-    for (const std::string& file : listMediaFiles(dir, /*recursive=*/true)) {
+    for (const std::string& raw_file :
+         listMediaFiles(dir, /*recursive=*/true)) {
+      const std::string file = normalizePath(raw_file);
       if (merged.count(file) != 0) continue;  // seen via an earlier folder
       LibraryEntry e;
       const auto prev = existing.find(file);
@@ -339,32 +362,34 @@ void MediaLibrary::scan() {
 }
 
 const NfoInfo* MediaLibrary::nfoFor(const std::string& path) const {
-  const auto it = nfo_.find(path);
+  const auto it = nfo_.find(normalizePath(path));
   return it == nfo_.end() ? nullptr : &it->second;
 }
 
 const LibraryEntry* MediaLibrary::find(const std::string& path) const {
+  const std::string key = normalizePath(path);
   const auto it = std::find_if(entries_.begin(), entries_.end(),
                                [&](const LibraryEntry& e) {
-                                 return e.path == path;
+                                 return e.path == key;
                                });
   return it == entries_.end() ? nullptr : &*it;
 }
 
 LibraryEntry* MediaLibrary::upsert(const std::string& path) {
+  const std::string key = normalizePath(path);
   const auto it = std::find_if(entries_.begin(), entries_.end(),
                                [&](const LibraryEntry& e) {
-                                 return e.path == path;
+                                 return e.path == key;
                                });
   if (it != entries_.end()) return &*it;
-  LibraryEntry e;
-  e.path = path;
   // Keep the sorted-by-path invariant: insert at the first greater slot.
-  const auto at = std::lower_bound(entries_.begin(), entries_.end(), path,
+  const auto at = std::lower_bound(entries_.begin(), entries_.end(), key,
                                    [](const LibraryEntry& e,
                                       const std::string& key) {
                                      return e.path < key;
                                    });
+  LibraryEntry e;
+  e.path = key;
   return &*entries_.insert(at, std::move(e));
 }
 
@@ -383,17 +408,19 @@ void MediaLibrary::recordProgress(const std::string& path,
 }
 
 void MediaLibrary::clearPosition(const std::string& path) {
+  const std::string key = normalizePath(path);
   const auto it = std::find_if(entries_.begin(), entries_.end(),
                                [&](const LibraryEntry& e) {
-                                 return e.path == path;
+                                 return e.path == key;
                                });
   if (it != entries_.end()) it->position_ms = 0;
 }
 
 bool MediaLibrary::removeEntry(const std::string& path) {
+  const std::string key = normalizePath(path);
   const auto it = std::find_if(entries_.begin(), entries_.end(),
                                [&](const LibraryEntry& e) {
-                                 return e.path == path;
+                                 return e.path == key;
                                });
   if (it == entries_.end()) return false;
   entries_.erase(it);

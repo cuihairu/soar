@@ -55,6 +55,14 @@ std::string slurp(const std::string& path) {
                      std::istreambuf_iterator<char>());
 }
 
+// Joins in the store's canonical separator form ('/', library.cpp
+// normalizePath): the library folds separators on every OS, so a string
+// expectation built on the platform native form would mismatch on Windows.
+// Identical to base + "/" + rel on POSIX — no behaviour change there.
+std::string join(const std::string& base, const std::string& rel) {
+  return (fs::path(base) / rel).generic_string();
+}
+
 // A watched tree: two media files at the root, one nested, one nested
 // deeper, and two decoys the extension filter must skip.
 struct Tree {
@@ -95,7 +103,7 @@ TEST_CASE("save and load round-trips folders and entries") {
   MediaLibrary again(store);
   again.load();
   REQUIRE(again.folders().size() == 2);
-  CHECK(again.folders()[0] == dir + "/films");
+  CHECK(again.folders()[0] == join(dir, "films"));
   CHECK(again.folders()[1] == "/watches/Movies, tonight");
   REQUIRE(again.entries().size() == 2);
   // Entries come back sorted by path (byte order), not insertion order.
@@ -158,10 +166,10 @@ TEST_CASE("scan discovers media recursively and stats each file") {
   lib.scan();
   REQUIRE(lib.entries().size() == 4);
   // Byte-order by path: root files first, then the nested ones.
-  CHECK(lib.entries()[0].path == tree.root + "/a.mp4");
-  CHECK(lib.entries()[1].path == tree.root + "/b.mkv");
-  CHECK(lib.entries()[2].path == tree.root + "/season1/c.mp4");
-  CHECK(lib.entries()[3].path == tree.root + "/season1/extras/d.avi");
+  CHECK(lib.entries()[0].path == join(tree.root, "a.mp4"));
+  CHECK(lib.entries()[1].path == join(tree.root, "b.mkv"));
+  CHECK(lib.entries()[2].path == join(tree.root, "season1/c.mp4"));
+  CHECK(lib.entries()[3].path == join(tree.root, "season1/extras/d.avi"));
   for (const auto& e : lib.entries()) {
     CHECK(e.size > 0);
     CHECK(e.mtime != 0);
@@ -253,7 +261,7 @@ TEST_CASE("overlapping watched folders produce one entry per file") {
   lib.addFolder(tree.root + "/season1");  // nested inside the first
   lib.scan();
   REQUIRE(lib.entries().size() == 4);
-  CHECK(lib.entries()[0].path == tree.root + "/a.mp4");
+  CHECK(lib.entries()[0].path == join(tree.root, "a.mp4"));
 }
 
 TEST_CASE("history API creates, counts, clears and forgets") {

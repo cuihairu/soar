@@ -10,7 +10,11 @@
 // history into the library and a scanned file keeps its history across
 // scans. Keys are the URI exactly as opened (http:// URLs included);
 // torrent bridge URLs change port every session and are skipped by the
-// caller, not here.
+// caller, not here. File paths are one key per file on disk: every entry
+// point folds separators to '/' (normalizePath — lossless on Windows where
+// '\' is never a filename character, a no-op on POSIX where it can be), so
+// argv, dialog and scanned forms of the same source cannot fork into two
+// rows with split history.
 
 #ifndef SOAR_APP_UI_LIBRARY_H_
 #define SOAR_APP_UI_LIBRARY_H_
