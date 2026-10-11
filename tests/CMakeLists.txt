@@ -136,6 +136,20 @@ target_link_libraries(soar_library_tests PRIVATE soar_app_ui doctest::doctest)
 
 add_test(NAME soar_library_tests COMMAND soar_library_tests)
 
+# Keyboard shortcut map tests (docs/ui-design.md §3.2): the default table,
+# the config grammar (rebind / unbind / digit range / kill switch), the
+# lookup specificity rules, and the help-overlay name rendering. Pure
+# logic over in-memory text + one temp file — no display, no media, no
+# network.
+add_executable(soar_shortcut_tests
+  test_shortcuts.cpp
+)
+
+target_compile_features(soar_shortcut_tests PRIVATE cxx_std_17)
+target_link_libraries(soar_shortcut_tests PRIVATE soar_app_ui doctest::doctest)
+
+add_test(NAME soar_shortcut_tests COMMAND soar_shortcut_tests)
+
 # CLI integration tests run the real soar executable as a subprocess and
 # check exit codes / stderr reports for the headless and error paths.
 # They need the app target, so they only exist when the app is built;
@@ -184,7 +198,7 @@ if(TARGET soar)
 # job until its two-digit-minute timeout. CTest kills the test at the
 # 10-minute mark instead, so one wedged case costs minutes, not the job.
 set_tests_properties(soar_core_tests soar_backend_tests soar_ui_tests
-  soar_dir_scan_tests soar_library_tests
+  soar_dir_scan_tests soar_library_tests soar_shortcut_tests
   soar_subtitle_tests soar_ass_tests PROPERTIES TIMEOUT 600)
 # soar_cli_tests needs its own, bigger budget. Under coverage
 # instrumentation (--coverage -O0 -g) the scripted window cases crawl: the

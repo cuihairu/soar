@@ -158,10 +158,14 @@ target_link_libraries(soar_p2p PUBLIC torrent-rasterbar)
 # docs/ui-design.md §5.3) — no SDL/ImGui dependency, shared by the app and
 # the unit-test suite. dir_scan.cpp is the folder-import half of the same
 # contract: directory listing/grouping for open-folder + the playlist tree.
+# shortcuts.cpp is the keybinding half (docs/ui-design.md §3.2): its keycode
+# table mirrors SDL's values and player_window.cpp static_asserts the
+# equality, so the pure-logic library never needs SDL headers.
 add_library(soar_app_ui STATIC
   src/app/ui/ui_state.cpp
   src/app/ui/dir_scan.cpp
   src/app/ui/library.cpp
+  src/app/ui/shortcuts.cpp
 )
 target_compile_features(soar_app_ui PUBLIC cxx_std_17)
 target_include_directories(soar_app_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/app)
