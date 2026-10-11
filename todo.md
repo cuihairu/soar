@@ -1,5 +1,49 @@
 # todo
 
+## 投屏协议选型（2026-10-11 拍板收口，本批只出结论零实现码）
+
+挂账②收口。范围：四候选（AirPlay / Chromecast / DLNA/UPnP AV / Miracast）×
+五维对比 + 单一推荐；实现另立批（要点见本节末尾）。
+
+- [x] **结论：DLNA/UPnP AV 先行，soar 作控制点驱动接收端 MediaRenderer**
+
+| 维度 | AirPlay | Chromecast (CASTV2) | **DLNA/UPnP AV（选它）** | Miracast |
+|---|---|---|---|---|
+| 协议开放度 | 封闭：Apple 私有无官方规范，现存实现全靠反向工程（shairport-sync/pyatv），协议随系统版本漂移；AirPlay 2 配对加密（SRP6a/Ed25519/Curve25519）+ MFi 认证，专利/授权灰区 | 半开放：CASTV2 帧格式与 protobuf schema 公开流传、Google 不阻第三方发送端（pychromecast/go-chromecast 长期存在）；媒体通道只支持 URL（接收端自行拉流），行为随 Google 接收器固件变 | **完全开放**：UPnP DeviceArchitecture + AVTransport 公开免费标准（SSDP 组播 + HTTP 拉 XML 设备描述 + SOAP 控制动作 SetAVTransportURI/Play/Seek/Stop），无认证授权要求；DLNA 组织 2017 解散只停了认证，规范与设备实现仍在 | 标准需 Wi-Fi Alliance 成员资格获取；Linux 侧实现（miraclecast）长期不成熟停摆 |
+| 接收端生态 | Apple 硬件 + 近年智能电视内置 AirPlay 2（厂商获 Apple 授权）；第三方接收端要么 MFi 要么反向工程 | 大：Chromecast/Google TV 硬件 + 内置 built-in 的电视；2024 起 Chromecast 产品线停售（换 Google TV Streamer），但 built-in 仍在电视里普遍存在 | **最大**：2010 年代以来几乎所有智能电视/机顶盒/游戏机/AV 功放出厂内置 renderer，2026 实核 Samsung Tizen / LG webOS 新机仍随附（如实：属 legacy 功能，厂商设置埋深、个别新款可能移除——这是 Chromecast 留作第二候选的原因） | 智能电视 Screen Share 普遍存在，但那是屏幕镜像不是媒体投屏 |
+| 发送端覆盖（iOS/Android/桌面） | iOS/macOS 原生最好；Android/Windows/Linux 无官方发送端 | Android/Chrome 原生；桌面第三方发送端库成熟 | **全平台等价**：纯网络协议无平台 API 依赖，桌面三平台同一套代码；iOS/Android 现成控制点 app（BubbleUPnP 等）佐证该形态 | Windows/Android 原生；macOS/Linux 基本不可行 |
+| 实现复杂度 | 高：mDNS + 反向工程报文 + 配对加密，镜像流与 DRM 内容另有 FairPlay 约束 | 中：mDNS 发现 + TLS + protobuf CASTV2 + LOAD 消息；需引入 TLS 与 protobuf（wire format 字段少可手写） | **最低**：几条 SSDP 报文 + HTTP 拉 XML + SOAP over HTTP POST，纯 socket 手写零新依赖；GENA 事件订阅可选（第一期轮询 GetPositionInfo 即可） | 极高且错类：Wi-Fi Direct 链路 + 实时 H.264 屏幕编码 + HDCP，是镜像管线不是 URL 投屏 |
+| soar 栈契合度（SDL/libtorrent/本地桥） | 差：加解密/授权栈全新，URL 模式受 FairPlay 与格式限制纠缠 | 好：URL-cast 模型与本地 HTTP 桥同构，但 TLS/protobuf 是新依赖 | **最好**：renderer 自带 Range 地来 GET 桥 URL——P4 的 `TorrentStream http://127.0.0.1:<port>/` 投屏会话期改绑 LAN 口即成（Range 三形态 206/416 已有），控制面纯 UDP/HTTP 与 p2p/http 同栈零新依赖 | 差：Wi-Fi Direct 管理在 soar 桌面栈中完全不存在 |
+
+### 依据（为何 DLNA 先行）
+
+1. 完全开放标准，零授权/加密/专利风险——AirPlay 的反向工程+专利灰区、
+   Chromecast 的私有接收器行为不进第一批。
+2. 接收端存量最大：几乎全部智能电视/机顶盒/游戏机出厂即有 renderer，
+   接收端无需用户装任何 app。
+3. 实现复杂度最低且零新第三方依赖：SSDP+XML+SOAP 自实现，符合仓库
+   「核心抽象不动、最小依赖」口径（P4 决策先例）。
+4. 栈契合最好：「接收端来拉 URL」与既有本地 HTTP 桥是同一原语——桥
+   会话期改绑 LAN 口即可，播放链路零改动。
+
+次选与排除：Chromecast 留作第二批候选（URL-cast 与桥同构，增量成本在
+TLS+protobuf 与接收器格式白名单）；AirPlay 排除（授权/配对加密/反向
+工程漂移风险，收益不抵）；Miracast 排除（屏幕镜像非媒体投屏，类别
+不符）。另如实记录：FUTO 的 FCast 是新兴完全开放协议（零授权、本地
+直连、自定义接收端），但接收端生态目前过小（主要 FUTO 自家 receiver
+与 GrayJay），不作首选，留意其生态增长。
+
+### 实现批要点（另立批，本批零实现码）
+
+- 安全边界：桥默认仍 127.0.0.1-only，仅投屏会话期临时绑局域网口，
+  会话结束即恢复——LAN 暴露窗口最小化。
+- 接收端自解码：不支持的容器/编码显式报错提示，第一实现批不做发送端
+  转码（FFmpeg 转码留作后续可选）。
+- 组件自实现 SSDP/SOAP/XML，零新第三方依赖；soar 只做控制点，不做
+  renderer/DMS 角色；GENA 事件订阅不做（第一期轮询）。
+- 测试面：纯逻辑单测（SSDP 报文构造/解析、SOAP 请求、设备 XML 解析）
+  + 测试内嵌最小 MediaRenderer 冒烟（同 P2 内嵌 RTSP 服务器先例）。
+
 ## 快捷键可配置批（2026-10-11 登记，ui-design.md §3.2「可配置留待后续」收口）
 
 范围：键位映射组件（默认表 + 配置文件重绑 + 全局开关）、窗口接线、帮助浮层
