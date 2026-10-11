@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 480" width="1600" height="480">
+  <rect width="1600" height="480" rx="48" fill="#2a0f1e"/>
+  <g transform="translate(96 88) scale(0.3)">
+    <rect width="1024" height="1024" rx="232" fill="none"/>
+    <circle cx="512" cy="512" r="322" fill="none" stroke="#5c2338" stroke-width="56"/>
+    <path fill="none" stroke="#d4237a" stroke-width="56" stroke-linecap="round"
+          d="M512 190 A322 322 0 0 1 834 512"/>
+    <path fill="#d4237a" d="M428 348 L428 676 C428 716 460 738 496 720 L716 548 C748 524 748 500 716 476 L496 304 C460 286 428 308 428 348 Z"
+          transform="translate(512 512) scale(0.72) translate(-512 -512) translate(16 0)"/>
+  </g>
+  <text x="480" y="272" font-family="DejaVu Sans" font-weight="bold" font-size="168" fill="#ffffff" letter-spacing="10">SOAR</text>
+  <rect x="486" y="316" width="740" height="4" rx="2" fill="#d4237a"/>
+  <text x="486" y="386" font-family="DejaVu Sans" font-size="56" fill="#e8b7cc">Every format, set free.</text>
+</svg>
