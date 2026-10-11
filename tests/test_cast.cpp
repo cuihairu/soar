@@ -983,11 +983,17 @@ class FakeRenderer {
 
   ~FakeRenderer() {
     running_ = false;
-    // Wake the blocked syscalls first; close each fd only after its reader
-    // thread is joined (close vs a live recvfrom/accept is a data race).
+    // The listener retires like the product's stop(): shutdown, then close,
+    // then join. Darwin ignores shutdown() on a listening socket — there
+    // close() is what wakes the blocked accept; Linux wakes on the shutdown
+    // and the close lands on an already-retired fd. Nothing opens an fd in
+    // between (the UDP wake comes after the join), so the number cannot be
+    // recycled under the waking thread. The UDP fd keeps the opposite order:
+    // close vs a live recvfrom is a data race, so the datagram wakes the
+    // loop first and the close lands after the join.
     if (lfd_ >= 0) ::shutdown(lfd_, SHUT_RDWR);
-    if (accept_thread_.joinable()) accept_thread_.join();
     if (lfd_ >= 0) ::close(lfd_);
+    if (accept_thread_.joinable()) accept_thread_.join();
     if (udp_fd_ >= 0) wakeUdp();
     if (udp_thread_.joinable()) udp_thread_.join();
     if (udp_fd_ >= 0) ::close(udp_fd_);
@@ -1089,7 +1095,7 @@ class FakeRenderer {
   void acceptLoop() {
     while (running_) {
       const int cfd = static_cast<int>(::accept(lfd_, nullptr, nullptr));
-      if (cfd < 0) break;  // woken by the destructor's shutdown
+      if (cfd < 0) break;  // woken by the destructor's shutdown/close
       std::thread(serveConn, state_, cfd).detach();
     }
   }
