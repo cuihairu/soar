@@ -2568,6 +2568,14 @@ TEST_CASE("windowed run honors a rebound quit key from the shortcuts config") {
   MESSAGE("the X11 window test is POSIX-only; skipping");
   return;
 #else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // Built without the ImGui overlay (CI's no-imgui job): the bare loop
+  // consults no shortcut map at all — letters do nothing there by
+  // design, and only the hardcoded Escape path quits. Same skip rule as
+  // the HUD tour above.
+  MESSAGE("app built without the ImGui overlay; skipping the rebind tour");
+  return;
+#endif
   // Opt-in (the CI coverage job), same gating as the tests above.
   if (std::getenv("SOAR_TEST_X11") == nullptr) {
     MESSAGE("SOAR_TEST_X11 not set; skipping the X11 window test");
