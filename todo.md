@@ -28,8 +28,15 @@
       `SOAR_ENABLE_IMGUI=OFF`（无 ImGui 的裸回退循环只硬编码 Escape），
       字母键无反应是回退路径使然而非映射缺陷；套件树 build-cov3
       IMGUI=ON，用例真跑即过。
-- [ ] **S4 全量门禁 + 提交推送**（本地 fullgate 过线 → rebase → push →
-      CI 七腿绿）。
+- [x] **S4 全量门禁 + 提交推送**：本地 fullgate 绿（12/12 套件；行
+      95.3%=7056/7406、支 85.0%=7530/8861，对门禁 95.0/84.6 的真实余量
+      ~20 行/~34 支，按原始分子分母核）；三 commit fc89dc0（组件）/
+      dfac800（接线+CLI+文档）/76c637d（rebind 用例补 no-imgui 门控）已
+      push，CI run 38134638705 七腿全绿（build×3/tsan/asan/coverage/
+      no-imgui）。如实记录：dfac800 那轮 no-imgui 腿红——rebind 用例没
+      门控裸回退构建（该循环不走映射表，字母键按设计无效），本地双树
+      （build-cov3 实跑 + build-noimgui 跳过）验证后 76c637d 补
+      `SOAR_CLI_HAS_IMGUI` 门控转绿。
 
 ### 如实说明
 
