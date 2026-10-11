@@ -99,8 +99,22 @@ class TorrentStream {
   // Called by the destructor; idempotent.
   void stop();
 
-  // Valid after a successful start(): "http://127.0.0.1:<port>/"
+  // Valid after a successful start(): "http://127.0.0.1:<port>/". During a
+  // casting session (exposeToLan below) the host/port change with the
+  // rebind — callers re-read this URL, never cache it.
   const std::string& playbackUrl() const { return playback_url_; }
+
+  // Casting support (docs/mvp.md §3, DLNA control point): rebinds the
+  // listen socket from 127.0.0.1 to all interfaces for exactly as long as
+  // a casting session needs it, and rewrites playbackUrl() to the local
+  // address that routes toward `peer_host` (the renderer). The port
+  // changes with the rebind — a fresh listener — while established
+  // connections keep streaming untouched (they are accepted sockets).
+  // restoreLoopback() puts the host-only binding back. Same thread
+  // contract as start(); only valid once Serving; both return false with
+  // *err set and leave the binding untouched on failure.
+  bool exposeToLan(const std::string& peer_host, std::string* err);
+  bool restoreLoopback(std::string* err);
 
   std::uint64_t fileSize() const { return file_size_; }
   const std::string& fileName() const { return file_name_; }

@@ -39,7 +39,10 @@
 
 #ifndef _WIN32
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -965,6 +968,147 @@ TEST_CASE("a magnet that never hears from the swarm times out explicitly") {
   CHECK(stream.lastError().find("peers seen:") != std::string::npos);
   CHECK(std::chrono::duration_cast<std::chrono::seconds>(waited).count() >= 55);
   CHECK(stream.phase() == p2p::TorrentPhase::Idle);
+}
+
+TEST_CASE("exposeToLan rebinds the bridge for casting and restoreLoopback reverts it") {
+  // A non-loopback local IPv4, found by the UDP-connect route trick
+  // (connect on a datagram socket just pins the route, nothing goes on
+  // the wire). No route at all (offline runner): nothing honest to
+  // assert here, skip.
+  const int probe = ::socket(AF_INET, SOCK_DGRAM, 0);
+  REQUIRE(probe >= 0);
+  sockaddr_in dst{};
+  dst.sin_family = AF_INET;
+  dst.sin_port = htons(53);
+  REQUIRE(::inet_pton(AF_INET, "192.0.2.1", &dst.sin_addr) == 1);
+  std::string lan_ip;
+  if (::connect(probe, reinterpret_cast<sockaddr*>(&dst), sizeof(dst)) == 0) {
+    sockaddr_in local{};
+    socklen_t len = sizeof(local);
+    char buf[INET_ADDRSTRLEN] = {0};
+    if (::getsockname(probe, reinterpret_cast<sockaddr*>(&local), &len) == 0 &&
+        ::inet_ntop(AF_INET, &local.sin_addr, buf, sizeof(buf)) != nullptr &&
+        std::strcmp(buf, "127.0.0.1") != 0) {
+      lan_ip = buf;
+    }
+  }
+  ::close(probe);
+  if (lan_ip.empty()) {
+    MESSAGE("no non-loopback route; the LAN rebind case skipped");
+    return;
+  }
+
+  // Connect to host:port with a bounded handshake; ranged GET when the
+  // connect lands. False = refused or no answer (a listener not bound to
+  // that address refuses immediately on the same host).
+  auto probeTcp = [](const std::string& host, int port, int* status) {
+    *status = 0;
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    REQUIRE(fd >= 0);
+    const int nb = ::fcntl(fd, F_SETFL, O_NONBLOCK);
+    REQUIRE(nb == 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<unsigned short>(port));
+    REQUIRE(::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) == 1);
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 &&
+        errno != EINPROGRESS) {
+      ::close(fd);
+      return false;
+    }
+    pollfd pfd{};
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+    if (::poll(&pfd, 1, 3000) != 1) {
+      ::close(fd);
+      return false;
+    }
+    int soerr = 0;
+    socklen_t elen = sizeof(soerr);
+    ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &elen);
+    if (soerr != 0) {
+      ::close(fd);
+      return false;
+    }
+    const int back = ::fcntl(fd, F_SETFL, 0);
+    REQUIRE(back == 0);
+    timeval tv{};
+    tv.tv_sec = 10;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    const std::string req =
+        "GET / HTTP/1.1\r\nHost: h\r\nRange: bytes=0-1023\r\nConnection: close\r\n\r\n";
+    ::send(fd, req.data(), req.size(), 0);
+    char buf[128] = {0};
+    ::recv(fd, buf, sizeof(buf) - 1, 0);
+    ::close(fd);
+    const char* sp = std::strchr(buf, ' ');
+    *status = sp != nullptr ? std::atoi(sp + 1) : 0;
+    return true;
+  };
+  auto portOf = [](const std::string& url) {
+    const size_t colon = url.rfind(':');
+    REQUIRE(colon != std::string::npos);
+    const int port = std::atoi(url.c_str() + colon + 1);
+    REQUIRE(port > 0);
+    return port;
+  };
+
+  const SoloStore s = makeSolo("rebind", 64 * 1024);
+  p2p::TorrentStream stream;
+  p2p::TorrentStream::Params p;
+  p.torrent_path = s.torrent;
+  p.store_dir = s.dir;
+  REQUIRE(stream.start(p));
+  REQUIRE(stream.phase() == p2p::TorrentPhase::Serving);
+  const int loopback_port = portOf(stream.playbackUrl());
+
+  // Loopback-only: the LAN address of this host does not reach it.
+  int status = 0;
+  CHECK_FALSE(probeTcp(lan_ip, loopback_port, &status));
+
+  // An unresolvable renderer host is the explicit routing failure, and
+  // the serving state is untouched. (An empty host fails getaddrinfo on
+  // every resolver; a made-up name cannot be trusted — wildcard DNS on
+  // the local network happily resolves anything.)
+  std::string err;
+  CHECK_FALSE(stream.exposeToLan("", &err));
+  CHECK(err.find("no local address routes to") != std::string::npos);
+  CHECK(stream.playbackUrl() ==
+        "http://127.0.0.1:" + std::to_string(loopback_port) + "/");
+  int still = 0;
+  REQUIRE(probeTcp("127.0.0.1", loopback_port, &still));
+  CHECK(still == 206);
+
+  // Expose toward the LAN address: fresh listener, rewritten URL.
+  REQUIRE(stream.exposeToLan(lan_ip, &err));
+  const std::string exposed_url = stream.playbackUrl();
+  CHECK(exposed_url ==
+        "http://" + lan_ip + ":" + std::to_string(portOf(exposed_url)) + "/");
+  const int exposed_port = portOf(exposed_url);
+  // The new listener serves the media over the LAN address (206 = the
+  // Range contract), and the old port is gone with the retired listener.
+  status = 0;
+  REQUIRE(probeTcp(lan_ip, exposed_port, &status));
+  CHECK(status == 206);
+  CHECK_FALSE(probeTcp("127.0.0.1", loopback_port, &still));
+
+  // Restore puts loopback back: URL rewritten, LAN refused, media served.
+  REQUIRE(stream.restoreLoopback(&err));
+  const std::string back_url = stream.playbackUrl();
+  CHECK(back_url.rfind("http://127.0.0.1:", 0) == 0);
+  status = 0;
+  REQUIRE(probeTcp("127.0.0.1", portOf(back_url), &status));
+  CHECK(status == 206);
+  CHECK_FALSE(probeTcp(lan_ip, portOf(back_url), &status));
+  CHECK_FALSE(probeTcp(lan_ip, exposed_port, &status));
+
+  // Past stop(): not serving anymore, on both methods.
+  stream.stop();
+  REQUIRE(waitPhase(stream, p2p::TorrentPhase::Idle));
+  CHECK_FALSE(stream.exposeToLan(lan_ip, &err));
+  CHECK(err == "torrent: not serving");
+  CHECK_FALSE(stream.restoreLoopback(&err));
+  CHECK(err == "torrent: not serving");
 }
 
 #endif  // !_WIN32

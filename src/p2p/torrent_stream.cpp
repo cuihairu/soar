@@ -26,7 +26,9 @@
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
 #else
+#  include <arpa/inet.h>
 #  include <fcntl.h>
+#  include <netdb.h>
 #  include <netinet/in.h>
 #  include <signal.h>
 #  include <sys/socket.h>
@@ -106,6 +108,74 @@ static bool sendAll(int fd, const char* p, size_t n) {
 }
 
 static void sleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+
+// The local dotted-quad address whose interface routes toward `host` (the
+// UDP-connect trick: connect a datagram socket — nothing is ever sent —
+// and read the local end). "" when the host does not resolve or nothing
+// routes: the caller then refuses to expose the bridge rather than
+// advertise an address no renderer can fetch.
+std::string localIpForPeer(const std::string& host) {
+  addrinfo hints{};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_DGRAM;  // connect() on a datagram socket is local
+  addrinfo* list = nullptr;
+  if (getaddrinfo(host.c_str(), nullptr, &hints, &list) != 0 || list == nullptr)
+    return "";
+  const int fd = static_cast<int>(socket(AF_INET, SOCK_DGRAM, 0));
+  if (fd < 0) {
+    freeaddrinfo(list);
+    return "";
+  }
+  std::string out;
+  if (connect(fd, list->ai_addr, static_cast<socklen_t>(list->ai_addrlen)) == 0) {
+    sockaddr_in local{};
+    socklen_t len = sizeof(local);
+    if (getsockname(fd, reinterpret_cast<sockaddr*>(&local), &len) == 0) {
+      char buf[INET_ADDRSTRLEN] = {0};
+      if (inet_ntop(AF_INET, &local.sin_addr, buf, sizeof(buf)) != nullptr)
+        out = buf;
+    }
+  }
+  sockClose(fd);
+  freeaddrinfo(list);
+  return out;
+}
+
+// A listening socket bound to `net_addr` (INADDR_LOOPBACK or INADDR_ANY)
+// on an ephemeral port. Returns -1 with *err set on failure; `label` only
+// names the address in that error.
+int makeListener(std::uint32_t net_addr, const char* label, std::string* err) {
+  sockInit();
+  const int lfd = static_cast<int>(socket(AF_INET, SOCK_STREAM, 0));
+  if (lfd < 0) {
+    *err = "torrent: cannot create listen socket (errno " +
+           std::to_string(lastNetError()) + ")";
+    return -1;
+  }
+  int one = 1;
+  setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR,
+             reinterpret_cast<const char*>(&one), sizeof(one));
+  sockaddr_in bind_addr{};
+  bind_addr.sin_family = AF_INET;
+  bind_addr.sin_addr.s_addr = htonl(net_addr);
+  bind_addr.sin_port = 0;  // any free port; the URL carries the chosen one
+  if (bind(lfd, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) != 0 ||
+      listen(lfd, kListenBacklog) != 0) {
+    *err = "torrent: cannot listen on " + std::string(label) +
+           " (errno " + std::to_string(lastNetError()) + ")";
+    sockClose(lfd);
+    return -1;
+  }
+  return lfd;
+}
+
+// Port of a bound listening socket.
+int listenerPort(int lfd) {
+  sockaddr_in bound{};
+  socklen_t blen = sizeof(bound);
+  getsockname(lfd, reinterpret_cast<sockaddr*>(&bound), &blen);
+  return ntohs(bound.sin_port);
+}
 
 // Reads the portion of the served file at `off` straight from disk. The
 // caller made sure every intersecting piece is complete, so the bytes on
@@ -349,6 +419,12 @@ struct TorrentStream::Impl {
   int piece_len = 0;
 
   int listen_fd = -1;
+  // Set (and the listener shutdown) while a rebind retires the accept
+  // loop: accept() wakes with an error and this flag tells it to exit
+  // instead of spinning — the same shutdown() wake that stop() uses, but
+  // without touching `stopped`, which would kill in-flight reads.
+  std::shared_ptr<std::atomic<bool>> listener_retired =
+      std::make_shared<std::atomic<bool>>(false);
   std::thread worker;  // startAsync: runs runTail(); start() runs it inline
   std::thread accept_thread;
   std::thread monitor_thread;
@@ -411,11 +487,26 @@ struct TorrentStream::Impl {
     while (!stopped->load(std::memory_order_relaxed)) {
       const int cfd = sockAccept(listen_fd);
       if (cfd < 0) {
-        if (stopped->load(std::memory_order_relaxed)) break;
+        if (stopped->load(std::memory_order_relaxed) ||
+            listener_retired->load(std::memory_order_relaxed))
+          break;
         continue;
       }
       std::thread(handleConn, makeCtx(), cfd).detach();
     }
+  }
+
+  // Listener swap for the casting rebinds: retire the accept loop
+  // (shutdown wakes it, the flag says rebind-not-stop), then install the
+  // new socket. Already-accepted connections run on untouched fds.
+  void rebindListener(int new_fd) {
+    listener_retired->store(true, std::memory_order_relaxed);
+    sockShutdown(listen_fd);
+    if (accept_thread.joinable()) accept_thread.join();
+    sockClose(listen_fd);
+    listener_retired->store(false, std::memory_order_relaxed);
+    listen_fd = new_fd;
+    accept_thread = std::thread([this] { acceptLoop(); });
   }
 };
 
@@ -491,30 +582,10 @@ bool TorrentStream::Impl::prepare(const Params& p, TorrentStream* owner, std::st
 
   sockInit();
 
-  const int lfd = static_cast<int>(socket(AF_INET, SOCK_STREAM, 0));
-  if (lfd < 0) {
-    *err = "torrent: cannot create listen socket (errno " +
-           std::to_string(lastNetError()) + ")";
-    return false;
-  }
-  int one = 1;
-  setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR,
-             reinterpret_cast<const char*>(&one), sizeof(one));
-  sockaddr_in bind_addr{};
-  bind_addr.sin_family = AF_INET;
-  bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // never exposed off-host
-  bind_addr.sin_port = 0;  // any free port; the URL carries the chosen one
-  if (bind(lfd, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) != 0 ||
-      listen(lfd, kListenBacklog) != 0) {
-    *err = "torrent: cannot listen on 127.0.0.1 (errno " +
-           std::to_string(lastNetError()) + ")";
-    sockClose(lfd);
-    return false;
-  }
-  sockaddr_in bound{};
-  socklen_t blen = sizeof(bound);
-  getsockname(lfd, reinterpret_cast<sockaddr*>(&bound), &blen);
-  owner->playback_url_ = "http://127.0.0.1:" + std::to_string(ntohs(bound.sin_port)) + "/";
+  const int lfd = makeListener(INADDR_LOOPBACK, "127.0.0.1", err);
+  if (lfd < 0) return false;
+  owner->playback_url_ =
+      "http://127.0.0.1:" + std::to_string(listenerPort(lfd)) + "/";
   listen_fd = lfd;
   return true;
 }
@@ -671,6 +742,42 @@ TorrentStatus TorrentStream::status() const {
   if (impl_ == nullptr) return s;
   std::lock_guard<std::mutex> lock(impl_->status_mu);
   return impl_->status;
+}
+
+bool TorrentStream::exposeToLan(const std::string& peer_host, std::string* err) {
+  if (impl_ == nullptr || phase_.load(std::memory_order_acquire) != TorrentPhase::Serving ||
+      impl_->listen_fd < 0) {
+    *err = "torrent: not serving";
+    return false;
+  }
+  const std::string ip = localIpForPeer(peer_host);
+  if (ip.empty() || ip == "0.0.0.0") {
+    *err = "torrent: no local address routes to " + peer_host;
+    return false;
+  }
+  // The new listener exists before the old one retires: a failed bind
+  // leaves the current serving state untouched.
+  const int nfd = makeListener(INADDR_ANY, "0.0.0.0", err);
+  if (nfd < 0) return false;
+  const std::string url = "http://" + ip + ":" + std::to_string(listenerPort(nfd)) + "/";
+  impl_->rebindListener(nfd);
+  playback_url_ = url;
+  return true;
+}
+
+bool TorrentStream::restoreLoopback(std::string* err) {
+  if (impl_ == nullptr || phase_.load(std::memory_order_acquire) != TorrentPhase::Serving ||
+      impl_->listen_fd < 0) {
+    *err = "torrent: not serving";
+    return false;
+  }
+  const int nfd = makeListener(INADDR_LOOPBACK, "127.0.0.1", err);
+  if (nfd < 0) return false;
+  const std::string url =
+      "http://127.0.0.1:" + std::to_string(listenerPort(nfd)) + "/";
+  impl_->rebindListener(nfd);
+  playback_url_ = url;
+  return true;
 }
 
 }  // namespace soar::p2p
