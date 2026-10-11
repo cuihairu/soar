@@ -30,24 +30,25 @@ The playback API and event model depend on no specific multimedia library — sw
 
 ## Current status
 
-The v0.1 core playback pipeline (open → decode → A/V sync → render/audio) runs end to end on the FFmpeg + SDL2 backend, with a CLI smoke entry point; all v0.2 capabilities have landed (playlist, screenshots, A-B loop, audio endpoint switching, HLS/DASH/RTSP smoke coverage, subtitle rendering and subtitle experience, stream-while-downloading and P2P download — see the roadmap below and [docs/mvp.md](docs/mvp.md)). The desktop app is an SDL2 window with a Dear ImGui overlay floating control bar (OSC), plus keyboard shortcuts and info/recent/help/playlist overlays (design and trade-offs in [docs/ui-design.md](docs/ui-design.md)); audio and subtitle tracks can be switched at runtime, during playback or while paused, without interrupting playback (details below and docs/mvp.md §6). v1.0 (hardware decoding/HDR, casting, media library) has not started.
+The v0.1 core playback pipeline (open → decode → A/V sync → render/audio) runs end to end on the FFmpeg + SDL2 backend, with a CLI smoke entry point; all v0.2 capabilities have landed (playlist, screenshots, A-B loop, audio endpoint switching, HLS/DASH/RTSP smoke coverage, subtitle rendering and subtitle experience, stream-while-downloading and P2P download — see the roadmap below and [docs/mvp.md](docs/mvp.md)). The desktop app is an SDL2 window with a Dear ImGui overlay floating control bar (OSC), plus keyboard shortcuts and info/recent/help/playlist/library overlays (design and trade-offs in [docs/ui-design.md](docs/ui-design.md)); audio and subtitle tracks can be switched at runtime, during playback or while paused, without interrupting playback (details below and docs/mvp.md §6). Of v1.0, two slices have landed: the local media library (watched folders, play history and resume, the `B` overlay, offline NFO sidecar scraping — docs/mvp.md §3) and the first hardware-decode wiring (`--hwdec=`, which silently falls back to software decoding on any failure; the frame path on real GPUs and the HDR color pipeline are still open — see docs/mvp.md §3). Casting and the plugin system have not started.
 
 ## Features (implemented)
 
 - **Media input**: local files, multiple files queued (`soar <a> <b> …` — the first plays, the rest queue), network stream URLs (`http(s)`/HLS/DASH/RTSP and every other protocol FFmpeg supports), `.torrent` files and `magnet:` links; failure reasons are visible when opening fails;
 - **Playback control**: play / pause / stop / seek / rate / volume and mute;
 - **Playlist**: `N`/`Shift+N` for next/previous (out-of-range shows a Toast instead of wrapping), auto-advance on natural end (stops at Ended on the last item; Space replays), `P` overlay with click-to-play and `x` to remove, Loop three-state (off/all/one) and Shuffle;
+- **Media library**: watch folders (recursively scanned, missing files pruned; entries opened directly — URLs, files outside every watched folder — are never pruned), per-source play history with resume (a position past 5 s and at least 5 s from the end is offered on reopen, finishing clears it, `--no-resume` keeps recording but never jumps back), `B` opens the library overlay (click to play with resume, add a watched folder through the directory picker's watch mode, rescan), and offline NFO sidecar scraping (a `<name>.nfo` sibling's title/plot fills the library rows). History is recorded by window sessions only — headless stays stateless — and torrent bridge URLs are skipped (their local port changes every session);
 - **Screenshots and A-B loop**: `S` saves the most recently presented frame as `screenshot.png`; `L` sets a three-step loop (set A → set B → clear, jumps back at EOF, cleared by a manual seek);
 - **Media info**: duration, seekability, track list (video / audio / subtitle, with codec, language, title);
 - **Track selection**: audio track switching at runtime (seamless while playing or paused); video track switching not supported; subtitle track switching at runtime — selecting a built-in track swaps the subtitle decoder at a safe point in the decode thread and resumes cues from the new track (historical cues before the switch point need one backward seek to rescan; no automatic rescan), selecting an external track or turning subtitles off closes the built-in subtitle decode gate (details and boundaries in [docs/mvp.md](docs/mvp.md) §6);
 - **Subtitle rendering**: built-in ASS/SSA rendered with [libass](https://github.com/libass/libass) styling (fonts/colors/positioning/effects follow the script; container-attached fonts are used as-is), external .ass/.ssa rendered with the same styling, external SRT/WebVTT rendered on the same canvas with the repository default style (builds without libass degrade to plain text), built-in SRT/WebVTT text subtitles extracted and displayed in real time; `V` toggles visibility, `[`/`]` ±0.5s sync offset, subtitle settings overlay (font size / sync offset / visibility); optional subtitle download (`SOAR_SUBTITLE_ENDPOINT`/`_API_KEY`) and subtitle translation (`SOAR_TRANSLATE_ENDPOINT` etc., OpenAI-compatible endpoint) services — zero network by default, no request is made unless configured (see docs/mvp.md §6);
 - **Event-driven**: four event categories — state changes, progress updates, media info changes, errors — the UI only subscribes to callbacks;
-- **Video rendering**: the backend decodes to YUV420P frames and exports them; the application layer presents them directly as SDL2 textures;
+- **Video rendering**: the backend decodes to YUV420P frames and exports them; the application layer presents them directly as SDL2 textures; `--hwdec=` asks FFmpeg's hwaccel API to decode on a device (any failure — unsupported codec, no device, rejected open — falls back to software decoding, and hwaccel frames are transferred back to YUV420P before export, so nothing downstream changes);
 - **Audio output**: SDL2 audio device, resampled to device parameters, with volume/mute/rate support; output endpoints can be enumerated and switched in the audio track menu (takes effect on the next audio frame);
 - **Network and download**: HTTP(S) plays as it downloads; `--cache-dir=` enables disk caching — the same URL replays offline, playback resumes after interruption, and seeking into an undownloaded range fetches only the target blocks, with a `Downloading N%` progress badge (http:// goes through the cache, https passes through; see docs/mvp.md §5 P3); `.torrent`/`magnet:` download sequentially via a vendored libtorrent core, bridged into the same playback pipeline as a local `http://127.0.0.1:<port>/` URL (`--torrent-store=`/`--torrent-peer=`/`--torrent-index=`/`--torrent-list`, with a "connecting to swarm - N peers" status and download badge during the window; P2P boundaries in docs/mvp.md §5 P4);
 - **Desktop UI**: bottom floating OSC (auto-hides after 2.5s without input, pinned on hover/drag/overlay/pause), full-width seek bar (hover time tooltip, drag preview, commit on release) + button row (transport controls, clock, volume, rate, audio track, subtitle, fullscreen);
 - **Mouse and keyboard**: single click toggles the OSC, double click toggles fullscreen, vertical wheel adjusts volume / horizontal (or Shift) wheel seeks, drag-and-drop opens files, recent files (MRU ×15, persisted); the GUI build (`soarw.exe`/`--gui`) starts into an empty main screen with no input — an "Open a file" poster, opened with the `O` key or a click on the poster (a file dialog on Windows, a drag-and-drop hint toast on other platforms);
-- **Shortcuts**: `Space/K` play/pause, `←/→ ±5s`, `Shift+←/→ ±1s`, `PgUp/PgDn ±60s`, `Home`, `0–9` percentage, `↑/↓` volume, `M` mute, `,/.` rate, `F` fullscreen, `A/C` cycle audio/subtitle tracks, `L` A-B loop (set A → set B → clear), `V` subtitle visibility, `[`/`]` subtitle offset, `S` screenshot (PNG), `P` playlist overlay, `N/Shift+N` next/previous, `O` open file, `I/R/H` info/recent/help, `Q` quit, `Esc` exit fullscreen or quit;
+- **Shortcuts**: `Space/K` play/pause, `←/→ ±5s`, `Shift+←/→ ±1s`, `PgUp/PgDn ±60s`, `Home`, `0–9` percentage, `↑/↓` volume, `M` mute, `,/.` rate, `F` fullscreen, `A/C` cycle audio/subtitle tracks, `L` A-B loop (set A → set B → clear), `V` subtitle visibility, `[`/`]` subtitle offset, `S` screenshot (PNG), `P` playlist overlay, `N/Shift+N` next/previous, `B` media library overlay, `O` open file, `I/R/H` info/recent/help, `Q` quit, `Esc` exit fullscreen or quit;
 - **Status feedback**: pause/buffering indicators, OSD Toasts for action results, media info overlay (with error line and track list).
 
 ## Architecture
@@ -55,7 +56,7 @@ The v0.1 core playback pipeline (open → decode → A/V sync → render/audio) 
 ```mermaid
 flowchart TB
     subgraph APP["Application layer: soar (executable)"]
-        UI["ImGui overlay: floating OSC + info/recent/help overlays"]
+        UI["ImGui overlay: floating OSC + info/recent/help/playlist/library overlays"]
         WIN["SDL2 window: YUV frames → texture presentation"]
         HEADLESS["CLI smoke mode --headless"]
     end
@@ -146,13 +147,20 @@ Optional capabilities are auto-detected: if FFmpeg is found (pkg-config) the FFm
 
 # Core behavior demo without multimedia dependencies
 ./build/soar --backend=null <path-or-url>
+
+# Ask FFmpeg for hardware decoding (auto, or a device name: vaapi / vdpau / d3d11va / dxva2 / videotoolbox / ...);
+# any failure — unsupported codec, no device, rejected open — falls back to software decoding
+./build/soar --hwdec=auto <path-or-url>
+
+# Record library history but never resume to the saved position
+./build/soar --no-resume <path-or-url>
 ```
 
 ## Roadmap
 
 - **v0.1 (MVP, closed out)**: playback controls, seek, rate, volume, track info and selection, events and progress callbacks, desktop UI (floating OSC + shortcuts + info/recent/help overlays) — the acceptance checklist is fully done (see [docs/ui-design.md](docs/ui-design.md) §6);
 - **v0.2**: playlist, screenshots, A-B loop, audio device selection, HLS/DASH/RTSP smoke coverage, subtitle experience (fonts/size/sync offset) — all landed;
-- **v1.0**: hardware decoding and HDR, casting (AirPlay/Chromecast/DLNA), media library and scraping, plugin system.
+- **v1.0**: hardware decoding (first wiring landed: `--hwdec=`, software fallback) and the HDR color pipeline, casting (AirPlay/Chromecast/DLNA), media library and offline NFO scraping (landed; network scraping and multi-device sync are waiting on a protocol decision — docs/mvp.md §3), plugin system.
 
 For full boundaries and the explicit "not doing" list, see [docs/mvp.md](docs/mvp.md).
 
@@ -175,6 +183,8 @@ Suite responsibilities:
 | `soar_subtitle_tests` | External subtitle core: SRT/WebVTT parsing, sidecar provider, download/translation clients | pure logic, no media or network |
 | `soar_ass_tests` | ASS renderer: libass thin wrapper, straight alpha compositing, built-in track streaming | builds as an empty shell and skips without libass; rendering uses a test font shipped in the repo |
 | `soar_ui_tests` | Pure window UI logic (OSC auto-hide state machine, recent-files store, Toast, time formatting) | no display needed |
+| `soar_dir_scan_tests` | Directory-scan helpers: media-extension filter, flat/recursive listing (exact-path cases pinned on POSIX only), queue grouping | pure `std::filesystem`, no media or display |
+| `soar_library_tests` | Media library store: watched folders, scan merge/prune, resume policy, history API, persisted line format, NFO sidecar parsing | pure `std::filesystem`, no media or display |
 | `soar_p2p_tests` | P2P bridge: TorrentStream start/stop contract, local HTTP service (Range/multi-file/timeouts) | self-seeding in-process (libtorrent hash-checked prefill), no swarm; POSIX sockets, skipped on Windows |
 | `soar_cli_tests` | `soar` subprocess smoke (`--headless` exit codes and error paths) | registered only when the app target is built; Xvfb cases additionally need `SOAR_TEST_X11=1` |
 
