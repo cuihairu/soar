@@ -327,7 +327,7 @@ int discoverRenderers(int timeout_ms, std::vector<DiscoveredRenderer>* out,
     }
     const int remaining = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
-    if (!waitReadable(fd, std::min(remaining, 250))) continue;
+    if (!waitReadable(fd, (std::min)(remaining, 250))) continue;
     char buf[4096];
     const int r = static_cast<int>(::recvfrom(fd, buf, sizeof(buf), 0, nullptr, nullptr));
     if (r <= 0) continue;

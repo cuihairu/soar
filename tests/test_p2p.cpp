@@ -1079,8 +1079,15 @@ TEST_CASE("exposeToLan rebinds the bridge for casting and restoreLoopback revert
   REQUIRE(probeTcp("127.0.0.1", loopback_port, &still));
   CHECK(still == 206);
 
-  // Expose toward the LAN address: fresh listener, rewritten URL.
-  REQUIRE(stream.exposeToLan(lan_ip, &err));
+  // Expose toward a default-route peer: fresh listener, rewritten URL.
+  // The stand-in "renderer" is the probe target itself, not the host's own
+  // address — connecting to the host's own IP rides a machine-scoped local
+  // route whose source selection differs across platforms (macOS does not
+  // mirror the interface address the way Linux does); the default-route
+  // lookup is the one path proven to work an inch above.
+  std::string err2;
+  REQUIRE_MESSAGE(stream.exposeToLan("192.0.2.1", &err2),
+                  "expose failed: " << err2);
   const std::string exposed_url = stream.playbackUrl();
   CHECK(exposed_url ==
         "http://" + lan_ip + ":" + std::to_string(portOf(exposed_url)) + "/");

@@ -8,7 +8,7 @@
 namespace soar::cast {
 
 std::string makeSearchRequest(const std::string& search_target, int mx) {
-  const int clamped = std::max(1, std::min(mx, 5));
+  const int clamped = (std::max)(1, (std::min)(mx, 5));
   std::string out;
   out.reserve(96 + search_target.size());
   out += "M-SEARCH * HTTP/1.1\r\n";
