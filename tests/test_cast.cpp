@@ -706,7 +706,7 @@ void serveConn(std::shared_ptr<FakeState> state, int fd) {
     std::string reply;
     if (path.rfind("/desc.xml", 0) == 0) {
       if (state->not_http) {
-        ::send(fd, "GARBAGE\r\n\r\n", 12, 0);
+        ::send(fd, "GARBAGE\r\n\r\n", 11, 0);
         break;
       }
       if (state->flood_head) {
@@ -744,7 +744,9 @@ void serveConn(std::shared_ptr<FakeState> state, int fd) {
       break;  // Connection: close
     }
     if (path.rfind("/AVTransport/ctrl", 0) != 0) {
-      ::send(fd, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", 68, 0);
+      const std::string not_found =
+          "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      ::send(fd, not_found.data(), static_cast<int>(not_found.size()), 0);
       break;
     }
 
@@ -854,7 +856,10 @@ void serveConn(std::shared_ptr<FakeState> state, int fd) {
           "<RelTime>" + rel + "</RelTime><AbsTime>" + rel + "</AbsTime>"
           "</u:GetPositionInfoResponse></s:Body></s:Envelope>";
     } else {
-      ::send(fd, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", 84, 0);
+      const std::string server_error =
+          "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n"
+          "Connection: close\r\n\r\n";
+      ::send(fd, server_error.data(), static_cast<int>(server_error.size()), 0);
       break;
     }
 
