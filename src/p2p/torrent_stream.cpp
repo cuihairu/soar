@@ -115,6 +115,10 @@ static void sleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseco
 // routes: the caller then refuses to expose the bridge rather than
 // advertise an address no renderer can fetch.
 std::string localIpForPeer(const std::string& host) {
+  // An empty host is a caller error: refusing here keeps the answer off
+  // the resolver, whose empty-name behavior is not portable (glibc fails
+  // fast, macOS walks its search domains).
+  if (host.empty()) return "";
   addrinfo hints{};
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_DGRAM;  // connect() on a datagram socket is local
