@@ -48,7 +48,7 @@ The v0.1 core playback pipeline (open → decode → A/V sync → render/audio) 
 - **Network and download**: HTTP(S) plays as it downloads; `--cache-dir=` enables disk caching — the same URL replays offline, playback resumes after interruption, and seeking into an undownloaded range fetches only the target blocks, with a `Downloading N%` progress badge (http:// goes through the cache, https passes through; see docs/mvp.md §5 P3); `.torrent`/`magnet:` download sequentially via a vendored libtorrent core, bridged into the same playback pipeline as a local `http://127.0.0.1:<port>/` URL (`--torrent-store=`/`--torrent-peer=`/`--torrent-index=`/`--torrent-list`, with a "connecting to swarm - N peers" status and download badge during the window; P2P boundaries in docs/mvp.md §5 P4);
 - **Desktop UI**: bottom floating OSC (auto-hides after 2.5s without input, pinned on hover/drag/overlay/pause), full-width seek bar (hover time tooltip, drag preview, commit on release) + button row (transport controls, clock, volume, rate, audio track, subtitle, fullscreen);
 - **Mouse and keyboard**: single click toggles the OSC, double click toggles fullscreen, vertical wheel adjusts volume / horizontal (or Shift) wheel seeks, drag-and-drop opens files, recent files (MRU ×15, persisted); the GUI build (`soarw.exe`/`--gui`) starts into an empty main screen with no input — an "Open a file" poster, opened with the `O` key or a click on the poster (a file dialog on Windows, a drag-and-drop hint toast on other platforms);
-- **Shortcuts**: `Space/K` play/pause, `←/→ ±5s`, `Shift+←/→ ±1s`, `PgUp/PgDn ±60s`, `Home`, `0–9` percentage, `↑/↓` volume, `M` mute, `,/.` rate, `F` fullscreen, `A/C` cycle audio/subtitle tracks, `L` A-B loop (set A → set B → clear), `V` subtitle visibility, `[`/`]` subtitle offset, `S` screenshot (PNG), `P` playlist overlay, `N/Shift+N` next/previous, `B` media library overlay, `O` open file, `I/R/H` info/recent/help, `Q` quit, `Esc` exit fullscreen or quit;
+- **Shortcuts**: `Space/K` play/pause, `←/→ ±5s`, `Shift+←/→ ±1s`, `PgUp/PgDn ±60s`, `Home`, `0–9` percentage, `↑/↓` volume, `M` mute, `,/.` rate, `F` fullscreen, `A/C` cycle audio/subtitle tracks, `L` A-B loop (set A → set B → clear), `V` subtitle visibility, `[`/`]` subtitle offset, `S` screenshot (PNG), `P` playlist overlay, `N/Shift+N` next/previous, `B` media library overlay, `O` open file, `I/R/H` info/recent/help, `Q` quit, `Esc` exit fullscreen or quit — all rebindable through `soar/shortcuts.txt` in the state dir (`--shortcuts=FILE` moves it, `--no-shortcuts` kills the map; docs/ui-design.md §3.2);
 - **Status feedback**: pause/buffering indicators, OSD Toasts for action results, media info overlay (with error line and track list).
 
 ## Architecture
@@ -154,6 +154,13 @@ Optional capabilities are auto-detected: if FFmpeg is found (pkg-config) the FFm
 
 # Record library history but never resume to the saved position
 ./build/soar --no-resume <path-or-url>
+
+# Window sessions only: bind 'q' to nothing and move mute to 'u'
+# (state dir: soar/shortcuts.txt; hand-edit, defaults otherwise)
+./build/soar --shortcuts=/path/to/shortcuts.txt <path-or-url>
+
+# Window sessions only: ignore the key map entirely
+./build/soar --no-shortcuts <path-or-url>
 ```
 
 ## Roadmap
@@ -185,6 +192,7 @@ Suite responsibilities:
 | `soar_ui_tests` | Pure window UI logic (OSC auto-hide state machine, recent-files store, Toast, time formatting) | no display needed |
 | `soar_dir_scan_tests` | Directory-scan helpers: media-extension filter, flat/recursive listing (exact-path cases pinned on POSIX only), queue grouping | pure `std::filesystem`, no media or display |
 | `soar_library_tests` | Media library store: watched folders, scan merge/prune, resume policy, history API, persisted line format, NFO sidecar parsing | pure `std::filesystem`, no media or display |
+| `soar_shortcut_tests` | Keybinding map: shipped defaults, config grammar (rebind/unbind/range/kill switch), lookup precedence, help-overlay names | pure logic over in-memory text, no display or media |
 | `soar_p2p_tests` | P2P bridge: TorrentStream start/stop contract, local HTTP service (Range/multi-file/timeouts) | self-seeding in-process (libtorrent hash-checked prefill), no swarm; POSIX sockets, skipped on Windows |
 | `soar_cli_tests` | `soar` subprocess smoke (`--headless` exit codes and error paths) | registered only when the app target is built; Xvfb cases additionally need `SOAR_TEST_X11=1` |
 

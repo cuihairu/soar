@@ -128,6 +128,13 @@ bool envMediaPath(const char* name, std::string& out_path) {
 //   decode time, not decode speed assumptions: 4.5s crosses both
 //   boundaries even when the decoder runs at half the presentation pace.
 //
+// "rebind" — key-rebinding end to end: press the original key (argv[4],
+//   hex keysym) four times — the window must survive the storm (its
+//   binding was taken over; exit 7 proves it did not) — then press the
+//   rebound key (argv[5]) and wait for the window to disappear (exit 0).
+//   Same contract as escape/delete: non-zero means the injector could
+//   not do its job.
+//
 // "delete" — send a WM_DELETE_WINDOW client message. The protocol reply
 //   needs no window manager: SDL itself listens for WM_PROTOCOLS and
 //   converts the message into SDL_QUIT, so this drives the QUIT branch
@@ -314,6 +321,34 @@ if mode == "empty":
         if find_window() is None:
             sys.exit(0)
         time.sleep(0.2)
+    sys.exit(5)
+
+if mode == "rebind":
+    # Key-rebinding end to end: the original key (argv[4], hex keysym)
+    # must not close the window, the rebound key (argv[5]) must. Same
+    # choreography as the escape storm below — the 4.5s settle, one click
+    # on the bare video area (a popup left open would own the keyboard
+    # and the app's popup guard swallows every shortcut), then key
+    # storms rather than single presses.
+    old_kc = d.keysym_to_keycode(int(sys.argv[4], 0))
+    new_kc = d.keysym_to_keycode(int(sys.argv[5], 0))
+    time.sleep(4.5)
+    if moved(200, 400):
+        button(1)
+        time.sleep(0.5)
+    for _ in range(4):  # the old key must do nothing
+        if not focus() or not key(old_kc):
+            sys.exit(4)
+        time.sleep(0.5)
+    if find_window() is None:
+        sys.exit(7)  # the old key still quits: the rebinding did not take
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        if not focus() or not key(new_kc):
+            sys.exit(4)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)  # the rebound key quit: rebinding verified end to end
     sys.exit(5)
 
 if mode == "drive":
@@ -2525,6 +2560,100 @@ TEST_CASE("windowed run plays on a real X server and exits cleanly on Escape") {
   // backend; the video-frame block inside the loop simply compiles out.
   CHECK(run.output.find("Falling back to null backend") != std::string::npos);
 #endif
+#endif
+}
+
+TEST_CASE("windowed run honors a rebound quit key from the shortcuts config") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+  // Opt-in (the CI coverage job), same gating as the tests above.
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the X11 window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the X11 window test");
+    return;
+  }
+
+  // A private display per run: the pid offset keeps concurrent test
+  // processes and stale servers from a previous run off this one.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "640x480x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the X11 window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  // State scratch: a shortcuts file that moves quit from 'q' to 'x'. The
+  // line REPLACES the action's defaults (ui-design.md §3.2), so 'q' is
+  // left unbound. XDG_STATE_HOME keeps the window's own state out of the
+  // real user store, the same isolation the library/recent cases use.
+  const std::string state_home =
+      "/tmp/soar_shortcuts_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const std::string conf_dir = state_home + "/soar";
+  ::mkdir(conf_dir.c_str(), 0755);
+  {
+    std::ofstream out(conf_dir + "/shortcuts.txt", std::ios::trunc);
+    out << "quit = x\n";
+  }
+
+  // The embedded font pins HUD metrics; audio stays off-pulse.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+
+  // The injector storms 'q' (must do nothing now), then presses 'x' and
+  // waits for the window to disappear. Its exit code is the rebinding
+  // proof; the CLI's exit code only says the session ended.
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "rebind", "0x71", "0x78", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  const auto run = runCli({"--backend=null", "asset://sample"});
+  std::printf("x11 shortcuts rebind test: cli exit=%d, output:\n%s\n",
+              run.exit_code, run.output.c_str());
+  int injector_rc = -1;
+  ::waitpid(injector, &injector_rc, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+  REQUIRE(WIFEXITED(injector_rc));
+  CHECK(WEXITSTATUS(injector_rc) == 0);  // q survived its storm, x quit
+  CHECK(run.exit_code == 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
 #endif
 }
 

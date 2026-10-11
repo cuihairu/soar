@@ -45,6 +45,12 @@ struct WindowUiConfig {
   // Resume seek on open (cleared by --no-resume). Recording continues
   // either way — declining the jump is not declining the books.
   bool resume_playback = true;
+  // Keyboard shortcuts (docs/ui-design.md §3.2): config file override
+  // (--shortcuts=) and the global kill switch (--no-shortcuts, which wins
+  // over a `shortcuts = on` line in the file). Empty path = the
+  // defaultShortcutsPath() file next to recent.txt/library.txt.
+  std::string shortcuts_path;
+  bool shortcuts_enabled = true;
   // Display-only override for the source name shown in the poster and the
   // window title (P2P: the streamed file's name instead of the bridge URL).
   // Empty = derive from the URI as before.

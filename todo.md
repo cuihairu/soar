@@ -1,5 +1,46 @@
 # todo
 
+## 快捷键可配置批（2026-10-11 登记，ui-design.md §3.2「可配置留待后续」收口）
+
+范围：键位映射组件（默认表 + 配置文件重绑 + 全局开关）、窗口接线、帮助浮层
+实时键位列、CLI 开关、X11 走查用例。不在本批：设置面板 GUI（仍不做，手工
+编辑配置文件即本批交付形态）、按键录制器。
+
+- [x] **S1 键位映射组件**：`src/app/ui/shortcuts.{h,cpp}`（soar_app_ui 目标，
+      纯逻辑无 SDL，同 ui_state/dir_scan/library 契约；自带 `kKey*` 键码表，
+      player_window.cpp 71 条 `static_assert` 对 SDL 逐值钉死——漂移编译期
+      失败）。`ShortcutMap`：出厂默认表（即 §3.2 表）、行式配置重绑（行替换
+      动作默认绑定、单字符区间、shift/ctrl/alt 前缀、空值解绑、`shortcuts
+      = off` 全局开关）、查找规则（无修饰绑定无视修饰键=复刻原 switch；带
+      修饰绑定同键优先；同键两行后行胜出=后面的行拿走键）、typo 行跳过
+      不解绑。测试 `tests/test_shortcuts.cpp`（16 用例）+ `soar_shortcut_tests`。
+- [x] **S2 窗口接线**：`handleEvent` 硬编码 switch 换 `bindingFor()` 查表
+      （34 动作全覆盖，行为逐键等价——percent_seek 用命中序号×10%，自定义
+      键集按序映射）；帮助浮层键位列改由当前绑定实时渲染（默认配置下与
+      原静态表逐字节一致，X11 标签哈希用例不受扰）；`--shortcuts=FILE` /
+      `--no-shortcuts` CLI 开关（后者优先级高于文件内 `shortcuts = on`）。
+- [x] **S3 X11 走查用例**：注入脚本加 `rebind` 模式（旧键 4 连按窗口必
+      留存 → rc=7；新键风暴 20s 内退出 → rc=0），用例
+      「windowed run honors a rebound quit key from the shortcuts config」
+      （`quit = x`：q 留存、x 退出；SDL_CreateRenderer 失败环境跳过）。
+      本地 build-cov3 实跑 7 个无后端 X11 用例全绿（含 HUD 走查/库浮层/
+      续播）。排障插曲：手工探针曾误用 build-system 树的二进制——该树
+      `SOAR_ENABLE_IMGUI=OFF`（无 ImGui 的裸回退循环只硬编码 Escape），
+      字母键无反应是回退路径使然而非映射缺陷；套件树 build-cov3
+      IMGUI=ON，用例真跑即过。
+- [ ] **S4 全量门禁 + 提交推送**（本地 fullgate 过线 → rebase → push →
+      CI 七腿绿）。
+
+### 如实说明
+
+- 默认行为零变化是验收线：出厂默认表逐键复刻原硬编码 switch（含
+  shift+q 退出、shift+← 1s、ctrl+o 文件夹），帮助浮层默认文案逐字节不变。
+- 键码表两处错值（DELETE 127 ASCII 段、MENU 0x40000076）由 S2 的
+  static_assert 网络编译期坐实后修正——钉死网络正是为这类漂移而设。
+- 重绑只接管应用级快捷键：浮层内部的按键（如播放队列浮层的 `x` 删行）
+  不走映射表，把某个动作绑到那个键会两处都触发——属用户自选冲突，与
+  设置面板的按键录制器同类问题，本批不做消解。
+
 ## 媒体库批（2026-10-10 登记，mvp.md §3「媒体库与刮削、历史/同步、多端一致性」）
 
 范围：媒体库核心（监视文件夹 + 扫描 + 持久化）、历史/断点续播、窗口库浮层。

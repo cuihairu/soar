@@ -58,6 +58,9 @@ static void print_usage(const char* argv0) {
   fmt::print("  --backend=    Select backend (ffmpeg, null; default: ffmpeg when built in)\n");
   fmt::print("  --cache-dir=  Cache http:// downloads here for offline replay\n");
   fmt::print("  --no-resume   Do not jump back to the saved playback position\n");
+  fmt::print("  --shortcuts=  Keybinding config file (default in the state dir:\n");
+  fmt::print("                soar/shortcuts.txt next to recent.txt)\n");
+  fmt::print("  --no-shortcuts Ignore keyboard shortcuts (window only)\n");
   fmt::print("  --hwdec=     Hardware video decode: none (default), auto, or a\n");
   fmt::print("                device (vaapi, vdpau, d3d11, dxva2, videotoolbox,\n");
   fmt::print("                cuda, nvdec); falls back to software when unavailable\n");
@@ -160,6 +163,8 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   int torrent_index = 0;
   bool torrent_list = false;
   bool resume_playback = true;  // --no-resume clears it (window sessions only)
+  std::string shortcuts_path;   // --shortcuts= (empty = the state-dir file)
+  bool shortcuts_enabled = true;  // --no-shortcuts clears it (window only)
   int uri_index = -1;
 
   // Parse arguments
@@ -209,6 +214,10 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
       torrent_list = true;
     } else if (arg == "--no-resume") {
       resume_playback = false;
+    } else if (arg == "--no-shortcuts") {
+      shortcuts_enabled = false;
+    } else if (arg.rfind("--shortcuts=", 0) == 0) {
+      shortcuts_path = arg.substr(12);  // after "--shortcuts="
     } else if (arg.rfind('-', 0) == 0) {
       fmt::print(stderr, "Unknown option: {}\n", arg);
       print_usage(argv[0]);
@@ -517,6 +526,10 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   soar::app::MediaLibrary library{soar::app::defaultLibraryPath()};
   ui_cfg.library = &library;
   ui_cfg.resume_playback = resume_playback;
+  // Rebindable keyboard shortcuts (docs/ui-design.md §3.2): the state-dir
+  // file unless --shortcuts= says otherwise; --no-shortcuts kills the map.
+  ui_cfg.shortcuts_path = shortcuts_path;
+  ui_cfg.shortcuts_enabled = shortcuts_enabled;
   // P2P sources: show the streamed file's name instead of the bridge URL
   // (empty for ordinary sources — the window falls back to the URI).
   ui_cfg.source_label = torrent_stream.fileName();

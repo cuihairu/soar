@@ -19,6 +19,7 @@
 #include "startup_report.h"
 #include "ui/dir_scan.h"
 #include "ui/library.h"
+#include "ui/shortcuts.h"
 #include "ui_state.h"
 
 #include <fmt/format.h>
@@ -64,6 +65,84 @@
 
 namespace soar::app {
 namespace {
+
+#ifdef SOAR_WITH_SDL2
+// The keycode table in ui/shortcuts.h mirrors SDL_Keycode by value — the
+// keydown handler below hands SDL event syms straight to ShortcutMap (the
+// pure-logic library stays SDL-free; SOAR_ENABLE_SDL2 is optional). Drift
+// between the two tables fails here instead of silently rebinding keys.
+static_assert(static_cast<int>(SDLK_TAB) == static_cast<int>(kKeyTab));
+static_assert(static_cast<int>(SDLK_BACKSPACE) == static_cast<int>(kKeyBackspace));
+static_assert(static_cast<int>(SDLK_RETURN) == static_cast<int>(kKeyReturn));
+static_assert(static_cast<int>(SDLK_ESCAPE) == static_cast<int>(kKeyEscape));
+static_assert(static_cast<int>(SDLK_SPACE) == static_cast<int>(kKeySpace));
+static_assert(static_cast<int>(SDLK_QUOTE) == static_cast<int>(kKeyApostrophe));
+static_assert(static_cast<int>(SDLK_COMMA) == static_cast<int>(kKeyComma));
+static_assert(static_cast<int>(SDLK_MINUS) == static_cast<int>(kKeyMinus));
+static_assert(static_cast<int>(SDLK_PERIOD) == static_cast<int>(kKeyPeriod));
+static_assert(static_cast<int>(SDLK_SLASH) == static_cast<int>(kKeySlash));
+static_assert(static_cast<int>(SDLK_0) == static_cast<int>(kKey0));
+static_assert(static_cast<int>(SDLK_9) == static_cast<int>(kKey9));
+static_assert(static_cast<int>(SDLK_SEMICOLON) == static_cast<int>(kKeySemicolon));
+static_assert(static_cast<int>(SDLK_EQUALS) == static_cast<int>(kKeyEquals));
+static_assert(static_cast<int>(SDLK_LEFTBRACKET) == static_cast<int>(kKeyLeftBracket));
+static_assert(static_cast<int>(SDLK_BACKSLASH) == static_cast<int>(kKeyBackslash));
+static_assert(static_cast<int>(SDLK_RIGHTBRACKET) == static_cast<int>(kKeyRightBracket));
+static_assert(static_cast<int>(SDLK_BACKQUOTE) == static_cast<int>(kKeyGrave));
+static_assert(static_cast<int>(SDLK_a) == static_cast<int>(kKeyA));
+static_assert(static_cast<int>(SDLK_b) == static_cast<int>(kKeyB));
+static_assert(static_cast<int>(SDLK_c) == static_cast<int>(kKeyC));
+static_assert(static_cast<int>(SDLK_d) == static_cast<int>(kKeyD));
+static_assert(static_cast<int>(SDLK_e) == static_cast<int>(kKeyE));
+static_assert(static_cast<int>(SDLK_f) == static_cast<int>(kKeyF));
+static_assert(static_cast<int>(SDLK_g) == static_cast<int>(kKeyG));
+static_assert(static_cast<int>(SDLK_h) == static_cast<int>(kKeyH));
+static_assert(static_cast<int>(SDLK_i) == static_cast<int>(kKeyI));
+static_assert(static_cast<int>(SDLK_j) == static_cast<int>(kKeyJ));
+static_assert(static_cast<int>(SDLK_k) == static_cast<int>(kKeyK));
+static_assert(static_cast<int>(SDLK_l) == static_cast<int>(kKeyL));
+static_assert(static_cast<int>(SDLK_m) == static_cast<int>(kKeyM));
+static_assert(static_cast<int>(SDLK_n) == static_cast<int>(kKeyN));
+static_assert(static_cast<int>(SDLK_o) == static_cast<int>(kKeyO));
+static_assert(static_cast<int>(SDLK_p) == static_cast<int>(kKeyP));
+static_assert(static_cast<int>(SDLK_q) == static_cast<int>(kKeyQ));
+static_assert(static_cast<int>(SDLK_r) == static_cast<int>(kKeyR));
+static_assert(static_cast<int>(SDLK_s) == static_cast<int>(kKeyS));
+static_assert(static_cast<int>(SDLK_t) == static_cast<int>(kKeyT));
+static_assert(static_cast<int>(SDLK_u) == static_cast<int>(kKeyU));
+static_assert(static_cast<int>(SDLK_v) == static_cast<int>(kKeyV));
+static_assert(static_cast<int>(SDLK_w) == static_cast<int>(kKeyW));
+static_assert(static_cast<int>(SDLK_x) == static_cast<int>(kKeyX));
+static_assert(static_cast<int>(SDLK_y) == static_cast<int>(kKeyY));
+static_assert(static_cast<int>(SDLK_z) == static_cast<int>(kKeyZ));
+static_assert(static_cast<int>(SDLK_DELETE) == static_cast<int>(kKeyDelete));
+static_assert(static_cast<int>(SDLK_CAPSLOCK) == static_cast<int>(kKeyCapsLock));
+static_assert(static_cast<int>(SDLK_F1) == static_cast<int>(kKeyF1));
+static_assert(static_cast<int>(SDLK_F12) == static_cast<int>(kKeyF12));
+static_assert(static_cast<int>(SDLK_PRINTSCREEN) == static_cast<int>(kKeyPrintScreen));
+static_assert(static_cast<int>(SDLK_SCROLLLOCK) == static_cast<int>(kKeyScrollLock));
+static_assert(static_cast<int>(SDLK_PAUSE) == static_cast<int>(kKeyPause));
+static_assert(static_cast<int>(SDLK_INSERT) == static_cast<int>(kKeyInsert));
+static_assert(static_cast<int>(SDLK_HOME) == static_cast<int>(kKeyHome));
+static_assert(static_cast<int>(SDLK_PAGEUP) == static_cast<int>(kKeyPageUp));
+static_assert(static_cast<int>(SDLK_END) == static_cast<int>(kKeyEnd));
+static_assert(static_cast<int>(SDLK_PAGEDOWN) == static_cast<int>(kKeyPageDown));
+static_assert(static_cast<int>(SDLK_RIGHT) == static_cast<int>(kKeyRight));
+static_assert(static_cast<int>(SDLK_LEFT) == static_cast<int>(kKeyLeft));
+static_assert(static_cast<int>(SDLK_DOWN) == static_cast<int>(kKeyDown));
+static_assert(static_cast<int>(SDLK_UP) == static_cast<int>(kKeyUp));
+static_assert(static_cast<int>(SDLK_KP_DIVIDE) == static_cast<int>(kKeyNumDivide));
+static_assert(static_cast<int>(SDLK_KP_MULTIPLY) == static_cast<int>(kKeyNumMultiply));
+static_assert(static_cast<int>(SDLK_KP_MINUS) == static_cast<int>(kKeyNumMinus));
+static_assert(static_cast<int>(SDLK_KP_PLUS) == static_cast<int>(kKeyNumPlus));
+static_assert(static_cast<int>(SDLK_KP_ENTER) == static_cast<int>(kKeyNumEnter));
+static_assert(static_cast<int>(SDLK_KP_1) == static_cast<int>(kKeyNum1));
+static_assert(static_cast<int>(SDLK_KP_9) == static_cast<int>(kKeyNum9));
+static_assert(static_cast<int>(SDLK_KP_0) == static_cast<int>(kKeyNum0));
+static_assert(static_cast<int>(SDLK_KP_PERIOD) == static_cast<int>(kKeyNumPeriod));
+static_assert(static_cast<int>(SDLK_MENU) == static_cast<int>(kKeyMenu));
+static_assert(static_cast<int>(SDLK_KP_EQUALS) == static_cast<int>(kKeyNumEquals));
+#endif
 
 using milliseconds = std::chrono::milliseconds;
 
@@ -358,6 +437,12 @@ class PlayerHud {
         subtitle_fonts_(loadSubtitleFonts()) {
     recent_.load();
     recent_dirs_.load();
+    // Keyboard shortcuts (docs/ui-design.md §3.2): the config lives next
+    // to recent.txt/library.txt; --shortcuts= moves it, --no-shortcuts is
+    // the kill switch and wins over a `shortcuts = on` line in the file.
+    shortcuts_.load(cfg.shortcuts_path.empty() ? defaultShortcutsPath()
+                                               : cfg.shortcuts_path);
+    shortcuts_.setEnabled(cfg.shortcuts_enabled);
     if (library_ != nullptr) library_->load();
     if (cfg.torrent == nullptr) {
       recordOpen(cfg.initial_uri);
@@ -464,9 +549,22 @@ class PlayerHud {
         // no SDLK_Q-style constants — normalize so one case label covers both.
         SDL_Keycode key = e.key.keysym.sym;
         if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
-        const bool shift = (e.key.keysym.mod & KMOD_SHIFT) != 0;
-        switch (key) {
-          case SDLK_ESCAPE:
+        const ShortcutKey pressed{
+            static_cast<std::uint32_t>(key),
+            (e.key.keysym.mod & KMOD_SHIFT) != 0,
+            (e.key.keysym.mod & KMOD_CTRL) != 0,
+            (e.key.keysym.mod & KMOD_ALT) != 0};
+        // The rebindable map (docs/ui-design.md §3.2) decides which action
+        // a keydown fires; its defaults reproduce the switch that used to
+        // live here. Plain bindings ignore held modifiers (shift+q still
+        // quits); a flagged binding (shift+left, ctrl+o) outranks the
+        // plain one for the same key.
+        ShortcutAction action = ShortcutAction::None;
+        const int binding = shortcuts_.bindingFor(pressed, &action);
+        switch (action) {
+          case ShortcutAction::None:
+            return;
+          case ShortcutAction::Escape:
             // Fullscreen → window first; otherwise quit (docs §3.2, which
             // also keeps the CLI's Escape-exit contract the tests pin).
             if (st_.fullscreen) {
@@ -475,104 +573,114 @@ class PlayerHud {
               *quit = true;
             }
             return;
-          case SDLK_q:
+          case ShortcutAction::Quit:
             *quit = true;
             return;
-          case SDLK_SPACE:
-          case SDLK_k:
+          case ShortcutAction::PlayPause:
             togglePlayPause();
             return;
-          case SDLK_LEFT:
-            nudgeSeek(shift ? -1000 : -5000, now);
+          case ShortcutAction::SeekBack5:
+            nudgeSeek(-5000, now);
             return;
-          case SDLK_RIGHT:
-            nudgeSeek(shift ? 1000 : 5000, now);
+          case ShortcutAction::SeekFwd5:
+            nudgeSeek(5000, now);
             return;
-          case SDLK_PAGEUP:
+          case ShortcutAction::SeekBack1:
+            nudgeSeek(-1000, now);
+            return;
+          case ShortcutAction::SeekFwd1:
+            nudgeSeek(1000, now);
+            return;
+          case ShortcutAction::SeekBack60:
             nudgeSeek(-60000, now);
             return;
-          case SDLK_PAGEDOWN:
+          case ShortcutAction::SeekFwd60:
             nudgeSeek(60000, now);
             return;
-          case SDLK_HOME:
+          case ShortcutAction::SeekStart:
             seekTo(milliseconds(0), now);
             return;
-          case SDLK_UP:
+          case ShortcutAction::PercentSeek:
+            // Jump in 10% steps: the Nth binding of the action goes to
+            // N*10% (the shipped 0-9 table gives the digit semantics; a
+            // rebound set maps ordinally; the cap bounds custom lists).
+            if (binding >= 0) {
+              percentSeek(std::min(binding * 10, 100), now);
+            }
+            return;
+          case ShortcutAction::VolumeUp:
             nudgeVolume(+0.05, now);
             return;
-          case SDLK_DOWN:
+          case ShortcutAction::VolumeDown:
             nudgeVolume(-0.05, now);
             return;
-          case SDLK_m:
+          case ShortcutAction::Mute:
             toggleMute(now);
             return;
-          case SDLK_COMMA:
+          case ShortcutAction::RateDown:
             nudgeRate(-1, now);
             return;
-          case SDLK_PERIOD:
+          case ShortcutAction::RateUp:
             nudgeRate(+1, now);
             return;
-          case SDLK_f:
+          case ShortcutAction::Fullscreen:
             setFullscreen(!st_.fullscreen);
             return;
-          case SDLK_l:
+          case ShortcutAction::LoopAB:
             cycleLoopAB(now);
             return;
-          case SDLK_a:
+          case ShortcutAction::CycleAudio:
             cycleTrack(TrackType::Audio, now);
             return;
-          case SDLK_c:
+          case ShortcutAction::CycleSubtitle:
             cycleTrack(TrackType::Subtitle, now);
-            return;
-          case SDLK_i:
-            toggleOverlay(Overlay::Info);
-            return;
-          case SDLK_r:
-            toggleOverlay(Overlay::Recent);
-            return;
-          case SDLK_h:
-            toggleOverlay(Overlay::Help);
-            return;
-          case SDLK_p:
-            toggleOverlay(Overlay::Playlist);
-            return;
-          case SDLK_b:  // 'b' - browse the media library (docs/mvp.md §3)
-            openLibrary();
-            return;
-          case SDLK_n:  // mpv binding: next / previous queue entry
-            playlistStep(shift, now);
-            return;
-          case SDLK_o:
-            // Ctrl+O is the open-a-folder entry (v0.2.1): the in-app picker
-            // with the recursive toggle and the recent-dirs list. Plain O
-            // stays open-a-file (BUGS.md #3): the Windows common dialog;
-            // elsewhere the attempt degrades to a toast saying what works.
-            if ((e.key.keysym.mod & KMOD_CTRL) != 0) {
-              openDirPicker();
-            } else {
-              openFilePicker();
-            }
             return;
           // Subtitle keys (v0.2), back on since the X11 drive scripts
           // pin every coordinate they used to disturb (subsdrive presses
           // [ ] v with the overlay measured). `s` follows mpv and takes a
           // screenshot instead of toggling visibility: V does that now.
-          case SDLK_LEFTBRACKET:  // '[' - decrease subtitle offset
+          case ShortcutAction::SubtitleOffsetBack:
             nudgeSubtitleOffset(-500, now);
             return;
-          case SDLK_RIGHTBRACKET:  // ']' - increase subtitle offset
+          case ShortcutAction::SubtitleOffsetFwd:
             nudgeSubtitleOffset(+500, now);
             return;
-          case SDLK_v:  // 'v' - toggle subtitle visibility
+          case ShortcutAction::SubtitleVisibility:
             toggleSubtitleVisibility(now);
             return;
-          case SDLK_s:  // 's' - save a screenshot (PNG, mpv binding)
+          case ShortcutAction::Screenshot:
             takeScreenshot(now);
             return;
-          default:
-            if (key >= SDLK_0 && key <= SDLK_9) {
-              percentSeek(static_cast<int>(key - SDLK_0) * 10, now);
-            }
+          case ShortcutAction::OpenFile:
+            // Open-a-file (BUGS.md #3): the Windows common dialog;
+            // elsewhere the attempt degrades to a toast saying what works.
+            openFilePicker();
+            return;
+          case ShortcutAction::OpenFolder:
+            // The open-a-folder entry (v0.2.1): the in-app picker with the
+            // recursive toggle and the recent-dirs list.
+            openDirPicker();
+            return;
+          case ShortcutAction::Playlist:
+            toggleOverlay(Overlay::Playlist);
+            return;
+          case ShortcutAction::Library:
+            openLibrary();  // media library (docs/mvp.md §3)
+            return;
+          case ShortcutAction::QueueNext:
+            playlistStep(false, now);
+            return;
+          case ShortcutAction::QueuePrev:
+            playlistStep(true, now);
+            return;
+          case ShortcutAction::Info:
+            toggleOverlay(Overlay::Info);
+            return;
+          case ShortcutAction::Recent:
+            toggleOverlay(Overlay::Recent);
+            return;
+          case ShortcutAction::Help:
+            toggleOverlay(Overlay::Help);
             return;
         }
       }
@@ -2288,41 +2396,79 @@ class PlayerHud {
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(380, 400), ImGuiCond_Appearing);
     if (ImGui::Begin("Shortcuts", &open, ImGuiWindowFlags_NoSavedSettings)) {
-      static const char* const kRows[][2] = {
-          {"Space / K", "Play / pause"},
-          {"O", "Open a file (Windows dialog)"},
-          {"Ctrl+O", "Open a folder into the queue"},
-          {"Left / Right", "Seek -5s / +5s"},
-          {"Shift+Left / Right", "Seek -1s / +1s"},
-          {"PgUp / PgDn", "Seek -60s / +60s"},
-          {"Home", "Go to start"},
-          {"0 - 9", "Jump to 0% - 90%"},
-          {"Up / Down", "Volume -5% / +5%"},
-          {"M", "Mute"},
-          {", / .", "Speed down / up"},
-          {"A", "Cycle audio track"},
-          {"C", "Cycle subtitles (incl. off)"},
-          {"S", "Screenshot (PNG)"},
-          {"V", "Toggle subtitles on/off"},
-          {"[ / ]", "Subtitle offset -500ms / +500ms"},
-          {"L", "A-B loop (arm A, arm B, clear)"},
-          {"F", "Fullscreen"},
-          {"I", "Media info"},
-          {"R", "Recent files"},
-          {"P", "Playlist queue"},
-          {"B", "Media library"},
-          {"N / Shift+N", "Queue next / previous"},
-          {"H", "This help"},
-          {"Esc", "Leave fullscreen / quit"},
-          {"Q", "Quit"},
+      // Rows mirror the shipped table; the key column renders from the
+      // live map, so a rebound config relabels the help (docs/ui-design.md
+      // §3.2). With the default config the column is byte-identical to the
+      // static strings that used to live here (the X11 drive tests pin
+      // this text via label hashing).
+      struct HelpRow {
+        ShortcutAction a;
+        ShortcutAction b;  // None = single-action row
+        const char* label;
       };
+      static const HelpRow kRows[] = {
+          {ShortcutAction::PlayPause, ShortcutAction::None, "Play / pause"},
+          {ShortcutAction::OpenFile, ShortcutAction::None,
+           "Open a file (Windows dialog)"},
+          {ShortcutAction::OpenFolder, ShortcutAction::None,
+           "Open a folder into the queue"},
+          {ShortcutAction::SeekBack5, ShortcutAction::SeekFwd5,
+           "Seek -5s / +5s"},
+          {ShortcutAction::SeekBack1, ShortcutAction::SeekFwd1,
+           "Seek -1s / +1s"},
+          {ShortcutAction::SeekBack60, ShortcutAction::SeekFwd60,
+           "Seek -60s / +60s"},
+          {ShortcutAction::SeekStart, ShortcutAction::None, "Go to start"},
+          {ShortcutAction::PercentSeek, ShortcutAction::None,
+           "Jump to 0% - 90%"},
+          {ShortcutAction::VolumeUp, ShortcutAction::VolumeDown,
+           "Volume -5% / +5%"},
+          {ShortcutAction::Mute, ShortcutAction::None, "Mute"},
+          {ShortcutAction::RateDown, ShortcutAction::RateUp,
+           "Speed down / up"},
+          {ShortcutAction::CycleAudio, ShortcutAction::None,
+           "Cycle audio track"},
+          {ShortcutAction::CycleSubtitle, ShortcutAction::None,
+           "Cycle subtitles (incl. off)"},
+          {ShortcutAction::Screenshot, ShortcutAction::None,
+           "Screenshot (PNG)"},
+          {ShortcutAction::SubtitleVisibility, ShortcutAction::None,
+           "Toggle subtitles on/off"},
+          {ShortcutAction::SubtitleOffsetBack, ShortcutAction::SubtitleOffsetFwd,
+           "Subtitle offset -500ms / +500ms"},
+          {ShortcutAction::LoopAB, ShortcutAction::None,
+           "A-B loop (arm A, arm B, clear)"},
+          {ShortcutAction::Fullscreen, ShortcutAction::None, "Fullscreen"},
+          {ShortcutAction::Info, ShortcutAction::None, "Media info"},
+          {ShortcutAction::Recent, ShortcutAction::None, "Recent files"},
+          {ShortcutAction::Playlist, ShortcutAction::None, "Playlist queue"},
+          {ShortcutAction::Library, ShortcutAction::None, "Media library"},
+          {ShortcutAction::QueueNext, ShortcutAction::QueuePrev,
+           "Queue next / previous"},
+          {ShortcutAction::Help, ShortcutAction::None, "This help"},
+          {ShortcutAction::Escape, ShortcutAction::None,
+           "Leave fullscreen / quit"},
+          {ShortcutAction::Quit, ShortcutAction::None, "Quit"},
+      };
+      std::vector<std::string> keys;
+      keys.reserve(sizeof(kRows) / sizeof(kRows[0]));
+      for (const HelpRow& row : kRows) {
+        std::string key = shortcuts_.bindingNames(row.a);
+        if (row.b != ShortcutAction::None) {
+          key += " / ";
+          key += shortcuts_.bindingNames(row.b);
+        }
+        keys.push_back(std::move(key));
+      }
       if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_RowBg)) {
-        for (const auto& row : kRows) {
+        std::size_t i = 0;
+        for (const HelpRow& row : kRows) {
           ImGui::TableNextRow();
           ImGui::TableNextColumn();
-          ImGui::TextUnformatted(row[0]);
+          ImGui::TextUnformatted(keys[i].c_str());
           ImGui::TableNextColumn();
-          ImGui::TextDisabled("%s", row[1]);
+          ImGui::TextDisabled("%s", row.label);
+          ++i;
         }
         ImGui::EndTable();
       }
@@ -2483,6 +2629,9 @@ class PlayerHud {
   // files), the picker's browse position, and the recursive-import choice
   // (kept for the session so repeated imports share one setting).
   RecentStore recent_dirs_;
+  // Rebindable keyboard shortcuts (docs/ui-design.md §3.2): defaults in
+  // the ctor, then the config file / CLI flags via WindowUiConfig.
+  ShortcutMap shortcuts_;
   std::string dirpick_path_;
   bool dirpick_recursive_ = false;
   // Picker mode: false imports the picked folder into the queue, true

@@ -77,7 +77,7 @@ soar 主窗口
 ├── 信息浮层（I 键）：文件、状态、时长、可否 seek、后端、轨道清单（类型/编号/编码/语言/标题/选中）
 ├── 最近打开浮层（R 键）：MRU 列表，点击重开；无历史时提示
 ├── 媒体库浮层（B 键，v0.3）：监视文件夹行 + 源条目（续播位置标注、离线 NFO 边车标题优先），点击重开；Add folder... 走监视模式 DirPick
-├── 快捷键帮助浮层（H 键）：静态键位表
+├── 快捷键帮助浮层（H 键）：键位列实时渲染（跟随当前绑定，默认配置下与出厂表逐字节一致）
 ├── 播放队列浮层（P 键，v0.2）：队列点选即播、`x` 删除，Loop 三态与 Shuffle
 ├── 字幕设置浮层（v0.2）：字号滑条、同步偏移、可见性开关
 └── 退出路径：Esc（全屏时先退全屏）/ 窗口关闭按钮
@@ -105,7 +105,7 @@ soar 主窗口
 - IINA 取 2.5s 默认；暂停钉住采纳自 vidstack（暂停时用户正要操作，隐藏是反直觉的）。
 - 拖动 seek 期间不提交，只显示预览时间；`IsItemDeactivated`（松手）才调 `Player::seek`——FFmpeg 后端的 seek 由解码线程异步执行，拖动中连续提交既浪费也抖动（vidstack scrub-preview 同语义）。
 
-### 3.2 快捷键表（v0.1 固定 + v0.2 增补，可配置留待后续）
+### 3.2 快捷键表（可配置，默认值即此表）
 
 | 键 | 动作 | 来源 |
 |---|---|---|
@@ -132,6 +132,30 @@ soar 主窗口
 | `Q` | 退出程序（v0.2） | mpv 语义 |
 | `Esc` | 全屏时退出全屏；否则退出程序 | mpv.net/vidstack 语义，兼容现有 CLI 测试契约 |
 
+#### 可配置键位（出厂默认 + 手工重绑）
+
+上表即出厂默认（`src/app/ui/shortcuts.{h,cpp}` 的 `ShortcutMap` 构造表，
+`ShortcutAction` 的枚举序即帮助浮层行序）。键位可用手工编辑的配置文件重绑，
+默认落在 state 目录 `soar/shortcuts.txt`（与 recent.txt/library.txt 同目录；
+Windows 走 `%APPDATA%\soar\shortcuts.txt`）；CLI 用 `--shortcuts=FILE` 换文件、
+`--no-shortcuts` 整体关闭（优先级高于文件里的 `shortcuts = on`）：
+
+```text
+# 注释（整行或值后）
+play_pause = space, k      # 逗号分隔；该行替换该动作的默认绑定
+percent_seek = 0-9         # 单字符区间展开为 10 个键
+screenshot = ctrl+alt+s   # shift+/ctrl+/control+/alt+ 前缀，顺序任意
+quit =                     # 空值 = 解绑该动作
+shortcuts = off            # 全局开关（on 恢复默认表）
+```
+
+匹配规则（复刻原硬编码 switch 的行为）：无修饰键绑定对任意修饰状态生效
+（`shift+q` 仍退出）；带修饰键的绑定在修饰相同时优先于无修饰绑定
+（`shift+←` 是 1s seek，`ctrl+o` 是打开文件夹）。同键被两行声明时后行
+胜出（后面的行把键从先行名下拿走，`mute = k` 不会输给 play_pause 的默认
+`k`）。整行 token 都写错按笔误跳过（不会意外解绑），解绑只用空值。帮助
+浮层的键位列由当前绑定实时渲染（重绑后帮助文字跟着变）。
+
 ### 3.3 鼠标与滚轮
 
 - 单击视频区：切换 OSC 显隐（IINA `singleClickAction`）；双击：全屏切换（mpv）。判定用 500ms 内二次单击（SDL 双击事件语义）。空主界面（无源起始态）单击 = 打开文件入口（BUGS.md #3），不走 OSC/全屏判定。
@@ -147,7 +171,7 @@ soar 主窗口
 ### 3.5 手势与迷你模式（v0.2 边界）
 
 - 迷你模式：IINA 音乐模式形态（`autoSwitchToMusicMode` 默认 true），纯音频自动缩为小窗 + 封面；等字幕渲染/播放列表之后做。
-- 触控板手势（双指 seek/音量）与键盘可配置化同期。
+- 触控板手势（双指 seek/音量）待键盘可配置化之后。
 
 ## 4. 视觉风格
 
@@ -222,4 +246,4 @@ CMake：`SOAR_ENABLE_IMGUI`（默认 ON）取 ImGui v1.91.9b（含 `imgui_impl_s
 
 v0.2 已落地的（本节原列"不做"清单中的兑现项，防边界漂移在此记账）：播放队列浮层（P 键：点选/删除、Loop/Shuffle——侧栏形态未做，浮层即现状）、字幕渲染接入后的字幕菜单实效化（下载 `[download]` 与翻译 `[translate]` 行已接线，见 docs/mvp.md §6）。
 
-仍不做的：非 Windows 平台的文件对话框（Windows 的 `GetOpenFileNameW` 已落地于空主界面/O 键入口，其他平台降级为拖放提示——跨平台对话框 UI 未做）、seek 悬停缩略图（120px/500 张缓存规格起步）、迷你音乐模式、设置面板、快捷键可配置、多主题。
+仍不做的：非 Windows 平台的文件对话框（Windows 的 `GetOpenFileNameW` 已落地于空主界面/O 键入口，其他平台降级为拖放提示——跨平台对话框 UI 未做）、seek 悬停缩略图（120px/500 张缓存规格起步）、迷你音乐模式、设置面板、多主题。
