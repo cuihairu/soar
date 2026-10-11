@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-<img src="assets/logo.svg" width="140" alt="Soar logo" />
+<img src="assets/logo.svg" width="64" height="64" alt="Soar logo" />
 
 # Soar — Universal Media Player
 

@@ -21,25 +21,25 @@
 
 ### 主播放窗（亮色）
 
-![主播放窗 亮色](/prototypes/redesign/desktop-main-light.png)
+<img src="/prototypes/redesign/desktop-main-light.png" alt="主播放窗 亮色" width="60%">
 
 外壳（顶栏 / 状态徽标 / 控制栏 / 注解浮层 / 进度槽）随主题用浅色；视频画布与其上的字幕属内容层，两主题恒黑。
 
 ### 主播放窗（暗色）
 
-![主播放窗 暗色](/prototypes/redesign/desktop-main-dark.png)
+<img src="/prototypes/redesign/desktop-main-dark.png" alt="主播放窗 暗色" width="60%">
 
 ### 设置面板（亮色）
 
-![设置面板 亮色](/prototypes/redesign/settings-light.png)
+<img src="/prototypes/redesign/settings-light.png" alt="设置面板 亮色" width="60%">
 
 ### 媒体库（亮色）
 
-![媒体库 亮色](/prototypes/redesign/library-light.png)
+<img src="/prototypes/redesign/library-light.png" alt="媒体库 亮色" width="60%">
 
 ### 播放列表（亮色）
 
-![播放列表 亮色](/prototypes/redesign/playlist-light.png)
+<img src="/prototypes/redesign/playlist-light.png" alt="播放列表 亮色" width="60%">
 
 ## 决策记录
 
