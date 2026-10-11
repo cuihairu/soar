@@ -111,31 +111,36 @@ static void sleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseco
 
 // The local dotted-quad address whose interface routes toward `host` (the
 // UDP-connect trick: connect a datagram socket — nothing is ever sent —
-// and read the local end). "" when the host does not resolve or nothing
-// routes: the caller then refuses to expose the bridge rather than
-// advertise an address no renderer can fetch.
+// and read the local end). "" when the host is not a usable address or
+// nothing routes: the caller then refuses to expose the bridge rather
+// than advertise an address no renderer can fetch.
 std::string localIpForPeer(const std::string& host) {
-  // An empty host is a caller error: refusing here keeps the answer off
-  // the resolver, whose empty-name behavior is not portable (glibc fails
-  // fast, macOS walks its search domains).
-  if (host.empty()) return "";
-  addrinfo hints{};
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_DGRAM;  // connect() on a datagram socket is local
-  hints.ai_flags = AI_NUMERICSERV;
-  addrinfo* list = nullptr;
-  // A concrete destination port makes source selection happen: on macOS a
-  // port-0 connect keeps the wildcard local address (0.0.0.0), which the
-  // caller would read as "no route". Nothing is ever sent, so any port.
-  if (getaddrinfo(host.c_str(), "9", &hints, &list) != 0 || list == nullptr)
-    return "";
-  const int fd = static_cast<int>(socket(AF_INET, SOCK_DGRAM, 0));
-  if (fd < 0) {
+  // Numeric hosts never see the resolver: getaddrinfo's behavior for
+  // edge-case strings ("" among them) is resolver-dependent to the point
+  // of wedging on some platforms (macOS walks its search domains).
+  sockaddr_in dst{};
+  dst.sin_family = AF_INET;
+  dst.sin_port = htons(9);  // discard: a real port makes source selection
+                            // concrete (macOS keeps 0.0.0.0 on a port-0
+                            // connect); nothing is ever sent
+  if (::inet_pton(AF_INET, host.c_str(), &dst.sin_addr) != 1) {
+    if (host.empty()) return "";
+    // A name: only here the resolver earns a call (renderer control URLs
+    // are dotted quads in practice; names are the rare case).
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags = AI_NUMERICSERV;
+    addrinfo* list = nullptr;
+    if (getaddrinfo(host.c_str(), "9", &hints, &list) != 0 || list == nullptr)
+      return "";
+    std::memcpy(&dst, list->ai_addr, sizeof(dst));
     freeaddrinfo(list);
-    return "";
   }
+  const int fd = static_cast<int>(socket(AF_INET, SOCK_DGRAM, 0));
+  if (fd < 0) return "";
   std::string out;
-  if (connect(fd, list->ai_addr, static_cast<socklen_t>(list->ai_addrlen)) == 0) {
+  if (connect(fd, reinterpret_cast<sockaddr*>(&dst), sizeof(dst)) == 0) {
     sockaddr_in local{};
     socklen_t len = sizeof(local);
     if (getsockname(fd, reinterpret_cast<sockaddr*>(&local), &len) == 0) {
@@ -145,7 +150,6 @@ std::string localIpForPeer(const std::string& host) {
     }
   }
   sockClose(fd);
-  freeaddrinfo(list);
   return out;
 }
 

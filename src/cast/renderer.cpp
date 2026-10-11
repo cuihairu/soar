@@ -281,6 +281,18 @@ int discoverRenderers(int timeout_ms, std::vector<DiscoveredRenderer>* out,
     *err = "ssdp: cannot create socket (errno " + std::to_string(lastNetError()) + ")";
     return -1;
   }
+  // Fully non-blocking: every wait below is poll-driven, and a blocking
+  // sendto on a wedged route/interface would hang the discovery window
+  // past its own deadline.
+#ifdef _WIN32
+  u_long nonblocking = 1;
+  ::ioctlsocket(fd, FIONBIO, &nonblocking);
+#else
+  {
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
+#endif
   sockaddr_in local{};
   local.sin_family = AF_INET;
   local.sin_addr.s_addr = htonl(INADDR_ANY);
