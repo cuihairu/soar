@@ -100,6 +100,21 @@ add_test(NAME soar_p2p_tests COMMAND soar_p2p_tests)
 # under coverage instrumentation.
 set_tests_properties(soar_p2p_tests PROPERTIES TIMEOUT 600)
 
+# DLNA casting control point (docs/mvp.md §3): SSDP/device-XML/SOAP pure
+# string logic everywhere, plus a minimal in-process MediaRenderer the
+# POSIX cases drive through real sockets (discovery exchange on loopback,
+# description fetch, action exchange, bridge LAN rebind end to end). Same
+# POSIX-only smoke shape as the p2p suite.
+add_executable(soar_cast_tests
+  test_cast.cpp
+)
+
+target_compile_features(soar_cast_tests PRIVATE cxx_std_17)
+target_link_libraries(soar_cast_tests PRIVATE soar_cast soar_p2p doctest::doctest)
+
+add_test(NAME soar_cast_tests COMMAND soar_cast_tests)
+set_tests_properties(soar_cast_tests PROPERTIES TIMEOUT 300)
+
 # Pure UI logic unit tests (docs/ui-design.md §5.3): auto-hide state
 # machine, recent store, toast, time formatting. No display needed.
 add_executable(soar_ui_tests

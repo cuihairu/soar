@@ -1,5 +1,63 @@
 # todo
 
+## 投屏实现批·一期（2026-10-11 点单开工，「投屏协议选型」节末尾实现批要点兑现）
+
+范围（照要点，不得扩面）：SSDP 发现 + 设备描述 XML 解析 + SOAP 控制
+（SetAVTransportURI/Play/Seek/Stop）自实现组件（控制点，零新第三方依赖；
+GENA 不做改轮询 GetPositionInfo）、桥会话期 LAN 改绑/恢复、接收端不支持
+格式显式报错（不做发送端转码）、纯逻辑单测 + 内嵌最小 MediaRenderer 冒烟。
+不在本批：窗口/CLI 产品入口接线（另立批）、pause 动作、renderer/DMS 角色、
+GENA 事件、转码。
+
+- [x] **C1 纯逻辑组件**：`src/cast/ssdp.{h,cpp}`（M-SEARCH 构造 golden+超时
+      钳制、应答解析——ST/USN/LOCATION 三查、NOTIFY 拒收、大小写/裸 LF 容
+      错）、`src/cast/device_xml.{h,cpp}`（设备描述解析含实体解码、相对
+      controlURL 按 RFC3986 引用合并、URL 拆分含 IPv6 括号形、AVTransport
+      解析含空 controlURL 跳过取下一个）、`src/cast/soap.{h,cpp}`（四动作
+      请求构造 golden——Content-Length 与报体互证、DIDL 线上双重转义、
+      fault/GetPositionInfo 解析拒空指针出参、时钟互转 H:MM:SS[.毫秒]、
+      HTTP 状态提取）。
+- [x] **C2 桥 LAN 改绑**：`TorrentStream::exposeToLan(peer_host)` /
+      `restoreLoopback()`——换代监听 socket（新临时端口，旧已受理连接不受
+      扰：retire 旗标+先退旧线程再起新线程无窗口）、playbackUrl() 重读生
+      效；默认恒 127.0.0.1，会话结束/失败即恢复；`localIpForPeer` UDP
+      connect 探路。用例进 test_p2p.cpp：暴露前 LAN 拒连→暴露后 LAN
+      GET 206/旧回环口拒连→恢复后回环 206/LAN 拒连→stop 后两端口均
+      「not serving」；错误路径（未 serving、无路由本机地址）。
+- [x] **C3 会话组件**：`src/cast/renderer.{h,cpp}`（SSDP 组播发现、描述
+      拉取、SOAP POST、非阻塞 connect 超时——握手后必须恢复阻塞模式，
+      否则 SO_RCVTIMEO 不生效 recv 恒 EAGAIN，实测踩坑）+
+      `src/cast/cast_session.{h,cpp}`（发现→改绑→SetURI→Play→
+      GetPositionInfo 轮询→Stop→恢复；启动宽限期内位置不前进=显式报错
+      「接收端多半解不了该源，本构建无发送端转码」；NOT_IMPLEMENTED 时钟
+      =「未知」不判卡死；SOAP fault 原文透出；连续轮询失联显式失败；
+      stop 幂等，seek 非致命）。
+- [x] **C4 测试面 + 门禁收编 + 文档**：`tests/test_cast.cpp` 28 用例/431
+      断言（纯逻辑全平台 + 内嵌最小 MediaRenderer 进程内冒烟 POSIX-only，
+      同 p2p 套件口径：发现→起会话全驱动、fault 三动作、stall/deaf/
+      no-clock、传输边角 spill/no-length/flood-head/not-http/巨长度、
+      noav/坏控制地址/404 轮询/快速失败矩阵）、`soar_cast_tests` 目标、
+      桥改绑用例进 test_p2p.cpp、fullgate 绿（13/13 套件；行
+      95.2%=7837/8228、支 84.9%=8448/9947，对门禁 95.0/84.6 真实余量
+      ~20 行/~32 支，按原始分子分母核；cast 增量后本地双树全绿：Debug
+      ×3 + no-imgui ×1）、mvp.md §3/README v1.0 行/todo 落账。
+
+### 如实说明
+
+- src/cast 的 socket 层按 p2p 先例自含 winsock 包装（Windows 构建腿要
+  编译通过——6 个源文件本地 mingw -fsyntax-only 干净），但**活 socket
+  冒烟用例按 p2p 套件口径 POSIX-only**——Windows 上组播/绑卡行为未在本
+  批验证，纯逻辑用例全平台跑；test_cast.cpp 的 Windows 分支本地无法
+  mingw 编验（系统 doctest 头拉 glibc），待 CI MSVC 腿核。
+- 覆盖率口径：gcov 把 winsock #ifdef 分支计为不可达死支（p2p 同负担），
+  门禁余量按 gcovr 门禁同旗标（--exclude-throw-branches 等）原始分子
+  分母核，未用聚合法。
+- 产品入口（窗口投屏浮层/CLI `--cast`）不在本批：组件经测试直接驱动，
+  「接收端不支持格式显式报错」以组件错误串落地，用户可见提示随接线批。
+- 本地桥改绑的 LAN 暴露窗只在会话期（SetAVTransportURI 前、Stop/失败后
+  即回 127.0.0.1）；「接收端自解码」的行为判定是轮询位置宽限窗不动即显
+  式报错，真实接收端解码能力矩阵未在本批验证（无真实设备）。
+
 ## 投屏协议选型（2026-10-11 拍板收口，本批只出结论零实现码）
 
 挂账②收口。范围：四候选（AirPlay / Chromecast / DLNA/UPnP AV / Miracast）×

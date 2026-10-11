@@ -154,6 +154,27 @@ target_include_directories(soar_p2p PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/p2p)
 target_compile_features(soar_p2p PUBLIC cxx_std_17)
 target_link_libraries(soar_p2p PUBLIC torrent-rasterbar)
 
+# DLNA/UPnP AV casting control point (docs/mvp.md §3, protocol decided
+# 2026-10-11): SSDP discovery, device-description parsing and SOAP
+# control, all self-implemented over plain sockets (no new third-party
+# dependency). Consumes the p2p bridge's LAN exposure for the media URL.
+# Not linked into the app yet: the window/CLI entry points are a later
+# batch; the tests drive the component directly.
+add_library(soar_cast STATIC
+  src/cast/ssdp.cpp
+  src/cast/text_util.cpp
+  src/cast/device_xml.cpp
+  src/cast/soap.cpp
+  src/cast/renderer.cpp
+  src/cast/cast_session.cpp
+)
+target_include_directories(soar_cast PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/cast)
+target_compile_features(soar_cast PUBLIC cxx_std_17)
+target_link_libraries(soar_cast PUBLIC soar_p2p)
+if(WIN32)
+  target_link_libraries(soar_cast PUBLIC ws2_32)
+endif()
+
 # Pure UI logic (auto-hide state machine, recent store, toast, time format:
 # docs/ui-design.md §5.3) — no SDL/ImGui dependency, shared by the app and
 # the unit-test suite. dir_scan.cpp is the folder-import half of the same

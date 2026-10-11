@@ -167,7 +167,7 @@ Optional capabilities are auto-detected: if FFmpeg is found (pkg-config) the FFm
 
 - **v0.1 (MVP, closed out)**: playback controls, seek, rate, volume, track info and selection, events and progress callbacks, desktop UI (floating OSC + shortcuts + info/recent/help overlays) — the acceptance checklist is fully done (see [docs/ui-design.md](docs/ui-design.md) §6);
 - **v0.2**: playlist, screenshots, A-B loop, audio device selection, HLS/DASH/RTSP smoke coverage, subtitle experience (fonts/size/sync offset) — all landed;
-- **v1.0**: hardware decoding (first wiring landed: `--hwdec=`, software fallback) and the HDR color pipeline, casting (protocol decided 2026-10-11: DLNA/UPnP AV first, Chromecast a later candidate — docs/todo.md), media library and offline NFO scraping (landed; network scraping and multi-device sync are waiting on a protocol decision — docs/mvp.md §3), plugin system.
+- **v1.0**: hardware decoding (first wiring landed: `--hwdec=`, software fallback) and the HDR color pipeline, casting (DLNA/UPnP AV control-point component landed 2026-10-12: self-implemented SSDP discovery, device XML, SOAP control, session-scoped bridge LAN rebind; window/CLI entry wiring is a later batch — docs/mvp.md §3, docs/todo.md), media library and offline NFO scraping (landed; network scraping and multi-device sync are waiting on a protocol decision — docs/mvp.md §3), plugin system.
 
 For full boundaries and the explicit "not doing" list, see [docs/mvp.md](docs/mvp.md).
 
