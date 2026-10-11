@@ -118,8 +118,12 @@ std::string localIpForPeer(const std::string& host) {
   addrinfo hints{};
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_DGRAM;  // connect() on a datagram socket is local
+  hints.ai_flags = AI_NUMERICSERV;
   addrinfo* list = nullptr;
-  if (getaddrinfo(host.c_str(), nullptr, &hints, &list) != 0 || list == nullptr)
+  // A concrete destination port makes source selection happen: on macOS a
+  // port-0 connect keeps the wildcard local address (0.0.0.0), which the
+  // caller would read as "no route". Nothing is ever sent, so any port.
+  if (getaddrinfo(host.c_str(), "9", &hints, &list) != 0 || list == nullptr)
     return "";
   const int fd = static_cast<int>(socket(AF_INET, SOCK_DGRAM, 0));
   if (fd < 0) {
