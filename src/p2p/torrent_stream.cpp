@@ -508,14 +508,18 @@ struct TorrentStream::Impl {
     }
   }
 
-  // Listener swap for the casting rebinds: retire the accept loop
-  // (shutdown wakes it, the flag says rebind-not-stop), then install the
-  // new socket. Already-accepted connections run on untouched fds.
+  // Listener swap for the casting rebinds: retire the accept loop, then
+  // install the new socket. Already-accepted connections run on untouched
+  // fds. The wake order mirrors stop(): Linux's accept breaks on
+  // shutdown(), but Darwin ignores shutdown on a listening socket — there
+  // close() is what wakes the blocked accept. Nothing reopens a fd in
+  // between (the replacement socket already exists), so the number cannot
+  // be recycled under the waking thread.
   void rebindListener(int new_fd) {
     listener_retired->store(true, std::memory_order_relaxed);
     sockShutdown(listen_fd);
-    if (accept_thread.joinable()) accept_thread.join();
     sockClose(listen_fd);
+    if (accept_thread.joinable()) accept_thread.join();
     listener_retired->store(false, std::memory_order_relaxed);
     listen_fd = new_fd;
     accept_thread = std::thread([this] { acceptLoop(); });

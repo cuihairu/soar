@@ -1173,14 +1173,10 @@ TEST_CASE("discovery and the client reject their degenerate inputs") {
   std::vector<cast::DiscoveredRenderer> found;
   std::string err;
   // No output vector: immediate refusal, no sockets needed.
-  std::fprintf(stderr, "degenerate: null-out refusal\n");
   CHECK(cast::discoverRenderers(50, nullptr, &err) == -1);
   // A multicast interface that is not an address.
-  std::fprintf(stderr, "degenerate: bad-interface refusal\n");
   CHECK(cast::discoverRenderers(50, &found, &err, "999.999.1.1") == -1);
-  std::fprintf(stderr, "degenerate: bad-interface returned\n");
   CHECK(err.find("bad multicast interface") != std::string::npos);
-  std::fprintf(stderr, "degenerate: full-window discovery\n");
 
   // The client without a control URL refuses before any socket work.
   cast::RendererClient none("", cast::kAvTransportType);

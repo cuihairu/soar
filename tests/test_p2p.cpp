@@ -993,8 +993,6 @@ TEST_CASE("exposeToLan rebinds the bridge for casting and restoreLoopback revert
     }
   }
   ::close(probe);
-  std::fprintf(stderr, "rebind: route probe done, lan_ip=%s\n",
-               lan_ip.empty() ? "<none>" : lan_ip.c_str());
   if (lan_ip.empty()) {
     MESSAGE("no non-loopback route; the LAN rebind case skipped");
     return;
@@ -1056,7 +1054,6 @@ TEST_CASE("exposeToLan rebinds the bridge for casting and restoreLoopback revert
   };
 
   const SoloStore s = makeSolo("rebind", 64 * 1024);
-  std::fprintf(stderr, "rebind: torrent built\n");
   p2p::TorrentStream stream;
   p2p::TorrentStream::Params p;
   p.torrent_path = s.torrent;
@@ -1064,12 +1061,10 @@ TEST_CASE("exposeToLan rebinds the bridge for casting and restoreLoopback revert
   REQUIRE(stream.start(p));
   REQUIRE(stream.phase() == p2p::TorrentPhase::Serving);
   const int loopback_port = portOf(stream.playbackUrl());
-  std::fprintf(stderr, "rebind: started on %d\n", loopback_port);
 
   // Loopback-only: the LAN address of this host does not reach it.
   int status = 0;
   CHECK_FALSE(probeTcp(lan_ip, loopback_port, &status));
-  std::fprintf(stderr, "rebind: lan probe of the loopback port refused\n");
 
   // An unresolvable renderer host is the explicit routing failure, and
   // the serving state is untouched. (An empty host fails getaddrinfo on
@@ -1077,14 +1072,12 @@ TEST_CASE("exposeToLan rebinds the bridge for casting and restoreLoopback revert
   // the local network happily resolves anything.)
   std::string err;
   CHECK_FALSE(stream.exposeToLan("", &err));
-  std::fprintf(stderr, "rebind: empty expose refused\n");
   CHECK(err.find("no local address routes to") != std::string::npos);
   CHECK(stream.playbackUrl() ==
         "http://127.0.0.1:" + std::to_string(loopback_port) + "/");
   int still = 0;
   REQUIRE(probeTcp("127.0.0.1", loopback_port, &still));
   CHECK(still == 206);
-  std::fprintf(stderr, "rebind: loopback still serving\n");
 
   // Expose toward a default-route peer: fresh listener, rewritten URL.
   // The stand-in "renderer" is the probe target itself, not the host's own
@@ -1093,24 +1086,20 @@ TEST_CASE("exposeToLan rebinds the bridge for casting and restoreLoopback revert
   // mirror the interface address the way Linux does); the default-route
   // lookup is the one path proven to work an inch above.
   std::string err2;
-  std::fprintf(stderr, "rebind: exposing toward the default route\n");
   REQUIRE_MESSAGE(stream.exposeToLan("192.0.2.1", &err2),
                   "expose failed: " << err2);
   const std::string exposed_url = stream.playbackUrl();
   CHECK(exposed_url ==
         "http://" + lan_ip + ":" + std::to_string(portOf(exposed_url)) + "/");
   const int exposed_port = portOf(exposed_url);
-  std::fprintf(stderr, "rebind: exposed on %d\n", exposed_port);
   // The new listener serves the media over the LAN address (206 = the
   // Range contract), and the old port is gone with the retired listener.
   status = 0;
   REQUIRE(probeTcp(lan_ip, exposed_port, &status));
-  std::fprintf(stderr, "rebind: lan get status %d\n", status);
   CHECK(status == 206);
   CHECK_FALSE(probeTcp("127.0.0.1", loopback_port, &still));
 
   // Restore puts loopback back: URL rewritten, LAN refused, media served.
-  std::fprintf(stderr, "rebind: restoring loopback\n");
   REQUIRE(stream.restoreLoopback(&err));
   const std::string back_url = stream.playbackUrl();
   CHECK(back_url.rfind("http://127.0.0.1:", 0) == 0);
@@ -1119,11 +1108,9 @@ TEST_CASE("exposeToLan rebinds the bridge for casting and restoreLoopback revert
   CHECK(status == 206);
   CHECK_FALSE(probeTcp(lan_ip, portOf(back_url), &status));
   CHECK_FALSE(probeTcp(lan_ip, exposed_port, &status));
-  std::fprintf(stderr, "rebind: restore probes done\n");
 
   // Past stop(): not serving anymore, on both methods.
   stream.stop();
-  std::fprintf(stderr, "rebind: stopped\n");
   REQUIRE(waitPhase(stream, p2p::TorrentPhase::Idle));
   CHECK_FALSE(stream.exposeToLan(lan_ip, &err));
   CHECK(err == "torrent: not serving");
