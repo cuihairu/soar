@@ -7,6 +7,14 @@
 #ifdef _WIN32
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
+   // A transitive windows.h defines min/max as function-like macros and
+   // they clobber std::min below (MSVC C2589). Drop them for this TU.
+#  if defined(min)
+#    undef min
+#  endif
+#  if defined(max)
+#    undef max
+#  endif
 #else
 #  include <arpa/inet.h>
 #  include <netdb.h>
