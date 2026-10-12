@@ -39,8 +39,16 @@ GENA 事件、转码。
       noav/坏控制地址/404 轮询/快速失败矩阵）、`soar_cast_tests` 目标、
       桥改绑用例进 test_p2p.cpp、fullgate 绿（13/13 套件；行
       95.2%=7837/8228、支 84.9%=8448/9947，对门禁 95.0/84.6 真实余量
-      ~20 行/~32 支，按原始分子分母核；cast 增量后本地双树全绿：Debug
-      ×3 + no-imgui ×1）、mvp.md §3/README v1.0 行/todo 落账。
+      ~20 行/~32 支，按原始分子分母核；cast 28 用例本地全树绿（Debug/
+      tsan/asan/no-imgui，p2p 20 用例同口径））、mvp.md §3/README v1.0
+      行/todo 落账。十一 commit d5c4631（桥改绑）/1059876（cast 组件+
+      测试+文档）/01e3713（tsan 修）/78a6c5d（asan 字面量长度修）/
+      2700b34（MSVC min/max 括号+LAN 探路走默认路由）/868405d（macOS
+      port-0 探路修）/19f9569（空主机名拒走 resolver+活组播用例
+      apple 门控）/5abad61（数值优先探路+发现 socket 非阻塞）/
+      dcfb886（排障面包屑一轮定位）/3c9bc73/ded50fd（Darwin 监听
+      socket 关停序双修）已 push，CI run 38184694410 七腿全绿
+      （build×3/tsan/asan/coverage/no-imgui）。
 
 ### 如实说明
 
@@ -48,7 +56,17 @@ GENA 事件、转码。
   编译通过——6 个源文件本地 mingw -fsyntax-only 干净），但**活 socket
   冒烟用例按 p2p 套件口径 POSIX-only**——Windows 上组播/绑卡行为未在本
   批验证，纯逻辑用例全平台跑；test_cast.cpp 的 Windows 分支本地无法
-  mingw 编验（系统 doctest 头拉 glibc），待 CI MSVC 腿核。
+  mingw 编验（系统 doctest 头拉 glibc），CI MSVC 腿已核绿。
+- macOS CI 连红收口成一条平台教训（runs 38170618582→38182398534 面包
+  屑一轮定位）：**Darwin 对监听 socket 的 shutdown() 是 no-op**，唤醒
+  阻塞 accept 只能靠 close()——产品 `rebindListener`（3c9bc73）与测试
+  FakeRenderer 析构（ded50fd）同踩，两处都改成与 stop() 同款的
+  shutdown→close→join 序。配套三个 macOS 环境差一并落地：探路 UDP
+  connect 要真实端口（port 0 在 macOS 恒报 0.0.0.0）、localIpForPeer
+  数值优先（macOS 对空/坏主机名 getaddrinfo 走搜索域挂起，IP 一律先
+  inet_pton）、发现 socket 全程非阻塞 poll 驱动。两个活组播发现用例
+  `!defined(__APPLE__)` 门控维持（macOS CI VM 对 lo0 组播 M-SEARCH 不
+  应答），纯逻辑+直连定位的会话用例全平台跑。
 - 覆盖率口径：gcov 把 winsock #ifdef 分支计为不可达死支（p2p 同负担），
   门禁余量按 gcovr 门禁同旗标（--exclude-throw-branches 等）原始分子
   分母核，未用聚合法。
