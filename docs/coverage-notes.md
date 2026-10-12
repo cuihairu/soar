@@ -351,6 +351,16 @@ BUGS.md #4（CLI 播放 Ended 后偶发不退出）的排查批落地两件测�
 - **结构性不可计（library.cpp 余 24 支，已定性勿追）**：(1) **可证死臂 3 支**——`parseEntryLine` 的 `pos > line.size()` 与 `path.empty()`、load 的 `dir.empty()`：trimTail 先剥尾部空白，行尾第 6 空格/空路径/2 字符 `f ` 行都到不了这三个条件（它们只对「trimTail 不再剥尾空白」的未来改动有防御价值，留着）；(2) **文件系统失败臂**——`is_regular_file`/`ifstream::good`/三处流写失败/rename 失败/scan 的三处 error_code 置位臂（约 15 支）：权限游戏与中途 I/O 失败违背「真实失败契约」纪律，按 §3.7 同款定性；(3) **对抗输入臂**（约 6 支）——`parentDir` 无斜杠（需相对路径 store，要 chdir）、`isUnderFolder` 空文件夹串与 Windows 反斜杠折臂、trimTail 空行臂、`line[0]` 双否 fallthrough；`isTorrentBridge` 真臂（窗口会话里打开的桥 URL 才走得到）维持 §3.22 初稿定性。
 - **读数**：本地系统 gcovr 7.2（build-cov3，夹具媒体 + X11 窗口全量跑）行 95.3%（6757/7089）、支 84.8%（7188/8480），门禁 95.0/84.6，余量约 13 支（> ±4 抖动带）；全量 ctest 11/11 绿（437s，load 峰 66.7）。
 
+### 3.23 投屏接线批：窗口 cast 浮层 + CLI `--cast`（mvp.md §3 投屏节）
+
+一期组件不动，产品入口接线：`player_window.cpp` cast 区（~180 行，`openCast`/`beginCastSearch`/`startCastTo`/`stopCast`/`handleCastTick`/`drawCastOverlay`——浮层 520x420 居中、相位 switch、位置读出走 `on_position` 原子回调、Stop casting/Search again 按钮、renderer 行 Selectable、toast）、`handleCastTick` 预置 direct/auto 两路径（等桥 Serving、auto 3s 发现突发）、`main.cpp` headless `--cast` 块（错误串「cast: 」前缀去重）、`shortcuts` 的 `t` 键动作。
+
+- **测试武装**：headless 4 例 29 断言——python 假 DLNA renderer 夹具（`kDlnaRendererScript`：ok/noav/silent 三模式，真回 SOAP + 回写 PositionInfo 时钟 + 拉桥 URL 记 206）+ 拒连端口 + `--cast` 无源开 socket 前拒绝；断言 SetURI 收到改写后的新桥口（≠旧桥口）、renderer 实拉桥 URL、Play/Stop 全握手、无 AVTransport/拒连矩阵。X11 六发走查 27 断言——直连全握手（三连 Search 点击覆盖突发防重入 + 完成线程回收 + Stop 按钮）/auto 突发无应答分支/404 描述 Failed 相位/静默 renderer 失联相位/无源文案/无 info-hash magnet 等 serving（挂起中干净退出）；走查脚本 `kCastWalkthroughScript` 六模式，私有 Xvfb（`70+pid%25`）+ 像素校验按钮坐标。
+- **一个夹具教训**：magnet 无 info-hash（`magnet:?dn=x`）解析即败（`missing info-hash from URI`，exit 1）——等 serving 的用例用伪 hash（`magnet:?xt=urn:btih:0123...&dn=cast-walkthrough`，无 tracker）才构得到「解析成功但永不服务」的挂起态。
+- **顺手修竞态（c1a75b5）**：`FFmpegBackend::open()` 对 `hwdec_` 的解锁写撞 `close()` 锁内 `clear()`（tsan -O0 带夹具确定性命中，-O1 时序躲开）；arm 移入 decode_mutex_ 锁内，先于 setupDecoders 读取的既序不变。
+- **覆盖诚实账（16 行三类定性，勿追）**：(1) SSDP responder 应答路径（`handleCastTick` auto 的 found[0] 分支、行点击守卫两行）——组播应答需真实设备或本机桥接，走查环境脆弱，组件层 `test_cast.cpp` 已盖发现+SOAP；(2) Discovering/Idle 相位 4 行结构不可达——`start()` 同步跑在 UI 线程，`cast_active_` 只在 Play 成功后赋值，浮层画不到这两个相位（防御性 switch 臂）。
+- **读数**：本地系统 gcovr 7.2（build-cov3，夹具媒体 + X11 窗口全量跑）行 **95.3%（8017/8411）**、支 **85.2%（8660/10168）**，门禁 95.0/84.6 双过（行余 ~28 行、支余 ~59 支，> ±4 抖动带）；全量 ctest 13/13 绿（六树：system/tsan -O1/tsan -O0/asan 无 X11 对齐 CI，no-imgui+cov3 带 X11；tsan -O0 三连跑绿）。
+
 ## 4. 测试纪律
 
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。

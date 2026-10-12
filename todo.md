@@ -1,5 +1,59 @@
 # todo
 
+## 投屏接线批·二期（2026-10-12，「一期」范围里明确排除的产品入口接线兑现）
+
+范围：窗口投屏浮层 + CLI `--cast`。一期组件（`src/cast/`）不动，桥改绑/
+恢复语义不动；pause 动作、GENA、发送端转码仍不在本批。
+
+- [x] **快捷键 + 入口**：`ShortcutAction::Cast`（默认 `t`，进 defaults 表
+      /名字 round-trip/查表三处既有用例矩阵）。
+- [x] **窗口投屏浮层**（`player_window.cpp` cast 区，~180 行）：`t` 开合
+      520x420 居中浮层——无源说明、未 serving 提示、会话相位渲染
+      （Casting 带位置读出 `on_position` 原子回调 / Failed / Stopped）、
+      Stop casting / Search again 按钮（SSDP 3s 突发一次性防重入，后台
+      线程发现 + 互斥结果表，完成线程回收）、renderer 行 Selectable
+      （AllowOverlap 修 ImGui 全宽吞 SameLine 点击）、toast 反馈
+      （成功/失败/无应答/已停）。
+- [x] **CLI `--cast=<descURL|auto>`**：headless 直接驱动 CastSession
+      （失败 exit 1，错误串已在组件层带「cast: 」前缀时不重复加）；窗口
+      模式预置 arm，等桥 Serving 后自启——direct 直连 / auto 一次 3s 发
+      现突发→首个应答者或「No DLNA renderer answered」toast；`--cast`
+      无 torrent 源在开任何 socket 前拒绝。
+- [x] **测试面**：headless 4 用例 29 断言（python 假 DLNA renderer 夹具
+      ok/noav/silent 三模式 + 拒连端口；断言 SetURI 收到改写后的新桥口
+      URL、renderer 实拉桥 URL 206、Play/Stop 全握手、无 AVTransport/
+      拒连/无源拒绝矩阵）+ X11 六发走查 27 断言（直连全握手 + 搜索三连
+      点覆盖防重入/线程回收/Stop 按钮、auto 突发、404 描述失败相位、
+      静默 renderer 失联相位、无源文案、无 info-hash magnet 等 serving
+      挂起 + Escape 干净退出）；非 X11 与 no-imgui 树 MESSAGE 跳过。
+- [x] **顺手修一处真实数据竞态**：`FFmpegBackend::open()` 对 `hwdec_`
+      的解锁写撞 `close()` 锁内 `clear()`（tsan-o0 带夹具确定性命中，
+      -O1 时序躲开）——arm 移入 decode_mutex_ 锁内（arm 先于
+      setupDecoders 的既序不变），三连跑绿。
+- [x] **门禁**：六树 13/13 全绿（system / tsan -O1 / tsan -O0 / asan 均
+      无 X11 对齐 CI，no-imgui + cov3 带 X11），gcovr 行 **95.3%
+      （8017/8411）**、支 **85.2%（8660/10168）**，对 95.0/84.6 余量
+      ~28 行/~59 支（> 抖动带）。
+
+### 如实说明
+
+- 覆盖诚实账：cast 区域可测 172/191 行，余 16 行三类定性——SSDP responder
+  需要组播应答，走查环境脆弱不上（组件层 test_cast.cpp 已盖发现与 SOAP）；
+  startCastTo 的行点击守卫两行（「未 serving」toast / already-casting）
+  只在点中已发现 renderer 行时可达，同需 responder；Discovering/Idle 相
+  位文案四行结构不可达——`start()` 同步跑在 UI 线程，`cast_active_` 只在
+  Play 成功后才赋值，浮层永远画不到这两个相位（防御性 switch 臂）。
+- X11 走查依赖 python3-xlib + 私有 Xvfb（`70+pid%25`），按钮坐标按
+  SOAR_UI_BITMAP_FONT=1 探测（缩放 TTF 会 reflow 浮层）。
+- **真 SSDP responder 的端到端未验证**（无真实设备、本机组播环境脆弱）：
+  窗口/CLI 产品面发现走「无应答」分支验证，发现→SOAP 的真链路由组件层
+  用例覆盖；接真实电视前的设备矩阵仍是挂账。
+- gcovr 门禁 filter 两坑：`--filter` 必须用目录形（`src`/`include`，CI
+  同款）——手写正则 `.*/include/.*` 会把 `third_party/libtorrent/include`
+  卷进来（分母 8411→66146 的假读数，45% 假红）；系统头 `no_working_dir_
+  found` 噪声用 `--gcov-ignore-errors=no_working_dir_found` 吸收。
+- 二 commit：c1a75b5（hwdec 竞态修）/ 61ab95d（接线 + 测试）。
+
 ## 投屏实现批·一期（2026-10-11 点单开工，「投屏协议选型」节末尾实现批要点兑现）
 
 范围（照要点，不得扩面）：SSDP 发现 + 设备描述 XML 解析 + SOAP 控制
