@@ -44,6 +44,7 @@ using soar::app::kKeyR;
 using soar::app::kKeyRight;
 using soar::app::kKeyRightBracket;
 using soar::app::kKeyS;
+using soar::app::kKeyT;
 using soar::app::kKeyB;
 using soar::app::kKeySpace;
 using soar::app::kKeyZ;
@@ -130,6 +131,7 @@ TEST_CASE("defaults match the shipped table exactly") {
   CHECK(map.bindings(A::Info) == std::vector<ShortcutKey>{plain(kKeyI)});
   CHECK(map.bindings(A::Recent) == std::vector<ShortcutKey>{plain(kKeyR)});
   CHECK(map.bindings(A::Help) == std::vector<ShortcutKey>{plain(kKeyH)});
+  CHECK(map.bindings(A::Cast) == std::vector<ShortcutKey>{plain(kKeyT)});
   CHECK(map.bindings(A::Quit) == std::vector<ShortcutKey>{plain(kKeyQ)});
 
   CHECK(map.enabled());
@@ -173,6 +175,7 @@ TEST_CASE("lookup fires the action for every default key") {
   CHECK(map.actionFor(plain(kKeyI)) == A::Info);
   CHECK(map.actionFor(plain(kKeyR)) == A::Recent);
   CHECK(map.actionFor(plain(kKeyH)) == A::Help);
+  CHECK(map.actionFor(plain(kKeyT)) == A::Cast);
   CHECK(map.actionFor(plain(kKeyQ)) == A::Quit);
   CHECK(map.actionFor(plain(kKeyEscape)) == A::Escape);
 }
@@ -393,6 +396,7 @@ TEST_CASE("action names round-trip") {
   CHECK(shortcutActionName(ShortcutAction::PlayPause) == "play_pause");
   CHECK(shortcutActionName(ShortcutAction::SubtitleOffsetBack) ==
         "subtitle_offset_back");
+  CHECK(shortcutActionName(ShortcutAction::Cast) == "cast");
   CHECK(shortcutActionName(ShortcutAction::None) == "");
   // Every nameable action parses back to itself; the config grammar and
   // the enum stay in lockstep.

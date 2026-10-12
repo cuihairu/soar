@@ -125,6 +125,7 @@ const char* const kActionNames[] = {
     "library",          "queue_next",
     "queue_prev",       "info",
     "recent",           "help",
+    "cast",
     "quit",
 };
 
@@ -191,6 +192,7 @@ ShortcutMap::ShortcutMap() {
   addDefault(&bindings_[static_cast<int>(ShortcutAction::Info)], kKeyI);
   addDefault(&bindings_[static_cast<int>(ShortcutAction::Recent)], kKeyR);
   addDefault(&bindings_[static_cast<int>(ShortcutAction::Help)], kKeyH);
+  addDefault(&bindings_[static_cast<int>(ShortcutAction::Cast)], kKeyT);
   addDefault(&bindings_[static_cast<int>(ShortcutAction::Quit)], kKeyQ);
 }
 

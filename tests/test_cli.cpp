@@ -2131,6 +2131,162 @@ TEST_CASE("a malformed magnet in window mode fails before the window opens") {
 #ifndef _WIN32
 namespace {
 
+// Minimal DLNA/UPnP MediaRenderer for the --cast cases (docs/mvp.md §3):
+// a device description with an AVTransport service whose controlURL
+// accepts the four SOAP actions the control point sends, a position clock
+// that advances so the session's stall detector sees a playing receiver,
+// and — the point of the whole exercise — a fetch of the CurrentURI after
+// SetAVTransportURI, exactly what a real DMR does with the URL it is
+// handed. Every observed event goes to the log file as one line:
+//   seturi <url> | fetch <status> <bytes> | fetch-fail <reason> | play | stop
+constexpr char kDlnaRendererScript[] = R"PY(
+import re, socket, sys, time, urllib.request
+
+port = int(sys.argv[1])
+log_path = sys.argv[2]
+mode = sys.argv[3]  # "ok" has AVTransport; "noav" only RenderingControl
+
+def log(line):
+    with open(log_path, "a") as f:
+        f.write(line + "\n")
+
+SERVICE = ('urn:schemas-upnp-org:service:AVTransport:1' if mode != "noav"
+           else 'urn:schemas-upnp-org:service:RenderingControl:1')
+DESC = ('<?xml version="1.0" encoding="utf-8"?>'
+        '<root xmlns="urn:schemas-upnp-org:device-1-0">'
+        '<device>'
+        '<deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>'
+        '<friendlyName>Test Renderer</friendlyName>'
+        '<UDN>uuid:soar-test-renderer</UDN>'
+        '<serviceList><service>'
+        '<serviceType>' + SERVICE + '</serviceType>'
+        '<serviceId>urn:upnp-org:serviceId:AVT</serviceId>'
+        '<controlURL>/ctl</controlURL>'
+        '<eventSubURL>/evt</eventSubURL>'
+        '<SCPDURL>/scpd.xml</SCPDURL>'
+        '</service></serviceList>'
+        '</device></root>')
+
+def reply(payload):
+    return ("HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: "
+            + str(len(payload)) + "\r\nConnection: close\r\n\r\n" + payload)
+
+def action_ok(action):
+    return ('<?xml version="1.0"?><s:Envelope '
+            'xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+            '<u:' + action + 'Response '
+            'xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"/>'
+            '</s:Body></s:Envelope>')
+
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", port))
+srv.listen(4)
+print("ready", flush=True)  # harness reads this line over a pipe
+
+t0 = None  # the position clock starts at the first poll
+deadline = time.time() + 240
+srv.settimeout(max(1.0, deadline - time.time()))
+while time.time() < deadline:
+    try:
+        conn, _ = srv.accept()
+    except socket.timeout:
+        break
+    try:
+        conn.settimeout(10)
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        if b"\r\n\r\n" not in buf:
+            continue
+        head, _, body = buf.partition(b"\r\n\r\n")
+        lines = head.decode("iso-8859-1", "replace").splitlines()
+        req = lines[0] if lines else ""
+        content_length = 0
+        soap_action = ""
+        for line in lines[1:]:
+            low = line.lower()
+            if low.startswith("content-length:"):
+                content_length = int(line.split(":", 1)[1].strip() or "0")
+            elif low.startswith("soapaction:"):
+                soap_action = line.split(":", 1)[1].strip()
+        while len(body) < content_length:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            body += chunk
+        text = body.decode("utf-8", "replace")
+        path = req.split(" ")[1] if " " in req else "/"
+        if path == "/desc.xml":
+            conn.sendall(reply(DESC).encode())
+            continue
+        if path != "/ctl":
+            conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0"
+                         b"\r\nConnection: close\r\n\r\n")
+            continue
+        action = soap_action.split("#")[-1].strip('"') if soap_action else "?"
+        if action == "SetAVTransportURI":
+            m = re.search(r"<CurrentURI>(.*?)</CurrentURI>", text)
+            uri = m.group(1) if m else ""
+            log("seturi " + uri)
+            # A real DMR fetches the source as soon as it accepts it; do
+            # the same so the case can pin the rewritten bridge URL as
+            # actually serving bytes.
+            try:
+                r = urllib.request.Request(uri, headers={"Range": "bytes=0-1023"})
+                with urllib.request.urlopen(r, timeout=5) as f:
+                    n = len(f.read())
+                    log("fetch %d %d" % (f.getcode(), n))
+            except Exception as e:
+                log("fetch-fail %s" % e)
+            conn.sendall(reply(action_ok(action)).encode())
+        elif action == "GetPositionInfo":
+            if t0 is None:
+                t0 = time.time()
+            rel = min(int(time.time() - t0) + 1, 119)
+            if rel < 60:
+                pos = "0:00:%02d" % rel
+            else:
+                pos = "0:%02d:%02d" % (rel // 60, rel % 60)
+            payload = ('<?xml version="1.0"?><s:Envelope '
+                       'xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+                       '<s:Body><u:GetPositionInfoResponse '
+                       'xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+                       '<Track>1</Track>'
+                       '<TrackDuration>0:02:00</TrackDuration>'
+                       '<TrackMetaData></TrackMetaData>'
+                       '<TrackURI></TrackURI>'
+                       '<RelTime>' + pos + '</RelTime>'
+                       '<AbsTime>' + pos + '</AbsTime>'
+                       '<RelCount>2147483647</RelCount>'
+                       '<AbsCount>2147483647</AbsCount>'
+                       '</u:GetPositionInfoResponse></s:Body></s:Envelope>')
+            conn.sendall(reply(payload).encode())
+        else:
+            if action == "Play":
+                log("play")
+                conn.sendall(reply(action_ok(action)).encode())
+                if mode == "silent":
+                    # Die right after accepting the source: the control
+                    # point's polls then fail until the session declares
+                    # the receiver dead.
+                    conn.close()
+                    sys.exit(0)
+            elif action == "Stop":
+                log("stop")
+            conn.sendall(reply(action_ok(action) if action != "?" else "").encode())
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+)PY";
+
 // Forks the dev seeder (tools/seed_torrent) over a payload directory and
 // waits until both the .torrent file exists and the seeding port accepts
 // connections. The seeder runs forever; the caller kills it. The .torrent
@@ -2182,6 +2338,83 @@ struct Seeder {
     }
   }
 };
+
+// The fake DLNA renderer: a forked python3 HTTP server (kDlnaRendererScript)
+// that publishes a device description, answers the AVTransport SOAP actions,
+// and writes everything it saw to a log file the case reads after the CLI
+// has exited. `mode` picks the description flavor: "ok" carries the
+// AVTransport service the control point needs, "noav" only RenderingControl.
+struct DlnaRenderer {
+  pid_t pid = -1;
+  std::string log_path;
+  int port = 0;
+
+  bool start(const std::string& log, int port_, const char* mode) {
+    log_path = log;
+    port = port_;
+    int ready_pipe[2];
+    if (::pipe(ready_pipe) != 0) return false;
+    pid = ::fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+      ::close(ready_pipe[0]);
+      ::dup2(ready_pipe[1], 1);  // script prints "ready" on stdout
+      ::close(ready_pipe[1]);
+      ::execlp("python3", "python3", "-c", kDlnaRendererScript,
+               std::to_string(port).c_str(), log_path.c_str(), mode,
+               static_cast<char*>(nullptr));
+      _exit(127);
+    }
+    ::close(ready_pipe[1]);
+    std::string ready_line;
+    char ch = 0;
+    while (::read(ready_pipe[0], &ch, 1) == 1) {
+      ready_line += ch;
+      if (ch == '\n') break;
+    }
+    ::close(ready_pipe[0]);
+    return ready_line.find("ready") != std::string::npos;
+  }
+
+  void stop() {
+    if (pid > 0) {
+      ::kill(pid, SIGTERM);
+      ::waitpid(pid, nullptr, 0);
+      pid = -1;
+    }
+  }
+
+  std::string logged() const {
+    std::ifstream in(log_path);
+    std::string all, line;
+    while (std::getline(in, line)) all += line + "\n";
+    return all;
+  }
+};
+
+// A loopback port nothing listens on right now: bind to port 0, read the
+// kernel's pick, close. Another process could claim it afterwards, but the
+// window is tiny and a refused connect is what the case needs.
+int closedTcpPort() {
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) return 0;
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    ::close(fd);
+    return 0;
+  }
+  socklen_t len = sizeof(addr);
+  if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+    ::close(fd);
+    return 0;
+  }
+  const int port = ::ntohs(addr.sin_port);
+  ::close(fd);
+  return port;
+}
 
 }  // namespace
 #endif  // !_WIN32
@@ -2285,7 +2518,646 @@ TEST_CASE("headless run plays a seeded multi-file torrent through the bridge") {
 #endif
 #endif
 }
+
+TEST_CASE("headless --cast drives a fake DLNA renderer through the bridge") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the cast test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the cast test");
+    return;
+  }
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("no python3; skipping the cast test");
+    return;
+  }
+  std::string tmpl = "/tmp/soar_cli_cast_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const std::string payload = std::string(tmp) + "/payload";
+  REQUIRE(std::filesystem::create_directories(payload));
+  // Same payload shape as the tplay case: the media file, sorted first,
+  // is the bridge's default selection.
+  REQUIRE(std::filesystem::copy_file(media, payload + "/00_media.mkv"));
+  for (int i = 0; i < 39; ++i) {
+    std::ofstream out(payload + "/f" + std::to_string(i) + ".bin", std::ios::binary);
+    out << std::string(64, 'x');
+  }
+  const int port = 25000 + (::getpid() % 400);
+  const int renderer_port = 25200 + (::getpid() % 400);
+  const std::string log_path = std::string(tmp) + "/renderer.log";
+  Seeder seeder;
+  DlnaRenderer renderer;
+  if (!seeder.start(payload, std::string(tmp) + "/x.torrent", port) ||
+      !renderer.start(log_path, renderer_port, "ok")) {
+    MESSAGE("fixture did not come up; skipping");
+    renderer.stop();
+    seeder.stop();
+    std::filesystem::remove_all(tmp);
+    return;
+  }
+  const auto run = runCli({"--headless",
+                           std::string("--torrent-store=") + tmp + "/store",
+                           "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                           std::string("--cast=http://127.0.0.1:") +
+                               std::to_string(renderer_port) + "/desc.xml",
+                           std::string(tmp) + "/x.torrent"},
+                          240);
+  seeder.stop();
+  renderer.stop();
+  CHECK(run.exit_code == 0);
+  // The description's friendlyName names the session on stderr.
+  CHECK(run.output.find("cast: Test Renderer <- ") != std::string::npos);
+  CHECK(run.output.find("event: media-info") != std::string::npos);
+
+  // The handshake from the renderer's side: SetAVTransportURI, Play, then
+  // the session destructor's Stop once the headless tail is done.
+  const std::string seen = renderer.logged();
+  INFO(seen);
+  const std::string uri_marker = "seturi http://127.0.0.1:";
+  const size_t uri_at = seen.find(uri_marker);
+  REQUIRE(uri_at != std::string::npos);
+  const size_t uri_begin = uri_at + uri_marker.size();
+  size_t uri_end = uri_begin;
+  while (uri_end < seen.size() && seen[uri_end] >= '0' && seen[uri_end] <= '9') {
+    ++uri_end;
+  }
+  const std::string cast_port = seen.substr(uri_begin, uri_end - uri_begin);
+  REQUIRE(!cast_port.empty());
+
+  // exposeToLan rebinds the bridge to a fresh port before the old listener
+  // retires, so the URL handed over can never reuse the startup line's.
+  const std::string bridge_marker = "-> http://127.0.0.1:";
+  const size_t bridge_at = run.output.find(bridge_marker);
+  REQUIRE(bridge_at != std::string::npos);
+  const size_t bridge_begin = bridge_at + bridge_marker.size();
+  size_t bridge_end = bridge_begin;
+  while (bridge_end < run.output.size() && run.output[bridge_end] >= '0' &&
+         run.output[bridge_end] <= '9') {
+    ++bridge_end;
+  }
+  const std::string bridge_port =
+      run.output.substr(bridge_begin, bridge_end - bridge_begin);
+  CHECK(cast_port != bridge_port);
+  // And the rewritten URL really serves bytes: the fake renderer fetched
+  // the source the way a real DMR would right after accepting it.
+  const bool bridge_served = seen.find("fetch 206 ") != std::string::npos ||
+                             seen.find("fetch 200 ") != std::string::npos;
+  CHECK(bridge_served);
+  CHECK(seen.find("\nplay\n") != std::string::npos);
+  CHECK(seen.find("\nstop\n") != std::string::npos);
+  std::filesystem::remove_all(tmp);
+#endif
+#endif
+}
+
+TEST_CASE("headless --cast reports a renderer without AVTransport") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the cast test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the cast test");
+    return;
+  }
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("no python3; skipping the cast test");
+    return;
+  }
+  std::string tmpl = "/tmp/soar_cli_castnoav_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const std::string payload = std::string(tmp) + "/payload";
+  REQUIRE(std::filesystem::create_directories(payload));
+  REQUIRE(std::filesystem::copy_file(media, payload + "/00_media.mkv"));
+  const int port = 25000 + (::getpid() % 400);
+  const int renderer_port = 25200 + (::getpid() % 400);
+  Seeder seeder;
+  DlnaRenderer renderer;
+  if (!seeder.start(payload, std::string(tmp) + "/x.torrent", port) ||
+      !renderer.start(std::string(tmp) + "/renderer.log", renderer_port, "noav")) {
+    MESSAGE("fixture did not come up; skipping");
+    renderer.stop();
+    seeder.stop();
+    std::filesystem::remove_all(tmp);
+    return;
+  }
+  const auto run = runCli({"--headless",
+                           std::string("--torrent-store=") + tmp + "/store",
+                           "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                           std::string("--cast=http://127.0.0.1:") +
+                               std::to_string(renderer_port) + "/desc.xml",
+                           std::string(tmp) + "/x.torrent"},
+                          240);
+  seeder.stop();
+  renderer.stop();
+  CHECK(run.exit_code == 1);
+  CHECK(run.output.find("Test Renderer has no AVTransport service") !=
+        std::string::npos);
+  std::filesystem::remove_all(tmp);
+#endif
+#endif
+}
+
+TEST_CASE("headless --cast fails cleanly when the renderer is unreachable") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the cast test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the cast test");
+    return;
+  }
+  std::string tmpl = "/tmp/soar_cli_castdead_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const std::string payload = std::string(tmp) + "/payload";
+  REQUIRE(std::filesystem::create_directories(payload));
+  REQUIRE(std::filesystem::copy_file(media, payload + "/00_media.mkv"));
+  const int port = 25000 + (::getpid() % 400);
+  const int dead_port = closedTcpPort();
+  if (dead_port == 0) {
+    MESSAGE("no closed port available; skipping");
+    std::filesystem::remove_all(tmp);
+    return;
+  }
+  Seeder seeder;
+  if (!seeder.start(payload, std::string(tmp) + "/x.torrent", port)) {
+    MESSAGE("seed_torrent did not come up; skipping");
+    seeder.stop();
+    std::filesystem::remove_all(tmp);
+    return;
+  }
+  const auto run = runCli({"--headless",
+                           std::string("--torrent-store=") + tmp + "/store",
+                           "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                           std::string("--cast=http://127.0.0.1:") +
+                               std::to_string(dead_port) + "/desc.xml",
+                           std::string(tmp) + "/x.torrent"},
+                          240);
+  seeder.stop();
+  CHECK(run.exit_code == 1);
+  CHECK(run.output.find("cannot reach") != std::string::npos);
+  std::filesystem::remove_all(tmp);
+#endif
+#endif
+}
+
+// The cast walkthrough injector. Mode "direct" waits for the cast to go
+// live in the renderer log, opens the t overlay, clicks Search again (a
+// 3s SSDP burst with no responder on the private display) and Stop
+// casting, then quits through the Escape storm the other injectors use.
+// Mode "auto" only waits out the pre-armed --cast=auto discovery burst
+// (which answers nothing here) and quits; mode "fail" opens the overlay
+// immediately and quits after a 404ing description killed the handshake.
+// All modes deliver real XTEST input on the private X server, so this
+// script needs python3-xlib.
+constexpr char kCastWalkthroughScript[] = R"PY(
+import sys, time
+from Xlib import X, display as xdisplay
+from Xlib.ext import xtest
+
+display_name, rlog, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+
+d = xdisplay.Display(display_name)
+
+def find_win():
+    def walk(w):
+        try:
+            name = w.get_wm_name()
+        except Exception:
+            name = None
+        if name and "soar" in str(name).lower():
+            return w
+        for c in w.query_tree().children:
+            f = walk(c)
+            if f is not None:
+                return f
+        return None
+    return walk(d.screen().root)
+
+def sync():
+    d.sync()
+
+def press(keycode):
+    xtest.fake_input(d, X.KeyPress, keycode)
+    sync()
+    time.sleep(0.05)
+    xtest.fake_input(d, X.KeyRelease, keycode)
+    sync()
+
+def click(x, y):
+    xtest.fake_input(d, X.MotionNotify, x=x, y=y)
+    sync()
+    time.sleep(0.4)
+    xtest.fake_input(d, X.ButtonPress, 1)
+    sync()
+    # Hold across several rendered frames: a press and release inside one
+    # long coverage-build frame is one same-frame pair, and ImGui never
+    # sees a click.
+    time.sleep(0.4)
+    xtest.fake_input(d, X.ButtonRelease, 1)
+    sync()
+    time.sleep(0.8)
+
+def brightness(x, y):
+    # 9x9 mean over the root image (Xvfb 24bpp ZPixmap: 4 bytes per pixel,
+    # blue first — the average is channel-order agnostic).
+    try:
+        img = d.screen().root.get_image(x - 4, y - 4, 9, 9, X.ZPixmap, 0xffffffff)
+        data = img.data
+        total = 0
+        n = 0
+        for i in range(0, len(data) - 3, 4):
+            total += (data[i] + data[i + 1] + data[i + 2]) // 3
+            n += 1
+        return total / max(n, 1)
+    except Exception:
+        return 0.0
+
+def escape_until_gone():
+    esc = d.keysym_to_keycode(0xFF1B)  # XK_Escape
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        win = find_win()
+        if win is None:
+            return True
+        try:
+            win.set_input_focus(X.RevertToParent, X.CurrentTime)
+        except Exception:
+            pass
+        sync()
+        press(esc)
+        time.sleep(0.5)
+    return find_win() is None
+
+if mode == "direct":
+    live = False
+    for _ in range(240):
+        try:
+            if "\nplay\n" in open(rlog).read():
+                live = True
+                break
+        except FileNotFoundError:
+            pass
+        time.sleep(0.5)
+    if not live:
+        escape_until_gone()
+        sys.exit(3)
+    time.sleep(1.5)
+
+win = None
+for _ in range(60):
+    win = find_win()
+    if win is not None:
+        break
+    time.sleep(0.5)
+if win is None:
+    sys.exit(3)
+
+# get_geometry's x/y are parent-relative, but a top-level window's parent
+# is the root, so they are absolute here (translate_coords reads the other
+# side of the translation and led every early probe astray).
+geo = win.get_geometry()
+cx = geo.x + geo.width // 2
+cy = geo.y + geo.height // 2
+
+if mode == "direct":
+    try:
+        win.set_input_focus(X.RevertToParent, X.CurrentTime)
+        sync()
+        t_key = d.keysym_to_keycode(ord("t"))
+        # The Stop button sits one text line below the position readout,
+        # and that line appears on the first GetPositionInfo poll (~1s
+        # cadence). Until it does the whole block sits one line higher, so
+        # wait for the button's pixels before trusting either coordinate.
+        stop_x, stop_y = cx - 197, cy - 114
+        search_x, search_y = cx - 197, cy - 89
+        for _ in range(24):
+            if brightness(stop_x, stop_y) > 35.0:
+                break
+            press(t_key)  # a lost first press; re-pressing re-opens
+            time.sleep(1.0)
+        if brightness(stop_x, stop_y) > 35.0:
+            # Three presses, three guards: the first starts a burst, the
+            # second lands while it is still running (one-at-a-time), the
+            # third after it finished reaps the dead thread and respawns.
+            click(search_x, search_y)
+            time.sleep(1.0)
+            click(search_x, search_y)
+            time.sleep(4.0)  # the 3s discovery window plus its toast
+            click(search_x, search_y)
+            time.sleep(4.0)
+            click(stop_x, stop_y)
+            time.sleep(1.5)
+    except Exception:
+        pass
+elif mode == "auto":
+    # Give the async torrent time to serve and the pre-armed --cast=auto
+    # burst its full 3s window (plus toast margin) before the quit storm,
+    # so the discovery path actually runs.
+    time.sleep(12.0)
+else:
+    # "fail"/"silent": open the overlay immediately — the async torrent is
+    # usually still preparing, so the not-yet-serving line shows — and
+    # keep it open across the failure. "silent" needs the longer wait:
+    # the receiver dies after Play and the poll failures take ~10s to
+    # declare it dead.
+    try:
+        win.set_input_focus(X.RevertToParent, X.CurrentTime)
+        sync()
+        press(d.keysym_to_keycode(ord("t")))
+    except Exception:
+        pass
+    time.sleep(16.0 if mode == "silent" else 10.5)
+
+if mode == "notorrent":
+    # No torrent at all: the overlay's no-source explanation text.
+    try:
+        win.set_input_focus(X.RevertToParent, X.CurrentTime)
+        sync()
+        press(d.keysym_to_keycode(ord("t")))
+    except Exception:
+        pass
+    time.sleep(2.5)
+
+if mode == "wait":
+    # A source that never serves (trackerless magnet): the pre-armed cast
+    # request keeps waiting, and the early overlay shows the not-yet-
+    # serving line the whole time.
+    try:
+        win.set_input_focus(X.RevertToParent, X.CurrentTime)
+        sync()
+        press(d.keysym_to_keycode(ord("t")))
+    except Exception:
+        pass
+    time.sleep(8.0)
+
+if not escape_until_gone():
+    sys.exit(4)
+sys.exit(0)
+)PY";
+
+TEST_CASE("windowed --cast drives the overlay and the renderer end to end") {
+#ifdef _WIN32
+  MESSAGE("the X11 cast walkthrough is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  MESSAGE("no ImGui; the cast overlay does not exist; skipping");
+  return;
+#else
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the X11 cast walkthrough");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the X11 cast walkthrough");
+    return;
+  }
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the X11 cast walkthrough");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the X11 cast walkthrough");
+    return;
+  }
+  std::string tmpl = "/tmp/soar_cli_castx11_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const std::string payload = std::string(tmp) + "/payload";
+  REQUIRE(std::filesystem::create_directories(payload));
+  REQUIRE(std::filesystem::copy_file(media, payload + "/00_media.mkv"));
+  const int port = 25000 + (::getpid() % 400);
+  const int renderer_port = 25200 + (::getpid() % 400);
+  const std::string log_path = std::string(tmp) + "/renderer.log";
+  Seeder seeder;
+  DlnaRenderer renderer;
+  if (!seeder.start(payload, std::string(tmp) + "/x.torrent", port) ||
+      !renderer.start(log_path, renderer_port, "ok")) {
+    MESSAGE("fixture did not come up; skipping");
+    renderer.stop();
+    seeder.stop();
+    std::filesystem::remove_all(tmp);
+    return;
+  }
+
+  // Same private-display scheme as the other window tests (this binary
+  // runs its cases serially, so the servers never overlap).
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the X11 cast walkthrough");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    seeder.stop();
+    renderer.stop();
+    std::filesystem::remove_all(tmp);
+    return;
+  }
+
+  // Launch 1: pre-armed direct cast. The window starts the session itself
+  // once the async torrent serves, the overlay shows the live position,
+  // and the injector's two clicks exercise search + stop before quitting.
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kCastWalkthroughScript, display.c_str(),
+             log_path.c_str(), "direct", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // The walkthrough probes probed every coordinate under the bitmap font;
+  // the scaled TTF face reflows the overlay and moves both buttons.
+  const ScopedEnv font_env("SOAR_UI_BITMAP_FONT", "1");
+  const auto run = runCli({std::string("--torrent-store=") + tmp + "/store",
+                           "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                           std::string("--cast=http://127.0.0.1:") +
+                               std::to_string(renderer_port) + "/desc.xml",
+                           std::string(tmp) + "/x.torrent"},
+                          300);
+  ::waitpid(injector, nullptr, 0);
+  const std::string seen = renderer.logged();
+  std::printf("x11 cast walkthrough: cli exit=%d, renderer log:\n%s\n",
+              run.exit_code, seen.c_str());
+
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("event: media-info") != std::string::npos);
+  INFO(seen);
+  CHECK(seen.find("\nplay\n") != std::string::npos);
+  // The overlay's Stop casting button (or the destructor) must have told
+  // the renderer to stop — a cast cannot silently outlive the process.
+  CHECK(seen.find("\nstop\n") != std::string::npos);
+
+  // Launch 2: --cast=auto with no responder. The burst fails after its
+  // window and the session-less t overlay path stays honest; the case
+  // pins the clean exit, the coverage numbers carry the rest.
+  const std::string empty_log = std::string(tmp) + "/auto.log";
+  { std::ofstream touch(empty_log); }
+  pid_t injector2 = ::fork();
+  REQUIRE(injector2 >= 0);
+  if (injector2 == 0) {
+    ::execlp("python3", "python3", "-c", kCastWalkthroughScript, display.c_str(),
+             empty_log.c_str(), "auto", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  const auto run2 = runCli({std::string("--torrent-store=") + tmp + "/store2",
+                            "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                            "--cast=auto",
+                            std::string(tmp) + "/x.torrent"},
+                           300);
+  ::waitpid(injector2, nullptr, 0);
+  std::printf("x11 cast auto walkthrough: cli exit=%d\n", run2.exit_code);
+  CHECK(run2.exit_code == 0);
+
+  // Launch 3: a description URL that answers 404. The handshake fails
+  // after the bridge serves, the toast fires, and the overlay (already
+  // open) shows the Failed phase text.
+  pid_t injector3 = ::fork();
+  REQUIRE(injector3 >= 0);
+  if (injector3 == 0) {
+    ::execlp("python3", "python3", "-c", kCastWalkthroughScript, display.c_str(),
+             log_path.c_str(), "fail", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  const auto run3 = runCli({std::string("--torrent-store=") + tmp + "/store3",
+                            "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                            std::string("--cast=http://127.0.0.1:") +
+                                std::to_string(renderer_port) + "/missing.xml",
+                            std::string(tmp) + "/x.torrent"},
+                           300);
+  ::waitpid(injector3, nullptr, 0);
+  std::printf("x11 cast fail walkthrough: cli exit=%d\n", run3.exit_code);
+  CHECK(run3.exit_code == 0);
+  CHECK(run3.output.find("event: media-info") != std::string::npos);
+
+  // Launch 4: a renderer that accepts the source and dies. The poll
+  // failures pile up until the session declares the receiver dead, and
+  // the t overlay the injector opened early shows the Failed phase.
+  const int dead_port = 25400 + (::getpid() % 400);
+  DlnaRenderer silent;
+  const std::string silent_log = std::string(tmp) + "/silent.log";
+  if (!silent.start(silent_log, dead_port, "silent")) {
+    MESSAGE("silent renderer did not come up; skipping that launch");
+  } else {
+    pid_t injector4 = ::fork();
+    REQUIRE(injector4 >= 0);
+    if (injector4 == 0) {
+      ::execlp("python3", "python3", "-c", kCastWalkthroughScript, display.c_str(),
+               silent_log.c_str(), "silent", static_cast<char*>(nullptr));
+      _exit(127);
+    }
+    const auto run4 = runCli({std::string("--torrent-store=") + tmp + "/store4",
+                              "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                              std::string("--cast=http://127.0.0.1:") +
+                                  std::to_string(dead_port) + "/desc.xml",
+                              std::string(tmp) + "/x.torrent"},
+                             300);
+    ::waitpid(injector4, nullptr, 0);
+    std::printf("x11 cast silent walkthrough: cli exit=%d\n", run4.exit_code);
+    CHECK(run4.exit_code == 0);
+    // The receiver really did accept the source before dying.
+    CHECK(silent.logged().find("\nplay\n") != std::string::npos);
+  }
+  silent.stop();
+
+  // Launch 5: no torrent at all (--gui). The t overlay explains the
+  // torrent-only casting contract instead of drawing a status.
+  pid_t injector5 = ::fork();
+  REQUIRE(injector5 >= 0);
+  if (injector5 == 0) {
+    ::execlp("python3", "python3", "-c", kCastWalkthroughScript, display.c_str(),
+             "-", "notorrent", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  const auto run5 = runCli({"--gui"}, 120);
+  ::waitpid(injector5, nullptr, 0);
+  std::printf("x11 cast notorrent walkthrough: cli exit=%d\n", run5.exit_code);
+  CHECK(run5.exit_code == 0);
+
+  // Launch 6: a trackerless magnet never serves, so the pre-armed cast
+  // request keeps waiting through every frame and the early overlay shows
+  // the not-yet-serving line. Quitting mid-wait must stay clean.
+  pid_t injector6 = ::fork();
+  REQUIRE(injector6 >= 0);
+  if (injector6 == 0) {
+    ::execlp("python3", "python3", "-c", kCastWalkthroughScript, display.c_str(),
+             "-", "wait", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  const auto run6 = runCli({std::string("--torrent-store=") + tmp + "/store6",
+                            "--torrent-peer=127.0.0.1:1",
+                            std::string("--cast=http://127.0.0.1:") +
+                                std::to_string(renderer_port) + "/desc.xml",
+                            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=cast-walkthrough"},
+                           300);
+  ::waitpid(injector6, nullptr, 0);
+  std::printf("x11 cast magnet walkthrough: cli exit=%d\n", run6.exit_code);
+  CHECK(run6.exit_code == 0);
+
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+  seeder.stop();
+  renderer.stop();
+  std::filesystem::remove_all(tmp);
+#endif
+#endif
+#endif
+}
 #endif  // SOAR_SEED_TORRENT
+
+TEST_CASE("--cast without a torrent source is rejected before anything opens") {
+  // The torrent-only guard fires before the player opens anything, so no
+  // fixture is needed: the source argument never gets opened.
+  const auto run = runCli({"--headless", "--cast=http://127.0.0.1:1/desc.xml",
+                           "definitely-not-a-torrent.mkv"});
+  CHECK(run.exit_code == 2);
+  CHECK(run.output.find("--cast needs a torrent source") != std::string::npos);
+}
 
 TEST_CASE("headless run over the null backend succeeds") {
   const auto run = runCli({"--headless", "--backend=null", "asset://sample"});

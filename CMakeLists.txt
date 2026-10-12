@@ -201,7 +201,7 @@ if(SOAR_BUILD_APP)
   # soar --version prints this; install scripts use it as the post-install
   # smoke check (daily-build's BUILD_INFO greps the same project VERSION).
   target_compile_definitions(soar PRIVATE SOAR_APP_VERSION="${PROJECT_VERSION}")
-  target_link_libraries(soar PRIVATE soar::core soar_app_ui soar_p2p)
+  target_link_libraries(soar PRIVATE soar::core soar_app_ui soar_p2p soar_cast)
   if(WIN32)
     # player_window.cpp 的打开文件对话框（GetOpenFileNameW）——窗口代码
     # 两个前端共用，控制台 soar.exe 也一样能按 O / 点海报选文件。

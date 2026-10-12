@@ -37,6 +37,11 @@
 
 #  include "torrent_stream.h"
 
+#  ifdef SOAR_WITH_IMGUI
+#    include "cast_session.h"   // DLNA control point (docs/mvp.md §3)
+#    include "renderer.h"       // DiscoveredRenderer for the cast overlay
+#  endif
+
 #  include <algorithm>
 #  include <atomic>
 #  include <cctype>
@@ -49,7 +54,10 @@
 #  include <fstream>
 #  include <iterator>
 #  include <map>
+#  include <memory>
+#  include <mutex>
 #  include <string>
+#  include <thread>
 #  include <utility>
 #  include <vector>
 
@@ -172,7 +180,8 @@ const char* trackTypeName(TrackType t) {
 }
 
 // Which overlay page is open; at most one at a time (docs/ui-design.md §2).
-enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist, DirPick, Library };
+enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist, DirPick, Library,
+                     Cast };
 
 // Letterbox destination: the frame scaled to fit, centered (docs §4 — the
 // video area is always aspect-correct on the theme background).
@@ -432,6 +441,7 @@ class PlayerHud {
       : player_(player), cfg_(cfg), window_(window), recent_(cfg.recent_path),
         current_uri_(cfg.initial_uri), source_label_(cfg.source_label),
         torrent_(cfg.torrent), torrent_pending_(cfg.torrent != nullptr),
+        cast_location_(cfg.cast_location),
         recent_dirs_(defaultRecentDirsPath(), 8),
         library_(cfg.library),
         subtitle_fonts_(loadSubtitleFonts()) {
@@ -509,6 +519,11 @@ class PlayerHud {
   // away. The player is still open here (runPlayerWindow stops it after
   // the HUD block ends), so position()/state() are live.
   ~PlayerHud() {
+    // The cast session dies first: its stop() restores the bridge to
+    // 127.0.0.1 and joins the poller, and the discovery thread (a bounded
+    // 3s window) must be joined before the members go away.
+    endCastSearch();
+    if (cast_active_) cast_active_->stop();
     if (library_ == nullptr) return;
     if (!current_uri_.empty() && !isTorrentBridge(current_uri_)) {
       switch (player_.state()) {
@@ -667,6 +682,9 @@ class PlayerHud {
           case ShortcutAction::Library:
             openLibrary();  // media library (docs/mvp.md §3)
             return;
+          case ShortcutAction::Cast:
+            openCast();  // DLNA cast overlay (docs/mvp.md §3)
+            return;
           case ShortcutAction::QueueNext:
             playlistStep(false, now);
             return;
@@ -797,6 +815,7 @@ class PlayerHud {
   // called between ImGui::NewFrame and ImGui::Render.
   void drawUi(milliseconds now, bool video_active) {
     handlePendingTorrent(now);
+    handleCastTick(now);
     const ImGuiIO& io = ImGui::GetIO();
     // A minimized window reports a zero-sized drawable, and every OSC
     // dimension below is derived from it (bar_w would go negative). Skip
@@ -1416,6 +1435,191 @@ class PlayerHud {
     toggleOverlay(Overlay::Library);
   }
 
+  // ---- Casting (docs/mvp.md §3): the DLNA control-point entry ----
+  //
+  // Ownership: every start attempt constructs a fresh CastSession (the
+  // component's start() demands the Idle phase, so a failed attempt can
+  // never restart in place — a new object is the retry). Discovery runs on
+  // a plain background thread so the 3s M-SEARCH window never freezes the
+  // UI; the session itself is always started from the UI thread with a
+  // direct location, which keeps CastSession's owner-thread contract.
+
+  void openCast() { toggleOverlay(Overlay::Cast); }
+
+  // One discovery burst in the background; results land under cast_mu_.
+  void beginCastSearch() {
+    if (cast_discover_thread_.joinable()) {
+      if (cast_searching_.load(std::memory_order_acquire)) return;  // one at a time
+      cast_discover_thread_.join();  // finished: reap before respawning
+    }
+    {
+      std::lock_guard<std::mutex> lock(cast_mu_);
+      cast_found_.clear();
+    }
+    cast_searching_.store(true, std::memory_order_release);
+    cast_discover_thread_ = std::thread([this] {
+      std::vector<soar::cast::DiscoveredRenderer> found;
+      std::string err;
+      soar::cast::discoverRenderers(3000, &found, &err, nullptr);
+      std::lock_guard<std::mutex> lock(cast_mu_);
+      cast_found_ = std::move(found);
+      cast_searching_.store(false, std::memory_order_release);
+    });
+  }
+
+  // Joins the discovery thread (bounded by the component's 3s window).
+  void endCastSearch() {
+    if (cast_discover_thread_.joinable()) cast_discover_thread_.join();
+  }
+
+  // Starts a cast toward the renderer description at `location`. One
+  // session at a time: a fresh attempt stops and replaces the previous one.
+  void startCastTo(const std::string& location, milliseconds now) {
+    if (torrent_ == nullptr || torrent_->phase() != soar::p2p::TorrentPhase::Serving) {
+      st_.toast.show("The torrent source is not serving", now);
+      return;
+    }
+    if (cast_active_ && cast_active_->phase() == soar::cast::CastSession::Phase::Casting) {
+      return;  // already casting; stop first
+    }
+    if (cast_active_) cast_active_->stop();
+    auto session = std::make_unique<soar::cast::CastSession>();
+    soar::cast::CastSession::Params p;
+    p.bridge = torrent_;
+    p.renderer_location = location;
+    p.title = source_label_;
+    p.on_position = [this](std::int64_t pos, std::int64_t dur) {
+      cast_pos_ms_.store(pos, std::memory_order_relaxed);
+      cast_dur_ms_.store(dur, std::memory_order_relaxed);
+    };
+    if (session->start(p)) {
+      st_.toast.show("Casting to " + session->rendererName(), now);
+      cast_active_ = std::move(session);
+    } else {
+      st_.toast.show("Cast failed: " + session->lastError(), now);
+    }
+  }
+
+  void stopCast(milliseconds now) {
+    if (!cast_active_) return;
+    cast_active_->stop();
+    st_.toast.show("Cast stopped", now);
+  }
+
+  // Per-frame: the pre-armed --cast request and the auto-pick handoff.
+  // The auto request waits for the discovery burst to finish, then casts
+  // to the first answer (or toasts the silence).
+  void handleCastTick(milliseconds now) {
+    if (cast_location_.empty() || cast_auto_done_) return;
+    if (torrent_ == nullptr ||
+        torrent_->phase() != soar::p2p::TorrentPhase::Serving) {
+      return;  // the pre-armed request waits for a serving bridge
+    }
+    if (cast_location_ != "auto") {
+      cast_auto_done_ = true;
+      startCastTo(cast_location_, now);
+      return;
+    }
+    if (cast_searching_.load(std::memory_order_acquire)) return;
+    if (!cast_discover_started_) {
+      cast_discover_started_ = true;
+      beginCastSearch();
+      return;
+    }
+    cast_auto_done_ = true;  // the burst is over either way
+    std::vector<soar::cast::DiscoveredRenderer> found;
+    {
+      std::lock_guard<std::mutex> lock(cast_mu_);
+      found = cast_found_;
+    }
+    if (found.empty()) {
+      st_.toast.show("No DLNA renderer answered", now);
+      return;
+    }
+    startCastTo(found[0].location, now);
+  }
+
+  void drawCastOverlay() {
+    bool open = true;
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_Appearing);
+    if (ImGui::Begin("Cast", &open, ImGuiWindowFlags_NoSavedSettings)) {
+      const auto now = nowMs();
+      if (torrent_ == nullptr) {
+        ImGui::TextDisabled("%s",
+            "Casting streams a torrent source through the local bridge.\n"
+            "Open a .torrent or magnet: source first - this build casts\n"
+            "torrent sources only (no sender-side transcoding).");
+      } else {
+        const std::string what = source_label_.empty()
+                                     ? std::string("the torrent source")
+                                     : source_label_;
+        ImGui::Text("Cast '%s' to a DLNA renderer", what.c_str());
+        if (torrent_->phase() != soar::p2p::TorrentPhase::Serving) {
+          ImGui::TextDisabled("%s", "The torrent source is not serving yet.");
+        } else if (cast_active_) {
+          switch (cast_active_->phase()) {
+            case soar::cast::CastSession::Phase::Discovering:
+              ImGui::TextDisabled("%s", "Connecting to the renderer...");
+              break;
+            case soar::cast::CastSession::Phase::Casting: {
+              const std::string name = cast_active_->rendererName();
+              ImGui::Text("Casting to %s", name.c_str());
+              const std::int64_t pos = cast_pos_ms_.load(std::memory_order_relaxed);
+              const std::int64_t dur = cast_dur_ms_.load(std::memory_order_relaxed);
+              if (pos >= 0) {
+                std::string line = "at " + formatClock(milliseconds(pos));
+                if (dur > 0) line += " / " + formatClock(milliseconds(dur));
+                ImGui::TextDisabled("%s", line.c_str());
+              }
+              if (ImGui::SmallButton("Stop casting")) stopCast(now);
+              break;
+            }
+            case soar::cast::CastSession::Phase::Failed:
+              ImGui::Text("Cast failed: %s", cast_active_->lastError().c_str());
+              ImGui::TextDisabled("%s", "Pick a renderer below to retry.");
+              break;
+            case soar::cast::CastSession::Phase::Stopped:
+              ImGui::TextDisabled("%s", "Cast stopped. Pick a renderer to start again.");
+              break;
+            case soar::cast::CastSession::Phase::Idle:
+              break;  // between attempts; the list below is the way forward
+          }
+        }
+        ImGui::Separator();
+        if (ImGui::SmallButton("Search again")) beginCastSearch();
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", cast_searching_.load(std::memory_order_acquire)
+                                      ? "searching..."
+                                      : "SSDP M-SEARCH, 3s window");
+        std::vector<soar::cast::DiscoveredRenderer> found;
+        {
+          std::lock_guard<std::mutex> lock(cast_mu_);
+          found = cast_found_;
+        }
+        if (found.empty()) {
+          ImGui::TextDisabled("%s", "No renderers found yet.");
+        }
+        for (const soar::cast::DiscoveredRenderer& d : found) {
+          ImGui::PushID(d.location.c_str());
+          const std::string label =
+              d.friendly_name.empty() ? d.location : d.friendly_name;
+          if (ImGui::Selectable(label.c_str(), false,
+                                ImGuiSelectableFlags_AllowOverlap)) {
+            startCastTo(d.location, now);
+          }
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.location.c_str());
+          ImGui::PopID();
+        }
+      }
+    }
+    ImGui::End();
+    if (!open) st_.overlay = Overlay::None;
+  }
+
+
   // Folder import: every media file under `dir` (recursive per the picker
   // toggle) joins the queue; an empty queue starts playing the first one —
   // importing into a fresh window should leave something on screen, while
@@ -1868,6 +2072,12 @@ class PlayerHud {
                     static_cast<unsigned long long>(have * 100 / total));
       chip("##download", text, 34.0f);
     }
+    // Cast chip while a DLNA session is live (docs/mvp.md §3): the TV
+    // plays even when this window is minimized, so the state stays visible.
+    if (cast_active_ &&
+        cast_active_->phase() == soar::cast::CastSession::Phase::Casting) {
+      chip("##cast", "Casting", 56.0f);
+    }
   }
 
   // Draw subtitle overlay: polls the backend for decoded subtitle frames
@@ -2015,6 +2225,7 @@ class PlayerHud {
       case Overlay::Playlist: drawPlaylistOverlay(); return;
       case Overlay::DirPick: drawDirPickOverlay(); return;
       case Overlay::Library: drawLibraryOverlay(); return;
+      case Overlay::Cast: drawCastOverlay(); return;
     }
   }
 
@@ -2443,6 +2654,8 @@ class PlayerHud {
           {ShortcutAction::Recent, ShortcutAction::None, "Recent files"},
           {ShortcutAction::Playlist, ShortcutAction::None, "Playlist queue"},
           {ShortcutAction::Library, ShortcutAction::None, "Media library"},
+          {ShortcutAction::Cast, ShortcutAction::None,
+           "Cast to a DLNA renderer"},
           {ShortcutAction::QueueNext, ShortcutAction::QueuePrev,
            "Queue next / previous"},
           {ShortcutAction::Help, ShortcutAction::None, "This help"},
@@ -2625,6 +2838,20 @@ class PlayerHud {
   // polls phase() each frame and opens the bridge URL on Serving.
   soar::p2p::TorrentStream* torrent_ = nullptr;
   bool torrent_pending_ = false;
+  // Casting (docs/mvp.md §3): the pre-armed --cast request, one attempt at
+  // a time (a fresh CastSession per start — the component cannot restart a
+  // failed session), the background discovery burst, and the position
+  // mirror the session's poll thread writes for the overlay.
+  std::string cast_location_;
+  bool cast_auto_done_ = false;
+  bool cast_discover_started_ = false;
+  std::unique_ptr<soar::cast::CastSession> cast_active_;
+  std::mutex cast_mu_;
+  std::vector<soar::cast::DiscoveredRenderer> cast_found_;
+  std::atomic<bool> cast_searching_{false};
+  std::atomic<std::int64_t> cast_pos_ms_{-1};
+  std::atomic<std::int64_t> cast_dur_ms_{-1};
+  std::thread cast_discover_thread_;
   // Open-folder flow (v0.2.1): recent directories MRU (smaller cap than
   // files), the picker's browse position, and the recursive-import choice
   // (kept for the session so repeated imports share one setting).

@@ -136,6 +136,7 @@ enum class ShortcutAction {
   Playlist, Library,
   QueueNext, QueuePrev,
   Info, Recent, Help,
+  Cast,               // t: the DLNA cast overlay (docs/mvp.md §3)
   Quit,
 };
 

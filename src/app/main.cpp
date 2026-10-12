@@ -17,6 +17,7 @@
 #endif
 
 #include "torrent_stream.h"
+#include "cast_session.h"
 
 #include <chrono>
 #include <cstdint>
@@ -69,6 +70,9 @@ static void print_usage(const char* argv0) {
   fmt::print("  --torrent-index=  Which file of a multi-file torrent to stream (default 0)\n");
   fmt::print("  --torrent-list    Print the torrent's file table and exit (magnet:\n");
   fmt::print("                    contacts the swarm for metadata first)\n");
+  fmt::print("  --cast=     Cast a torrent source to a DLNA renderer: a device\n");
+  fmt::print("                    description URL, or auto for one SSDP discovery\n");
+  fmt::print("                    burst; needs a .torrent/magnet: source\n");
   fmt::print("Sources: local paths, http(s)://, .torrent files and magnet: URIs\n");
   fmt::print("(served over a local-http bridge, docs/mvp.md §5 P4).\n");
 #ifdef SOAR_WITH_FFMPEG
@@ -162,6 +166,7 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   std::vector<std::string> torrent_peers;
   int torrent_index = 0;
   bool torrent_list = false;
+  std::string cast_arg;  // --cast=<location|auto> (docs/mvp.md §3)
   bool resume_playback = true;  // --no-resume clears it (window sessions only)
   std::string shortcuts_path;   // --shortcuts= (empty = the state-dir file)
   bool shortcuts_enabled = true;  // --no-shortcuts clears it (window only)
@@ -212,6 +217,13 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
       torrent_index = std::atoi(arg.c_str() + 16);
     } else if (arg == "--torrent-list") {
       torrent_list = true;
+    } else if (arg.rfind("--cast=", 0) == 0) {
+      cast_arg = arg.substr(7);  // after "--cast="
+      if (cast_arg.empty()) {
+        fmt::print(stderr, "--cast needs a location or auto\n");
+        print_usage(argv[0]);
+        return 2;
+      }
     } else if (arg == "--no-resume") {
       resume_playback = false;
     } else if (arg == "--no-shortcuts") {
@@ -309,12 +321,14 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   // True when the stream was started with startAsync() for the window (the
   // bridge is opened by the window's pending-torrent poll, not here).
   bool torrent_async = false;
+  bool source_is_torrent = false;
   if (uri_index >= 0) {
     const std::string lower_uri = lower_copy(uri);
     const bool is_magnet = lower_uri.rfind("magnet:", 0) == 0;
     const bool is_torrent = !is_magnet &&
         lower_uri.size() > 8 && lower_uri.compare(lower_uri.size() - 8, 8, ".torrent") == 0;
     if (is_magnet || is_torrent) {
+      source_is_torrent = true;
       if (torrent_store.empty()) {
         torrent_store =
             (std::filesystem::temp_directory_path() / "soar-torrent").string();
@@ -401,7 +415,22 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
     }
   }
 
+  // Casting rides the torrent bridge (docs/mvp.md §3): the renderer fetches
+  // the stream from it. Without a torrent source there is nothing to cast
+  // — say so at launch instead of failing inside the window.
+  if (!cast_arg.empty() && !source_is_torrent) {
+    fmt::print(stderr,
+               "--cast needs a torrent source (.torrent or magnet:); this "
+               "build casts torrent sources only\n");
+    return 2;
+  }
+
   soar::Player player(std::move(backend));
+  // DLNA cast session (--cast=, docs/mvp.md §3). Declared after the bridge
+  // it points at, so it dies first: its destructor sends SOAP Stop and
+  // puts the bridge back on 127.0.0.1. Headless starts it below; the
+  // window starts it itself once the async torrent source is serving.
+  soar::cast::CastSession cast_session;
   // Mirrors the BufferingStarted/Ended event pair for the window UI's
   // buffering chip (backend threads set it; the window loop polls it).
   std::atomic<bool> buffering{false};
@@ -485,6 +514,26 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   }
 
   if (headless) {
+    // Headless cast (--cast=): run the control-point handshake against the
+    // serving bridge, then leave with the usual headless contract. The
+    // session's destructor stops the renderer and restores the bridge — a
+    // TV cast cannot outlive this process (the bridge dies with it).
+    if (!cast_arg.empty()) {
+      soar::cast::CastSession::Params cp;
+      cp.bridge = &torrent_stream;
+      cp.renderer_location = cast_arg == "auto" ? "" : cast_arg;
+      cp.title = torrent_stream.fileName();
+      if (!cast_session.start(cp)) {
+        // Most session errors already carry the "cast: " subject; the
+        // printer owns the prefix, so a duplicate comes off (the ssdp
+        // errors are the ones that rely on it being added here).
+        std::string err = cast_session.lastError();
+        if (err.rfind("cast: ", 0) == 0) err.erase(0, 6);
+        fmt::print(stderr, "cast: {}\n", err);
+        return 1;
+      }
+      fmt::print(stderr, "cast: {} <- {}\n", cast_session.rendererName(), uri);
+    }
     (void)player.seek(std::chrono::seconds(1));
     (void)player.pause();
     (void)player.stop();
@@ -537,6 +586,9 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   // bridge URL itself once Serving lands (poster shows the wait; Failed is
   // a toast). Null for ordinary and synchronous sources.
   ui_cfg.torrent = torrent_async ? &torrent_stream : nullptr;
+  // --cast request (docs/mvp.md §3): the window starts the DLNA session
+  // once the source is serving and offers the picking overlay on t.
+  ui_cfg.cast_location = cast_arg;
 #  ifdef SOAR_WITH_FFMPEG
   ui_cfg.ffmpeg = ffmpeg_backend;
 #  endif
