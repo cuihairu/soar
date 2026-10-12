@@ -31,9 +31,15 @@
       -O1 时序躲开）——arm 移入 decode_mutex_ 锁内（arm 先于
       setupDecoders 的既序不变），三连跑绿。
 - [x] **门禁**：六树 13/13 全绿（system / tsan -O1 / tsan -O0 / asan 均
-      无 X11 对齐 CI，no-imgui + cov3 带 X11），gcovr 行 **95.3%
-      （8017/8411）**、支 **85.2%（8660/10168）**，对 95.0/84.6 余量
-      ~28 行/~59 支（> 抖动带）。
+      无 X11 对齐 CI，no-imgui + cov3 带 X11；http_cache 夹具在并发
+      负载下两次端口抽奖 flake，串行重跑即绿），gcovr 行 **95.4%
+      （8022/8411）**、支 **85.2%（8661/10168）**，对 95.0/84.6 余量
+      ~31 行/~59 支（> 抖动带）。
+- [x] **补 CI 两腿编译红**（run 38208822456 的 windows/macos，正是
+      本批代码）：soarw 无条件 include `cast_session.h` 却没链
+      `soar_cast`（8f28301）；`::ntohs` 在 Darwin 是宏、加 `::`
+      限定语法不成立（f06c5c5）。两处只在 Windows-only / macOS-only
+      目标里露，Linux 本地树永不构建，从 CI 日志定位。
 
 ### 如实说明
 
