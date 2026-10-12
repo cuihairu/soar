@@ -459,9 +459,15 @@ TEST_CASE("a self-seeded torrent serves the whole file over local HTTP") {
   CHECK(st.metadata);
   CHECK(st.total == s.bytes.size());
   CHECK(st.downloaded == s.bytes.size());
-  std::lock_guard<std::mutex> lock(progress_mu);
-  CHECK(progress_calls >= 1);
-  CHECK(last_progress.metadata);
+  // The guard must drop before stop(): stop() joins the monitor thread,
+  // whose next tick re-enters on_progress — a guard held across the join
+  // deadlocks the case on the callback's own mutex (seen under tsan -O0,
+  // where the tick phase lands inside this window deterministically).
+  {
+    std::lock_guard<std::mutex> lock(progress_mu);
+    CHECK(progress_calls >= 1);
+    CHECK(last_progress.metadata);
+  }
 
   stream.stop();
   CHECK(stream.phase() == p2p::TorrentPhase::Idle);
