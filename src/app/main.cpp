@@ -73,6 +73,9 @@ static void print_usage(const char* argv0) {
   fmt::print("  --cast=     Cast a torrent source to a DLNA renderer: a device\n");
   fmt::print("                    description URL, or auto for one SSDP discovery\n");
   fmt::print("                    burst; needs a .torrent/magnet: source\n");
+  fmt::print("  --cast-transcode  Transcode the source to H.264/AAC MPEG-TS while\n");
+  fmt::print("                    casting, for renderers that cannot decode the\n");
+  fmt::print("                    original (needs the FFmpeg backend; Seek is off)\n");
   fmt::print("Sources: local paths, http(s)://, .torrent files and magnet: URIs\n");
   fmt::print("(served over a local-http bridge, docs/mvp.md §5 P4).\n");
 #ifdef SOAR_WITH_FFMPEG
@@ -167,6 +170,7 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   int torrent_index = 0;
   bool torrent_list = false;
   std::string cast_arg;  // --cast=<location|auto> (docs/mvp.md §3)
+  bool cast_transcode = false;  // --cast-transcode: sender-side H.264/AAC TS
   bool resume_playback = true;  // --no-resume clears it (window sessions only)
   std::string shortcuts_path;   // --shortcuts= (empty = the state-dir file)
   bool shortcuts_enabled = true;  // --no-shortcuts clears it (window only)
@@ -224,6 +228,8 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
         print_usage(argv[0]);
         return 2;
       }
+    } else if (arg == "--cast-transcode") {
+      cast_transcode = true;
     } else if (arg == "--no-resume") {
       resume_playback = false;
     } else if (arg == "--no-shortcuts") {
@@ -523,6 +529,7 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
       cp.bridge = &torrent_stream;
       cp.renderer_location = cast_arg == "auto" ? "" : cast_arg;
       cp.title = torrent_stream.fileName();
+      cp.transcode = cast_transcode;
       if (!cast_session.start(cp)) {
         // Most session errors already carry the "cast: " subject; the
         // printer owns the prefix, so a duplicate comes off (the ssdp
@@ -589,6 +596,7 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   // --cast request (docs/mvp.md §3): the window starts the DLNA session
   // once the source is serving and offers the picking overlay on t.
   ui_cfg.cast_location = cast_arg;
+  ui_cfg.cast_transcode = cast_transcode;
 #  ifdef SOAR_WITH_FFMPEG
   ui_cfg.ffmpeg = ffmpeg_backend;
 #  endif

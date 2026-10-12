@@ -167,12 +167,18 @@ add_library(soar_cast STATIC
   src/cast/soap.cpp
   src/cast/eventing.cpp
   src/cast/event_server.cpp
+  src/cast/transcode_server.cpp
   src/cast/renderer.cpp
   src/cast/cast_session.cpp
 )
 target_include_directories(soar_cast PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/cast)
 target_compile_features(soar_cast PUBLIC cxx_std_17)
-target_link_libraries(soar_cast PUBLIC soar_p2p)
+# soar_core carries the FFmpeg probe (SOAR_WITH_FFMPEG + the libav link);
+# the transcode server reuses that one probe instead of re-running its
+# own, so the capability switch is identical everywhere. PUBLIC: the cast
+# tests see the same switch as the app. Without FFmpeg the server
+# compiles to its explicit-failure stub.
+target_link_libraries(soar_cast PUBLIC soar_p2p soar_core)
 if(WIN32)
   target_link_libraries(soar_cast PUBLIC ws2_32)
 endif()

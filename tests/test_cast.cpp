@@ -19,6 +19,7 @@
 #include "ssdp.h"
 #include "text_util.h"
 #include "torrent_stream.h"
+#include "transcode_server.h"
 
 #include <algorithm>
 #include <atomic>
@@ -721,6 +722,7 @@ struct FakeState {
   std::mutex mu;
   std::string uri;
   std::string title;
+  std::string didl;  // the unescaped DIDL metadata (protocolInfo assertions)
   std::string seek_target;
   bool played = false;
   bool stop_requested = false;
@@ -967,6 +969,7 @@ void serveConn(std::shared_ptr<FakeState> state, int fd) {
       // text is escaped a second time.
       const std::string didl =
           soar::cast::xmlDecode(soar::cast::tagText(rest, "CurrentURIMetaData"));
+      state->didl = didl;
       state->title = soar::cast::xmlDecode(soar::cast::tagText(didl, "dc:title"));
       if (state->fault_set_uri) {
         body = state->fault_no_desc ? fault_body_no_desc : fault_body;
@@ -1238,6 +1241,10 @@ class FakeRenderer {
   std::string lastTitle() {
     std::lock_guard<std::mutex> lock(state_->mu);
     return state_->title;
+  }
+  std::string lastDidl() {
+    std::lock_guard<std::mutex> lock(state_->mu);
+    return state_->didl;
   }
   std::string lastSeekTarget() {
     std::lock_guard<std::mutex> lock(state_->mu);
@@ -1906,7 +1913,8 @@ TEST_CASE("a renderer that never advances the position reports the decode failur
   REQUIRE_MESSAGE(session.start(params), "start failed: " << session.lastError());
   CHECK(waitPhase(session, cast::CastSession::Phase::Failed, 15000));
   CHECK(session.lastError().find("cannot decode") != std::string::npos);
-  CHECK(session.lastError().find("no sender-side transcoding") != std::string::npos);
+  CHECK(session.lastError().find("transcoding was not requested") !=
+        std::string::npos);
   // Failure cleanup restored the bridge.
   CHECK(bridge.playbackUrl().rfind("http://127.0.0.1:", 0) == 0);
 }
@@ -2159,5 +2167,720 @@ TEST_CASE("a session without a serving bridge or renderer fails fast") {
   session.stop();
   session.stop();
 }
+
+// ---- the GENA event server over real sockets ----------------------------
+// The renderer POSTs NOTIFY requests here; these cases drive the accepted
+// connections raw: well-formed bodies reach the callback, malformed and
+// hostile clients get a bare 200 (or nothing) and never disturb the loop.
+
+int dial(int port) {
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  REQUIRE(fd >= 0);
+  timeval tv{};
+  tv.tv_sec = 20;
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<unsigned short>(port));
+  REQUIRE(::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) == 1);
+  REQUIRE(::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+  return fd;
+}
+
+// Sends everything, then reads until the server closes. "" on a reset.
+std::string talk(int fd, const std::string& out) {
+  size_t off = 0;
+  while (off < out.size()) {
+    const ssize_t w = ::send(fd, out.data() + off, out.size() - off, 0);
+    REQUIRE(w > 0);
+    off += static_cast<size_t>(w);
+  }
+  std::string all;
+  char buf[4096];
+  for (;;) {
+    const ssize_t r = ::recv(fd, buf, sizeof(buf), 0);
+    if (r <= 0) break;
+    all.append(buf, static_cast<size_t>(r));
+  }
+  return all;
+}
+
+bool replyIsBare200(const std::string& reply) {
+  return reply.rfind("HTTP/1.1 200 OK\r\n", 0) == 0 &&
+         reply.find("CONTENT-LENGTH: 0") != std::string::npos;
+}
+
+TEST_CASE("event server delivers NOTIFY bodies and shrugs off junk") {
+  cast::EventServer es;
+  std::string err;
+  std::vector<std::string> bodies;
+  REQUIRE(es.start([&bodies](std::string_view body) {
+            bodies.emplace_back(body);
+          }, &err));
+  const int port = es.port();
+  REQUIRE(port > 0);
+  CHECK(es.callbackUrlFor("127.0.0.1") ==
+        "http://127.0.0.1:" + std::to_string(port) + "/cast/events");
+
+  // A well-formed NOTIFY: the callback fires with exactly the body.
+  {
+    const int fd = dial(port);
+    const std::string body = "<e xmlns=\"urn:u\">LastChange blah</e>";
+    const std::string reply =
+        talk(fd, "NOTIFY /cast/events HTTP/1.1\r\nHOST: x\r\nCONTENT-TYPE: "
+                 "text/xml\r\nCONTENT-LENGTH: " +
+                     std::to_string(body.size()) + "\r\n\r\n" + body);
+    CHECK(replyIsBare200(reply));
+    REQUIRE(bodies.size() == 1);
+    CHECK(bodies.back() == body);
+    ::close(fd);
+  }
+
+  // A body inline after the blank line with no CONTENT-LENGTH at all:
+  // whatever arrived is what the callback sees (renderers forget the
+  // header; the poll path covers any loss).
+  {
+    const int fd = dial(port);
+    const std::string reply =
+        talk(fd, "NOTIFY /cast/events HTTP/1.1\r\nHOST: x\r\n\r\ninline-body");
+    CHECK(replyIsBare200(reply));
+    REQUIRE(bodies.size() == 2);
+    CHECK(bodies.back() == "inline-body");
+    ::close(fd);
+  }
+
+  // A CONTENT-LENGTH larger than what rode in with the head: the rest of
+  // the body is read off the wire before the callback fires.
+  {
+    const int fd = dial(port);
+    const std::string head =
+        "NOTIFY /cast/events HTTP/1.1\r\nHOST: x\r\nCONTENT-LENGTH: 12\r\n\r\nabc";
+    const std::string reply = talk(fd, head + "defghijklmno");
+    CHECK(replyIsBare200(reply));
+    REQUIRE(bodies.size() == 3);
+    CHECK(bodies.back() == "abcdefghijklmno");
+    ::close(fd);
+  }
+
+  // A complete head with no body: no callback, still a bare 200.
+  {
+    const int fd = dial(port);
+    CHECK(replyIsBare200(talk(fd, "BLAH\r\n\r\n")));
+    CHECK(bodies.size() == 3);
+    ::close(fd);
+  }
+
+  // Connect and close without sending anything: the read fails, the loop
+  // moves on to the next client.
+  {
+    const int fd = dial(port);
+    ::close(fd);
+    const int fd2 = dial(port);  // the accept loop still serves
+    CHECK(replyIsBare200(talk(fd2, "BLAH\r\n\r\n")));
+    ::close(fd2);
+  }
+
+  es.stop();
+  CHECK(es.port() == 0);
+  CHECK(es.callbackUrlFor("127.0.0.1").empty());
+}
+
+TEST_CASE("an oversized headless request is refused, not fatal") {
+  // Regression: a flood past the size cap without a blank line used to
+  // reach head.resize(npos) — length_error out of serveConnection and the
+  // whole process down. The reply must go out and the server must live.
+  cast::EventServer es;
+  std::string err;
+  int fired = 0;
+  REQUIRE(es.start([&fired](std::string_view) { ++fired; }, &err));
+  const int port = es.port();
+
+  {
+    const int fd = dial(port);
+    // Bigger than kMaxNotify (64 KiB), never terminated.
+    CHECK(replyIsBare200(talk(fd, std::string(70 * 1024, 'A'))));
+    ::close(fd);
+  }
+
+  // The loop survived; a normal NOTIFY still lands.
+  {
+    const int fd = dial(port);
+    const std::string reply = talk(fd, "NOTIFY / HTTP/1.1\r\n\r\nafter-flood");
+    CHECK(replyIsBare200(reply));
+    CHECK(fired == 1);
+    ::close(fd);
+  }
+  es.stop();
+}
+
+TEST_CASE("event server rejects degenerate calls cleanly") {
+  cast::EventServer es;
+  std::string err;
+  es.stop();  // stopping an idle server is a no-op
+
+  // No callback: connections are answered, nothing fires.
+  REQUIRE(es.start(nullptr, &err));
+  const int port = es.port();
+  REQUIRE(port > 0);
+  {
+    const int fd = dial(port);
+    CHECK(replyIsBare200(
+        talk(fd, "NOTIFY / HTTP/1.1\r\nCONTENT-LENGTH: 5\r\n\r\nhello")));
+    ::close(fd);
+  }
+
+  // A client that sends nothing gets the bare 200 after the read timeout
+  // and the loop keeps serving (same server, next case runs fresh).
+  CHECK(es.start(nullptr, &err));  // starting twice is a no-op, same port
+  CHECK(es.port() == port);
+
+  es.stop();
+  // The port can be bound again right away.
+  REQUIRE(es.start(nullptr, &err));
+  CHECK(es.port() > 0);
+  // A named peer resolves through getaddrinfo ("localhost" is never a
+  // dotted quad) and still advertises a local callback URL.
+  CHECK(es.callbackUrlFor("localhost").rfind("http://", 0) == 0);
+  es.stop();
+}
+
+TEST_CASE("a silent event client hits the head timeout and still gets the 200") {
+  cast::EventServer es;
+  std::string err;
+  REQUIRE(es.start(nullptr, &err));
+  const int fd = dial(es.port());
+  const auto t0 = std::chrono::steady_clock::now();
+  // Nothing is ever sent; the reply only comes after the server's read
+  // timeout (5 s), so a fast reply here would mean the timeout arm died.
+  CHECK(replyIsBare200(talk(fd, "")));
+  CHECK(std::chrono::steady_clock::now() - t0 > std::chrono::seconds(4));
+  ::close(fd);
+  es.stop();
+}
+
+// ---- sender-side transcoding (src/cast/transcode_server.cpp) -----------
+// The pump runs against the same tiny committed fixtures the player suite
+// uses: one H.264/AAC source the MPEG-TS pair accepts (copied through),
+// one MPEG-4/MP3 source (decoded and re-encoded). Both end to end: the
+// pump demuxes a real (bridge) URL, the HTTP endpoint streams to a real
+// client, and a cast session hands the whole thing to the fixture
+// renderer.
+
+#ifdef SOAR_WITH_FFMPEG
+
+std::string readFixture(const char* rel) {
+  std::ifstream f(std::string(SOAR_TEST_CAST_FIXTURES) + "/" + rel,
+                  std::ios::binary);
+  REQUIRE(f.good());
+  std::string out((std::istreambuf_iterator<char>(f)),
+                  std::istreambuf_iterator<char>());
+  REQUIRE(!out.empty());
+  return out;
+}
+
+// A committed media fixture by name, at the compile-time-pinned absolute
+// path (the CWD of a ctest process is the build tree, so relative names
+// would resolve against it and miss).
+std::string castFixture(const char* name) {
+  return std::string(SOAR_TEST_CAST_FIXTURES) + "/" + name;
+}
+
+// GETs the TS endpoint and reads the head plus the body until the server
+// closes (a finite source ends its stream — no Range anywhere: the
+// endpoint has one live resource).
+struct StreamFetch {
+  int status = 0;
+  std::string content_type;
+  std::string body;
+};
+
+StreamFetch fetchStream(const std::string& host, int port) {
+  StreamFetch out;
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  REQUIRE(fd >= 0);
+  timeval tv{};
+  tv.tv_sec = 20;
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<unsigned short>(port));
+  REQUIRE(::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) == 1);
+  REQUIRE(::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+  const std::string req =
+      "GET / HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n";
+  size_t off = 0;
+  while (off < req.size()) {
+    const ssize_t w = ::send(fd, req.data() + off, req.size() - off, 0);
+    REQUIRE(w > 0);
+    off += static_cast<size_t>(w);
+  }
+  std::string all;
+  char buf[16384];
+  for (;;) {
+    const ssize_t r = ::recv(fd, buf, sizeof(buf), 0);
+    if (r <= 0) break;
+    all.append(buf, static_cast<size_t>(r));
+  }
+  ::close(fd);
+  const size_t head_end = all.find("\r\n\r\n");
+  REQUIRE(head_end != std::string::npos);
+  const std::string head = all.substr(0, head_end);
+  const char* sp = std::strchr(head.c_str(), ' ');
+  out.status = sp != nullptr ? std::atoi(sp + 1) : 0;
+  for (size_t i = 0; i + 1 < head.size(); ++i) {
+    if ((head[i] == 'c' || head[i] == 'C') &&
+        cast::ciEqual(head.substr(i, 13), "content-type:")) {
+      size_t b = i + 13;
+      while (b < head.size() && head[b] == ' ') ++b;
+      size_t e = head.find("\r\n", b);
+      if (e == std::string::npos) e = head.size();
+      out.content_type = head.substr(b, e - b);
+      break;
+    }
+  }
+  out.body = all.substr(head_end + 4);
+  return out;
+}
+
+bool tsSync(const std::string& body) {
+  // MPEG-TS: one 0x47 sync byte per 188-byte packet. A few hundred
+  // packets of pacing is far beyond coincidence.
+  const size_t packets = std::min(body.size() / 188, size_t{200});
+  if (packets < 10) return false;
+  for (size_t i = 0; i < packets; ++i) {
+    if (static_cast<unsigned char>(body[i * 188]) != 0x47) return false;
+  }
+  return true;
+}
+
+// The stream codecs ffprobe finds in a fetched TS body ("h264\naac\n"
+// shape), proving both streams really travel — a byte count alone once
+// hid an audio path that produced nothing. "" when ffprobe is absent.
+std::string probeCodecs(const std::string& body) {
+  if (std::system("command -v ffprobe >/dev/null 2>&1") != 0) return "";
+  const std::string dir = makeTempDir("cast-tsprobe");
+  const std::string file = dir + "/out.ts";
+  writeBytes(file, body);
+  const std::string cmd = "ffprobe -v error -show_entries stream=codec_name "
+                          "-of csv=p=0 " + file + " 2>/dev/null";
+  std::string codecs;
+  if (FILE* probe = ::popen(cmd.c_str(), "r")) {
+    char line[64];
+    while (::fgets(line, sizeof(line), probe) != nullptr) codecs += line;
+    ::pclose(probe);
+  }
+  (void)std::system(("rm -rf " + dir).c_str());
+  return codecs;
+}
+
+// A WAV of sawtooth PCM `seconds` long (44.1 kHz stereo 16-bit): the raw
+// samples are valid noise audio, so the pump encodes it into MPEG-TS well
+// past the 1 MiB in-flight queue — the one way to reach the queue-full
+// backpressure state with a small test footprint.
+std::string makeNoiseWav(const char* tag, int seconds) {
+  const int rate = 44100, channels = 2, bytes_per_sample = 2;
+  const std::string pcm = patternBytes(static_cast<size_t>(rate) * channels *
+                                       bytes_per_sample *
+                                       static_cast<size_t>(seconds));
+  const auto le = [](unsigned v, int n) {
+    std::string s;
+    for (int i = 0; i < n; ++i) {
+      s.push_back(static_cast<char>(v & 0xff));
+      v >>= 8;
+    }
+    return s;
+  };
+  std::string h = "RIFF" + le(0, 4) + "WAVEfmt " + le(16, 4) + le(1, 2) +
+                  le(channels, 2) + le(rate, 4) + le(rate * channels * 2, 4) +
+                  le(channels * 2, 2) + le(16, 2) + "data" + le(pcm.size(), 4);
+  h.replace(4, 4, le(static_cast<unsigned>(pcm.size()) + 36, 4));
+  const std::string dir = makeTempDir(tag);
+  writeBytes(dir + "/noise.wav", h + pcm);
+  return dir + "/noise.wav";
+}
+
+TEST_CASE("transcode copies an already-compatible source to MPEG-TS") {
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(castFixture("cast_h264_aac.mp4"), &err));
+  REQUIRE(ts.waitReady(20000));
+
+  const StreamFetch got = fetchStream("127.0.0.1", ts.port());
+  CHECK(got.status == 200);
+  CHECK(got.content_type == "video/mp2t");
+  // Two seconds of 64k video + 24k audio plus TS overhead: tens of KB.
+  CHECK(got.body.size() > 20000);
+  CHECK(tsSync(got.body));
+  // The copied pair must both be in there (mp4 AAC needs its ADTS
+  // framing rebuilt for TS — the muxer does it from the extradata).
+  const std::string codecs = probeCodecs(got.body);
+  if (!codecs.empty()) {
+    CHECK(codecs.find("h264") != std::string::npos);
+    CHECK(codecs.find("aac") != std::string::npos);
+  }
+
+  ts.stop();
+}
+
+TEST_CASE("transcode re-encodes a source the pair does not accept") {
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(castFixture("cast_mpeg4_mp3.mp4"), &err));
+  // The pump's last error is the diagnostic a failed readiness needs.
+  REQUIRE_MESSAGE(ts.waitReady(20000), ts.lastError());  // mpeg4+mp3: decode + x264/aac encode
+
+  const StreamFetch got = fetchStream("127.0.0.1", ts.port());
+  CHECK(got.status == 200);
+  CHECK(got.body.size() > 20000);
+  CHECK(tsSync(got.body));
+  // Both re-encoded streams must survive the whole chain — this probe is
+  // what catches a resample path that quietly produces no samples.
+  const std::string codecs = probeCodecs(got.body);
+  if (!codecs.empty()) {
+    CHECK(codecs.find("h264") != std::string::npos);
+    CHECK(codecs.find("aac") != std::string::npos);
+  }
+
+  ts.stop();
+}
+
+TEST_CASE("transcode reports a broken source through waitReady") {
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(castFixture("no-such-file.mp4"), &err));
+  CHECK_FALSE(ts.waitReady(20000));
+  CHECK_FALSE(ts.lastError().empty());
+  ts.stop();
+}
+
+TEST_CASE("transcode serves one stream at a time") {
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(castFixture("cast_h264_aac.mp4"), &err));
+  REQUIRE(ts.waitReady(20000));
+
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  REQUIRE(fd >= 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<unsigned short>(ts.port()));
+  REQUIRE(::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) == 1);
+  REQUIRE(::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+  const std::string req = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  ::send(fd, req.data(), req.size(), 0);
+  char buf[512];
+  const ssize_t first = ::recv(fd, buf, sizeof(buf), 0);
+  REQUIRE(first > 0);  // the 200 head and the first stream bytes
+
+  // A second renderer-side fetch while the first holds the slot: 503.
+  const StreamFetch second = fetchStream("127.0.0.1", ts.port());
+  CHECK(second.status == 503);
+
+  ::close(fd);
+  ts.stop();
+}
+
+TEST_CASE("transcode scales an odd-size video-only source") {
+  // 161x91 forces the even-size + scale branch, and with no audio stream
+  // the muxer runs video-only.
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(castFixture("cast_odd_video_only.mp4"), &err));
+  REQUIRE(ts.waitReady(20000));
+
+  const StreamFetch got = fetchStream("127.0.0.1", ts.port());
+  CHECK(got.status == 200);
+  CHECK(got.body.size() > 10000);
+  CHECK(tsSync(got.body));
+
+  ts.stop();
+}
+
+TEST_CASE("the transcode URL routes toward the renderer host") {
+  cast::TranscodeServer ts;
+  CHECK(ts.urlFor("127.0.0.1").empty());  // not started: nothing to route to
+
+  std::string err;
+  REQUIRE(ts.start(castFixture("cast_h264_aac.mp4"), &err));
+  const std::string url = ts.urlFor("127.0.0.1");
+  CHECK(url.rfind("http://127.0.0.1:", 0) == 0);
+
+  ts.stop();
+  CHECK(ts.urlFor("127.0.0.1").empty());  // stopped: the endpoint is gone
+}
+
+// The cast-session wiring over a real bridge: media.bin is the fixture's
+// bytes, so the pump demuxes a real torrent-served URL.
+TEST_CASE("a transcode session hands the renderer the TS endpoint") {
+  SoloStore store;
+  store.dir = makeTempDir("cast-ts");
+  store.bytes = readFixture("cast_h264_aac.mp4");
+  writeBytes(store.dir + "/media.bin", store.bytes);
+  store.torrent = buildTorrent(store.dir, store.dir + "/media.torrent");
+
+  p2p::TorrentStream bridge;
+  p2p::TorrentStream::Params bp;
+  bp.torrent_path = store.torrent;
+  bp.store_dir = store.dir;
+  REQUIRE(bridge.start(bp));
+  REQUIRE(bridge.phase() == p2p::TorrentPhase::Serving);
+
+  FakeRenderer fr({});
+  REQUIRE(fr.location().rfind("http://127.0.0.1:", 0) == 0);
+
+  cast::CastSession session;
+  cast::CastSession::Params params;
+  params.bridge = &bridge;
+  params.renderer_location = fr.location();
+  params.transcode = true;
+  REQUIRE(session.start(params));
+  REQUIRE(waitPhase(session, cast::CastSession::Phase::Casting, 30000));
+
+  REQUIRE(fr.lastUri().rfind("http://", 0) == 0);
+  // The renderer was pointed at the transcode endpoint, the DIDL
+  // advertises the stream type, and the renderer's own fetch of that URI
+  // succeeded (a working HTTP stream, not the bridge URL).
+  CHECK(fr.lastUri() != bridge.playbackUrl());
+  CHECK(fr.lastDidl().find("protocolInfo=\"http-get:*:video/mpeg:*\"") !=
+        std::string::npos);
+  CHECK(fr.mediaFetchStatus() == 200);
+
+  // Seek has nothing to seek into on a live TS point.
+  CHECK_FALSE(session.seekMs(5000));
+  CHECK(session.lastError().find("transcoding") != std::string::npos);
+
+  session.stop();
+  CHECK(bridge.playbackUrl().rfind("http://127.0.0.1:", 0) == 0);
+}
+
+TEST_CASE("transcode refuses degenerate lifecycle calls cleanly") {
+  cast::TranscodeServer ts;
+  std::string err;
+  ts.stop();  // stopping an idle server is a no-op
+  CHECK_FALSE(ts.waitReady(50));  // nothing will ever be ready
+  CHECK(ts.port() == 0);
+
+  // Starting twice is a no-op: the second call keeps the first server.
+  REQUIRE(ts.start(castFixture("cast_h264_aac.mp4"), &err));
+  const int port = ts.port();
+  REQUIRE(port > 0);
+  CHECK(ts.start(castFixture("cast_mpeg4_mp3.mp4"), &err));
+  CHECK(ts.port() == port);
+  // The pump is still the first source's: it readies on the h264 copy.
+  REQUIRE(ts.waitReady(20000));
+
+  // The endpoint survives the redundant start and keeps serving.
+  const StreamFetch got = fetchStream("127.0.0.1", port);
+  CHECK(got.status == 200);
+  ts.stop();
+}
+
+TEST_CASE("transcode drops silent, reset, and junk request heads") {
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(castFixture("cast_h264_aac.mp4"), &err));
+  REQUIRE(ts.waitReady(20000));
+  const int port = ts.port();
+
+  // Silence: the head read times out, the connection closes with no
+  // reply, and the endpoint takes the next client.
+  {
+    const int fd = dial(port);
+    CHECK(talk(fd, "").empty());
+    ::close(fd);
+  }
+
+  // A partial head closed with a reset (SO_LINGER 0): the read fails and
+  // the connection is dropped — no reply, no disturbance.
+  {
+    const int fd = dial(port);
+    const std::string partial = "GET / HT";
+    size_t off = 0;
+    while (off < partial.size()) {
+      const ssize_t w = ::send(fd, partial.data() + off, partial.size() - off, 0);
+      REQUIRE(w > 0);
+      off += static_cast<size_t>(w);
+    }
+    linger l{};
+    l.l_onoff = 1;
+    l.l_linger = 0;
+    ::setsockopt(fd, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&l),
+                 sizeof(l));
+    ::close(fd);  // RST, not FIN
+  }
+
+  // Any head that completes is a GET: the endpoint has one resource.
+  {
+    const int fd = dial(port);
+    const std::string got = talk(fd, "BLAH\r\n\r\n");
+    CHECK(got.rfind("HTTP/1.1 200 OK\r\n", 0) == 0);
+    ::close(fd);
+  }
+
+  // The slot is free again after all three. The junk-head client above
+  // drained its whole (finite) stream before closing, and the flag clears
+  // right after its final close — poll rather than race it.
+  StreamFetch got;
+  for (int i = 0; i < 25 && got.status != 200; ++i) {
+    got = fetchStream("127.0.0.1", port);
+    if (got.status != 200) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }
+  CHECK(got.status == 200);
+  ts.stop();
+}
+
+TEST_CASE("transcode stop joins a client holding the stream open") {
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(castFixture("cast_h264_aac.mp4"), &err));
+  REQUIRE(ts.waitReady(20000));
+
+  // Take the stream and stop reading: the serve thread blocks in send and
+  // the pump backs up behind the queue. stop() must tear all of it down
+  // and return instead of waiting on the client.
+  const int port = ts.port();
+  const int fd = dial(port);
+  const std::string req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+  REQUIRE(::send(fd, req.data(), req.size(), 0) == static_cast<ssize_t>(req.size()));
+  char buf[512];
+  const ssize_t head = ::recv(fd, buf, sizeof(buf), 0);
+  REQUIRE(head > 0);  // the 200 head (and probably some stream bytes)
+
+  ts.stop();  // joins pump, accept, and the mid-stream serve thread
+  CHECK(ts.port() == 0);
+  CHECK(ts.urlFor("127.0.0.1").empty());
+  // The listener is gone: a new fetch cannot even connect.
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<unsigned short>(port));
+  REQUIRE(::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) == 1);
+  const int fd2 = ::socket(AF_INET, SOCK_STREAM, 0);
+  REQUIRE(fd2 >= 0);
+  CHECK(::connect(fd2, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0);
+  ::close(fd2);
+  ::close(fd);
+}
+
+TEST_CASE("a client that stops reading parks the pump until stop") {
+  // The queue is the flow control: a source whose TS output outgrows the
+  // 1 MiB in-flight cap with nobody draining it parks the pump in the
+  // queue-full wait. stop() must break the wait and join everything.
+  const std::string wav = makeNoiseWav("tsbp", 90);
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(wav, &err));
+  REQUIRE(ts.waitReady(20000));  // the muxer header is out; the rest queues
+
+  const int fd = dial(ts.port());
+  const std::string req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+  REQUIRE(::send(fd, req.data(), req.size(), 0) == static_cast<ssize_t>(req.size()));
+  char buf[256];
+  REQUIRE(::recv(fd, buf, sizeof(buf), 0) > 0);  // the 200 head, then silence
+
+  // Give the pump time to fill the queue behind the unreading client
+  // (encode-bound: several seconds for a minute of audio under -O0).
+  std::this_thread::sleep_for(std::chrono::seconds(6));
+  ts.stop();
+  CHECK(ts.port() == 0);
+  CHECK(ts.urlFor("127.0.0.1").empty());
+  ::close(fd);
+}
+
+TEST_CASE("transcode resamples a pcm source into the aac stream") {
+  // pcm_s16le at 4000 Hz mono: not copyable, needs decode + rate clamp +
+  // channel layout conversion + encode — and the fifo reframing of a
+  // decoder that delivers 4000-sample frames into 1024-sample ones.
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(castFixture("cast_pcm_aud.mov"), &err));
+  REQUIRE_MESSAGE(ts.waitReady(20000), ts.lastError());
+
+  const StreamFetch got = fetchStream("127.0.0.1", ts.port());
+  CHECK(got.status == 200);
+  CHECK(got.body.size() > 2000);
+  CHECK(tsSync(got.body));
+  const std::string codecs = probeCodecs(got.body);
+  if (!codecs.empty()) {
+    CHECK(codecs.find("aac") != std::string::npos);
+    CHECK(codecs.find("h264") == std::string::npos);  // audio-only source
+  }
+  ts.stop();
+}
+
+TEST_CASE("transcode reports a source with no playable streams") {
+  // A timecode-only track: containers parse, nothing transcodes.
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(castFixture("cast_data_only.mov"), &err));
+  CHECK_FALSE(ts.waitReady(20000));
+  CHECK(ts.lastError().find("no video or audio stream") != std::string::npos);
+  ts.stop();
+}
+
+TEST_CASE("a transcode session on an undecodable source fails before Play") {
+  // The pump fails on the garbage bytes before the renderer ever sees a
+  // URI, and start() reports that instead of a half-cast state.
+  const SoloStore store = makeSolo("tsjunk");
+  p2p::TorrentStream bridge;
+  p2p::TorrentStream::Params bp;
+  bp.torrent_path = store.torrent;
+  bp.store_dir = store.dir;
+  REQUIRE(bridge.start(bp));
+  REQUIRE(bridge.phase() == p2p::TorrentPhase::Serving);
+
+  FakeRenderer fr({});
+  cast::CastSession session;
+  cast::CastSession::Params params;
+  params.bridge = &bridge;
+  params.renderer_location = fr.location();
+  params.transcode = true;
+  REQUIRE_FALSE(session.start(params));
+  CHECK(session.lastError().find("could not start on the source") !=
+        std::string::npos);
+  CHECK(session.phase() == cast::CastSession::Phase::Failed);
+  // The bridge exposure is undone on the failure path.
+  CHECK(bridge.playbackUrl().rfind("http://127.0.0.1:", 0) == 0);
+  session.stop();
+}
+
+TEST_CASE("a stalled renderer fails a transcode session naming the TS stream") {
+  // Real media (the pump readies), a renderer that fetches the URI but
+  // never plays: the stall diagnosis must name the transcoded stream, not
+  // tell the caller to enable transcoding.
+  SoloStore store;
+  store.dir = makeTempDir("tsstall");
+  store.bytes = readFixture("cast_h264_aac.mp4");
+  writeBytes(store.dir + "/media.bin", store.bytes);
+  store.torrent = buildTorrent(store.dir, store.dir + "/media.torrent");
+
+  p2p::TorrentStream bridge;
+  p2p::TorrentStream::Params bp;
+  bp.torrent_path = store.torrent;
+  bp.store_dir = store.dir;
+  REQUIRE(bridge.start(bp));
+  REQUIRE(bridge.phase() == p2p::TorrentPhase::Serving);
+
+  FakeRenderer::Config config;
+  config.stalled = true;
+  FakeRenderer fr(config);
+
+  cast::CastSession session;
+  cast::CastSession::Params params;
+  params.bridge = &bridge;
+  params.renderer_location = fr.location();
+  params.transcode = true;
+  params.poll_ms = 100;
+  params.start_grace_ms = 800;
+  REQUIRE_MESSAGE(session.start(params), "start failed: " << session.lastError());
+  CHECK(waitPhase(session, cast::CastSession::Phase::Failed, 15000));
+  CHECK(session.lastError().find("stalled even") != std::string::npos);
+  CHECK(session.lastError().find("transcoded") != std::string::npos);
+  CHECK(bridge.playbackUrl().rfind("http://127.0.0.1:", 0) == 0);
+  session.stop();
+}
+
+#endif  // SOAR_WITH_FFMPEG
 
 #endif  // _WIN32

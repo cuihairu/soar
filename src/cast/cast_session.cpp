@@ -6,6 +6,10 @@ namespace soar::cast {
 
 namespace {
 using Clock = std::chrono::steady_clock;
+// How long the transcode pump gets to produce its first MPEG-TS bytes
+// (muxer header + first frames). Local bridge sources land well inside;
+// the timeout mainly bounds a broken source's failure.
+constexpr int kTranscodeReadyMs = 10000;
 }  // namespace
 
 CastSession::~CastSession() { stop(); }
@@ -100,8 +104,32 @@ bool CastSession::start(const Params& params) {
   }
   exposed_.store(true, std::memory_order_relaxed);
 
+  // Transcode mode: the renderer gets the session's own MPEG-TS endpoint
+  // instead of the bridge URL. The pump starts on the (post-rebind) bridge
+  // URL — still fetchable from this host — and waitReady holds the cast
+  // until the TS header is out, so a renderer connecting sees a stream at
+  // once. The endpoint advertises video/mpeg in the DIDL: renderers that
+  // filter on protocolInfo accept the transcode stream's real type.
+  std::string uri = bridge_->playbackUrl();
+  std::string protocol_info;
+  if (params_.transcode) {
+    if (!transcode_.start(uri, &err)) {
+      failWith(err);
+      return false;
+    }
+    if (!transcode_.waitReady(kTranscodeReadyMs)) {
+      const std::string& why = transcode_.lastError();
+      transcode_.stop();
+      failWith("cast: sender-side transcoding could not start on the source" +
+               (why.empty() ? std::string() : ": " + why));
+      return false;
+    }
+    uri = transcode_.urlFor(parts.host);
+    protocol_info = "http-get:*:video/mpeg:*";
+  }
+
   client_ = RendererClient(control_url, kAvTransportType);
-  if (!client_.setUri(bridge_->playbackUrl(), params_.title, &err)) {
+  if (!client_.setUri(uri, params_.title, &err, protocol_info)) {
     failWith("cast: SetAVTransportURI rejected: " + err);
     return false;
   }
@@ -161,9 +189,12 @@ void CastSession::pollLoop() {
     // clock first advances is not a decode failure.
     if (!advanced && Clock::now() - started - pausedDuration() >=
                          std::chrono::milliseconds(params_.start_grace_ms)) {
-      failWith("cast: the renderer did not start playing the source — it likely "
-               "cannot decode this container/codec, and this build has no "
-               "sender-side transcoding");
+      failWith(params_.transcode
+                   ? "cast: the renderer did not start playing — it stalled even "
+                     "on the transcoded stream"
+                   : "cast: the renderer did not start playing the source — it "
+                     "likely cannot decode this container/codec (sender-side "
+                     "transcoding was not requested; pass --cast-transcode)");
       return;
     }
   }
@@ -187,6 +218,8 @@ void CastSession::stop() {
                            // bridge back; the error is not actionable here
     }
   }
+  transcode_.stop();  // the renderer's feed goes first: the bridge reads
+                      // behind it have nothing waiting on them
   restoreBridge();
   Phase expected = Phase::Casting;
   phase_.compare_exchange_strong(expected, Phase::Stopped,
@@ -196,6 +229,12 @@ void CastSession::stop() {
 
 bool CastSession::seekMs(std::int64_t ms) {
   if (phase_.load(std::memory_order_acquire) != Phase::Casting) return false;
+  if (params_.transcode) {
+    std::lock_guard<std::mutex> elock(error_mu_);
+    last_error_ = "cast: Seek is not supported while transcoding (the served "
+                  "MPEG-TS is a live point with nothing to seek into)";
+    return false;
+  }
   std::lock_guard<std::mutex> lock(client_mu_);
   std::string err;
   if (!client_.seekRel(ms, &err)) {

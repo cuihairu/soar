@@ -67,6 +67,9 @@ struct WindowUiConfig {
   // other non-empty value is a device-description URL. Empty = no cast
   // request (the t overlay still offers manual picking).
   std::string cast_location;
+  // --cast-transcode: sender-side transcoding for the session the window
+  // starts (the overlay's switch feeds the same flag for manual casts).
+  bool cast_transcode = false;
   // Video frames come from the FFmpeg backend (null when it is not in use).
   soar::FFmpegBackend* ffmpeg = nullptr;
   // Set by the Player event callback (backend thread) on

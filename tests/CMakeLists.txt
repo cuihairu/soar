@@ -111,9 +111,16 @@ add_executable(soar_cast_tests
 
 target_compile_features(soar_cast_tests PRIVATE cxx_std_17)
 target_link_libraries(soar_cast_tests PRIVATE soar_cast soar_p2p doctest::doctest)
+# The committed media fixtures at an absolute path (the CWD of a ctest
+# process is the build tree, so relative fixture names would miss).
+target_compile_definitions(soar_cast_tests PRIVATE
+  SOAR_TEST_CAST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 
 add_test(NAME soar_cast_tests COMMAND soar_cast_tests)
-set_tests_properties(soar_cast_tests PROPERTIES TIMEOUT 300)
+# The transcode suite encodes real media (x264/aac) and holds two 5 s
+# request-head timeouts open on purpose; sanitizer legs (TSAN ~3-5x on the
+# encode paths) need the same headroom the media suite already has.
+set_tests_properties(soar_cast_tests PROPERTIES TIMEOUT 600)
 
 # Pure UI logic unit tests (docs/ui-design.md §5.3): auto-hide state
 # machine, recent store, toast, time formatting. No display needed.

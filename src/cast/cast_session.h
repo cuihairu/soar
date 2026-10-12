@@ -10,8 +10,10 @@
 // it to the LAN for exactly as long as the renderer may fetch from it and
 // stop() (or any failure path) puts the loopback binding back. The
 // receiver decodes the source itself: a renderer that never starts
-// playing is reported as an explicit decode failure — this build has no
-// sender-side transcoding to fall back on.
+// playing is reported as an explicit decode failure. With transcode
+// support (SOAR_WITH_FFMPEG and Params::transcode) the session instead
+// re-encodes to H.264/AAC MPEG-TS and points the renderer at that — a
+// renderer stalling even on the transcoded stream is the honest failure.
 //
 // Thread contract: start()/stop()/seekMs()/phase() all come from the
 // owner thread (the one that called start()); a poll thread inside reads
@@ -30,6 +32,7 @@
 #include "eventing.h"
 #include "renderer.h"
 #include "torrent_stream.h"
+#include "transcode_server.h"
 
 namespace soar::cast {
 
@@ -43,6 +46,11 @@ class CastSession {
     std::string renderer_location;
     int discover_ms = 3000;
     std::string title;  // dc:title of the DIDL metadata ("")
+    // Sender-side transcoding (needs the FFmpeg backend): demux the bridge
+    // source, re-encode to H.264/AAC MPEG-TS, serve it over the session's
+    // own HTTP endpoint and hand the renderer that URI instead. A build
+    // without FFmpeg fails the session with the explicit reason.
+    bool transcode = false;
     // ~1 Hz tick with the renderer-reported position/duration in ms (-1 =
     // the renderer did not report a parseable clock for that field).
     std::function<void(std::int64_t, std::int64_t)> on_position;
@@ -69,17 +77,18 @@ class CastSession {
   CastSession(const CastSession&) = delete;
   CastSession& operator=(const CastSession&) = delete;
 
-  // Discovery → bridge LAN exposure → SetAVTransportURI → Play → poll
-  // thread. Returns false with lastError() set (the bridge is back on
-  // loopback in every failure path).
+  // Discovery → bridge LAN exposure → (transcode start) → SetAVTransportURI
+  // → Play → poll thread. Returns false with lastError() set (the bridge is
+  // back on loopback in every failure path).
   bool start(const Params& params);
 
-  // SOAP Stop (best effort), poll-thread join, bridge restore. Idempotent;
-  // also the destructor's cleanup.
+  // SOAP Stop (best effort), transcode teardown, poll-thread join, bridge
+  // restore. Idempotent; also the destructor's cleanup.
   void stop();
 
   // REL_TIME seek at the renderer. False when not casting or rejected
-  // (the reason lands in lastError()).
+  // (the reason lands in lastError()). Always false while transcoding:
+  // the served MPEG-TS is a live point with nothing to seek into.
   bool seekMs(std::int64_t ms);
 
   // AVTransport Pause. Idempotent. Paused time is excluded from the
@@ -136,6 +145,7 @@ class CastSession {
   std::string renderer_name_;
   Params params_;
   p2p::TorrentStream* bridge_ = nullptr;
+  TranscodeServer transcode_;
   std::thread poll_thread_;
   std::mutex client_mu_;  // guards client_ between the poll thread and seekMs/stop
   RendererClient client_;

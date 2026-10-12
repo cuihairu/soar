@@ -2620,6 +2620,99 @@ TEST_CASE("headless --cast drives a fake DLNA renderer through the bridge") {
 #endif
 }
 
+TEST_CASE("headless --cast-transcode hands the renderer the TS endpoint") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the transcode cast test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the transcode cast test");
+    return;
+  }
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("no python3; skipping the transcode cast test");
+    return;
+  }
+  std::string tmpl = "/tmp/soar_cli_castts_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const std::string payload = std::string(tmp) + "/payload";
+  REQUIRE(std::filesystem::create_directories(payload));
+  REQUIRE(std::filesystem::copy_file(media, payload + "/00_media.mkv"));
+  for (int i = 0; i < 39; ++i) {
+    std::ofstream out(payload + "/f" + std::to_string(i) + ".bin", std::ios::binary);
+    out << std::string(64, 'x');
+  }
+  const int port = 25400 + (::getpid() % 400);
+  const int renderer_port = 25600 + (::getpid() % 400);
+  const std::string log_path = std::string(tmp) + "/renderer.log";
+  Seeder seeder;
+  DlnaRenderer renderer;
+  if (!seeder.start(payload, std::string(tmp) + "/x.torrent", port) ||
+      !renderer.start(log_path, renderer_port, "ok")) {
+    MESSAGE("fixture did not come up; skipping");
+    renderer.stop();
+    seeder.stop();
+    std::filesystem::remove_all(tmp);
+    return;
+  }
+  const auto run = runCli({"--headless",
+                           std::string("--torrent-store=") + tmp + "/store",
+                           "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                           std::string("--cast=http://127.0.0.1:") +
+                               std::to_string(renderer_port) + "/desc.xml",
+                           "--cast-transcode",
+                           std::string(tmp) + "/x.torrent"},
+                          240);
+  seeder.stop();
+  renderer.stop();
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("cast: Test Renderer <- ") != std::string::npos);
+
+  // The URI the renderer was handed is the session's own TS endpoint: a
+  // port that is neither the bridge's nor the renderer's, and a fetch the
+  // endpoint answers with a bare 200 (a live point has no Range).
+  const std::string seen = renderer.logged();
+  INFO(seen);
+  const std::string uri_marker = "seturi http://127.0.0.1:";
+  const size_t uri_at = seen.find(uri_marker);
+  REQUIRE(uri_at != std::string::npos);
+  const size_t uri_begin = uri_at + uri_marker.size();
+  size_t uri_end = uri_begin;
+  while (uri_end < seen.size() && seen[uri_end] >= '0' && seen[uri_end] <= '9') {
+    ++uri_end;
+  }
+  const std::string cast_port = seen.substr(uri_begin, uri_end - uri_begin);
+  REQUIRE(!cast_port.empty());
+  const std::string bridge_marker = "-> http://127.0.0.1:";
+  const size_t bridge_at = run.output.find(bridge_marker);
+  REQUIRE(bridge_at != std::string::npos);
+  const size_t bridge_begin = bridge_at + bridge_marker.size();
+  size_t bridge_end = bridge_begin;
+  while (bridge_end < run.output.size() && run.output[bridge_end] >= '0' &&
+         run.output[bridge_end] <= '9') {
+    ++bridge_end;
+  }
+  const std::string bridge_port =
+      run.output.substr(bridge_begin, bridge_end - bridge_begin);
+  CHECK(cast_port != bridge_port);
+  CHECK(cast_port != std::to_string(renderer_port));
+  CHECK(seen.find("fetch 200 ") != std::string::npos);
+  CHECK(seen.find("fetch 206 ") == std::string::npos);
+  CHECK(seen.find("\nplay\n") != std::string::npos);
+  CHECK(seen.find("\nstop\n") != std::string::npos);
+  std::filesystem::remove_all(tmp);
+#endif
+#endif
+}
+
 TEST_CASE("headless --cast reports a renderer without AVTransport") {
 #ifdef _WIN32
   MESSAGE("POSIX-only test; skipping");

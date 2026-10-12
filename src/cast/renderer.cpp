@@ -402,9 +402,10 @@ bool fetchDescription(const std::string& location, DeviceDesc* out, std::string*
 }
 
 bool RendererClient::setUri(const std::string& uri, const std::string& title,
-                            std::string* err) {
+                            std::string* err, const std::string& protocol_info) {
   return actionReply(control_url_,
-                     cast::setAvTransportUri(control_url_, uri, title), err);
+                     cast::setAvTransportUri(control_url_, uri, title, protocol_info),
+                     err);
 }
 
 bool RendererClient::play(std::string* err) {

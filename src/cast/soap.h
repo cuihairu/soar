@@ -36,8 +36,12 @@ extern const char kAvTransportType[];
 
 // ---- request builders (full HTTP POST text, body last) ----
 
+// `protocol_info` ("" allowed) becomes the <res> protocolInfo attribute —
+// the stream type a picky renderer filters on (the transcode session
+// advertises "http-get:*:video/mpeg:*"). Empty keeps the attribute off.
 std::string setAvTransportUri(const std::string& control_url, const std::string& uri,
-                              const std::string& title);
+                              const std::string& title,
+                              const std::string& protocol_info = "");
 std::string play(const std::string& control_url);
 // Pause carries no arguments; resume is Play at speed 1 — the AVTransport
 // spec has no separate Resume action.

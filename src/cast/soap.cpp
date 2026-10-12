@@ -54,11 +54,16 @@ std::string instanceArg() { return "<InstanceID>0</InstanceID>"; }
 }  // namespace
 
 std::string setAvTransportUri(const std::string& control_url, const std::string& uri,
-                              const std::string& title) {
+                              const std::string& title,
+                              const std::string& protocol_info) {
   // The metadata a DMR needs to show a title is one minimal video item;
   // the URI is repeated in <res> because some picky renderers read it
   // from there rather than from CurrentURI. Everything user-visible is
   // XML-escaped; the wire form is the escaped text.
+  const std::string res_open =
+      protocol_info.empty()
+          ? std::string("<res>")
+          : "<res protocolInfo=\"" + xmlEscape(protocol_info) + "\">";
   const std::string didl =
       "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" "
       "xmlns:dc=\"http://purl.org/dc/elements/1.1/\" "
@@ -66,7 +71,7 @@ std::string setAvTransportUri(const std::string& control_url, const std::string&
       "<item id=\"0\" parentID=\"0\" restricted=\"1\">"
       "<dc:title>" + xmlEscape(title) + "</dc:title>"
       "<upnp:class>object.item.videoItem</upnp:class>"
-      "<res>" + xmlEscape(uri) + "</res>"
+      + res_open + xmlEscape(uri) + "</res>"
       "</item></DIDL-Lite>";
   return envelope(control_url, "SetAVTransportURI",
                   instanceArg() + "<CurrentURI>" + xmlEscape(uri) + "</CurrentURI>" +

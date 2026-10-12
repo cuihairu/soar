@@ -51,7 +51,8 @@ class RendererClient {
   // All five return false and fill `err` on transport failure (connect,
   // write, read, timeout) or when the renderer answers with a SOAP fault
   // (the fault text rides along: "SOAP fault 716: Resource not found").
-  bool setUri(const std::string& uri, const std::string& title, std::string* err);
+  bool setUri(const std::string& uri, const std::string& title, std::string* err,
+              const std::string& protocol_info = "");
   bool play(std::string* err);
   bool pause(std::string* err);
   bool stop(std::string* err);

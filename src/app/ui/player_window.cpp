@@ -442,6 +442,7 @@ class PlayerHud {
         current_uri_(cfg.initial_uri), source_label_(cfg.source_label),
         torrent_(cfg.torrent), torrent_pending_(cfg.torrent != nullptr),
         cast_location_(cfg.cast_location),
+        cast_transcode_(cfg.cast_transcode),
         recent_dirs_(defaultRecentDirsPath(), 8),
         library_(cfg.library),
         subtitle_fonts_(loadSubtitleFonts()) {
@@ -1488,6 +1489,7 @@ class PlayerHud {
     p.bridge = torrent_;
     p.renderer_location = location;
     p.title = source_label_;
+    p.transcode = cast_transcode_;
     p.on_position = [this](std::int64_t pos, std::int64_t dur) {
       cast_pos_ms_.store(pos, std::memory_order_relaxed);
       cast_dur_ms_.store(dur, std::memory_order_relaxed);
@@ -1566,7 +1568,7 @@ class PlayerHud {
         ImGui::TextDisabled("%s",
             "Casting streams a torrent source through the local bridge.\n"
             "Open a .torrent or magnet: source first - this build casts\n"
-            "torrent sources only (no sender-side transcoding).");
+            "torrent sources only.");
       } else {
         const std::string what = source_label_.empty()
                                      ? std::string("the torrent source")
@@ -1614,6 +1616,10 @@ class PlayerHud {
         ImGui::TextDisabled("%s", cast_searching_.load(std::memory_order_acquire)
                                       ? "searching..."
                                       : "SSDP M-SEARCH, 3s window");
+        // Sender-side transcoding: for renderers that cannot decode the
+        // source itself. Session-local, off by default — transcoding costs
+        // CPU and gives up Seek.
+        ImGui::Checkbox("Transcode to H.264/AAC (no seek)", &cast_transcode_);
         std::vector<soar::cast::DiscoveredRenderer> found;
         {
           std::lock_guard<std::mutex> lock(cast_mu_);
@@ -2863,6 +2869,7 @@ class PlayerHud {
   // failed session), the background discovery burst, and the position
   // mirror the session's poll thread writes for the overlay.
   std::string cast_location_;
+  bool cast_transcode_ = false;  // the cast overlay's transcode switch
   bool cast_auto_done_ = false;
   bool cast_discover_started_ = false;
   std::unique_ptr<soar::cast::CastSession> cast_active_;
