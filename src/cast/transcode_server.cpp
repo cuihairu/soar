@@ -248,8 +248,14 @@ namespace {
 
 // The muxer's AVIO write callback: the bytes go into the queue whose cap
 // backpressures the whole pump. Only stop() makes pushBytes fail; the
-// pump exits on its own then.
+// pump exits on its own then. FFmpeg 7.1 (libavformat 61.1) made the
+// write buffer const; older versions — the apt FFmpeg on the CI runners
+// included — pass a mutable uint8_t* and reject the const signature.
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(61, 1, 100)
 int queueWriteTrampoline(void* opaque, const unsigned char* buf, int buf_size) {
+#else
+int queueWriteTrampoline(void* opaque, unsigned char* buf, int buf_size) {
+#endif
   auto* self = static_cast<TranscodeServer*>(opaque);
   return self->pushBytes(buf, buf_size) ? buf_size : -1;
 }
