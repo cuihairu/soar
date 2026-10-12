@@ -39,7 +39,9 @@
       本批代码）：soarw 无条件 include `cast_session.h` 却没链
       `soar_cast`（8f28301）；`::ntohs` 在 Darwin 是宏、加 `::`
       限定语法不成立（f06c5c5）。两处只在 Windows-only / macOS-only
-      目标里露，Linux 本地树永不构建，从 CI 日志定位。
+      目标里露，Linux 本地树永不构建，从 CI 日志定位。修复后
+      run 38222325164 七腿全绿（CI 覆盖读数 行 8013/8405=95.3%、
+      支 8592/10007=85.9%，双过门禁）。
 
 ### 如实说明
 
