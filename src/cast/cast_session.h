@@ -1,8 +1,10 @@
 // One casting session (docs/mvp.md §3, DLNA control point): renderer
 // discovery (or an explicit device-description URL), the AVTransport
-// exchange — SetAVTransportURI, Play, Seek, Stop — position polling via
-// GetPositionInfo (GENA eventing is deliberately not done), and the
-// bridge's LAN-exposure window around it all.
+// exchange — SetAVTransportURI, Play, Pause, Seek, Stop — position
+// polling via GetPositionInfo with GENA eventing alongside it (a NOTIFY
+// that reports PLAYING counts as evidence of life for the start-grace
+// window; the poller stays the primary state source), and the bridge's
+// LAN-exposure window around it all.
 //
 // The local bridge stays 127.0.0.1-only outside a session; start() exposes
 // it to the LAN for exactly as long as the renderer may fetch from it and
@@ -24,6 +26,8 @@
 #include <string>
 #include <thread>
 
+#include "event_server.h"
+#include "eventing.h"
 #include "renderer.h"
 #include "torrent_stream.h"
 
@@ -42,6 +46,11 @@ class CastSession {
     // ~1 Hz tick with the renderer-reported position/duration in ms (-1 =
     // the renderer did not report a parseable clock for that field).
     std::function<void(std::int64_t, std::int64_t)> on_position;
+    // GENA events (best-effort): the transport state a NOTIFY reports,
+    // delivered on the event-server thread. May be unset; unparsable
+    // bodies are not reported, and a session without a working
+    // subscription simply stays poll-only.
+    std::function<void(TransportState)> on_transport;
     // Poll cadence, the no-advance window after Play (a receiver that
     // cannot decode the source sits at 0:00 — that is the explicit
     // failure), and how many consecutive failed polls end the session.
@@ -73,6 +82,18 @@ class CastSession {
   // (the reason lands in lastError()).
   bool seekMs(std::int64_t ms);
 
+  // AVTransport Pause. Idempotent. Paused time is excluded from the
+  // start-grace window: the renderer demonstrably took the source when it
+  // accepted Pause, and a user pausing before the clock first advances is
+  // not a decode failure.
+  bool pause();
+  // Resume is Play at speed 1 — the spec has no separate Resume action.
+  bool resume();
+
+  // Whether the session believes the renderer is currently paused. The
+  // renderer's own view is polled position, which freezes while paused.
+  bool paused() const;
+
   Phase phase() const { return phase_.load(std::memory_order_acquire); }
   const std::string& lastError() const;
   const std::string& rendererName() const { return renderer_name_; }
@@ -83,6 +104,29 @@ class CastSession {
   // Failed. Safe from both the owner and the poll thread.
   void failWith(const std::string& message);
   void restoreBridge();
+
+  // GENA eventing (best-effort): a subscription that never lands leaves
+  // the session poll-only. event_mu_ guards the subscription record
+  // between the owner thread (subscribe, teardown) and the poll thread
+  // (renewal once fewer than 60 seconds remain).
+  void startEvents(std::string event_url, const std::string& renderer_host);
+  void renewEventSubscription();
+  void teardownEventSubscription();
+  void handleNotify(std::string_view body);
+
+  EventServer events_;
+  mutable std::mutex event_mu_;
+  std::string event_url_;
+  std::string event_sid_;
+  std::chrono::steady_clock::time_point event_expires_{};
+  std::atomic<bool> event_playing_{false};  // the latest NOTIFY said PLAYING
+
+  // Paused-wall-clock bookkeeping (pause_mu_ guards both members; the poll
+  // thread calls it through pausedDuration()).
+  mutable std::mutex pause_mu_;
+  std::chrono::steady_clock::time_point paused_since_{};  // epoch = up
+  std::chrono::milliseconds paused_total_{0};
+  std::chrono::milliseconds pausedDuration() const;
 
   std::atomic<Phase> phase_{Phase::Idle};
   std::atomic<bool> stopping_{false};

@@ -172,7 +172,8 @@ int connectTo(const std::string& host, int port, std::string* err) {
 // per-recv timeout bounds a server that never closes). Returns the reply
 // status and body; `err` explains any failure.
 bool httpExchange(const UrlParts& parts, const std::string& request, int* status,
-                  std::string* body, std::string* err) {
+                  std::string* body, std::string* err,
+                  std::string* head_out = nullptr) {
   *status = 0;
   body->clear();
   const int fd = connectTo(parts.host, parts.port, err);
@@ -231,6 +232,7 @@ bool httpExchange(const UrlParts& parts, const std::string& request, int* status
            std::to_string(parts.port);
     return false;
   }
+  if (head_out != nullptr) *head_out = std::move(head);
   *body = std::move(reply);
   return true;
 }
@@ -410,6 +412,10 @@ bool RendererClient::play(std::string* err) {
   return actionReply(control_url_, cast::play(control_url_), err);
 }
 
+bool RendererClient::pause(std::string* err) {
+  return actionReply(control_url_, cast::pause(control_url_), err);
+}
+
 bool RendererClient::stop(std::string* err) {
   return actionReply(control_url_, cast::stop(control_url_), err);
 }
@@ -441,6 +447,22 @@ bool RendererClient::pollPosition(PositionInfo* out, std::string* err) {
     *err = "renderer sent no position report";
     return false;
   }
+  return true;
+}
+
+bool sendEventRequest(const std::string& event_url, const std::string& request,
+                      std::string* response, std::string* err) {
+  UrlParts parts;
+  if (!splitUrl(event_url, &parts)) {
+    *err = "cast: bad event URL " + event_url;
+    return false;
+  }
+  int status = 0;
+  std::string head, body;
+  if (!httpExchange(parts, request, &status, &body, err, &head)) return false;
+  *response = std::move(head);
+  *response += "\r\n\r\n";
+  *response += std::move(body);
   return true;
 }
 

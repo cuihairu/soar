@@ -110,6 +110,13 @@ bool CastSession::start(const Params& params) {
     return false;
   }
 
+  // Events are a courtesy layer over the poller: a renderer without an
+  // eventSubURL, a callback URL the host cannot advertise, or a refused
+  // SUBSCRIBE all leave the session poll-only, never failed.
+  std::string event_url;
+  if (avTransportEventUrl(desc, location, &event_url))
+    startEvents(std::move(event_url), parts.host);
+
   poll_thread_ = std::thread([this] { pollLoop(); });
   phase_.store(Phase::Casting, std::memory_order_release);
   return true;
@@ -123,6 +130,7 @@ void CastSession::pollLoop() {
   while (!stopping_.load(std::memory_order_relaxed)) {
     std::this_thread::sleep_for(std::chrono::milliseconds(params_.poll_ms));
     if (stopping_.load(std::memory_order_relaxed)) break;
+    renewEventSubscription();
     std::lock_guard<std::mutex> lock(client_mu_);
     if (stopping_.load(std::memory_order_relaxed)) break;
     PositionInfo info;
@@ -144,8 +152,14 @@ void CastSession::pollLoop() {
     if (pos < 0) continue;
     if (prev_pos >= 0 && pos > prev_pos) advanced = true;
     if (pos > 0) advanced = true;
+    // A PLAYING event over GENA is evidence of life too: some renderers
+    // announce the state change before their clock starts moving.
+    if (event_playing_.load(std::memory_order_acquire)) advanced = true;
     prev_pos = pos;
-    if (!advanced && Clock::now() - started >=
+    // Paused time does not count against the grace window: the renderer
+    // took the source (it accepted Pause), and a user pausing before the
+    // clock first advances is not a decode failure.
+    if (!advanced && Clock::now() - started - pausedDuration() >=
                          std::chrono::milliseconds(params_.start_grace_ms)) {
       failWith("cast: the renderer did not start playing the source — it likely "
                "cannot decode this container/codec, and this build has no "
@@ -158,7 +172,13 @@ void CastSession::pollLoop() {
 void CastSession::stop() {
   if (phase_.load(std::memory_order_acquire) == Phase::Idle) return;
   stopping_.store(true, std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lock(pause_mu_);
+    paused_since_ = Clock::time_point{};
+    paused_total_ = std::chrono::milliseconds{0};
+  }
   if (poll_thread_.joinable()) poll_thread_.join();
+  teardownEventSubscription();
   {
     std::lock_guard<std::mutex> lock(client_mu_);
     if (phase_.load(std::memory_order_relaxed) == Phase::Casting) {
@@ -183,6 +203,133 @@ bool CastSession::seekMs(std::int64_t ms) {
     last_error_ = "cast: Seek rejected: " + err;
     return false;
   }
+  return true;
+}
+
+void CastSession::startEvents(std::string event_url, const std::string& renderer_host) {
+  std::string err;
+  if (!events_.start([this](std::string_view body) { handleNotify(body); }, &err))
+    return;  // no listener means no subscription; the poll path runs on
+  const std::string callback = events_.callbackUrlFor(renderer_host);
+  std::string response;
+  Subscription sub;
+  if (callback.empty() ||
+      !sendEventRequest(event_url, subscribeRequest(event_url, callback, 1800),
+                        &response, &err) ||
+      !parseSubscribeReply(response, &sub)) {
+    events_.stop();
+    return;
+  }
+  std::lock_guard<std::mutex> lock(event_mu_);
+  event_url_ = std::move(event_url);
+  event_sid_ = sub.sid;
+  event_expires_ =
+      Clock::now() + (sub.timeout_secs == 0 ? std::chrono::hours(24)
+                                            : std::chrono::seconds(sub.timeout_secs));
+}
+
+void CastSession::renewEventSubscription() {
+  std::string url, sid;
+  bool due = false;
+  {
+    std::lock_guard<std::mutex> lock(event_mu_);
+    if (event_sid_.empty()) return;
+    due = Clock::now() + std::chrono::seconds(60) > event_expires_;
+    url = event_url_;
+    sid = event_sid_;
+  }
+  if (!due) return;
+  std::string err, response;
+  Subscription sub;
+  if (sendEventRequest(url, renewRequest(url, sid, 1800), &response, &err) &&
+      parseSubscribeReply(response, &sub)) {
+    std::lock_guard<std::mutex> lock(event_mu_);
+    event_sid_ = sub.sid;
+    event_expires_ =
+        Clock::now() + (sub.timeout_secs == 0 ? std::chrono::hours(24)
+                                              : std::chrono::seconds(sub.timeout_secs));
+    return;
+  }
+  // The renderer dropped the subscription: poll-only from here on. A
+  // late NOTIFY aimed at the dead SID is the renderer's business.
+  std::lock_guard<std::mutex> lock(event_mu_);
+  event_sid_.clear();
+  event_url_.clear();
+}
+
+void CastSession::teardownEventSubscription() {
+  std::string url, sid;
+  {
+    std::lock_guard<std::mutex> lock(event_mu_);
+    url = std::move(event_url_);
+    sid = std::move(event_sid_);
+    event_url_.clear();
+    event_sid_.clear();
+  }
+  if (!sid.empty()) {
+    std::string err, response;
+    sendEventRequest(url, unsubscribeRequest(url, sid), &response, &err);
+  }
+  events_.stop();
+}
+
+void CastSession::handleNotify(std::string_view body) {
+  const TransportState state = parseNotifyState(body);
+  if (state == TransportState::Playing)
+    event_playing_.store(true, std::memory_order_release);
+  if (state != TransportState::Unknown && params_.on_transport)
+    params_.on_transport(state);
+}
+
+std::chrono::milliseconds CastSession::pausedDuration() const {
+  std::lock_guard<std::mutex> lock(pause_mu_);
+  std::chrono::milliseconds total = paused_total_;
+  if (paused_since_ != Clock::time_point{}) {
+    total += std::chrono::duration_cast<std::chrono::milliseconds>(
+        Clock::now() - paused_since_);
+  }
+  return total;
+}
+
+bool CastSession::paused() const {
+  std::lock_guard<std::mutex> lock(pause_mu_);
+  return paused_since_ != Clock::time_point{};
+}
+
+bool CastSession::pause() {
+  if (phase_.load(std::memory_order_acquire) != Phase::Casting) return false;
+  if (paused()) return true;  // idempotent: already holding
+  std::lock_guard<std::mutex> lock(client_mu_);
+  std::string err;
+  if (!client_.pause(&err)) {
+    std::lock_guard<std::mutex> elock(error_mu_);
+    last_error_ = "cast: Pause rejected: " + err;
+    return false;
+  }
+  std::lock_guard<std::mutex> plock(pause_mu_);
+  paused_since_ = Clock::now();
+  return true;
+}
+
+bool CastSession::resume() {
+  if (phase_.load(std::memory_order_acquire) != Phase::Casting) return false;
+  bool was_paused;
+  {
+    std::lock_guard<std::mutex> lock(pause_mu_);
+    was_paused = paused_since_ != Clock::time_point{};
+  }
+  if (!was_paused) return true;  // idempotent: never paused
+  std::lock_guard<std::mutex> lock(client_mu_);
+  std::string err;
+  if (!client_.play(&err)) {
+    std::lock_guard<std::mutex> elock(error_mu_);
+    last_error_ = "cast: Play rejected: " + err;
+    return false;
+  }
+  std::lock_guard<std::mutex> plock(pause_mu_);
+  paused_total_ +=
+      std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - paused_since_);
+  paused_since_ = Clock::time_point{};
   return true;
 }
 

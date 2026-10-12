@@ -77,6 +77,12 @@ std::string play(const std::string& control_url) {
   return envelope(control_url, "Play", instanceArg() + "<Speed>1</Speed>");
 }
 
+// No arguments: the renderer holds wherever the clock sits. Resume goes
+// through Play, which restarts the same instance at speed 1.
+std::string pause(const std::string& control_url) {
+  return envelope(control_url, "Pause", instanceArg());
+}
+
 std::string stop(const std::string& control_url) {
   return envelope(control_url, "Stop", instanceArg());
 }

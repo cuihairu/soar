@@ -1506,6 +1506,21 @@ class PlayerHud {
     st_.toast.show("Cast stopped", now);
   }
 
+  // Pause/Resume at the renderer. A rejected action is surfaced: the user
+  // asked for something the receiver refused, and the button must not read
+  // as if it had worked.
+  void pauseCast(milliseconds now) {
+    if (!cast_active_) return;
+    if (cast_active_->pause()) st_.toast.show("Cast paused", now);
+    else st_.toast.show("Pause rejected: " + cast_active_->lastError(), now);
+  }
+
+  void resumeCast(milliseconds now) {
+    if (!cast_active_) return;
+    if (cast_active_->resume()) st_.toast.show("Cast resumed", now);
+    else st_.toast.show("Resume rejected: " + cast_active_->lastError(), now);
+  }
+
   // Per-frame: the pre-armed --cast request and the auto-pick handoff.
   // The auto request waits for the discovery burst to finish, then casts
   // to the first answer (or toasts the silence).
@@ -1573,6 +1588,11 @@ class PlayerHud {
                 std::string line = "at " + formatClock(milliseconds(pos));
                 if (dur > 0) line += " / " + formatClock(milliseconds(dur));
                 ImGui::TextDisabled("%s", line.c_str());
+              }
+              if (cast_active_->paused()) {
+                if (ImGui::SmallButton("Resume")) resumeCast(now);
+              } else {
+                if (ImGui::SmallButton("Pause")) pauseCast(now);
               }
               if (ImGui::SmallButton("Stop casting")) stopCast(now);
               break;

@@ -174,6 +174,24 @@ TEST_CASE("tag extraction matches case-insensitively and decodes entities") {
   CHECK(cast::xmlEscape("a<b>c\"d'e&f") == "a&lt;b&gt;c&quot;d&apos;e&amp;f");
 }
 
+TEST_CASE("attribute extraction reads the GENA state reports") {
+  // The transport state rides attributes, not element text.
+  CHECK(cast::tagAttr("<LastChange val=\"PLAYING\"/>", "LastChange", "val") == "PLAYING");
+  // Single quotes, spacing variants, and case-insensitive names.
+  CHECK(cast::tagAttr("<lastchange VAL = 'PAUSED_PLAYBACK' />", "LastChange",
+                      "val") == "PAUSED_PLAYBACK");
+  // Entities inside the value decode; the tag name never parses as an
+  // attribute name, and namespace-qualified attributes are skipped whole.
+  CHECK(cast::tagAttr("<e:property xmlns:e=\"urn:x\"><LastChange val=\"a&lt;b&quot;c\"/>"
+                      "</e:property>",
+                      "LastChange", "val") == "a<b\"c");
+  CHECK(cast::tagAttr("<LastChange val=\"PLAYING\"/>", "LastChange", "absent").empty());
+  CHECK(cast::tagAttr("<Other val=\"PLAYING\"/>", "LastChange", "val").empty());
+  CHECK(cast::tagAttr("no tags at all", "LastChange", "val").empty());
+  // An unterminated value is not a value.
+  CHECK(cast::tagAttr("<LastChange val=\"PLAYING>", "LastChange", "val").empty());
+}
+
 TEST_CASE("device descriptions parse and resolve the AVTransport control URL") {
   // The common Samsung/LG-shaped layout: relative control URLs resolved
   // against the description URL, several services beside AVTransport.
@@ -214,6 +232,12 @@ TEST_CASE("device descriptions parse and resolve the AVTransport control URL") {
   REQUIRE(cast::avTransportControlUrl(device, "http://192.168.1.20:8200/desc.xml", &url));
   CHECK(url == "http://192.168.1.20:8200/AVTransport/ctrl");
 
+  // The event subscription URL resolves the same way.
+  std::string event_url;
+  REQUIRE(cast::avTransportEventUrl(device, "http://192.168.1.20:8200/desc.xml",
+                                    &event_url));
+  CHECK(event_url == "http://192.168.1.20:8200/AVTransport/evt");
+
   // An absolute control URL passes through untouched.
   cast::DeviceDesc absolute = device;
   absolute.services[1].control_url = "http://other-host:9/ctrl";
@@ -239,6 +263,12 @@ TEST_CASE("device descriptions parse and resolve the AVTransport control URL") {
   no_av.services.push_back({"urn:schemas-upnp-org:service:RenderingControl:1", "id",
                             "/ctrl", "/evt"});
   CHECK_FALSE(cast::avTransportControlUrl(no_av, "http://h/d", &url));
+  CHECK_FALSE(cast::avTransportEventUrl(no_av, "http://h/d", &event_url));
+  // A service without an eventSubURL leaves the session poll-only.
+  cast::DeviceDesc no_evt;
+  no_evt.services.push_back(
+      {"urn:schemas-upnp-org:service:AVTransport:1", "id", "/ctrl", ""});
+  CHECK_FALSE(cast::avTransportEventUrl(no_evt, "http://h/d", &event_url));
   // Not a device description at all.
   cast::DeviceDesc junk;
   CHECK_FALSE(cast::parseDeviceDescription("<html>404</html>", &junk));
@@ -338,6 +368,23 @@ TEST_CASE("SOAP requests carry the envelope and an exact content length") {
         std::string::npos);
   CHECK(play.find("<InstanceID>0</InstanceID><Speed>1</Speed>") != std::string::npos);
 
+  // Pause takes no arguments past the instance id — no Speed, no Target.
+  // Resume is not a separate action; it reuses Play at speed 1.
+  const std::string pause = cast::pause(url);
+  CHECK(pause.find("SOAPACTION: \"urn:schemas-upnp-org:service:AVTransport:1#Pause\"") !=
+        std::string::npos);
+  CHECK(pause.find("<u:Pause xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">") !=
+        std::string::npos);
+  CHECK(pause.find("<InstanceID>0</InstanceID>") != std::string::npos);
+  CHECK(pause.find("Speed") == std::string::npos);
+  CHECK(pause.find("<Speed>") == std::string::npos);
+  {
+    const std::string body = body_of(pause);
+    const size_t at = pause.find("CONTENT-LENGTH: ") + 16;
+    const size_t declared = std::strtoull(pause.c_str() + at, nullptr, 10);
+    CHECK(declared == body.size());
+  }
+
   const std::string stop = cast::stop(url);
   CHECK(stop.find("SOAPACTION: \"urn:schemas-upnp-org:service:AVTransport:1#Stop\"") !=
         std::string::npos);
@@ -420,6 +467,87 @@ TEST_CASE("SOAP faults and position reports parse; clocks convert both ways") {
   CHECK(cast::formatClockMs(0) == "0:00:00");
   CHECK(cast::formatClockMs(-5) == "0:00:00");
   CHECK(cast::formatClockMs(90000) == "0:01:30");
+}
+
+TEST_CASE("GENA requests carry CALLBACK/NT/TIMEOUT and address the SID after") {
+  const std::string sub =
+      cast::subscribeRequest("http://192.168.1.20:8200/AVTransport/evt",
+                             "http://192.168.1.5:41000/cast/events", 1800);
+  CHECK(sub.find("SUBSCRIBE /AVTransport/evt HTTP/1.1\r\n") == 0);
+  CHECK(sub.find("HOST: 192.168.1.20:8200\r\n") != std::string::npos);
+  CHECK(sub.find("CALLBACK: <http://192.168.1.5:41000/cast/events>\r\n") !=
+        std::string::npos);
+  CHECK(sub.find("NT: upnp:event\r\n") != std::string::npos);
+  CHECK(sub.find("TIMEOUT: Second-1800\r\n") != std::string::npos);
+  // The requested timeout clamps to the spec's sane range.
+  CHECK(cast::subscribeRequest("http://h/evt", "http://me/evt", 1)
+            .find("TIMEOUT: Second-300\r\n") != std::string::npos);
+  CHECK(cast::subscribeRequest("http://h/evt", "http://me/evt", 999999)
+            .find("TIMEOUT: Second-86400\r\n") != std::string::npos);
+
+  // Renewal and teardown carry the SID — and neither may re-announce
+  // CALLBACK or NT, which the spec reserves for the initial subscribe.
+  const std::string renew =
+      cast::renewRequest("http://h:80/AVTransport/evt", "uuid:soar-evt-1", 1800);
+  CHECK(renew.find("SUBSCRIBE /AVTransport/evt HTTP/1.1\r\n") == 0);
+  CHECK(renew.find("SID: uuid:soar-evt-1\r\n") != std::string::npos);
+  CHECK(renew.find("CALLBACK") == std::string::npos);
+  CHECK(renew.find("NT:") == std::string::npos);
+  const std::string bye =
+      cast::unsubscribeRequest("http://h/AVTransport/evt", "uuid:soar-evt-1");
+  CHECK(bye.find("UNSUBSCRIBE /AVTransport/evt HTTP/1.1\r\n") == 0);
+  CHECK(bye.find("SID: uuid:soar-evt-1\r\n") != std::string::npos);
+  CHECK(bye.find("CALLBACK") == std::string::npos);
+}
+
+TEST_CASE("subscription replies parse only when SID and 200 agree") {
+  cast::Subscription sub;
+  REQUIRE(cast::parseSubscribeReply(
+      "HTTP/1.1 200 OK\r\nSID: uuid:soar-evt-1\r\nTIMEOUT: Second-1800\r\n"
+      "SERVER: x\r\n\r\n",
+      &sub));
+  CHECK(sub.sid == "uuid:soar-evt-1");
+  CHECK(sub.timeout_secs == 1800);
+  // "infinite" is the spec's no-expiry form; case-insensitive.
+  REQUIRE(cast::parseSubscribeReply(
+      "HTTP/1.1 200 OK\r\nsid: uuid:other\r\ntimeout: Second-infinite\r\n\r\n",
+      &sub));
+  CHECK(sub.sid == "uuid:other");
+  CHECK(sub.timeout_secs == 0);
+  // A refused subscribe is not a subscription; neither is a 200 without
+  // a SID.
+  CHECK_FALSE(cast::parseSubscribeReply(
+      "HTTP/1.1 412 Precondition Failed\r\nContent-Length: 0\r\n\r\n", &sub));
+  CHECK_FALSE(cast::parseSubscribeReply(
+      "HTTP/1.1 200 OK\r\nTIMEOUT: Second-1800\r\n\r\n", &sub));
+}
+
+// The real NOTIFY wire form: the state rides the escaped LastChange
+// attribute of a property-set body.
+std::string notifyBody(const char* state) {
+  const std::string inner =
+      std::string("<Event xmlns=\"urn:schemas-upnp-org:event-1-0\">"
+                  "<InstanceID val=\"0\"><TransportState val=\"") +
+      state + "\"/></InstanceID></Event>";
+  return "<e:propertyset xmlns:e=\"urn:schemas-upnp-org:event-1-0\">"
+         "<e:property><LastChange val=\"" +
+         cast::xmlEscape(inner) + "\"/></e:property></e:propertyset>";
+}
+
+TEST_CASE("NOTIFY bodies report the transport state they carry") {
+  CHECK(cast::parseNotifyState(notifyBody("PLAYING")) == cast::TransportState::Playing);
+  CHECK(cast::parseNotifyState(notifyBody("PAUSED_PLAYBACK")) ==
+        cast::TransportState::PausedPlayback);
+  CHECK(cast::parseNotifyState(notifyBody("STOPPED")) == cast::TransportState::Stopped);
+  CHECK(cast::parseNotifyState(notifyBody("TRANSITIONING")) ==
+        cast::TransportState::Transitioning);
+  CHECK(cast::parseNotifyState(notifyBody("NO_MEDIA_PRESENT")) ==
+        cast::TransportState::NoMediaPresent);
+  // An unparseable body is Unknown, never a state guess.
+  CHECK(cast::parseNotifyState("<e:propertyset/>") == cast::TransportState::Unknown);
+  CHECK(cast::parseNotifyState("not xml") == cast::TransportState::Unknown);
+  CHECK(cast::parseNotifyState(notifyBody("SOMETHING_ELSE")) ==
+        cast::TransportState::Unknown);
 }
 
 TEST_CASE("HTTP status extraction") {
@@ -572,6 +700,7 @@ bool waitPhase(const cast::CastSession& session, cast::CastSession::Phase want,
 struct FakeState {
   bool fault_set_uri = false;
   bool fault_play = false;
+  bool fault_pause = false;
   bool fault_seek = false;
   bool fault_no_desc = false;  // fault reply carries no errorDescription
   bool stalled = false;
@@ -585,6 +714,8 @@ struct FakeState {
   bool flood_head = false;      // description is a giant unterminated head
   bool empty_name = false;      // description has an empty friendlyName
   bool bad_control = false;     // controlURL scheme the control point rejects
+  bool refuse_subscribe = false;  // SUBSCRIBE answers 412
+  bool short_event_lease = false; // SUBSCRIBE grants Second-5, forcing renewal
   std::string description;
 
   std::mutex mu;
@@ -593,11 +724,18 @@ struct FakeState {
   std::string seek_target;
   bool played = false;
   bool stop_requested = false;
+  bool pause_requested = false;
   int position_requests = 0;
   int media_fetch_status = 0;
+  std::string callback_url;  // CALLBACK the control point subscribed with
+  int subscribe_count = 0;
+  int renew_count = 0;
+  bool unsubscribed = false;
   bool playing = false;
+  bool paused = false;
   std::chrono::steady_clock::time_point play_epoch{};
   std::int64_t seek_base_ms = 0;
+  std::int64_t pause_base_ms = 0;  // clock frozen here while paused
 };
 
 std::string fakeClock(std::int64_t ms) {
@@ -743,6 +881,51 @@ void serveConn(std::shared_ptr<FakeState> state, int fd) {
       ::send(fd, reply.data(), reply.size(), 0);
       break;  // Connection: close
     }
+    if (path.rfind("/AVTransport/evt", 0) == 0) {
+      // GENA: SUBSCRIBE records the CALLBACK and answers a SID; a
+      // subscription with a SID header is a renewal; UNSUBSCRIBE retires.
+      const std::string method = head.substr(0, sp1);
+      const std::string sid_hdr = headerValue(head, "sid:");
+      if (method == "SUBSCRIBE") {
+        bool refuse = false;
+        if (sid_hdr.empty()) {
+          std::string cb = headerValue(head, "callback:");
+          if (cb.size() >= 2 && cb.front() == '<' && cb.back() == '>')
+            cb = cb.substr(1, cb.size() - 2);
+          std::lock_guard<std::mutex> lock(state->mu);
+          state->callback_url = cb;
+          ++state->subscribe_count;
+          refuse = state->refuse_subscribe;
+        } else {
+          std::lock_guard<std::mutex> lock(state->mu);
+          ++state->renew_count;
+          refuse = state->refuse_subscribe;
+        }
+        const std::string reply =
+            refuse
+                ? std::string("HTTP/1.1 412 Precondition Failed\r\nContent-Length: "
+                              "0\r\nConnection: close\r\n\r\n")
+                : "HTTP/1.1 200 OK\r\nSID: uuid:soar-evt-1\r\nTIMEOUT: Second-" +
+                      std::string(state->short_event_lease ? "5" : "1800") +
+                      "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        ::send(fd, reply.data(), reply.size(), 0);
+        break;
+      }
+      if (method == "UNSUBSCRIBE") {
+        {
+          std::lock_guard<std::mutex> lock(state->mu);
+          state->unsubscribed = true;
+        }
+        const std::string bye =
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        ::send(fd, bye.data(), bye.size(), 0);
+        break;
+      }
+      const std::string not_found =
+          "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      ::send(fd, not_found.data(), static_cast<int>(not_found.size()), 0);
+      break;
+    }
     if (path.rfind("/AVTransport/ctrl", 0) != 0) {
       const std::string not_found =
           "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -797,9 +980,30 @@ void serveConn(std::shared_ptr<FakeState> state, int fd) {
       state->played = true;
       if (!state->fault_play) {
         state->playing = true;
-        state->play_epoch = std::chrono::steady_clock::now();
+        state->paused = false;
+        // Resume continues from where Pause froze the clock: anchor the
+        // epoch so elapsed picks up from pause_base_ms.
+        const std::int64_t base_ms = state->playing ? state->pause_base_ms : 0;
+        state->play_epoch =
+            std::chrono::steady_clock::now() -
+            std::chrono::milliseconds(base_ms);
       }
       body = state->fault_play ? fault_body : ok_envelope;
+    } else if (action == "Pause") {
+      std::lock_guard<std::mutex> lock(state->mu);
+      state->pause_requested = true;
+      if (!state->fault_pause) {
+        const std::int64_t elapsed =
+            state->playing
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - state->play_epoch).count() +
+                  state->seek_base_ms
+                : state->seek_base_ms;
+        state->pause_base_ms = elapsed;  // freeze here
+        state->paused = true;
+        state->playing = false;
+      }
+      body = state->fault_pause ? fault_body : ok_envelope;
     } else if (action == "Stop") {
       std::lock_guard<std::mutex> lock(state->mu);
       state->stop_requested = true;
@@ -837,11 +1041,13 @@ void serveConn(std::shared_ptr<FakeState> state, int fd) {
           // A legal renderer answer: no parseable clock at all.
           rel = "NOT_IMPLEMENTED";
         } else {
+          // While paused the clock holds at the freeze point, as a real
+          // renderer reports it.
           const std::int64_t elapsed = state->playing
                 ? std::chrono::duration_cast<std::chrono::milliseconds>(
                       std::chrono::steady_clock::now() - state->play_epoch).count() +
                   state->seek_base_ms
-                : state->seek_base_ms;
+                : (state->paused ? state->pause_base_ms : state->seek_base_ms);
           rel = fakeClock(elapsed);
         }
       }
@@ -866,6 +1072,7 @@ void serveConn(std::shared_ptr<FakeState> state, int fd) {
     const bool reject =
         (state->fault_set_uri && action == "SetAVTransportURI") ||
         (state->fault_play && action == "Play") ||
+        (state->fault_pause && action == "Pause") ||
         (state->fault_seek && action == "Seek");
     if (!reject) {
       reply = "HTTP/1.1 200 OK\r\nContent-Type: text/xml; charset=\"utf-8\"\r\nConnection: close\r\nContent-Length: " +
@@ -888,6 +1095,7 @@ class FakeRenderer {
   struct Config {
     bool fault_set_uri = false;
     bool fault_play = false;
+    bool fault_pause = false;
     bool fault_seek = false;
     bool fault_no_desc = false;
     bool stalled = false;
@@ -900,6 +1108,8 @@ class FakeRenderer {
     bool flood_head = false;
     bool empty_name = false;
     bool bad_control = false;
+    bool refuse_subscribe = false;
+    bool short_event_lease = false;
     int go_deaf_after = 0;
     bool join_group = false;  // answer loopback M-SEARCH bursts
   };
@@ -908,6 +1118,7 @@ class FakeRenderer {
     state_ = std::make_shared<FakeState>();
     state_->fault_set_uri = config.fault_set_uri;
     state_->fault_play = config.fault_play;
+    state_->fault_pause = config.fault_pause;
     state_->fault_seek = config.fault_seek;
     state_->fault_no_desc = config.fault_no_desc;
     state_->stalled = config.stalled;
@@ -920,6 +1131,8 @@ class FakeRenderer {
     state_->flood_head = config.flood_head;
     state_->empty_name = config.empty_name;
     state_->bad_control = config.bad_control;
+    state_->refuse_subscribe = config.refuse_subscribe;
+    state_->short_event_lease = config.short_event_lease;
     state_->go_deaf_after = config.go_deaf_after;
 
     const char* av_service =
@@ -1034,6 +1247,15 @@ class FakeRenderer {
     std::lock_guard<std::mutex> lock(state_->mu);
     return state_->played;
   }
+  bool sawPause() {
+    std::lock_guard<std::mutex> lock(state_->mu);
+    return state_->pause_requested;
+  }
+  // Whether the renderer reports the clock frozen at the pause point.
+  bool clockHeld() {
+    std::lock_guard<std::mutex> lock(state_->mu);
+    return state_->paused;
+  }
   bool sawStop() {
     std::lock_guard<std::mutex> lock(state_->mu);
     return state_->stop_requested;
@@ -1041,6 +1263,65 @@ class FakeRenderer {
   int mediaFetchStatus() {
     std::lock_guard<std::mutex> lock(state_->mu);
     return state_->media_fetch_status;
+  }
+  bool sawSubscribe() {
+    std::lock_guard<std::mutex> lock(state_->mu);
+    return state_->subscribe_count > 0;
+  }
+  int renewCount() {
+    std::lock_guard<std::mutex> lock(state_->mu);
+    return state_->renew_count;
+  }
+  bool sawUnsubscribed() {
+    std::lock_guard<std::mutex> lock(state_->mu);
+    return state_->unsubscribed;
+  }
+
+  // The renderer side of GENA: push a NOTIFY to the CALLBACK URL the
+  // control point subscribed with. Returns the HTTP status answered
+  // (0 when nothing was ever subscribed or the endpoint is unreachable).
+  int pushNotify(const std::string& body) {
+    std::string cb;
+    {
+      std::lock_guard<std::mutex> lock(state_->mu);
+      cb = state_->callback_url;
+    }
+    // "http://127.0.0.1:<port>/cast/events"
+    const size_t scheme = cb.find("//");
+    if (scheme == std::string::npos) return 0;
+    const size_t colon = cb.find(':', scheme + 2);
+    const size_t slash = cb.find('/', scheme + 2);
+    if (colon == std::string::npos || slash == std::string::npos) return 0;
+    const int port = std::atoi(cb.c_str() + colon + 1);
+    if (port <= 0) return 0;
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<unsigned short>(port));
+    ::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+      ::close(fd);
+      return 0;
+    }
+    const std::string req =
+        "NOTIFY " + cb.substr(slash) + " HTTP/1.1\r\n"
+        "HOST: 127.0.0.1\r\n"
+        "CONTENT-TYPE: text/xml; charset=\"utf-8\"\r\n"
+        "NT: upnp:event\r\n"
+        "NTS: upnp:propchange\r\n"
+        "SID: uuid:soar-evt-1\r\n"
+        "SEQ: 0\r\n"
+        "CONTENT-LENGTH: " +
+        std::to_string(body.size()) + "\r\n"
+        "Connection: close\r\n\r\n" +
+        body;
+    ::send(fd, req.data(), static_cast<int>(req.size()), 0);
+    char buf[256] = {0};
+    ::recv(fd, buf, sizeof(buf) - 1, 0);
+    ::close(fd);
+    const char* sp = std::strchr(buf, ' ');
+    return sp != nullptr ? std::atoi(sp + 1) : 0;
   }
 
  private:
@@ -1128,6 +1409,10 @@ struct TickCollector {
       if (ticks[i + 1].first <= ticks[i].first) return false;
     }
     return true;
+  }
+  std::int64_t lastPos() {
+    std::lock_guard<std::mutex> lock(mu);
+    return ticks.empty() ? -1 : ticks.back().first;
   }
 };
 
@@ -1342,6 +1627,9 @@ TEST_CASE("a cast session drives the renderer and restores the bridge") {
   CHECK(renderer.mediaFetchStatus() == 206);
   CHECK(renderer.lastTitle() == "Cast Me <Now>");
   CHECK(renderer.sawPlay());
+  // The event stream subscribed alongside the control plane and retires
+  // with the session.
+  CHECK(renderer.sawSubscribe());
 
   // Position ticks advance at the renderer.
   CHECK(waitTicks(ticks, 4, 8000));
@@ -1366,9 +1654,209 @@ TEST_CASE("a cast session drives the renderer and restores the bridge") {
   session.stop();
   CHECK(session.phase() == cast::CastSession::Phase::Stopped);
   CHECK(renderer.sawStop());
+  CHECK(renderer.sawUnsubscribed());
   CHECK(bridge.phase() == p2p::TorrentPhase::Serving);  // the bridge lives on
   CHECK(bridge.playbackUrl().rfind("http://127.0.0.1:", 0) == 0);
   CHECK(getStatus(bridge.playbackUrl()) == 206);
+}
+
+TEST_CASE("pause reaches the renderer, holds the clock, and resumes from it") {
+  const SoloStore store = makeSolo("pause");
+  p2p::TorrentStream bridge;
+  p2p::TorrentStream::Params bp;
+  bp.torrent_path = store.torrent;
+  bp.store_dir = store.dir;
+  REQUIRE(bridge.start(bp));
+
+  FakeRenderer::Config config;
+  FakeRenderer renderer(config);
+
+  TickCollector ticks;
+  cast::CastSession session;
+  cast::CastSession::Params params;
+  params.bridge = &bridge;
+  params.renderer_location = renderer.location();
+  params.poll_ms = 120;
+  params.start_grace_ms = 30000;
+  params.on_position = std::ref(ticks);
+  REQUIRE_MESSAGE(session.start(params), "start failed: " << session.lastError());
+
+  // Let the clock move before pausing: the renderer's held value is then a
+  // real number, so the "still advancing after resume" assertion has
+  // something to compare against.
+  CHECK(waitTicks(ticks, 2, 8000));
+
+  REQUIRE(session.pause());
+  CHECK(session.paused());
+  CHECK(session.pause());  // idempotent: a second pause is a no-op
+  bool pause_seen = false;
+  for (int i = 0; i < 100 && !pause_seen; ++i) {
+    pause_seen = renderer.sawPause();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(pause_seen);
+  // Drain the poll that may have been in flight when Pause landed: its
+  // answer still carries the pre-pause clock.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  // The renderer's clock holds and the session stays casting.
+  const std::int64_t held = ticks.lastPos();
+  CHECK(held > 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  CHECK(ticks.lastPos() == held);
+  CHECK(session.phase() == cast::CastSession::Phase::Casting);
+  CHECK(renderer.clockHeld());
+
+  REQUIRE(session.resume());
+  CHECK_FALSE(session.paused());
+  CHECK(session.resume());  // idempotent: resuming an unpaused session is a no-op
+  // waitTicks counts absolute size, and the vector already holds plenty of
+  // pre-pause ticks — wait for two NEW ones instead.
+  const size_t before = ticks.size();
+  REQUIRE(waitTicks(ticks, before + 2, 8000));
+  CHECK(ticks.lastPos() > held);  // the clock ran on from the freeze point
+
+  session.stop();
+  CHECK_FALSE(session.paused());  // the flag does not survive the stop
+}
+
+TEST_CASE("a rejected Pause leaves the session casting and unpaused") {
+  const SoloStore store = makeSolo("pausefault");
+  p2p::TorrentStream bridge;
+  p2p::TorrentStream::Params bp;
+  bp.torrent_path = store.torrent;
+  bp.store_dir = store.dir;
+  REQUIRE(bridge.start(bp));
+
+  FakeRenderer::Config config;
+  config.fault_pause = true;
+  FakeRenderer renderer(config);
+
+  cast::CastSession session;
+  cast::CastSession::Params params;
+  params.bridge = &bridge;
+  params.renderer_location = renderer.location();
+  params.poll_ms = 120;
+  params.start_grace_ms = 30000;
+  REQUIRE_MESSAGE(session.start(params), "start failed: " << session.lastError());
+  CHECK_FALSE(session.pause());
+  CHECK(session.paused() == false);  // the session did not claim to hold
+  CHECK(session.lastError().find("cast: Pause rejected: SOAP fault") !=
+        std::string::npos);
+  // Seeking still works after a refused Pause.
+  CHECK(session.seekMs(3000));
+  session.stop();
+  CHECK(session.phase() == cast::CastSession::Phase::Stopped);
+}
+
+TEST_CASE("a PLAYING event over GENA keeps a stalled renderer past the grace window") {
+  const SoloStore store = makeSolo("gena");
+  p2p::TorrentStream bridge;
+  p2p::TorrentStream::Params bp;
+  bp.torrent_path = store.torrent;
+  bp.store_dir = store.dir;
+  REQUIRE(bridge.start(bp));
+
+  FakeRenderer::Config config;
+  config.stalled = true;  // GetPositionInfo answers 0:00:00 forever
+  FakeRenderer renderer(config);
+
+  std::mutex tmu;
+  std::vector<cast::TransportState> seen;
+  cast::CastSession session;
+  cast::CastSession::Params params;
+  params.bridge = &bridge;
+  params.renderer_location = renderer.location();
+  params.poll_ms = 120;
+  params.start_grace_ms = 1500;  // without an event this session is Failed now
+  params.on_transport = [&](cast::TransportState s) {
+    std::lock_guard<std::mutex> lock(tmu);
+    seen.push_back(s);
+  };
+  REQUIRE_MESSAGE(session.start(params), "start failed: " << session.lastError());
+  CHECK(renderer.sawSubscribe());
+
+  // The renderer announces PLAYING over the callback: evidence of life
+  // the poll clock cannot show.
+  CHECK(renderer.pushNotify(notifyBody("PLAYING")) == 200);
+  bool playing_seen = false;
+  for (int i = 0; i < 100 && !playing_seen; ++i) {
+    std::lock_guard<std::mutex> lock(tmu);
+    playing_seen = !seen.empty() && seen.back() == cast::TransportState::Playing;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(playing_seen);
+
+  // Well past the grace window the session is still casting — the event
+  // suppressed the decode-failure verdict the stalled poll would earn.
+  std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+  CHECK(session.phase() == cast::CastSession::Phase::Casting);
+
+  session.stop();
+  CHECK(renderer.sawUnsubscribed());
+}
+
+TEST_CASE("a refused subscription leaves the session poll-only and playing") {
+  const SoloStore store = makeSolo("nosub");
+  p2p::TorrentStream bridge;
+  p2p::TorrentStream::Params bp;
+  bp.torrent_path = store.torrent;
+  bp.store_dir = store.dir;
+  REQUIRE(bridge.start(bp));
+
+  FakeRenderer::Config config;
+  config.refuse_subscribe = true;
+  FakeRenderer renderer(config);
+
+  TickCollector ticks;
+  cast::CastSession session;
+  cast::CastSession::Params params;
+  params.bridge = &bridge;
+  params.renderer_location = renderer.location();
+  params.poll_ms = 120;
+  params.start_grace_ms = 30000;
+  params.on_position = std::ref(ticks);
+  REQUIRE_MESSAGE(session.start(params), "start failed: " << session.lastError());
+  CHECK(session.phase() == cast::CastSession::Phase::Casting);
+  // The renderer answered 412; the session subscribed once, took the
+  // refusal, and went on polling.
+  CHECK(renderer.sawSubscribe());
+  CHECK(waitTicks(ticks, 2, 8000));
+
+  session.stop();
+  CHECK(session.phase() == cast::CastSession::Phase::Stopped);
+  CHECK_FALSE(renderer.sawUnsubscribed());  // nothing to tear down
+}
+
+TEST_CASE("a short event lease is renewed while the session runs") {
+  const SoloStore store = makeSolo("renew");
+  p2p::TorrentStream bridge;
+  p2p::TorrentStream::Params bp;
+  bp.torrent_path = store.torrent;
+  bp.store_dir = store.dir;
+  REQUIRE(bridge.start(bp));
+
+  FakeRenderer::Config config;
+  config.short_event_lease = true;  // Second-5: due again within the test
+  FakeRenderer renderer(config);
+
+  cast::CastSession session;
+  cast::CastSession::Params params;
+  params.bridge = &bridge;
+  params.renderer_location = renderer.location();
+  params.poll_ms = 120;
+  params.start_grace_ms = 30000;
+  REQUIRE_MESSAGE(session.start(params), "start failed: " << session.lastError());
+  bool renewed = false;
+  for (int i = 0; i < 100 && !renewed; ++i) {
+    renewed = renderer.renewCount() >= 1;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(renewed);
+  CHECK(session.phase() == cast::CastSession::Phase::Casting);
+
+  session.stop();
+  CHECK(renderer.sawUnsubscribed());
 }
 
 TEST_CASE("a renderer fault on SetAVTransportURI fails the session with the fault text") {

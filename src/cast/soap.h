@@ -1,11 +1,11 @@
 // AVTransport SOAP control for the casting control point.
 //
-// Builds the complete HTTP requests (headers + envelope) for the four
-// actions this batch controls a renderer with — SetAVTransportURI, Play,
-// Seek, Stop — plus GetPositionInfo, the only state read (GENA eventing
-// is deliberately not done; the session polls). Also parses the replies'
-// two interesting shapes: a UPnP fault and a position report. Pure string
-// work; the HTTP side is renderer.cpp.
+// Builds the complete HTTP requests (headers + envelope) for the five
+// transport actions — SetAVTransportURI, Play, Pause, Seek, Stop — plus
+// GetPositionInfo, the only state read (GENA eventing is deliberately
+// not done; the session polls). Also parses the replies' two interesting
+// shapes: a UPnP fault and a position report. Pure string work; the HTTP
+// side is renderer.cpp.
 #pragma once
 
 #include <cstdint>
@@ -39,6 +39,9 @@ extern const char kAvTransportType[];
 std::string setAvTransportUri(const std::string& control_url, const std::string& uri,
                               const std::string& title);
 std::string play(const std::string& control_url);
+// Pause carries no arguments; resume is Play at speed 1 — the AVTransport
+// spec has no separate Resume action.
+std::string pause(const std::string& control_url);
 std::string stop(const std::string& control_url);
 // Unit REL_TIME — the position form a playing renderer seeks with.
 std::string seekRelTime(const std::string& control_url, std::int64_t ms);

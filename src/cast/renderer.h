@@ -39,20 +39,21 @@ int discoverRenderers(int timeout_ms, std::vector<DiscoveredRenderer>* out,
 bool fetchDescription(const std::string& location, DeviceDesc* out, std::string* err);
 
 // A client bound to one renderer's AVTransport control URL. Methods map
-// one-to-one onto the four actions of this batch plus the state read;
-// every method opens its own short-lived connection, so a renderer that
-// wedges one request cannot poison the next.
+// one-to-one onto the five transport actions of this batch plus the state
+// read; every method opens its own short-lived connection, so a renderer
+// that wedges one request cannot poison the next.
 class RendererClient {
  public:
   RendererClient() = default;
   RendererClient(std::string control_url, std::string service_type)
       : control_url_(std::move(control_url)), service_type_(std::move(service_type)) {}
 
-  // All four return false and fill `err` on transport failure (connect,
+  // All five return false and fill `err` on transport failure (connect,
   // write, read, timeout) or when the renderer answers with a SOAP fault
   // (the fault text rides along: "SOAP fault 716: Resource not found").
   bool setUri(const std::string& uri, const std::string& title, std::string* err);
   bool play(std::string* err);
+  bool pause(std::string* err);
   bool stop(std::string* err);
   bool seekRel(std::int64_t ms, std::string* err);
 
@@ -68,5 +69,12 @@ class RendererClient {
   std::string control_url_;
   std::string service_type_;
 };
+
+// The GENA subscription family runs over the same plumbing: one request
+// (a builder from eventing.h), the raw reply text back — the reply head
+// matters here, since SID and TIMEOUT are headers, not body content.
+// False on a transport failure; the reply's status is parsed downstream.
+bool sendEventRequest(const std::string& event_url, const std::string& request,
+                      std::string* response, std::string* err);
 
 }  // namespace soar::cast
