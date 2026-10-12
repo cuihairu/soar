@@ -2411,7 +2411,8 @@ int closedTcpPort() {
     ::close(fd);
     return 0;
   }
-  const int port = ::ntohs(addr.sin_port);
+  // Plain ntohs: Darwin defines it as a macro, and ::macro does not parse.
+  const int port = ntohs(addr.sin_port);
   ::close(fd);
   return port;
 }
