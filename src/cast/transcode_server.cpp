@@ -358,11 +358,12 @@ struct Pump {
 bool Pump::openInput() {
   if (avformat_open_input(&in, source.c_str(), nullptr, nullptr) != 0)
     return fail("cast: transcode cannot open the source " + source);
-  if (avformat_find_stream_info(in, nullptr) < 0)
-    return fail("cast: transcode cannot read the source's stream layout");
 
   // The first real video and audio streams; attached cover art is not
-  // the video. Subtitles and data streams do not travel.
+  // the video. Subtitles and data streams do not travel. The codec types
+  // are in the container header, so this scan runs before the probe: a
+  // stream-less source fails with the explicit reason even where the
+  // probe itself would error first (that behavior varies by ffmpeg build).
   for (unsigned i = 0; i < in->nb_streams; ++i) {
     const AVStream* st = in->streams[i];
     if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && in_v < 0 &&
@@ -373,6 +374,9 @@ bool Pump::openInput() {
   }
   if (in_v < 0 && in_a < 0)
     return fail("cast: transcode found no video or audio stream in the source");
+
+  if (avformat_find_stream_info(in, nullptr) < 0)
+    return fail("cast: transcode cannot read the source's stream layout");
 
   if (in_v >= 0 && !copyableVideo(in->streams[in_v]->codecpar)) {
     const AVCodec* dec = avcodec_find_decoder(in->streams[in_v]->codecpar->codec_id);
