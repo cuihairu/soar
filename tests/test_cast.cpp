@@ -2556,9 +2556,13 @@ TEST_CASE("transcode reports a broken source through waitReady") {
 }
 
 TEST_CASE("transcode serves one stream at a time") {
+  // Two things can free the slot while this test runs and turn the second
+  // fetch into a 200 instead of a 503: the source running to EOF (so the
+  // source is long), and the stalled-reader send timeout (so the first
+  // client keeps reading). Both are real release paths, not test noise.
   cast::TranscodeServer ts;
   std::string err;
-  REQUIRE(ts.start(castFixture("cast_h264_aac.mp4"), &err));
+  REQUIRE(ts.start(makeNoiseWav("tsone", 90), &err));
   REQUIRE(ts.waitReady(20000));
 
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -2569,17 +2573,34 @@ TEST_CASE("transcode serves one stream at a time") {
   REQUIRE(::inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) == 1);
   REQUIRE(::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
   const std::string req = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
-  ::send(fd, req.data(), req.size(), 0);
-  char buf[512];
-  const ssize_t first = ::recv(fd, buf, sizeof(buf), 0);
-  REQUIRE(first > 0);  // the 200 head and the first stream bytes
+  REQUIRE(::send(fd, req.data(), req.size(), 0) > 0);
+
+  std::atomic<bool> started{false};
+  std::thread drain([&fd, &started] {
+    char b[8192];
+    std::string got;
+    for (;;) {
+      const ssize_t n = ::recv(fd, b, sizeof(b), 0);
+      if (n <= 0) break;
+      got.append(b, static_cast<size_t>(n));
+      if (!started && got.find("HTTP/1.1 200 OK") != std::string::npos)
+        started = true;
+    }
+  });
+  for (int i = 0; i < 300 && !started; ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  REQUIRE(started);
 
   // A second renderer-side fetch while the first holds the slot: 503.
   const StreamFetch second = fetchStream("127.0.0.1", ts.port());
   CHECK(second.status == 503);
 
-  ::close(fd);
+  // The drain never closes the socket: stop() ends the stream, the server
+  // side closes it, and the drain sees EOF and joins. main closing the
+  // fd would race the drain's recv (and two closes of one fd would race
+  // each other) — both are flagged by TSan.
   ts.stop();
+  drain.join();
 }
 
 TEST_CASE("transcode scales an odd-size video-only source") {
