@@ -1,5 +1,41 @@
 # todo
 
+## 投屏后续批·三期（2026-10-12，一期范围里明确排除的三项兑现）
+
+范围：pause 动作、GENA 事件订阅、发送端转码。一期会话语义（发现→改绑→
+SetURI→Play→轮询→Stop→恢复）与二期产品接线不动；renderer/DMS 角色仍
+不做。与既有设计裁决冲突的项记录卡点跳过，不硬做（GENA 与转码在选型表
+里都是「后续可选」，非被否项，无冲突）。
+
+- [x] **pause 动作**（eaa13dd）：soap `pause()`（Pause 无参，resume 复用
+      Play speed 1——spec 无独立 Resume）+ `RendererClient::pause` +
+      `CastSession::pause/resume/paused`（Pause 成功即挂起 start 宽限窗
+      计时——宽限判定排除 paused 时长，不把「用户先暂停」误判成解码
+      失败；stop 清零暂停账）+ 浮层 Pause/Resume 按钮 + 夹具 Pause 动作
+      （时钟定格/续播从冻结点起跳）+ golden/会话/拒 Pause 三层用例。
+- [x] **GENA 事件订阅**（1838e7e）：SUBSCRIBE（CALLBACK/NT/TIMEOUT）+ 事件回调
+      HTTP 端点（会话期 LAN 可达，与桥同窗）+ NOTIFY LastChange 解析 →
+      TransportState（与轮询并存，事件先行；会话结束 UNSUBSCRIBE）。
+      收尾时补：六树门禁抓出 EventServer::stop 与 accept 线程对
+      listen_fd_/on_notify_ 的读写竞态（tsan 双腿确定性红，cli 头无
+      cast 子进程 exit 66 同根因）——serve 线程改持自身副本，stop 时序
+      不变（Darwin 靠 close 唤醒）。
+- [x] **发送端转码**（7339cd8）：FFmpeg 在场时转码路径——桥源 demux→
+      已兼容对 copy-through / 其余解码→libx264+native AAC→mpegts→
+      自含 HTTP 端点（单活点、第二路 503、1 MiB 队列反压全链到桥读），
+      `--cast-transcode` / 浮层开关（无 FFmpeg 构建显式失败），会话分叉
+      （waitReady 先于 SetURI、DIDL protocolInfo、Seek 恒拒、stall 文案
+      分叉、垃圾源 fail before Play）。测试面：五夹具家族（copy/重编码/
+      奇尺寸缩放/PCM 重采样链/无流源）+ 生命周期与请求头三态 + 队列满
+      反压 + 会话两分叉 + event server 直探（test_cast 55 例，本批 +27）
+      + CLI `--cast-transcode` 真二进制全链一例。收尾时顺手抓到并修了
+      两处：GENA 批 event server 的 stop-vs-serveLoop 竞态（tsan 双腿
+      红，fe8aa7d 改 serve 线程持 spawn 时副本）与同一服务器被 70 KB
+      无空行洪泛打死的 resize(npos) 崩溃（LAN 可达，fe8aa7d 按畸形
+      NOTIFY 处理）；噪声 WAV 夹具抓到 AAC 编码器拒绝未指明声道布局的
+      真 bug（普通 WAVE/裸 PCM 源解出 UNSPEC 布局，按声道数取默认布局
+      修复）。
+
 ## 投屏接线批·二期（2026-10-12，「一期」范围里明确排除的产品入口接线兑现）
 
 范围：窗口投屏浮层 + CLI `--cast`。一期组件（`src/cast/`）不动，桥改绑/
