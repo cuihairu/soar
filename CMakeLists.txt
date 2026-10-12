@@ -317,7 +317,7 @@ if(SOAR_BUILD_APP)
           SOAR_WITH_SDL2=1
         )
         target_link_libraries(soarw PRIVATE
-          soar::core soar_app_ui soar_p2p ${SOAR_SDL2_LIBS} shell32 comdlg32)
+          soar::core soar_app_ui soar_p2p soar_cast ${SOAR_SDL2_LIBS} shell32 comdlg32)
         if(soar_imgui_ok)
           target_compile_definitions(soarw PRIVATE SOAR_WITH_IMGUI=1)
           target_link_libraries(soarw PRIVATE imgui)
