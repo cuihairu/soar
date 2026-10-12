@@ -502,11 +502,13 @@ bool FFmpegBackend::open(const MediaSource& source) {
   // emitted after the lock is released so that user callbacks may safely
   // re-enter the public API.
   // hwdec_ must be armed before setupDecoders reads it (opened_source_ is
-  // only assigned after the whole open path succeeds).
-  hwdec_ = source.hwdec;
+  // only assigned after the whole open path succeeds). Arm it under the
+  // same mutex: close() clears hwdec_ under decode_mutex_, so an unlocked
+  // assign here races a concurrent close in the open/close storm.
   bool ok = false;
   {
     std::lock_guard<std::mutex> media_lock(decode_mutex_);
+    hwdec_ = source.hwdec;
 
     // Open the media file
     AVFormatContext* ctx = nullptr;
