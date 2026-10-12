@@ -36,7 +36,9 @@ class EventServer {
   int port() const { return port_; }
 
  private:
-  void serveLoop();
+  // Both parameters are the serve thread's own copies (stop() mutates the
+  // members while the loop is winding down — see the definition).
+  void serveLoop(int listen_fd, const std::function<void(std::string_view)>& on_notify);
 
   std::atomic<bool> running_{false};
   int listen_fd_ = -1;

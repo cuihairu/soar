@@ -142,21 +142,28 @@ void serveConnection(int fd, const std::function<void(std::string_view)>& cb) {
   }
   if (ok) {
     const size_t head_end = head.find("\r\n\r\n");
-    body = head.substr(head_end + 4);
-    head.resize(head_end);
-    const std::string length_field = fieldValue(head, "CONTENT-LENGTH");
-    size_t content_length =
-        length_field.empty()
-            ? 0
-            : static_cast<size_t>(std::strtoull(length_field.c_str(), nullptr, 10));
-    if (content_length > kMaxNotify) content_length = kMaxNotify;
-    while (body.size() < content_length) {
-      if (!waitReadable(fd, kReadTimeoutMs)) break;
-      const int r = sockRecv(fd, buf, static_cast<int>(sizeof(buf)));
-      if (r <= 0) break;
-      body.append(buf, static_cast<size_t>(r));
+    if (head_end == std::string::npos) {
+      // The read loop also exits on the size cap without a blank line;
+      // resizing to npos would throw length_error and abort the process —
+      // a LAN-reachable crash. Treat the flood like any malformed NOTIFY.
+      ok = false;
+    } else {
+      body = head.substr(head_end + 4);
+      head.resize(head_end);
+      const std::string length_field = fieldValue(head, "CONTENT-LENGTH");
+      size_t content_length =
+          length_field.empty()
+              ? 0
+              : static_cast<size_t>(std::strtoull(length_field.c_str(), nullptr, 10));
+      if (content_length > kMaxNotify) content_length = kMaxNotify;
+      while (body.size() < content_length) {
+        if (!waitReadable(fd, kReadTimeoutMs)) break;
+        const int r = sockRecv(fd, buf, static_cast<int>(sizeof(buf)));
+        if (r <= 0) break;
+        body.append(buf, static_cast<size_t>(r));
+      }
+      if (!body.empty() && cb) cb(body);
     }
-    if (!body.empty() && cb) cb(body);
   }
   const char reply[] = "HTTP/1.1 200 OK\r\nCONTENT-LENGTH: 0\r\nCONNECTION: close\r\n\r\n";
   sendAll(fd, reply, sizeof(reply) - 1);
@@ -197,8 +204,11 @@ bool EventServer::start(std::function<void(std::string_view)> on_notify,
   listen_fd_ = fd;
   port_ = ntohs(bound.sin_port);
   on_notify_ = std::move(on_notify);
+  auto cb = on_notify_;
   running_.store(true, std::memory_order_release);
-  serve_thread_ = std::thread([this] { serveLoop(); });
+  serve_thread_ = std::thread([this, fd = listen_fd_, cb = std::move(cb)] {
+    serveLoop(fd, cb);
+  });
   return true;
 }
 
@@ -227,17 +237,22 @@ std::string EventServer::callbackUrlFor(const std::string& peer_host) const {
   return "http://" + local + ":" + std::to_string(port_) + "/cast/events";
 }
 
-void EventServer::serveLoop() {
+void EventServer::serveLoop(
+    int listen_fd, const std::function<void(std::string_view)>& on_notify) {
+  // Both parameters are this thread's own copies: stop() closes the real
+  // socket (the accept wake on Darwin, where shutdown on a listener is a
+  // no-op) and clears the callback while this loop may still be one check
+  // away from reading them — the copies keep those writes off the loop's
+  // data entirely.
   for (;;) {
     if (!running_.load(std::memory_order_acquire)) break;
-    if (!waitReadable(listen_fd_, kAcceptPollMs)) continue;
-    const int fd = static_cast<int>(::accept(listen_fd_, nullptr, nullptr));
+    if (!waitReadable(listen_fd, kAcceptPollMs)) continue;
+    const int fd = static_cast<int>(::accept(listen_fd, nullptr, nullptr));
     if (fd < 0) {
       if (!running_.load(std::memory_order_acquire)) break;
       continue;
     }
-    auto cb = on_notify_;
-    serveConnection(fd, cb);
+    serveConnection(fd, on_notify);
   }
 }
 
