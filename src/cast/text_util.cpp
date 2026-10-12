@@ -133,6 +133,40 @@ std::vector<std::string> tagTexts(std::string_view xml, const char* tag) {
   return out;
 }
 
+// Value of `attr` inside the opening tag's head: the text between the tag
+// name and the closing bracket, scanned as name = quote value quote. The
+// tag name itself carries no '=', so it never parses as an attribute.
+std::string tagAttr(std::string_view xml, const char* tag, const char* attr) {
+  const size_t open = findOpeningTag(xml, 0, tag);
+  if (open == std::string::npos) return "";
+  const size_t gt = xml.find('>', open);
+  if (gt == std::string::npos) return "";
+  const std::string_view head = xml.substr(open + 1, gt - open - 1);
+  const std::string want = lower(attr);
+  size_t i = 0;
+  while (i < head.size() && !isBoundary(head[i])) ++i;  // past the tag name
+  while (i < head.size()) {
+    while (i < head.size() && isBoundary(head[i])) ++i;
+    const size_t name_at = i;
+    while (i < head.size() && head[i] != '=' && !isBoundary(head[i])) ++i;
+    if (i == name_at) break;  // no more names
+    const std::string name = lower(head.substr(name_at, i - name_at));
+    while (i < head.size() && isBoundary(head[i])) ++i;
+    if (i >= head.size() || head[i] != '=') continue;  // a bare word, not attr
+    ++i;
+    while (i < head.size() && isBoundary(head[i])) ++i;
+    if (i >= head.size()) break;
+    const char quote = head[i++];
+    if (quote != '"' && quote != '\'') break;  // malformed: give up
+    const size_t value_at = i;
+    while (i < head.size() && head[i] != quote) ++i;
+    if (i >= head.size()) break;  // unterminated
+    if (name == want) return xmlDecode(head.substr(value_at, i - value_at));
+    ++i;  // past the closing quote
+  }
+  return "";
+}
+
 std::string xmlDecode(std::string_view text) {
   std::string out;
   out.reserve(text.size());

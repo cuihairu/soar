@@ -165,6 +165,8 @@ add_library(soar_cast STATIC
   src/cast/text_util.cpp
   src/cast/device_xml.cpp
   src/cast/soap.cpp
+  src/cast/eventing.cpp
+  src/cast/event_server.cpp
   src/cast/renderer.cpp
   src/cast/cast_session.cpp
 )

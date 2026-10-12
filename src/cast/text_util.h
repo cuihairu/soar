@@ -32,6 +32,13 @@ std::string tagText(std::string_view xml, const char* tag);
 // Every value of a repeating tag, in document order, each decoded.
 std::vector<std::string> tagTexts(std::string_view xml, const char* tag);
 
+// Decoded value of `attr` in the first opening <tag ...> — the GENA state
+// reports carry their payload in attributes ("<LastChange val="...">"),
+// which the element-text readers cannot reach. "" for an absent tag or
+// attribute. The opening tag is located the same way tagText locates one;
+// a value must be quoted (either quote char) or it is not an attribute.
+std::string tagAttr(std::string_view xml, const char* tag, const char* attr);
+
 // The five predefined XML entities plus numeric (&#72;, &#x48;) ones. An
 // undefined escape stays on the wire untouched.
 std::string xmlDecode(std::string_view text);

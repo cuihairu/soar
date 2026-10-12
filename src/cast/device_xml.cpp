@@ -32,6 +32,23 @@ void splitAuthority(std::string_view url, std::string* authority, std::string* r
   *rest = end == std::string::npos ? "" : std::string(url.substr(end));
 }
 
+// The resolved AVTransport URL `field` names, deferring to the next
+// matching service when one carries no usable entry (an empty field or
+// an unresolvable reference).
+std::string avTransportUrl(const DeviceDesc& device, const std::string& base,
+                           std::string ServiceDesc::*field) {
+  const std::string prefix = "urn:schemas-upnp-org:service:avtransport:";
+  for (const ServiceDesc& service : device.services) {
+    const std::string type = lower(service.service_type);
+    if (type.size() <= prefix.size() ||
+        !ciEqual(type.substr(0, prefix.size()), prefix))
+      continue;
+    const std::string url = resolveUrl(base, service.*field);
+    if (!url.empty()) return url;
+  }
+  return "";
+}
+
 }  // namespace
 
 bool parseDeviceDescription(std::string_view xml, DeviceDesc* out) {
@@ -59,19 +76,19 @@ bool parseDeviceDescription(std::string_view xml, DeviceDesc* out) {
 bool avTransportControlUrl(const DeviceDesc& device, const std::string& base,
                            std::string* out) {
   if (out == nullptr) return false;
-  const std::string prefix = "urn:schemas-upnp-org:service:avtransport:";
-  for (const ServiceDesc& service : device.services) {
-    const std::string type = lower(service.service_type);
-    if (type.size() <= prefix.size() ||
-        !ciEqual(type.substr(0, prefix.size()), prefix))
-      continue;
-    const std::string url = resolveUrl(base, service.control_url);
-    if (!url.empty()) {
-      *out = url;
-      return true;
-    }
-  }
-  return false;
+  const std::string url = avTransportUrl(device, base, &ServiceDesc::control_url);
+  if (url.empty()) return false;
+  *out = url;
+  return true;
+}
+
+bool avTransportEventUrl(const DeviceDesc& device, const std::string& base,
+                         std::string* out) {
+  if (out == nullptr) return false;
+  const std::string url = avTransportUrl(device, base, &ServiceDesc::eventsub_url);
+  if (url.empty()) return false;
+  *out = url;
+  return true;
 }
 
 std::string resolveUrl(const std::string& base, const std::string& ref) {

@@ -19,7 +19,7 @@ struct ServiceDesc {
   std::string service_type;  // "urn:schemas-upnp-org:service:AVTransport:1"
   std::string service_id;
   std::string control_url;   // verbatim from <controlURL> — often relative
-  std::string eventsub_url;  // <eventSubURL>; parsed but unused (no GENA)
+  std::string eventsub_url;  // verbatim from <eventSubURL> — often relative
 };
 
 struct DeviceDesc {
@@ -41,6 +41,12 @@ bool parseDeviceDescription(std::string_view xml, DeviceDesc* out);
 // device has no AVTransport service or the URL does not resolve.
 bool avTransportControlUrl(const DeviceDesc& device, const std::string& base,
                            std::string* out);
+
+// Same match, the service's <eventSubURL> instead. Returns false when the
+// service exists but advertises no subscription endpoint (eventing is
+// best-effort everywhere: a renderer without one stays poll-only).
+bool avTransportEventUrl(const DeviceDesc& device, const std::string& base,
+                         std::string* out);
 
 // RFC 3986 §5.3 reference resolution, the subset device descriptions use:
 // absolute references pass through, "/path" attaches to scheme://authority,
