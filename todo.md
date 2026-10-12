@@ -354,3 +354,44 @@ TLS+protobuf 与接收器格式白名单）；AirPlay 排除（授权/配对加�
   后置令继续生效），本轮不改码。
 - BUGS #3（Windows 真机复测）/ BUGS #4（watchdog 挂账，根因位
   player_window.cpp 退出路径 stop/join 次序）维持挂账，留待专门批。
+
+## 原型对齐验收批（2026-10-13 登记，docs/alignment-audit-2026-10-13.md 逐屏三档结论）
+
+范围：以运行截图为据的逐屏对齐（evidence/alignment-2026-10-13/ 七屏）。
+结论：对上 0 屏 / 有差异 3 屏（desktop-main、playlist、library）/ 未实现 2 屏
+（settings、translate-panel，ui-design §2 定 v0.1 无设置页）。本批只收「需要实现」
+的 7 项差异；原型超前项（settings 页、translate 面板、顶栏/状态 pill、缩略图/
+卡片网格/来源徽标）不实现，改稿建议见审计文档。
+更正（2026-10-13）：初版误判「OSC 常显」——自动隐藏早已实现（HudVisibility
+kHideDelay=2500ms、悬停/拖动/浮层/暂停四钉住、单击 Force 切换、0.16s 淡出），
+初版截图摄于暂停态（暂停钉住 OSC）。播放中静置证据对（osc-playing/osc-hidden）
+补拍后入 evidence/。
+
+- [ ] **OSC 鼠标移动算输入**：SDL_MOUSEMOTION→noteActivity（现状无 motion
+      处理，仅 key/wheel/click 唤醒；原型「无输入」含移动，mpv 语义同）。
+      验收：播放中静置 >2.5s OSC 隐藏后，仅移动鼠标 OSC 即现（事件线加
+      `event: osc=shown/hidden` 边沿供走查断言）。
+- [ ] **OSC 补齐 prev/next 按钮**：与 N/Shift+N 同路径。验收：点击 prev 播
+      上一条、next 播下一条；队列尾/首边界行为与快捷键一致。
+- [ ] **OSC 补齐 A-B 与截图按钮**：A-B 两段设点循环（同 L），截图落 PNG
+      （同 S）。验收：按钮路径与键盘路径行为一致，toast 一致。
+- [ ] **OSC 右侧剩余时间**：显示 `-mm:ss`（原型 `-00:02:14` 形态）。验收：
+      播放中读数 = 总时长 - 位置，随 seek 刷新。
+- [ ] **Library 分类侧栏**：全部/最近加入/续播/已看完 + 计数，数据用 store
+      既有字段（last_played 序、position>0 且未看完为续播）。验收：种子数据
+      下计数正确；点分类过滤列表；续播视图条目与 Info 浮层读数一致。
+- [ ] **Library 搜索框**：`/` 聚焦，按标题过滤列表（原型「搜索媒体…」）。
+      验收：`/x` 键聚焦（与帮助表不冲突或进帮助表），输入即过滤。
+- [ ] **Playlist 添加文件 + 清空队列按钮**：添加文件与 O 同路径（开文件
+      对话框入队）；清空经确认。验收：两按钮行为与既有路径一致，空队列
+      toast/文案不变。
+
+### 如实说明
+
+- 证据边界：截图走查只覆盖键盘可达路径； OSC 按钮新增项的真点击走查依赖
+  坐标探测（SOAR_UI_BITMAP_FONT=1 固定布局），与既有 X11 走查同约束。
+- 未实现两屏非「漏做」：ui-design §2 明确 v0.1 无设置页、v0.2 再做面板；
+  translate 面板无 overlay/快捷键，后端管线已有。原型对应页面建议标注
+  「v0.2 规划稿」。
+- 原型 library 的缩略图/卡片网格/来源徽标超出当前数据层（无缩略图缓存、
+  库未区分来源类型），建议标注 v0.3 增强，本批不做。
