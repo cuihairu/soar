@@ -27,7 +27,7 @@ SetURI→Play→轮询→Stop→恢复）与二期产品接线不动；renderer/
       （waitReady 先于 SetURI、DIDL protocolInfo、Seek 恒拒、stall 文案
       分叉、垃圾源 fail before Play）。测试面：五夹具家族（copy/重编码/
       奇尺寸缩放/PCM 重采样链/无流源）+ 生命周期与请求头三态 + 队列满
-      反压 + 会话两分叉 + event server 直探（test_cast 55 例，本批 +27）
+      反压 + 会话两分叉 + event server 直探（test_cast 57 例，本批 +19）
       + CLI `--cast-transcode` 真二进制全链一例。收尾时顺手抓到并修了
       两处：GENA 批 event server 的 stop-vs-serveLoop 竞态（tsan 双腿
       红，fe8aa7d 改 serve 线程持 spawn 时副本）与同一服务器被 70 KB
