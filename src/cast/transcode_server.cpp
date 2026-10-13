@@ -366,8 +366,15 @@ bool Pump::openInput() {
   // probe itself would error first (that behavior varies by ffmpeg build).
   for (unsigned i = 0; i < in->nb_streams; ++i) {
     const AVStream* st = in->streams[i];
+    // A stream without an identifiable codec carries no picture to copy
+    // or decode (the demuxer leaves codec_id unset), so it cannot travel:
+    // QuickTime timecode tracks are video on some ffmpeg builds and data
+    // on others, and skipping them by codec id makes the stream-less
+    // verdict identical on every build instead of dying later on a
+    // missing decoder for an unknown codec.
     if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && in_v < 0 &&
-        (st->disposition & AV_DISPOSITION_ATTACHED_PIC) == 0)
+        (st->disposition & AV_DISPOSITION_ATTACHED_PIC) == 0 &&
+        st->codecpar->codec_id != AV_CODEC_ID_NONE)
       in_v = static_cast<int>(i);
     if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && in_a < 0)
       in_a = static_cast<int>(i);
