@@ -143,6 +143,8 @@ bool readRequestHead(int fd) {
 
 constexpr size_t kQueueBytes = 1 << 20;  // MPEG-TS bytes allowed in flight
 constexpr int kStreamSendTimeoutSec = 10;
+constexpr const char* kNoStreamsVerdict =
+    "cast: transcode found no video or audio stream in the source";
 
 }  // namespace
 
@@ -356,8 +358,18 @@ struct Pump {
 };
 
 bool Pump::openInput() {
-  if (avformat_open_input(&in, source.c_str(), nullptr, nullptr) != 0)
+  const int open_rc = avformat_open_input(&in, source.c_str(), nullptr, nullptr);
+  if (open_rc != 0) {
+    // A demuxer can refuse a container it finished parsing: ffmpeg 9's
+    // timecode handling adds a self-referencing tmcd track to its stream
+    // group twice and fails the whole open with EEXIST, while an 8.x build
+    // opens the same file and the scan below calls it stream-less. Nothing
+    // playable travels either way, so the verdict must not depend on the
+    // build's failure point.
+    if (open_rc == AVERROR(EEXIST))
+      return fail(kNoStreamsVerdict);
     return fail("cast: transcode cannot open the source " + source);
+  }
 
   // The first real video and audio streams; attached cover art is not
   // the video. Subtitles and data streams do not travel. The codec types
@@ -380,7 +392,7 @@ bool Pump::openInput() {
       in_a = static_cast<int>(i);
   }
   if (in_v < 0 && in_a < 0)
-    return fail("cast: transcode found no video or audio stream in the source");
+    return fail(kNoStreamsVerdict);
 
   if (avformat_find_stream_info(in, nullptr) < 0)
     return fail("cast: transcode cannot read the source's stream layout");
@@ -815,8 +827,7 @@ void TranscodeServer::pumpLoop() {
       // build classified a track that holds nothing (a demuxer can hand a
       // timecode track over as a decodable video stream) — without this the
       // pump finishes as a silent success with an empty error.
-      last_error_ =
-          "cast: transcode found no video or audio stream in the source";
+      last_error_ = kNoStreamsVerdict;
     }
   }
   {
