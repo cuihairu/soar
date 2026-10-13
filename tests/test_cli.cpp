@@ -439,27 +439,29 @@ if mode == "drive":
         wclick(59, 495)    # resume
         wclick(117, 495)   # Stop
         wclick(59, 495)    # play again from Stopped
-        wclick(269, 495)   # Mute (label widens to "Unmute" and the volume
-                           # slider shifts right — the drag below stays in
-                           # the intersection of both label variants)
-        moved(320, 495); time.sleep(0.15)
+        wclick(354, 495)   # Mute (row gained |< >| after Stop and the
+                           # clock became "elapsed (-remaining)"; label
+                           # widens to "Unmute" and the volume slider
+                           # shifts right — the drag below stays in the
+                           # intersection of both label variants)
+        moved(405, 495); time.sleep(0.15)
         xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.1)
-        moved(350, 495); time.sleep(0.1)
+        moved(430, 495); time.sleep(0.1)
         xtest.fake_input(d, X.ButtonRelease, 1); d.sync(); time.sleep(0.3)
-        wclick(399, 495)   # rate combo open (popup flips up: no room below)
+        wclick(484, 495)   # rate combo open (popup flips up: no room below)
         focus(); key(d.keysym_to_keycode(0x69)); time.sleep(0.2)  # suppressed
-        wclick(399, 468)   # pick 2x (bottom row, clear of the 1.0x default)
-        wclick(477, 495)   # audio combo open (single item fits below)
-        wclick(506, 522)   # pick the audio track
-        wclick(569, 495)   # subtitle combo open (flips up)
-        wclick(591, 468)   # pick the subtitle track ...
-        wclick(569, 495)   # ... reopen; "Off" only acts as a change when a
-        wclick(591, 443)   # track is currently selected, so the order matters
-        wclick(637, 495)   # Sub overlay (the Sub button sits between the
-        wclick(637, 495)   # subtitle combo and Info; open, then close)
-        wclick(685, 495)   # Info overlay (shifted right by the Sub button)
-        wclick(685, 495)   # (close again)
-        wclick(738, 495)   # fullscreen toggle button (also shifted)
+        wclick(484, 468)   # pick 2x (bottom row, clear of the 1.0x default)
+        wclick(555, 495)   # audio combo open (single item fits below)
+        wclick(584, 522)   # pick the audio track
+        wclick(633, 495)   # subtitle combo open (flips up)
+        wclick(655, 468)   # pick the subtitle track ...
+        wclick(633, 495)   # ... reopen; "Off" only acts as a change when a
+        wclick(655, 443)   # track is currently selected, so the order matters
+        wclick(692, 495)   # Sub overlay (the Sub button sits between the
+        wclick(692, 495)   # subtitle combo and Info; open, then close)
+        wclick(736, 495)   # Info overlay (shifted right by the Sub button)
+        wclick(736, 495)   # (close again)
+        wclick(788, 495)   # fullscreen toggle button (also shifted)
         focus(); key(d.keysym_to_keycode(0xFF1B)); time.sleep(0.3)
         # Seek bar: the row-1 slider sits at y 452..477 under the OSC top
         # edge. A press-drag-back-release first (the value returns to where
@@ -532,6 +534,122 @@ if mode == "drive":
             sys.exit(0)
     sys.exit(4)
 
+if mode == "osc":
+    # The OSC walkthrough over the null backend. The auto-hide verdict is
+    # read from the teed trail's logical-visibility edges (event: osc=...)
+    # instead of pixels: hidden after the 2.5s idle while playing, shown
+    # again on mouse motion alone (motion is input since the OSC batch),
+    # hidden again once the idle window restarted by that motion lapses,
+    # shown on the next key (which pauses and pins the bar for the click
+    # phase). The row-2 buttons then fire through the toast mirror:
+    # prev/next walk both queue boundaries AND a real handover (the
+    # launcher queued noseek-live behind sample), the A-B arm, and the
+    # null backend's screenshot refusal. Every wait failure records a
+    # code and falls through to the quit storm — leaving the CLI playing
+    # would only burn the test's own 300s budget.
+    tee = sys.argv[4] if len(sys.argv) > 4 else ""
+
+    def marker_count(marker):
+        try:
+            with open(tee) as f:
+                return f.read().count(marker)
+        except OSError:
+            return 0
+
+    def wait_ge(marker, want, budget):
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            if marker_count(marker) >= want:
+                return True
+            time.sleep(0.2)
+        return False
+
+    rc = 0
+    time.sleep(3.0)  # UI up, null media playing, bar freshly idle
+    geo = win.get_geometry()
+    cx, cy = geo.width // 2, geo.height // 2
+    try:
+        if not wait_ge("event: osc=hidden", 1, 20.0):
+            rc = 6
+        # Mouse motion alone must bring the bar back... Xvfb parks the
+        # pointer at the screen center and the window is centered too, so
+        # a warp aimed straight at the center is a zero-length move on
+        # the first run — XWarpPointer emits no event for one, and no
+        # event means no noteActivity and no wake. Step through a second
+        # point that differs from both the park position and the target:
+        # at least one of the two warps is a real move, so the wake edge
+        # arrives regardless of where the pointer started.
+        moved(cx - 400, cy - 180)
+        moved(cx, cy)
+        if not wait_ge("event: osc=shown", 1, 5.0):
+            rc = 6
+        # ...and the hide delay restarted from that motion: 4s of no
+        # input (2.5s delay + fade margin) hides it again.
+        if not wait_ge("event: osc=hidden", 2, 8.0):
+            rc = 6
+        # A key is activity too; space pauses, and the pause pins the
+        # bar for the button phase below.
+        focus(); key(d.keysym_to_keycode(0x20))
+        if not wait_ge("event: osc=shown", 2, 5.0):
+            rc = 6
+        # Row 2 buttons (bitmap-font coordinates, same derivation as the
+        # drive tour's widget phase). holdclick, not bare pairs: the -O0
+        # frames swallow back-to-back press/release. The queue holds two
+        # null sources (the launcher queued noseek-live behind sample), so
+        # prev/next walk a real boundary AND a real handover: the handover
+        # is read from the trail — noseek-live's media-info is the only
+        # seekable=false line, and each open adds a media-info line.
+        def bclick(x, y):
+            # Settle after the warp. The app's click handler decides
+            # "was this a widget click" from ImGui's WantCaptureMouse,
+            # which is decided at the previous frame's end from the mouse
+            # position THEN in effect: a press that lands in the same
+            # frame as the warp still reads the pre-warp position, misses
+            # the bar, and toggles the OSC instead of reaching the button
+            # (the click then lands on the bar anyway, so the action and
+            # the toggle both fire). The drive tour's wclick sleeps for
+            # the same reason; holdclick keeps the press/release apart by
+            # more than a frame.
+            moved(x, y)
+            time.sleep(0.25)
+            holdclick(1)
+
+        bclick(163, 495)   # |< prev: queue head boundary
+        if not wait_ge("event: toast=Start of playlist", 1, 5.0):
+            rc = 7
+        bclick(201, 495)   # >| next: opens the second entry
+        if not wait_ge("seekable=false", 1, 8.0):
+            rc = 7
+        bclick(201, 495)   # >| next again: tail boundary
+        if not wait_ge("event: toast=End of playlist", 1, 5.0):
+            rc = 7
+        bclick(163, 495)   # |< prev: back to the sample
+        if not wait_ge("event: media-info", 3, 8.0):
+            rc = 7
+        bclick(838, 495)   # A-B: arm point A
+        if not wait_ge("event: toast=Loop point A set at", 1, 5.0):
+            rc = 7
+        bclick(838, 495)   # A-B again: pair settles somehow
+        if not wait_ge("event: toast=", 4, 5.0):  # Start, End, arm, 2nd
+            rc = 7
+        bclick(888, 495)   # Shot: no frames on the null backend
+        if not wait_ge("event: toast=Screenshot needs the FFmpeg backend", 1, 5.0):
+            rc = 7
+    except Exception:
+        pass  # best effort: whatever ran before an error still counts
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(rc if rc else 0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(rc if rc else 0)
+    sys.exit(rc if rc else 4)
+
 if mode == "subsdrive":
     # Real-backend window run over the SRT fixture. The HUD tour rides the
     # null backend, so drawSubtitles and the Subtitle Settings page never
@@ -553,20 +671,20 @@ if mode == "subsdrive":
         key(d.keysym_to_keycode(keysym))
         time.sleep(0.4)
 
-    # Hold-clicks instead of the other modes' button() (0.15/0.5 spacing):
-    # this tour runs against the -O0 coverage build, whose frame time can
-    # exceed the few milliseconds between a back-to-back press and release
-    # — the pair is then pumped inside a single frame, nets out to "mouse
-    # up", and ImGui never registers the click at all (see holdclick).
-    # When the lost click is a combo pick, the popup stays open and owns
-    # the keyboard (the popup-guard mechanism the quit loop's dismissal
-    # works around); a hold crosses at least one frame boundary, so every
-    # click below lands.
+    # Hold-clicks everywhere (every mode's sclick below uses the same
+    # shape): this tour runs against the -O0 coverage build, whose frame
+    # time can exceed the few milliseconds between a back-to-back press
+    # and release — the pair is then pumped inside a single frame, nets
+    # out to "mouse up", and ImGui never registers the click at all (see
+    # holdclick). When the lost click is a combo pick, the popup stays
+    # open and owns the keyboard (the popup-guard mechanism the quit
+    # loop's dismissal works around); a hold crosses at least one frame
+    # boundary, so every click below lands.
     def sclick(x, y):
         moved(x, y); time.sleep(0.25)
         holdclick(1); time.sleep(0.9)
 
-    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    sclick(686, 495)   # Sub button: open the Subtitle Settings page
     sclick(360, 232)   # font size slider: jump to the small end
     sclick(630, 232)   # ... and to the large end
     for fx in (415, 479, 512, 544):  # ... and the 20/28/32/36 px buckets,
@@ -585,27 +703,30 @@ if mode == "subsdrive":
     sclick(459, 221)   # ... pick is the no-op arm
     sclick(459, 183)   # reopen ...
     sclick(459, 248)   # ... and re-select the track row
-    sclick(637, 495)   # close the page
+    sclick(686, 495)   # close the page
     time.sleep(0.5)
     # The OSC copy of the subtitle picker over the same real track list.
     # The first pick is a no-op by construction (the page above left the
     # stream selected, and a row that already is the selection
     # short-circuits); the pair after it is the pair that matters, since
     # "Off" only acts while something is selected.
-    # Row centers measured against the live popup: the Off row spans
-    # y 412-431 and the single stream row y 438-457 (SOAR_UI_BITMAP_FONT=1).
-    # The coordinates this tour used before (443/468) never sat on a row —
-    # 443 is the separator band under "Off" and 468 the padding below the
-    # last row — so every "pick" was a silent miss even when the click
-    # itself landed.
-    sclick(569, 495)   # subtitle combo open (Off + the stream, flips up)
-    sclick(591, 448)   # the track row, already selected: no-op arm
-    sclick(569, 495)   # reopen; "Off" has something to act on now ...
-    sclick(591, 423)   # ... (disableSubtitles from the OSC)
-    sclick(569, 495)   # reopen; nothing is selected, so "Off" ...
-    sclick(591, 423)   # ... is the no-op arm again
-    sclick(569, 495)   # reopen ...
-    sclick(591, 448)   # ... and re-select the track row
+    # Row centers re-probed after the OSC row-2 rework against the live
+    # popup: the combo sits at x 590-660 (click 623) and the popup flips
+    # up anchored to it, so the Off row's text band spans y 414-422
+    # (click 418) and the single stream row y 440-450 (click 445), both
+    # clicked at x 620 inside the popup's left half (SOAR_UI_BITMAP_FONT=1).
+    # The coordinates this tour used before (combo 569, rows 591) predate
+    # the rework: 569 now lands on the Audio combo and 591 sits on the
+    # popup's edge or the bar gap, so the picks turned into silent misses
+    # or stray audio picks.
+    sclick(623, 495)   # subtitle combo open (Off + the stream, flips up)
+    sclick(620, 445)   # the track row, already selected: no-op arm
+    sclick(623, 495)   # reopen; "Off" has something to act on now ...
+    sclick(620, 418)   # ... (disableSubtitles from the OSC)
+    sclick(623, 495)   # reopen; nothing is selected, so "Off" ...
+    sclick(620, 418)   # ... is the no-op arm again
+    sclick(623, 495)   # reopen ...
+    sclick(620, 445)   # ... and re-select the track row
     # Popup dismissal before the key phase (same defense as the quit loop
     # below): under -O0 coverage instrumentation a back-to-back click pair
     # can vanish inside one frame (see holdclick), a missed pick leaves
@@ -710,10 +831,10 @@ if mode == "subsdl":
     time.sleep(0.8)
 
     def sclick(x, y):
-        moved(x, y); time.sleep(0.15)
-        button(1); time.sleep(0.5)
+        moved(x, y); time.sleep(0.25)
+        holdclick(1); time.sleep(0.9)
 
-    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    sclick(686, 495)   # Sub button: open the Subtitle Settings page
     time.sleep(0.9)
     sclick(459, 190)   # Track combo: popup = Off / srt / sep / [download]
     time.sleep(1.0)
@@ -728,7 +849,7 @@ if mode == "subsdl":
     time.sleep(1.0)
     sclick(200, 400)   # bare video area: dismiss any popup, toggle nothing
     time.sleep(0.5)
-    sclick(637, 495)   # close the settings page
+    sclick(686, 495)   # close the settings page
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -736,7 +857,7 @@ if mode == "subsdl":
         # Same popup-wedge defense as subsdrive: with a popup up, every
         # key — q included — is swallowed by the app.
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()
@@ -761,10 +882,10 @@ if mode == "substl":
     time.sleep(0.8)
 
     def sclick(x, y):
-        moved(x, y); time.sleep(0.15)
-        button(1); time.sleep(0.5)
+        moved(x, y); time.sleep(0.25)
+        holdclick(1); time.sleep(0.9)
 
-    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    sclick(686, 495)   # Sub button: open the Subtitle Settings page
     time.sleep(0.9)
     sclick(459, 190)   # Track combo open: popup = Off / srt / sep / [download]
     time.sleep(1.0)
@@ -782,7 +903,7 @@ if mode == "substl":
     time.sleep(3.0)    # room for the chat round trip + store + load
     sclick(200, 400)   # bare video area: dismiss any popup, toggle nothing
     time.sleep(0.5)
-    sclick(637, 495)   # close the settings page
+    sclick(686, 495)   # close the settings page
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -790,7 +911,7 @@ if mode == "substl":
         # Same popup-wedge defense as subsdl: with a popup up, every
         # key — q included — is swallowed by the app.
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()
@@ -816,10 +937,10 @@ if mode == "subsembed":
     time.sleep(0.8)
 
     def sclick(x, y):
-        moved(x, y); time.sleep(0.15)
-        button(1); time.sleep(0.5)
+        moved(x, y); time.sleep(0.25)
+        holdclick(1); time.sleep(0.9)
 
-    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    sclick(686, 495)   # Sub button: open the Subtitle Settings page
     time.sleep(0.9)
     sclick(459, 190)   # Track combo: popup = Off / srt / sep / [translate]
     time.sleep(1.0)
@@ -837,7 +958,7 @@ if mode == "subsembed":
     time.sleep(1.5)
     sclick(200, 400)   # bare video area: dismiss any popup
     time.sleep(0.5)
-    sclick(637, 495)   # close the settings page
+    sclick(686, 495)   # close the settings page
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -845,7 +966,7 @@ if mode == "subsembed":
         # Same popup-wedge defense as subsdl: with a popup up, every
         # key — q included — is swallowed by the app.
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()
@@ -873,10 +994,10 @@ if mode == "subsdl404":
     time.sleep(0.8)
 
     def sclick(x, y):
-        moved(x, y); time.sleep(0.15)
-        button(1); time.sleep(0.5)
+        moved(x, y); time.sleep(0.25)
+        holdclick(1); time.sleep(0.9)
 
-    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    sclick(686, 495)   # Sub button: open the Subtitle Settings page
     time.sleep(0.9)
     sclick(459, 190)   # Track combo: Off / srt / sep / [download] / sep /
     time.sleep(1.0)    # [translate]
@@ -888,7 +1009,7 @@ if mode == "subsdl404":
     time.sleep(3.0)    # room for the chat round trip + store + load
     sclick(200, 400)   # bare video area: dismiss any popup
     time.sleep(0.5)
-    sclick(637, 495)   # close the settings page
+    sclick(686, 495)   # close the settings page
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -896,7 +1017,7 @@ if mode == "subsdl404":
         # Same popup-wedge defense as subsdl: with a popup up, every
         # key — q included — is swallowed by the app.
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()
@@ -922,10 +1043,10 @@ if mode == "subcycle":
     time.sleep(0.8)
 
     def sclick(x, y):
-        moved(x, y); time.sleep(0.15)
-        button(1); time.sleep(0.5)
+        moved(x, y); time.sleep(0.25)
+        holdclick(1); time.sleep(0.9)
 
-    sclick(637, 495)   # Sub button: open the page (its combo build runs
+    sclick(686, 495)   # Sub button: open the page (its combo build runs
     time.sleep(0.9)    # the translatable scan over the patched codec)
     sclick(459, 190)   # Track combo: Off / srt / (patched) row 3 ...
     time.sleep(1.0)
@@ -933,7 +1054,7 @@ if mode == "subcycle":
     time.sleep(1.0)
     sclick(200, 400)   # bare video area: dismiss the popup
     time.sleep(0.5)
-    sclick(637, 495)   # close the settings page
+    sclick(686, 495)   # close the settings page
     time.sleep(0.5)
     focus(); key(d.keysym_to_keycode(0x63))  # C: cycle selects the srt track
     time.sleep(0.6)
@@ -943,7 +1064,7 @@ if mode == "subcycle":
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()
@@ -973,10 +1094,10 @@ if mode == "sidecar":
     time.sleep(0.8)
 
     def sclick(x, y):
-        moved(x, y); time.sleep(0.15)
-        button(1); time.sleep(0.5)
+        moved(x, y); time.sleep(0.25)
+        holdclick(1); time.sleep(0.9)
 
-    sclick(637, 495)   # Sub button: open the Subtitle Settings page
+    sclick(686, 495)   # Sub button: open the Subtitle Settings page
     time.sleep(0.9)
     sclick(459, 190)   # Track combo: popup = Off / srt / sep / candidate
     time.sleep(1.0)
@@ -1004,7 +1125,7 @@ if mode == "sidecar":
     time.sleep(1.0)
     sclick(200, 400)   # bare video area: dismiss any popup, toggle nothing
     time.sleep(0.5)
-    sclick(637, 495)   # close the settings page
+    sclick(686, 495)   # close the settings page
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -1012,7 +1133,7 @@ if mode == "sidecar":
         # Same popup-wedge defense as subsdrive: with a popup up, every
         # key — q included — is swallowed by the app.
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()
@@ -1135,7 +1256,7 @@ if mode == "playlist":
         # No popup is up in this mode, but keep the same safe exit shape
         # as the other modes: a click, a pause, then q until it lands.
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()
@@ -1289,7 +1410,7 @@ if mode == "dirpick":
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()
@@ -1389,7 +1510,7 @@ if mode == "library":
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()
@@ -1436,7 +1557,7 @@ if mode == "audiodrive":
         # combo open when the instrumented app lags, and a stuck popup
         # swallows the q storm below.
         if moved(200, 400):
-            button(1)
+            holdclick(1)
         time.sleep(0.7)
         try:
             focus()
@@ -4273,6 +4394,128 @@ TEST_CASE("windowed UI run drives the HUD through a scripted XTEST session") {
     // The tour ends by reopening the sample, so it is back on top.
     CHECK(recent_txt.rfind("asset://sample", 0) == 0);
   }
+#endif
+#endif
+}
+
+TEST_CASE("windowed null-backend run hides the OSC on idle and wakes it on motion") {
+#ifdef _WIN32
+  MESSAGE("the OSC walkthrough is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  // The OSC is an ImGui draw; the bare-SDL build has none of it.
+  MESSAGE("app built without the ImGui overlay; skipping the OSC walkthrough");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the X11 OSC walkthrough");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the X11 OSC walkthrough");
+    return;
+  }
+  // The injector reads this file while the CLI runs: runCli tees every
+  // captured trail byte into it line-flushed (same contract as the
+  // playlist walkthrough's event-driven clicks).
+  const std::string trail =
+      "/tmp/soar_osc_trail_" + std::to_string(::getpid()) + ".log";
+
+  // Same private-display scheme as the drive walkthrough; the cases in
+  // this binary run serially, so the display is never contended.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the X11 OSC walkthrough");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "osc", trail.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  // Keep the run's MRU writes out of the real user state dir, and pin
+  // the widget metrics with the embedded bitmap font — both as in the
+  // drive test (the coordinates there and in the injector's osc mode
+  // mean the same thing only under it).
+  const std::string state_home = "/tmp/soar_osc_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  // Two queue entries: the injector's prev/next clicks walk a real
+  // handover (noseek-live's seekable=false media-info line is the
+  // discriminator) besides the two boundary toasts.
+  const auto run = runCli({"--backend=null", "asset://sample",
+                           "asset://noseek-live"},
+                          300, trail);
+
+  std::printf("x11 osc walkthrough: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+  std::filesystem::remove(trail);
+  std::filesystem::remove_all(state_home);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  // The null backend opened and played (state=2); the injector's space
+  // paused it (1) and pinned the bar for the button phase.
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  CHECK(run.output.find("event: state=1") != std::string::npos);
+  // The auto-hide verdict, edge by edge: hidden after the idle window,
+  // shown again on mouse motion alone, hidden once that window lapsed,
+  // shown on the key (the injector exits 6 if any edge never came).
+  CHECK(run.output.find("event: osc=hidden") != std::string::npos);
+  CHECK(run.output.find("event: osc=shown") != std::string::npos);
+  const auto count_of = [](const std::string& hay, const std::string& needle) {
+    int n = 0;
+    for (auto p = hay.find(needle); p != std::string::npos;
+         p = hay.find(needle, p + needle.size())) {
+      ++n;
+    }
+    return n;
+  };
+  // The row-2 buttons: prev/next walked a real handover into noseek-live
+  // (the only seekable=false media-info) and back (a third open), plus
+  // the two boundary toasts, the A-B arm, and the screenshot refusal
+  // (the null backend has no frames to save).
+  CHECK(count_of(run.output, "event: media-info") >= 3);
+  CHECK(run.output.find("seekable=false") != std::string::npos);
+  CHECK(run.output.find("event: toast=Start of playlist") != std::string::npos);
+  CHECK(run.output.find("event: toast=End of playlist") != std::string::npos);
+  CHECK(run.output.find("event: toast=Loop point A set at") != std::string::npos);
+  CHECK(run.output.find("event: toast=Screenshot needs the FFmpeg backend") !=
+        std::string::npos);
 #endif
 #endif
 }

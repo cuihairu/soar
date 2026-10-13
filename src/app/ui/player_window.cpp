@@ -446,6 +446,12 @@ class PlayerHud {
         recent_dirs_(defaultRecentDirsPath(), 8),
         library_(cfg.library),
         subtitle_fonts_(loadSubtitleFonts()) {
+    // Every toast lands on the CLI event trail (main.cpp prints the
+    // player-side events; the UI side mirrors its own here) so the
+    // walkthrough tests assert OSD feedback from the teed stderr alone.
+    st_.toast.mirror = [](const std::string& text) {
+      fmt::print(stderr, "event: toast={}\n", text);
+    };
     recent_.load();
     recent_dirs_.load();
     // Keyboard shortcuts (docs/ui-design.md §3.2): the config lives next
@@ -703,9 +709,23 @@ class PlayerHud {
             return;
         }
       }
+      case SDL_MOUSEMOTION:
+        // Pointer movement is user presence too (the prototype's idle
+        // wording is "no input", not "no keys or clicks"; mpv behaves the
+        // same): motion over or off the widgets alike wakes a hidden bar
+        // and restarts its idle window. Visibility itself is decided
+        // per-frame from the pins, so no filtering is wanted here.
+        st_.hud.noteActivity(now);
+        return;
       case SDL_MOUSEBUTTONDOWN: {
         if (e.button.button != SDL_BUTTON_LEFT) return;
-        if (ImGui::GetIO().WantCaptureMouse) return;  // on a widget
+        // On a widget, or on the bar itself: docs §1.1 scopes the toggle to
+        // the video area, and a press that lands in the same frame as a
+        // warp onto the bar must not toggle it either (see mouseOverHud).
+        if (ImGui::GetIO().WantCaptureMouse ||
+            (st_.hud_alpha > 0.01f && mouseOverHud())) {
+          return;
+        }
         // First-run window (BUGS.md #3): no source yet — a click is the
         // open-file entry, not an OSC toggle (nothing is playing to
         // toggle anything for).
@@ -828,6 +848,13 @@ class PlayerHud {
     const bool hud_shown = st_.hud.visible(now, /*pointer_over_hud=*/io.WantCaptureMouse,
                                            st_.seek_dragging,
                                            st_.overlay != Overlay::None, paused);
+    // Trail edge for the walkthrough tests: the bar's logical visibility
+    // flip (the 0.16s alpha ramp rides along; the edge is the assertion
+    // surface, not the fade).
+    if (hud_shown != st_.hud_was_shown) {
+      st_.hud_was_shown = hud_shown;
+      fmt::print(stderr, "event: osc={}\n", hud_shown ? "shown" : "hidden");
+    }
     maybeRecordProgress(now);
     maybeAdvancePlaylist(now);
     const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
@@ -1827,6 +1854,24 @@ class PlayerHud {
 
   // ---- Drawing ----
 
+  // The bar's rect, mirrored from drawHud below: bar_w = min(w - 24, 920),
+  // bar_h = 80, centered, 16px above the bottom edge. The click handler
+  // needs this instead of ImGui::GetIO().WantCaptureMouse: that flag is
+  // decided at the previous frame's end from the mouse position then in
+  // effect, so a pointer that warped onto the bar in the same frame as
+  // the press still reports "not over a widget" for the new position and
+  // the click both fires the button and toggles the OSC. The geometry is
+  // exact; it only counts while the bar is actually drawn.
+  bool mouseOverHud() const {
+    const ImGuiIO& io = ImGui::GetIO();
+    const float bar_w = std::min(io.DisplaySize.x - 24.0f, 920.0f);
+    const float bar_h = 80.0f;
+    const float x0 = (io.DisplaySize.x - bar_w) * 0.5f;
+    const float y0 = io.DisplaySize.y - bar_h - 16.0f;
+    return io.MousePos.x >= x0 && io.MousePos.x < x0 + bar_w &&
+           io.MousePos.y >= y0 && io.MousePos.y < y0 + bar_h;
+  }
+
   void drawHud(milliseconds now) {
     const ImGuiIO& io = ImGui::GetIO();
     const float w = io.DisplaySize.x;
@@ -1883,7 +1928,7 @@ class PlayerHud {
       if (!seekable) ImGui::EndDisabled();
       ImGui::PopItemWidth();
 
-      // Row 2: transport, clocks, volume, rate, tracks, overlays, full.
+      // Row 2: transport, clock, volume, rate, tracks, overlays, tools.
       const bool playing = player_.state() == PlaybackState::Playing;
       if (ImGui::Button(playing ? "Pause" : "Play", ImVec2(54, 0))) {
         togglePlayPause();
@@ -1891,14 +1936,30 @@ class PlayerHud {
       ImGui::SameLine();
       if (ImGui::Button("Stop", ImVec2(46, 0))) player_.stop();
       ImGui::SameLine();
-      const std::string clock =
-          (st_.seek_dragging ? "> " : "") + formatClock(milliseconds(static_cast<long long>(shown))) +
-          " / " + formatClock(info.duration);
+      // Prev/next as buttons (prototype's transport cluster; the N /
+      // Shift+N shortcuts behind them — same playlistStep, same boundary
+      // toasts).
+      if (ImGui::Button("|<", ImVec2(30, 0))) playlistStep(true, now);
+      ImGui::SameLine();
+      if (ImGui::Button(">|", ImVec2(30, 0))) playlistStep(false, now);
+      ImGui::SameLine();
+      // Elapsed with the remaining time beside it (prototype "-00:02:14");
+      // the absolute duration stays in the Info overlay — the bar row has
+      // no room for three clocks.
+      std::string clock =
+          (st_.seek_dragging ? "> " : "") +
+          formatClock(milliseconds(static_cast<long long>(shown)));
+      if (info.duration > milliseconds::zero()) {
+        const auto remaining = std::max(
+            milliseconds(0),
+            info.duration - milliseconds(static_cast<long long>(shown)));
+        clock += " (-" + formatClock(remaining) + ")";
+      }
       ImGui::TextUnformatted(clock.c_str());
       ImGui::SameLine();
       if (ImGui::Button(st_.last_muted ? "Unmute" : "Mute")) toggleMute(now);
       ImGui::SameLine();
-      ImGui::PushItemWidth(64.0f);
+      ImGui::PushItemWidth(56.0f);
       const double vol_min = 0.0;
       const double vol_max = 1.0;
       if (ImGui::SliderScalar("##vol", ImGuiDataType_Double, &st_.last_volume,
@@ -1917,11 +1978,11 @@ class PlayerHud {
       drawRateCombo(now);
       ImGui::PopItemWidth();
       ImGui::SameLine();
-      ImGui::PushItemWidth(84.0f);
+      ImGui::PushItemWidth(70.0f);
       drawTrackCombo(TrackType::Audio, now);
       ImGui::PopItemWidth();
       ImGui::SameLine();
-      ImGui::PushItemWidth(84.0f);
+      ImGui::PushItemWidth(70.0f);
       drawTrackCombo(TrackType::Subtitle, now);
       ImGui::PopItemWidth();
       ImGui::SameLine();
@@ -1934,6 +1995,12 @@ class PlayerHud {
       if (ImGui::Button(st_.fullscreen ? "Window" : "Full")) {
         setFullscreen(!st_.fullscreen);
       }
+      ImGui::SameLine();
+      // A-B loop and screenshot as buttons (the L / S shortcuts behind
+      // them — same actions, same toasts).
+      if (ImGui::Button("A-B")) cycleLoopAB(now);
+      ImGui::SameLine();
+      if (ImGui::Button("Shot")) takeScreenshot(now);
     }
     ImGui::End();
     ImGui::PopStyleVar();
@@ -2826,6 +2893,8 @@ class PlayerHud {
     double seek_scrub = 0.0;
     milliseconds last_click{0};
     float hud_alpha = 1.0f;
+    // Trail edge latch for the OSC's logical visibility.
+    bool hud_was_shown = true;
     double last_volume = 1.0;
     double last_rate = 1.0;
     bool last_muted = false;

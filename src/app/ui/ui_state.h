@@ -81,7 +81,15 @@ class Toast {
   void show(std::string text, std::chrono::milliseconds now) {
     text_ = std::move(text);
     shown_at_ = now;
+    // Observability hook: the window layer mirrors every toast onto the
+    // CLI event trail (`event: toast=...`) so headless walkthrough tests
+    // can assert OSD feedback without reading pixels.
+    if (mirror != nullptr) mirror(text_);
   }
+
+  // Set once by the window layer; plain function to keep this header
+  // free of <functional> in the core-only include paths.
+  void (*mirror)(const std::string&) = nullptr;
 
   bool active(std::chrono::milliseconds now) const {
     return now >= shown_at_ && now - shown_at_ < kDuration;
