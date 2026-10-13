@@ -19,7 +19,7 @@
 
 ### 1. desktop-main（主播放窗）—— 有差异
 
-对上：视频区 + 底部 OSC（seek 条一行 + 控件一行两行式）、toast（Paused）、字幕
+对上：视频区 + 底部 OSC（seek 条一行 + 控件一行两行式）、「Paused」chip、字幕
 渲染、全屏、播放/暂停/停止、音量滑条、倍速、音轨/字幕轨切换（原型放在设置页，
 实现放 OSC，功能覆盖且更强）、A-B 循环（L）、字幕开关（V）、截图（S）、
 上一首/下一首（N/Shift+N）——功能面全在，键盘路径完整（`help.png` 为证）。
@@ -36,6 +36,10 @@
    只有键盘路径（L/S/V/N/Shift+N，`help.png` 为证），OSC 无按钮；无剩余
    时间、无画质 pill。
 
+   OSC 批本轮落地：prev/next（`|<`/`>|`）、A-B、Shot 截图按钮与剩余时间
+   `-mm:ss` 均已进 OSC（player_window.cpp:1942-1944、:1946-1956、:1999-2004）；
+   CC 按钮与画质 pill 仍未出现，此两项维持原结论。
+
 对齐补记（初版误判撤回）：**OSC 2.5s 自动隐藏已实现**——`HudVisibility`
 （ui_state.cpp:91，kHideDelay=2500ms 即原型值/IINA 默认），悬停/拖动/浮层/
 暂停四钉住 + 单击显隐 Force 切换 + 0.16s 淡出（player_window.cpp:835）。
@@ -43,11 +47,12 @@
 `osc-playing.png`/`osc-hidden.png` 证据对因六树门禁占用构建树暂缓补拍，
 入 evidence/ 后在 OSC 批提交补账。剩余小差异：**鼠标移动不算输入**
 （SDL_MOUSEMOTION 无处理，仅 key/wheel/click 唤醒；原型「无输入」含移动），
-已登记 todo。
+已登记 todo。（OSC 批本轮落地：SDL_MOUSEMOTION 已计入唤醒
+（player_window.cpp:712），鼠标移动现已算输入，本条闭合。）
 
 ### 2. playlist（播放列表）—— 有差异
 
-对上：列表 + 当前行高亮（≻ 标记 + 高亮行）、Loop 三态（off/all/one 循环
+对上：列表 + 当前行高亮（`> ` 标记 + 高亮行）、Loop 三态（off/all/one 循环
 按钮，player_window.cpp:2442；原型为分段控件 关/全部/单曲）、Shuffle 开关、
 行移除（×）、打开文件夹、目录分组树（v0.2.1，原型没有的增强）。
 
@@ -81,14 +86,20 @@
 
 ui-design §2 明文「设置：v0.1 无设置页……v0.2 再做成面板」。原型 5 组导航
 （通用/播放/字幕/网络与下载/关于）与字幕页（字体/字号/时长对齐/渲染风格/
-外挂目录/自动下载/端点配置）均无 UI。部分能力散落他处：字幕轨道选择在
-「Subtitle Settings」浮层（OSC Sub 按钮，`help.png` 可见 H 帮助里无设置项）、
-倍速/音量在 OSC。
+外挂目录/自动下载/端点配置）均无 UI。部分能力散落他处：字幕轨道选择在 OSC 的 Sub 组合框（`drawTrackCombo`，
+player_window.cpp:2027、调用点 :1986）；「Subtitle Settings」浮层（OSC Sub
+按钮呼出，:2791）是字号/偏移/可见性；倍速/音量在 OSC。
 
 ### 5. translate-panel（字幕翻译浮层）—— 未实现
 
 无 Translate overlay、无快捷键（ShortcutAction 枚举无此项）；后端有
 export→translation 管线，但无面板 UI（端点状态/进度/逐行译文预览均未实现）。
+
+补记：面板 UI 仍未实现；但字幕菜单与 Subtitle Settings 浮层的 `[translate]` 行
+与 `translateTextAndLoad` 管线已接线（player_window.cpp:1174-1183、:1255；端点与
+模型经 `SOAR_TRANSLATE_ENDPOINT`/`_MODEL` 环境变量注入，未配置即不渲染该行），
+导出→翻译→落盘→加载全链已通（docs/mvp.md §6）。ShortcutAction 枚举确无
+Translate 项（shortcuts.h:116-141），「无快捷键」仍成立。
 
 ## 实现超出原型的屏（原型未画，不参与对齐判定）
 

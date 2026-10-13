@@ -13,16 +13,16 @@ CI 的 coverage job（Ubuntu，GCC `--coverage` + gcovr）统计 `src/` + `inclu
 - **仓库里同时存在两棵带插桩的树 = 读数作废**：gcovr 递归扫的是整个 `--root`，`--object-directory` 只是加了一个搜索路径，不构成限制。另一棵树残留的 `.gcno` 会被一起读进来，而它的行号来自**它自己那版源码**，与本树错位；两份数据的并集看起来比任何一次真实测量都高（2026-09-27 同一份代码先后读出 89.7% 与 77.6%，真值 94.2%）。本地复现门禁前先 `find . -name '*.gcno' -not -path './<本树>/*' -delete`，或干脆在干净 worktree 里单测一棵树。同一原因，测完要清掉手工 `gcov -o` / `gcovr --gcov-keep` 落在仓库根的 `.gcov` 中间文件——陈旧的中间文件也会被下一次 gcovr 当数据吃进去。
 - **陈旧对象 = 行号错位读数（批 1c 实录）**：源码改过（哪怕只加了两行注释）而某次重链没有重编该 TU 时，`.gcda` 仍按旧版行号记账——实测症状是「执行计数落在注释行」与「已被删除的死臂显示已覆盖」（假 12 次执行）。gcov 的行号来自编译期 `.gcno`，与磁盘上的当前源码无关。读单行覆盖、尤其拿它做死码证明之前，先 `stat` 对比对象与源码的 mtime，确认对象新于最后一次源码修改（§3.14 的死码删除就曾被这份假数据挡了一下）。
 - **-O0 注入器点击帧竞态 = hold-click（内嵌轨批实录，详见 §3.15）**：XTEST 背靠背 press/release 只在两事件之间夹着至少一个 ImGui 帧边界时才成为 click；-O0 覆盖构建帧长可超 100ms，而注入对的间隔只有几毫秒——实测 11 次 combo 打开只有 2 次落进 ImGui。同一机理的不对称性会误导定位：app 自己逐事件处理的 SDL 逻辑（如视频区点击切 OSC）始终生效，只有经 ImGui 的 click 会丢。窗口注入器对 combo/菜单类目标一律用 hold-click（按住超过一个帧时长再松开），且**坐标必须对着活弹层实测**（行矩形来自字体度量，猜的坐标可能始终落在分隔带或 padding 上，与帧竞态叠加成「怎么点都没反应」）。
-- **本机 gcovr 多版本共存，门禁复现必须钉系统 7.x（门禁上抬批实录）**：hermes PATH 上默认解析到 pip 的 **gcovr 8.6**，其头文件/行聚合与 7.x 有别——同一 cov3 gcda 实测行分母 5205 vs 5200、支分母 5874 vs 5877，且 `ffmpeg_backend.cpp` 行清单 ±2、`ui_state.h` 支清单 ±3，读数会平白漂移且**看起来完全合理**（当时差点据此定错门禁数值）。系统 `/usr/bin/gcovr` **7.2**（dpkg）才是本机历史口径，CI 的 apt 是 **7.0**（ubuntu noble，同 7.x 族、行为一致——行分母 5203 vs 5200 的小差属既有的 CI/本地微差）。本地跑门禁/水位一律 `PATH=/usr/bin:$PATH gcovr ...`（与夹具 env 的 PATH 约定同款），或先 `command -v gcovr` 核对不在 hermes 路径下。
+- **本机 gcovr 多版本共存，跑门禁前先核对版本（门禁上抬批实录）**：hermes PATH 上默认解析到 pip 的 **gcovr 8.6**，其头文件/行聚合与 7.x 有别——同一 cov3 gcda 实测行分母 5205 vs 5200、支分母 5874 vs 5877，且 `ffmpeg_backend.cpp` 行清单 ±2、`ui_state.h` 支清单 ±3，读数会平白漂移且**看起来完全合理**（当时差点据此定错门禁数值）。本机历史口径是系统 `/usr/bin/gcovr`（本机实测 7.2，dpkg）。**跑门禁/取水位前先 `command -v gcovr` 确认解析到系统 gcovr 而不是 hermes 路径下的 pip 版本**，或一律 `PATH=/usr/bin:$PATH gcovr ...`（与夹具 env 的 PATH 约定同款）。CI 侧的 gcovr 版本随 runner 镜像走——`ci.yml` 用的是未钉版的 `ubuntu-latest` 矩阵、`apt-get install gcovr` 装的是镜像自带版本，「CI 的 apt 是 **7.0**（ubuntu noble，同 7.x 族、行为一致——行分母 5203 vs 5200 的小差属既有的 CI/本地微差）」只是历史镜像下的实测，**当前 runner 上的版本须在 CI 侧核实后再引用**。
 
 FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job 是 `ffmpeg_backend.cpp` 覆盖数字的唯一来源。
 
 ## 2. 当前水位与门禁
 
-| 维度 | 实测（本地 cov3 完整跑 + 系统 gcovr 7.2，分支短板推进轮/§3.17 口径；CI 同源读数见下段） | 门禁（`--fail-under-*`） |
+| 维度 | 实测（本地 cov3 完整跑 + 系统 gcovr 7.x，发送端转码批/§3.24 口径） | 门禁（`--fail-under-*`） |
 |---|---|---|
-| 行 | 95.54%（4968/5200）；CI 同源 run 实测 95.50%（4969/5203，0d04488） | 95.0% |
-| 分支 | 85.15%（5004/5877）；CI 同源 run 实测 85.79%（4935/5752，0d04488） | 84.6% |
+| 行 | 94.44%（8886/9410） | 94.0% |
+| 分支 | 83.50%（9500/11376） | 83.0% |
 
 补测批（§3.16，纯测试零产品改动）刷新：本地行 95.50%、分支 84.99%——对内嵌轨选择语义批（§3.15）的 95.3/84.6 双升（+10 行 / +26 分支命中，分母 5203→5200 / 5872→5877 属 §1 多线程计数与 `negative_hits` 过滤的正常摆动）。CI 同提交：行 95.4%（4965/5203，命中与本地仅差 1 行）、分支 85.7%（4927/5752，百分比高 ~0.7 点为既知口径差）。
 
@@ -32,11 +32,11 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 批 1c（外挂文本轨画布，§3.14）：本地行 95.3%（4830/5068）、分支 84.5%（4869/5759），双升于批 1b（95.0/84.3）；分母 +42 行 / +61 分支（`synthesizeAssDocument` + 加载期合成接线 + UI 防双绘门与画布的 V 显隐/同步偏移参数——期间还删掉了实现中途的 select 期重合成死码，见 §3.14）。同提交的 CI 读数：行 **94.96%（4809/5066）**、分支 **84.73%（4777/5637）**——行分母与本地几乎相同（5066 vs 5068）但命中低 21 行，分支分母被 `negative_hits` 过滤偏小、百分比惯例高 ~0.5 点。门禁定值法的又一次实证：初取 **94.9/84.2**（对本地留 20 行/17 分支），CI 侧行余量只有 1.4 行（5066×0.949=4807.6 vs 实测 4809）——落在 ±1-2 行抖动带之内，一次计数噪声就可能闪红，故行门收到 **94.8**（CI 侧余量 6.4 行、本地侧 25 行，均大于抖动带；分支门 84.2 不动，CI 侧余量 31 分支）。总抬升仍是 94.6/84.0 → **94.8/84.2**。
 
-分文件行覆盖（§3.15 批口径）：`main.cpp` 98.5%（133/135，142-143 为窗口纹理弧的既知逐轮摆动）、`ui_state.cpp` 100%（132/132）、`ui_state.h` 100%（33/33）、`player_window.cpp` 95.0%（1090/1147）、`ass_dialogue.cpp` 98.2%（162/165）、`ass_renderer.cpp` 96.8%（149/154）、`ffmpeg_backend.cpp` 91.8%（1712/1866）、`http_cache.cpp` 98.5%（404/410）、`null_backend.cpp` 99.4%（156/157）、`player.cpp` 100%（69/69）、`subtitle_provider.cpp` 97.8%（703/719）、`subtitle_text.cpp` 100%（199/199）；头文件 `ffmpeg_backend.h`/`http_cache.h`/`player.h` 100%，`backend.h` 3/5 与 `subtitle_provider.h` 3/4 的缺口为 §3.1 家族声明弧。
+分文件行覆盖（§3.15 批口径——历史读数，分母随后续批次扩张，仅作批次间对照）：`main.cpp` 98.5%（133/135，142-143 为窗口纹理弧的既知逐轮摆动）、`ui_state.cpp` 100%（132/132）、`ui_state.h` 100%（33/33）、`player_window.cpp` 95.0%（1090/1147）、`ass_dialogue.cpp` 98.2%（162/165）、`ass_renderer.cpp` 96.8%（149/154）、`ffmpeg_backend.cpp` 91.8%（1712/1866）、`http_cache.cpp` 98.5%（404/410）、`null_backend.cpp` 99.4%（156/157）、`player.cpp` 100%（69/69）、`subtitle_provider.cpp` 97.8%（703/719）、`subtitle_text.cpp` 100%（199/199）；头文件 `ffmpeg_backend.h`/`http_cache.h`/`player.h` 100%，`backend.h` 3/5 与 `subtitle_provider.h` 3/4 的缺口为 §3.1 家族声明弧。
 
 分文件分支覆盖（§3.15 批口径）：以 CI coverage job 上传的 `coverage.txt`/`coverage-lines.txt` 产物为准（本地分支分母含 `negative_hits` 噪声，单文件数字以 CI 同口径为准；批 1c 基线：`main.cpp` 93.2%、`ui_state.cpp` 97.7%、`ui_state.h` 100%、`player_window.cpp` 82.1%、`ass_dialogue.cpp` 99.1%、`ass_renderer.cpp` 79.7%、`player.cpp` 90.5%、`ffmpeg_backend.cpp` 78.2%、`null_backend.cpp` 80.4%、`http_cache.cpp` 85.3%、`subtitle_provider.cpp` 88.9%、`subtitle_text.cpp` 98.1%）。
 
-这一版的数字以 CI coverage job 上传的 `coverage-report` 产物（`coverage.txt` 分支表 / `coverage-lines.txt` 行表）为主引用源：门禁本身跑在 CI 上，只有同一台 runner、同一版 gcovr 的读数才与门禁同口径（040ac9b 的那次运行，行 94.75% / 分支 84.66%，绿）。本地 cov4 复现测得行 94.84%（4262/4494）与分支 84.16%（4215/5008）。两者的口径差异是**分母**而非覆盖质量：CI 的分支统计开 `--exclude-throw-branches` 且过滤 `negative_hits`，分母系统性比本地小约 115（4890 vs 5008），所以 **CI 的分支百分比高于本地约 0.5 点**，而行分母几乎相同（4495 vs 4494）、两者一致。§1 "两棵插桩树"陷阱另有一层：本地 gcovr 若未剔除他树 gcno/gcda 会污染分母。**判门禁一律看 CI**；定值时须让本地与 CI 双双通绿（见下）。
+这一版的数字以 CI coverage job 上传的 `coverage-report` 产物（`coverage.txt` 分支表 / `coverage-lines.txt` 行表）为主引用源：门禁本身跑在 CI 上，只有同一台 runner、同一版 gcovr 的读数才与门禁同口径（040ac9b 的那次运行，行 94.75% / 分支 84.66%，绿）。本地 cov3 复现测得行 94.84%（4262/4494）与分支 84.16%（4215/5008）。两者的口径差异是**分母**而非覆盖质量：CI 的分支统计开 `--exclude-throw-branches` 且过滤 `negative_hits`，分母系统性比本地小约 115（4890 vs 5008），所以 **CI 的分支百分比高于本地约 0.5 点**，而行分母几乎相同（4495 vs 4494）、两者一致。§1 "两棵插桩树"陷阱另有一层：本地 gcovr 若未剔除他树 gcno/gcda 会污染分母。**判门禁一律看 CI**；定值时须让本地与 CI 双双通绿（见下）。
 
 门禁随实测水位同步上抬：测试合入、数字上涨后，把阈值抬到"实测值下方留出抖动余量"的位置，让回退被 CI 自动拦截。定值法：门禁取 **min(本地, CI) 之下**，余量必须大于既知抖动带（±1-2 行；并发解码负载下会翻转的时序弧，实测 2 行 / 4 分支），否则一次计数噪声就闪红。本批据此把门禁从 94.3/83.2 上抬到 **行 94.6%**（相对 CI 94.75% 留 5 行余量、相对本地 94.84% 留 10 行）与 **分支 84.0%**（相对本地 84.16% 留 8 分支余量、相对 CI 84.66% 留 32 分支）——两套口径都能过，且余量都大于抖动带。上一批取 94.3/83.2 时分支余量高达 42 支，属偏保守；这次的 8 支仍显著大于 4 支的抖动带。
 
@@ -73,9 +73,9 @@ P2 自适应协议批（77ae353/b6a2541）是纯测试批，零产品改动，�
 
 TTML 测试收编批（纯测试零产品改动，af55579 落下的 TTML/DFXP 解析面欠账）：tests/test_subtitle.cpp +286 行、8 个 TEST_CASE / 102 断言——探测（`<tt` 根元素、`<?xml` 声明跳过、命名空间前缀、ASS/`-->` 优先级）、时间戳四形态（HH:MM:SS/MM:SS/SS ± 分数、逗号点双分隔、补零截断）、帧刻度拒绝（`f`/`t` 后缀与四段）、五预定义实体 + 数字参考全套（含坏数字/超范围/代理对原样回退）、嵌套标记/`<br/>`/注释/截断容错/空白折叠、属性词边界（`send=` 不冒充 `end=`）、`begin/end/dur` 三级回退与非推进 end 的默认时长回退、坏 `<p>` 跳过不拖垮全文件。本地 cov3 完整跑（8/8 绿）+ 系统 gcovr，**CI 同口径**（`--filter src/include --exclude '^src/p2p/'`，分母与前批完全一致故直接可比）：行 87.9% → **91.8%（5284/5754，+228 行）**、分支 76.5% → **81.3%（5426/6678，+319 支）**。分文件主战果：`subtitle_text.cpp` 209/454 → **442/454（97.4%）**，af55579 的 TTML 连续缺失块基本收平（余 12 行）。门禁 95.0/84.6 维持不降；距门禁还差 182 行 / 224 支，余缺归下批测试收编（`exportSubtitleText` 媒体电池、`main.cpp` torrent 失败腿、`player_window` 嵌入轨注入与 pending UI、null_backend/player/subtitle_provider 小尾）。本机并行在途的 `src/core/audio_extract.cpp`（origin/main 上不存在）读数时按 `--exclude '^src/core/audio_extract'` 排除，否则分母 +150 行、含它读数 89.5/79.0——gcovr 的 `--exclude` 是从头匹配（CI 的 `^src/p2p/` 同为锚定式），裸词 `audio_extract` 不命中。
 
-包装批 + 启动故障可见化批（ed8b34c：Windows 黑框闪退修复 / `startup_report.*` + `soarw` 双前端 / deb/rpm/setup.exe 打包；修复批 7189e1b 为 `#ifdef _WIN32` 内单行参数序修正，Linux 可计行零变化，读数不再单列）：CI 读数（run 37169343362）**行 5659/5952 = 95.1%、分支 5797/6806 = 85.18%**——对 97f37ae 基线（5615/5905、5742/6745）净 +44 行 / +55 分支命中、分母 +47 / +61。门禁 95.0/84.6 双过（行余 ~4 行——贴线，分支余 ~50 支）。新增 `startup_report.cpp` **行 27/27 = 100%**、分支 22/25 = 88%（缺失线 117/119 为 `ofstream` ctor 与 string 拼接条件的 -O0 清理弧，§3.10/§3.12 同族）；主接线 `main.cpp` 行 213/237，玩家窗口 SDL_Init/CreateRenderer 失败点已接线。本批新启动失败路径（fail-open、torrent start、usage 类不落日志）由 3 个新 CLI 用例覆盖，**零新增未覆盖行**。本地 cov4 完整口径行 5660/5953 = 95.1%、分支 5852/6935 = 84.4%——本地分支低于门禁 84.6，逐条归因：既有 af55579 记账债（本地单位基线已在 84.56% 附近，见 TTML 批段落）+ 本批 ~26 支 compiler 生成分支 + 3 支防御臂；CI 投影 ~85.0% 仍绿（判门禁一律看 CI）。残余声明与 BUGS.md #2 同步：`player_window.cpp` 的 `SDL_CreateWindow` 失败点无测试覆盖，为保门禁未接线，留待测试收编批。
+包装批 + 启动故障可见化批（ed8b34c：Windows 黑框闪退修复 / `startup_report.*` + `soarw` 双前端 / deb/rpm/setup.exe 打包；修复批 7189e1b 为 `#ifdef _WIN32` 内单行参数序修正，Linux 可计行零变化，读数不再单列）：CI 读数（run 37169343362）**行 5659/5952 = 95.1%、分支 5797/6806 = 85.18%**——对 97f37ae 基线（5615/5905、5742/6745）净 +44 行 / +55 分支命中、分母 +47 / +61。门禁 95.0/84.6 双过（行余 ~4 行——贴线，分支余 ~50 支）。新增 `startup_report.cpp` **行 27/27 = 100%**、分支 22/25 = 88%（缺失线 117/119 为 `ofstream` ctor 与 string 拼接条件的 -O0 清理弧，§3.10/§3.12 同族）；主接线 `main.cpp` 行 213/237，玩家窗口 SDL_Init/CreateRenderer 失败点已接线。本批新启动失败路径（fail-open、torrent start、usage 类不落日志）由 3 个新 CLI 用例覆盖，**零新增未覆盖行**。本地 cov3 完整口径行 5660/5953 = 95.1%、分支 5852/6935 = 84.4%——本地分支低于门禁 84.6，逐条归因：既有 af55579 记账债（本地单位基线已在 84.56% 附近，见 TTML 批段落）+ 本批 ~26 支 compiler 生成分支 + 3 支防御臂；CI 投影 ~85.0% 仍绿（判门禁一律看 CI）。残余声明与 BUGS.md #2 同步：`player_window.cpp` 的 `SDL_CreateWindow` 失败点无测试覆盖，为保门禁未接线，留待测试收编批。
 
-启动故障可见化收口批（SDL_CreateWindow 失败点接线，唯一产品改动是 `player_window.cpp` 建窗失败块补 `reportFatalStartupError`，见 BUGS.md #2 收口）：本地 cov4 读数**行 5666/5955 = 95.1%**（基线 5660/5953——分母 +2 恰为接线两行，分子 +6 为夹具重生成的顺次命中漂移，接线本身只落未覆盖块内）、**分支 5869/6940 = 84.6%**，本地 gcovr 双门禁 GATE_EXIT=0。该分支确定性触发不存在（SDL 2.32.10 探针：dummy/offscreen/x11 各形态建窗恒成功、令 Init 失败的杠杆全落在已覆盖的 SDL_Init 点、RLIMIT_AS 断点在 Renderer 阶段、无效 VISUALID 忽略；注入 SDL 失败按 §3.2 政策不做），维持"已接线、未覆盖"记账。CI 终证（run 37191653811）**行 5660/5954 = 95.1%（余 ~3.7 行）、分支 5795/6811 = 85.09%** 双过，`player_window.cpp` 缺失行 2058-2062 恰为接线块。
+启动故障可见化收口批（SDL_CreateWindow 失败点接线，唯一产品改动是 `player_window.cpp` 建窗失败块补 `reportFatalStartupError`，见 BUGS.md #2 收口）：本地 cov3 读数**行 5666/5955 = 95.1%**（基线 5660/5953——分母 +2 恰为接线两行，分子 +6 为夹具重生成的顺次命中漂移，接线本身只落未覆盖块内）、**分支 5869/6940 = 84.6%**，本地 gcovr 双门禁 GATE_EXIT=0。该分支确定性触发不存在（SDL 2.32.10 探针：dummy/offscreen/x11 各形态建窗恒成功、令 Init 失败的杠杆全落在已覆盖的 SDL_Init 点、RLIMIT_AS 断点在 Renderer 阶段、无效 VISUALID 忽略；注入 SDL 失败按 §3.2 政策不做），维持"已接线、未覆盖"记账。CI 终证（run 37191653811）**行 5660/5954 = 95.1%（余 ~3.7 行）、分支 5795/6811 = 85.09%** 双过，`player_window.cpp` 缺失行 2058-2062 恰为接线块。
 
 ## 3. 未覆盖项定性（如实记录，不写假覆盖）
 
@@ -114,13 +114,13 @@ TTML 测试收编批（纯测试零产品改动，af55579 落下的 TTML/DFXP �
 
 `ui_state.*` 行覆盖 100%，缺口只在 `player_window.cpp`（行 96% / 分支 84%），全部落在下面四类。X11 驱动会话（`soar_cli_tests` 的 drive/stall 两例）已覆盖：全部快捷键族、滚轮两向、单击/双击、seek 条悬停/拖动/提交、OSC 组合菜单的选中与取消选中、音量条拖动、三个浮层的开关、MRU 的重开成功/重开失败、缓冲指示、1x1 退化几何、bare 窗口降级路径（CI `no-imgui` job）。
 
-- **SDL 资源创建失败的防御弧（119-120/127/954-956 行）**：`SDL_CreateTexture` / `SDL_UpdateYUVTexture` / `SDL_CreateWindow` 的失败分支。Xvfb 与 dummy 驱动下建窗建纹理必成功，合法尺寸下纹理更新不失败——与 §3.4 里 `main.cpp` 旧窗口块同族（那批代码搬到了本文件），注入 SDL 失败等于 mock 被测库，不做。**2026-10-04 收口**：`SDL_CreateWindow` 失败分支已接线（`player_window.cpp` 2057-2062：print → `reportFatalStartupError` → `SDL_Quit` → exit 1，与 Init/Renderer 兄弟块同款），该分支的确定性触发在全部环境杠杆下不存在（探针实证见 BUGS.md #2 收口批），维持"已接线、未覆盖"记账（行号 2057-2062）。
-- **`SDL_DROPFILE` 整块（359/361-365 行）**：拖放打开需要真实的 XDND 拖拽源（拖拽发起方的 selection 协商），XTEST 只能合成键鼠指针事件，构造不出跨进程 DnD 会话。同一 `openSource` 目标函数已由 MRU 重开路径覆盖（成功与失败两条），缺的只是"事件从哪来"。
-- **枚举 switch 的兜底与 Error 臂（59/61/70 行）**：`stateName`/`trackTypeName` 的 `return "?"` 是穷尽 switch 的编译器要求，实参取不到枚举外的值；`case PlaybackState::Error` 需要后端把状态翻成 Error——`NullBackend::fail()` 只置错误串不动状态，FFmpeg 后端的 fatal 解码路径才翻（版本依赖，见 §3.3），窗口会话跑在 null 后端上。
-- **切轨/Seek 失败的 toast（427/493/502/508-509/511/712 行）**：`Player::seek` / `selectTrack` 返回 false 的分支。null 后端对已打开的媒体恒返回 true（无轨可循环时走的是更早的"没有该类轨"分支，已由 stall 会话的纯音频 fixture 覆盖 Subtitle 侧），FFmpeg 后端要构造真实 IO 失败或坏轨 codec（§3.3/§3.4 的版本依赖与注入污染家族）。508-509 还多一层条件：需要**两条以上**字幕轨才会走"下一条"而不是"关掉"，null 后端只有一条。
-- **seek 条的"取消拖动"臂（595 行）**：`IsItemDeactivated()` 且 `IsItemDeactivatedAfterEdit()` 为假。ImGui 的滑条在按下瞬间就会改值（点击即定位），所以"拖走再拖回原位"仍被记为 edited；唯一不改值的按法是**精确按在当前值的手柄上**（把手柄算到像素、且期间播放位置不动），属于坐标级脆弱构造，不做。已覆盖的是它的兄弟路径：悬停提示、拖动预览、松手提交。
-- **字体候选全落空的内嵌回退（206 行）**：七个系统字体候选都不存在时才走到。X11 驱动用例用 `SOAR_UI_BITMAP_FONT=1` 钉住内嵌位图字体（这也是注入器坐标跨机器稳定的前提），因此该回退在测试里被短路；CI runner 实际带 DejaVu，走的是候选命中那条。
-- **"No recent files yet."（850 行）**：窗口化流程里 MRU 恒非空——`PlayerHud` 构造即 `recordOpen(cfg.initial_uri)`，而 CLI 没有 URI 时根本进不到窗口。"空列表"的语义由 `soar_ui_tests` 的 `RecentStore` 单测覆盖。
+- **SDL 资源创建失败的防御弧（233-236/238-243/3049-3055 行）**：`SDL_CreateTexture` / `SDL_UpdateYUVTexture` / `SDL_CreateWindow` 的失败分支。Xvfb 与 dummy 驱动下建窗建纹理必成功，合法尺寸下纹理更新不失败——与 §3.4 里 `main.cpp` 旧窗口块同族（那批代码搬到了本文件），注入 SDL 失败等于 mock 被测库，不做。**2026-10-04 收口**：`SDL_CreateWindow` 失败分支已接线（`player_window.cpp` 3049-3055：print → `reportFatalStartupError` → `SDL_Quit` → exit 1，与 Init/Renderer 兄弟块同款），该分支的确定性触发在全部环境杠杆下不存在（探针实证见 BUGS.md #2 收口批），维持"已接线、未覆盖"记账（行号 3049-3055）。
+- **`SDL_DROPFILE` 整块（777/779-783 行）**：拖放打开需要真实的 XDND 拖拽源（拖拽发起方的 selection 协商），XTEST 只能合成键鼠指针事件，构造不出跨进程 DnD 会话。同一 `openSource` 目标函数已由 MRU 重开路径覆盖（成功与失败两条），缺的只是"事件从哪来"。
+- **枚举 switch 的兜底与 Error 臂（168/170/179 行）**：`stateName`/`trackTypeName` 的 `return "?"` 是穷尽 switch 的编译器要求，实参取不到枚举外的值；`case PlaybackState::Error` 需要后端把状态翻成 Error——`NullBackend::fail()` 只置错误串不动状态，FFmpeg 后端的 fatal 解码路径才翻（版本依赖，见 §3.3），窗口会话跑在 null 后端上。
+- **切轨/Seek 失败的 toast（970/1335/1344/1350-1351/1353/2069 行）**：`Player::seek` / `selectTrack` 返回 false 的分支。null 后端对已打开的媒体恒返回 true（无轨可循环时走的是更早的"没有该类轨"分支，已由 stall 会话的纯音频 fixture 覆盖 Subtitle 侧），FFmpeg 后端要构造真实 IO 失败或坏轨 codec（§3.3/§3.4 的版本依赖与注入污染家族）。1350-1351 还多一层条件：需要**两条以上**字幕轨才会走"下一条"而不是"关掉"，null 后端只有一条。
+- **seek 条的"取消拖动"臂（1925 行）**：`IsItemDeactivated()` 且 `IsItemDeactivatedAfterEdit()` 为假。ImGui 的滑条在按下瞬间就会改值（点击即定位），所以"拖走再拖回原位"仍被记为 edited；唯一不改值的按法是**精确按在当前值的手柄上**（把手柄算到像素、且期间播放位置不动），属于坐标级脆弱构造，不做。已覆盖的是它的兄弟路径：悬停提示、拖动预览、松手提交。
+- **字体候选全落空的内嵌回退（411/433 行）**：七个系统字体候选都不存在时才走到。X11 驱动用例用 `SOAR_UI_BITMAP_FONT=1` 钉住内嵌位图字体（这也是注入器坐标跨机器稳定的前提），因此该回退在测试里被短路；CI runner 实际带 DejaVu，走的是候选命中那条。
+- **"No recent files yet."（2400 行）**：窗口化流程里 MRU 恒非空——`PlayerHud` 构造即 `recordOpen(cfg.initial_uri)`，而 CLI 没有 URI 时根本进不到窗口。"空列表"的语义由 `soar_ui_tests` 的 `RecentStore` 单测覆盖。
 - **窗口尺寸守卫的新增行**（`drawUi` 的 `DisplaySize < 1` 早退）由驱动会话的 `win.configure(1x1)` 命中：没有窗口管理器时 `XResizeWindow` 直接生效，SDL 拿到退化 drawable 后必须跳过整帧绘制（否则 OSC 宽度会算成负数）。
 
 ### 3.7 http 磁盘缓存（`src/core/http_cache.cpp`）的残余缺口
@@ -129,10 +129,10 @@ TTML 测试收编批（纯测试零产品改动，af55579 落下的 TTML/DFXP �
 
 - **saveMeta 短写（606-608 行，唯一缺失行）**：需要"fopen 成功但 fwrite 短写/失败"。注入手段只有文件系统故障或 RLIMIT_FSIZE，而后者被结构否定：fetchBlock 先写 256 KiB 数据块再写 ~40 字节的 meta，**允许数据块写入的配额必然允许更小的 meta 写入**，构造不出"meta 超限而数据块不超限"的窗口（ctor 的 fdTruncate 会先因配额失败）；`<meta>.tmp` 的路径形态也进不了 `/dev/full`。等价于需要真实 IO 故障注入层，超出"测真实链路"的边界。
 - **结构死臂（分支，编译期/契约级不可达）**：`readWholeFile` 的 limit 判断先于 `ok` 求值（112）；`parseHttpUrl` 的 scheme 复查（130，ctor 已验证前缀）、空 authority 死臂（141，空值已在更早分支返回）、路径三元的一臂归属噪声（134，§1 家族）；`getaddrinfo` 返回 0 却无结果的契约不可能臂（205/207）；`socket()` 创建失败需 EMFILE 级资源耗尽（213）；`httpFetch` 的无 Range 请求臂（347，组件恒带 Range）；响应头扫描器的 npos 臂（370/371/373/382，`\r\n\r\n` 终止子由 recvHeaders 保证，文本里必然有行边界）；`read()` 的兜底空错误文案（685，ensureBlock 的每条 false 路径都设置了 last_error_）。
-- **60 秒硬超时的文案臂（266/290-293 行分支）**：`kRecvTimeoutSec = 60` 是编译期常量且无注入口子（这是设计：看门狗进不了这个组件的 recv，超时是唯一的硬停）。命中超时文案需要真实等 60 秒，成本不成比例；超时**路径本身**（isTimeoutError 判定 + 断连文案）已由早断连/截断 body 模式覆盖。
+- **60 秒硬超时的文案臂（265-266/289-293 行分支）**：`kRecvTimeoutSec = 60` 是编译期常量且无注入口子（这是设计：看门狗进不了这个组件的 recv，超时是唯一的硬停）。命中超时文案需要真实等 60 秒，成本不成比例；超时**路径本身**（isTimeoutError 判定 + 断连文案）已由早断连/截断 body 模式覆盖。
 - **平台臂**：`isTimeoutError` 的 `EWOULDBLOCK` 分量在 Linux 上与 `EAGAIN` 同值，第二比较结构性不可达（193）；Windows 专属行（winsock 初始化、`_lseeki64`/`_write`/`_chsize_s` 臂）只存在于 Windows 编译，不计入本 Linux 口径。
 - **RLIMIT_FSIZE 注入的平台差异（CI 实证，run 36227059383）**：Linux 只在 `ftruncate` **增长越限**时检查配额，BSD 系（macOS）对**新尺寸**恒检查——同尺寸 truncate 也 EFBIG。配额用例因此把 cache 构造放在降配额**之前**，写失败弧在不强制 pwrite 配额的平台降级为 MESSAGE 说明（沿用 test_ui_state 的 /dev/full 先例）；`EWOULDBLOCK` 式的死臂同理不追。
-- **IPv6 无端口形式的 80 端口连接臂（139-146 的 close+1==size 分支）**：解析接受 `http://[::1]/...` 并默认 80 端口，命中该臂必须真的对 ::1:80 发起连接。Linux runner 立刻 RST、用例确定；macOS runner 的防火墙策略把 RST 变 drop（每例一个 connect 超时），故该子例在 `__APPLE__` 下跳过（覆盖数字由 Linux coverage job 独立供给，不受影响）。同理，"连接被拒"类用例一律用 bind(:0) 占位后释放的临时端口构造，不依赖低端口被立刻拒绝——runner 防火墙可能把对关闭低端口的 SYN 静默丢弃，把瞬时的 RST 拖成整个 connect 超时（macOS job 曾因此 423s）。
+- **IPv6 无端口形式的 80 端口连接臂（141-148 的 close+1==size 分支）**：解析接受 `http://[::1]/...` 并默认 80 端口，命中该臂必须真的对 ::1:80 发起连接。Linux runner 立刻 RST、用例确定；macOS runner 的防火墙策略把 RST 变 drop（每例一个 connect 超时），故该子例在 `__APPLE__` 下跳过（覆盖数字由 Linux coverage job 独立供给，不受影响）。同理，"连接被拒"类用例一律用 bind(:0) 占位后释放的临时端口构造，不依赖低端口被立刻拒绝——runner 防火墙可能把对关闭低端口的 SYN 静默丢弃，把瞬时的 RST 拖成整个 connect 超时（macOS job 曾因此 423s）。
 
 ### 3.8 `Event` 结构冻结（政策：新增载荷一律打包进 `message`）
 
@@ -150,7 +150,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 解码层缺口（`ffmpeg_backend.cpp` 行 91.0%、分支 78.0%，缺失集中在 `avcodec_decode_subtitle2` 失败路径、空 rect 列表、ASS/文本双分支的错误臂）属 §3.3 版本依赖与 §3.4 注入成本家族。补测批把分支总水位从 82.0%（2477/3021）抬到 82.7%（2499/3021，门禁 82.4% 上方 +9）：后端侧新增空 cue（仅覆写块的 ASS 事件，提取后为空、不入队）、burst FIFO 溢出序、mov_text 纯文本 rect 与双行 cue 的 rect-join 臂；UI 侧 subsdrive 在真实 cue 显示窗内把字号滑条停在 20/28/32/36 px 四个中段桶（drawSubtitles 字体链的四个真臂）、h 键开 Help 覆层（快捷键表 BeginTable 体）、m 静音后开 Media Info（"(muted)" 渲染臂）。门禁维持 94.1/82.4 不动。
 
-新增测试：`subtitle packets decode to text frames during playback`（`test_backend_media.cpp:1051`）在线播放 `subs_media.mkv`（首行 "Hello"、次行 "World"），断言提取文本包含预期词汇，同时钉死 ASS 括号剥离与逗号定位逻辑。该用例在 coverage job（`SOAR_TEST_SUBS_MEDIA`）与本地全量验证均绿。
+新增测试：`subtitle packets decode to text frames during playback`（`test_backend_media.cpp:1741`）在线播放 `subs_media.mkv`（首行 "Hello"、次行 "World"），断言提取文本包含预期词汇，同时钉死 ASS 括号剥离与逗号定位逻辑。该用例在 coverage job（`SOAR_TEST_SUBS_MEDIA`）与本地全量验证均绿。
 
 ### 3.10 外部字幕批（Stage 1）：SRT/WebVTT 文本解析 + `SubtitleProvider`
 
@@ -168,7 +168,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 本批把 §3.10 留空的 `ExternalSubtitleProvider`（findCandidates 恒空、fetch 恒 false）实现成自含的小型阻塞 HTTP 客户端，对话一个**自定文档化行协议**（不宣称兼容 OpenSubtitles 等现有服务 API）：检索 `GET {endpoint}?size&hash&name`（key 走 `X-API-Key` 头）、200 应答每行一个 TAB 分隔候选、只收 `http://`；下载体须过 `detectSubtitleFormat` 才算成功。端点与 key 一律环境变量注入，未配置恒空候选、零网络——「不强制联网」的口径不靠自觉，靠未配置分支的早退。`mediaHashHex`（头尾各 64 KiB u64 小端词求和 + 文件大小）与 `storeExternalSubtitle`（标题净化防路径穿越）落在本文件。
 
-水位：`subtitle_provider.cpp` **行 97.1%（369/380）**、UI 侧 `player_window.cpp` 的 download 路径（`remoteCandidates` 缓存、`[download]` 段、`downloadAndLoad` 的双失败 toast 臂）由 X11 窗口用例 subsdl 走通真实链路（菜单 → fetch → store → `loadExternalSubtitle` → `selectTrack`，断言外部轨 id 的选中轨迹）。全库本地 cov4 两轮复跑 行 94.43–94.48%、分支 83.33–83.41%（差 2 行/4 分支，±1-2 行抖动带内）；CI 同提交口径 行 94.4%（3929/4160）、分支 84.1%（3759/4467），判门禁一律看 CI。
+水位：`subtitle_provider.cpp` **行 97.1%（369/380）**、UI 侧 `player_window.cpp` 的 download 路径（`remoteCandidates` 缓存、`[download]` 段、`downloadAndLoad` 的双失败 toast 臂）由 X11 窗口用例 subsdl 走通真实链路（菜单 → fetch → store → `loadExternalSubtitle` → `selectTrack`，断言外部轨 id 的选中轨迹）。全库本地 cov3 两轮复跑 行 94.43–94.48%、分支 83.33–83.41%（差 2 行/4 分支，±1-2 行抖动带内）；CI 同提交口径 行 94.4%（3929/4160）、分支 84.1%（3759/4467），判门禁一律看 CI。
 
 协议分支全部打**本地 fixture 服务器**（`test_http_servers.h`），不打真实外网，key 不进仓库：
 
@@ -185,7 +185,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 本批把 §6 的「字幕文本翻译」落成核心路径（窗口接线与「已加载轨直译」入口是下一片，头注释里写明）：输入 SubRip/WebVTT 文本，cue 文本折叠单行、按 `batch_cues`（默认 16，<1 按 1）分块，以编号行（`1. text`）批量 POST 到用户自配的 OpenAI 兼容端点 `{endpoint}/chat/completions`；应答必须与批次**逐行编号、条数一致**，缺行/掉编号/非 2xx/超时/不可达/未配置一律 false 并带原因——全有或全无，不会产出半翻译轨。输出镜像输入格式（srt↔srt、vtt↔vtt），时间轴与 cue 编号保留。JSON 读写是最小手写（`jsonEscape`/`jsonUnescapeString` 含 `\uXXXX` 与代理对、`chatResponseContent` 只定位文档化路径，不是通用解析器），不引 JSON 库；`httpPost` 是 `httpGet` 的传输孪生（同 TU 匿名命名空间，复用 URL 解析/连接/收发）。
 
-水位：`subtitle_provider.cpp` **行 97.8%（699/715）、分支 88.7%（822/927）**——新增代码的全部真实行都覆盖，行缺口只剩尾括号/ctor 产物（见下）；全库本地 cov4（含夹具与 X11 窗口用例的完整跑）**行 94.5%（4251/4497）、分支 83.7%（4190/5005）**，双指标高于门禁线（94.3/83.2），比下载源批的本地水位（§3.11：94.43–94.48/83.33–83.41）继续上抬；CI 同提交口径见该批 run（判门禁一律看 CI）。测试 69 用例/544 断言全离线。
+水位：`subtitle_provider.cpp` **行 97.8%（699/715）、分支 88.7%（822/927）**——新增代码的全部真实行都覆盖，行缺口只剩尾括号/ctor 产物（见下）；全库本地 cov3（含夹具与 X11 窗口用例的完整跑）**行 94.5%（4251/4497）、分支 83.7%（4190/5005）**，双指标高于门禁线（94.3/83.2），比下载源批的本地水位（§3.11：94.43–94.48/83.33–83.41）继续上抬；CI 同提交口径见该批 run（判门禁一律看 CI）。测试 69 用例/544 断言全离线。
 
 测试手法（fixture 全部在 `test_http_servers.h` 的 chat 服务器，不打真实外网，key 不进仓库与日志）：
 
@@ -202,7 +202,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 本批（mvp §6 批 1b）把外挂 `.ass`/`.ssa` 从「仅提取纯文本」升级为「整篇文档进 libass 按脚本样式渲染」（无 libass 的构建降级回纯文本泵）：`assDocumentCues` 抽取即轨道（load 门槛），`selectTrack` 按最后选中的 ASS 源把一个 `AssRenderer` 在内嵌流（feed）与外挂文档（loadDocument）之间重定向，`disableSubtitles` 释放本批引入的文档内容。核心是纯接线，渲染本体是 libass 的（如实分账）。
 
-水位：本地 cov 树完整口径 **行 95.0%（4775/5026）、分支 84.3%（4805/5698）**，双指标在门禁（94.6/84.0）上方，分支比批 1a 基线（84.1%）再高 0.2 点；分母一次性长大 187 行 / 264 分支（`ass_dialogue.cpp` 整文件 + 后端/Provider 接线），行与批 1a 的 95.0% 持平——是分母扩张下的持平，不是水位滑落。新增 `ass_dialogue.cpp` **行 99.3%（136/137）、分支 100%（190/190）**，行缺口仅 1 条闭括号清理弧（§3.10/§3.12 家族），头文件 100%。
+水位：本地 cov 树完整口径 **行 95.0%（4775/5026）、分支 84.3%（4805/5698）**，双指标在门禁（94.6/84.0）上方，分支比批 1a 基线（84.1%）再高 0.2 点；分母一次性长大 187 行 / 264 分支（`ass_dialogue.cpp` 整文件 + 后端/Provider 接线），行与批 1a 的 95.0% 持平——是分母扩张下的持平，不是水位滑落。新增 `ass_dialogue.cpp` **行 99.3%（136/137）、分支 100%（190/190）**（批 1b 读数；136/137 是 gcov 插桩行/支分母，不是文件行数——当前文件已 281 行），行缺口仅 1 条闭括号清理弧（§3.10/§3.12 家族），头文件 100%。
 
 测试手法（两条纯单测链 + 三条媒体用例，全部离线）：
 
@@ -241,7 +241,7 @@ P3c 批实测的平台事实：给 `Event` 追加两个 `std::uint64_t` 字段�
 
 本批把「选内嵌字幕轨」从元数据语义改成解码语义，并让被选中的内嵌文本轨上画布。自写与复用的分账（措辞口径）：**字形渲染仍是 libass 的**；**本仓库的**是选择语义本身——`subtitle_decode_active_` 解码门（decodeLoop 只在门开时处理字幕包：open 起开、sidecar 选中/Off 关门并清队列、内嵌选中重开，批 1b/1c 只能靠画布侧关闭的叠加在两种构建里都从源头关闭）、非默认流的解码器交接（`buildSubtitleDecoder` + pending 槽，与音频切换同一 handoff 契约减去 resume seek：解码线程活着则 packet 边界换入、已死则 join 后直换并报 Stopped）、mov_text/subrip 的每帧重组（帧内多 rect 文本拼接为一条 Dialogue 事件、`assDialogueLineFromText` 重建事件行、文本流 arm feed 时喂合成默认头），以及 `disableSubtitles` 的解码语义化（关门 + 清队 + 释放 feed/文档）。顺带删除了 `ass_codec_private_` 暂存（arm 时从 codecpar 现读，open 期少一份镜像状态）。
 
-水位：本地 cov3 完整口径 **行 95.3%（4956/5203）、分支 84.6%（4969/5872）**（本批 commit 门禁那次完整跑），门禁 94.8/84.2 双过（本地余量 23 行 / 24 分支）。分母 +135 行 / +113 分支（对批 1c 的 5068/5759），命中 +126 行 / +100 分支——选择语义新码的可覆盖主干全被命中。分文件：`player_window.cpp` 行 95.0%（1090/1147，批 1c 93.9%——涨幅来自本批的 OSC 注入器修复，见文末）、`ffmpeg_backend.cpp` 行 91.8%（1712/1866，批内新增行的未覆盖臂即下文逐条定性的 20 条，门禁跑 missing 列表全部在场）、`ass_dialogue.cpp` 行 98.2%（162/165，缺口仍是 §3.10 家族三条闭括号清理弧）、`main.cpp` 98.5%（133/135，142-143 本轮翻 Missing——X11 窗口纹理弧的既知逐轮摆动家族，§2.1 RTSP 批同款）。CI 同提交读数：行 **95.3%（4955/5201）**、分支 **85.3%（4907/5750）**——批 1c 的「命中低 ~21 行」观察未复现，两侧基本持平（判门禁一律看 CI）。
+水位：本地 cov3 完整口径 **行 95.3%（4956/5203）、分支 84.6%（4969/5872）**（本批 commit 门禁那次完整跑），门禁 94.8/84.2 双过（本地余量 23 行 / 24 分支）。分母 +135 行 / +113 分支（对批 1c 的 5068/5759），命中 +126 行 / +100 分支——选择语义新码的可覆盖主干全被命中。分文件（分母为本批口径，文件行数随后续批次扩张）：`player_window.cpp` 行 95.0%（1090/1147，批 1c 93.9%——涨幅来自本批的 OSC 注入器修复，见文末）、`ffmpeg_backend.cpp` 行 91.8%（1712/1866，批内新增行的未覆盖臂即下文逐条定性的 20 条，门禁跑 missing 列表全部在场）、`ass_dialogue.cpp` 行 98.2%（162/165，缺口仍是 §3.10 家族三条闭括号清理弧）、`main.cpp` 98.5%（133/135，142-143 本轮翻 Missing——X11 窗口纹理弧的既知逐轮摆动家族，§2.1 RTSP 批同款）。CI 同提交读数：行 **95.3%（4955/5201）**、分支 **85.3%（4907/5750）**——批 1c 的「命中低 ~21 行」观察未复现，两侧基本持平（判门禁一律看 CI）。
 
 测试手法（SUBS_DUAL 夹具 + 孪生用例族，全部离线）：
 
@@ -281,7 +281,7 @@ todo.md 无可做项后按派发 fallback 转覆盖率最大缺口模块（`ffmp
 
 ### 3.17 分支短板推进轮：ffmpeg_backend 零计数支三分类甄别 + 四条可测臂落地
 
-按 §3.16 同款 fallback（取分支缺口最大模块）对 `ffmpeg_backend.cpp` 的 **375 条零计数支 / 268 个零行**（41c226f 基线，gcovr JSON 逐臂清单）做三分类甄别——可测落地 / 成对不变量或输入域互锁（撤销）/ 家族定性——最终纯测试零产品改动落 4 个用例，全部经 gcov JSON diff 逐臂验证命中：零支 375→366（+9 命中）、行 4966→4968，`ffmpeg_backend.cpp` 分文件读数 1719→1721 行（92.1%→92.2%）、1386→1395 支（78.7%→79.2%）。
+按 §3.16 同款 fallback（取分支缺口最大模块）对 `ffmpeg_backend.cpp` 的 **375 条零计数支 / 268 个零行**（41c226f 基线，gcovr JSON 逐臂清单）做三分类甄别——可测落地 / 成对不变量或输入域互锁（撤销）/ 家族定性——最终纯测试零产品改动落 4 个用例，全部经 gcov JSON diff 逐臂验证命中：零支 375→366（+9 命中）、行 4966→4968，`ffmpeg_backend.cpp` 分文件读数 1719→1721 行（92.1%→92.2%）、1386→1395 支（78.7%→79.2%）（分母为本批口径——当前文件已 3763 行，分母已随后续批次扩张）。
 
 - **2193-2194（setupDecoders 字幕 `find_decoder` 失败）**：§5「open 只为选中的流建 decoder」模式的镜像补全——既有坏流用例 patch 的是**非默认** ASS 流（选择期失败），本批 patch **默认** subrip 流（`S_TEXT/UTF8` → `S_TEXT/QQQQ`，同 11 字节保 EBML 尺寸；demuxer 把未知 id 映射为 `AV_CODEC_ID_NONE`）→ open 期 `avcodec_find_decoder` 返空 → fatal。断言镜像视频 UNKNOWN_CODEC 模板：`open` false + `lastError` 钉 "subtitle codec not found" + Error 态 + Error 事件 ≥1 + 健康媒体恢复开。命中 2193:1、2194:1。
 - **2027（openContext 的 `use_cache` 判据）**：`MediaSource::cache_dir` 契约（backend.h：仅 http:// 生效，本地路径与 https:// 忽略）此前只有 http 侧用例（CLI `--cache-dir`），「cache_dir 非空 + 本地路径」的短路方向零命中。本地文件 + fresh cache dir 打开 → 走直接路径、`HttpCache` 不构造，断言目录在 open 后仍空。命中该行五元组的零臂（末位 0→1）。
@@ -310,12 +310,12 @@ todo.md 无可做项后按派发 fallback 转覆盖率最大缺口模块（`ffmp
 
 - **测试增量（纯 cli TU，+4 用例）**：`--help/-h` 退出 0、`--gui --headless` 无源保持 usage 退出 2（headless 是显式命令行语义，不分叉）、默认后端解析为 FFmpeg（fixture 门控）、X11 空窗端到端——injector 新增 `empty` 模式（O 键 → 中心点击 → Escape → 轮询窗口消失，exit 4/5 失败路径），宿侧断言 exit 0 且输出无 Usage / No media source。控制台无参行为逐字不变（exit 2 + Usage），既有用例零改动全绿。
 - **CI 契约同步**：ci.yml / daily-build 的 Windows 冒烟「soarw 无参退出 2」断言换成「无参空启动 8 秒存活」（唯一豁免仍是 exit 1 + SDL_ 日志的渲染器缺失干净失败）；daily-build 安装器走查增装后/卸后注册表断言（`Soar.Media\shell\open\command` 指向 soarw.exe、`.mp4\OpenWithProgids` 含候选、卸后无痕）。
-- **读数**：CI run 37231910426 七腿绿，行 5686/5980=95.1%、支 5829/6845=85.2%——分母较上批 run 37191653811（5660/5954、5795/6811）+26 行/+34 支即本批新代码，门禁 95.0/84.6 双过（余量 0.1/0.6）。本地 cov4 全量 8/8 + 系统 gcovr 7.2 门禁 GATE_EXIT=0（行 95.2% 5691/5981、支 84.6% 5899/6974）。
+- **读数**：CI run 37231910426 七腿绿，行 5686/5980=95.1%、支 5829/6845=85.2%——分母较上批 run 37191653811（5660/5954、5795/6811）+26 行/+34 支即本批新代码，门禁 95.0/84.6 双过（余量 0.1/0.6）。本地 cov3 全量 8/8 + 系统 gcovr 7.2 门禁 GATE_EXIT=0（行 95.2% 5691/5981、支 84.6% 5899/6974）。
 - **走查注意（可复用教训）**：Xvfb 四帧验收（空窗海报 / O 键 toast / help `O` 行 / Esc 退出）中 toast 首拍 0.8s 恰好过期——`Toast::kDuration` 800ms（ui_state.h），进程外驱动截图须在 0.3s 内拍；短命 UI 状态的断言窗口要按常量倒推。
 
 ### 3.19 P2P 桥接测试收编批：src/p2p 撤 exclude 进门禁
 
-P4 特性批（docs/mvp.md §5）按「功能先落地、测试后补」登记过 exclude（ci.yml 注释原话 "the follow-up test batch brings it back under this gate"），本批兑现：新套件 `soar_p2p_tests`（tests/test_p2p.cpp，20 用例）+ ci.yml 撤两处 `--exclude '^src/p2p/'`，`torrent_stream.cpp` 分母 +368 行/+417 支进门槛。
+P4 特性批（docs/mvp.md §5）按「功能先落地、测试后补」登记过 exclude（ci.yml 注释原话 "the follow-up test batch brings it back under this gate"），本批兑现：新套件 `soar_p2p_tests`（tests/test_p2p.cpp，21 用例）+ ci.yml 撤两处 `--exclude '^src/p2p/'`，`torrent_stream.cpp` 分母 +368 行/+417 支进门槛。
 
 - **测试设计（自足链，无 swarm/无第二进程）**：payload 写进临时 store、用 vendored libtorrent 与 seed_torrent 工具同款 API 建 v1 种、`store_dir` 取 payload 的父目录—— TorrentStream 的本地哈希校验在 add 后即发现所有 piece 就位，HTTP 层直接服务真字节。覆盖面：失败契约（零参/缺 store/坏 .torrent/坏 magnet/五种坏 peer 形态）、成功链（200 全文件、Range 三形态 206+Content-Range、416 八种畸形、HEAD 无体、405、同连接 keep-alive、`file_base>0` 的多文件条目——走查期抓过的读偏 bug 的回归位）、越界 index 的错误表两臂（带/不带 on_files）、空文件条目（混合种）、single-flight 与 stop 幂等、startAsync 三态（Serving 快达 / Connecting 被 stop 打断不落 Failed / 尾失败落 Failed）、**缺片请求被 stop 释放**（unlink 后 waitForPiece 停在 deadline 上，stop 不许等满 60s）、**metadata 60s 超时的显式错误契约**（套件最贵的用例——磁铁卡死的对外承诺本身就是这 60 秒）。
 - **建种枚举序不可断言（首轮红的根因）**：`add_files(目录)` 的文件顺序是 OS 枚举序（实测 b 先于 a）——断言 `files[0]` 的用例全部改显式 `fs.add_file(rel, size)` 保序。同族：0 字节单文件在 libtorrent 层直接拒（"invalid length of torrent"，零 piece），产品侧 `file is empty` 守卫须用「0 字节 + 正常文件」混合种才可达。
@@ -369,7 +369,7 @@ BUGS.md #4（CLI 播放 Ended 后偶发不退出）的排查批落地两件测�
 - **噪声 WAV 夹具抓到真 bug**：普通 tag-1 WAV/裸 PCM 源经 FFmpeg 解出的是**未指明序的声道布局（UNSPEC）**，native AAC 编码器拒绝该布局直接开不了——已提交的 mp4/mov 夹具全带定位布局，覆盖不到。修复：`dec_a->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC` 时按声道数取默认布局（stereo→FL+FR）再交给编码器。夹具本身 `makeNoiseWav`（纯 C++ 手写 44 字节 RIFF 头 + patternBytes 锯齿 PCM）。
 - **顺手抓到自己写的远端可达崩溃**：event server 收到超过 64 KiB 上限且无空行的请求头时，读循环带 ok=true 退出 → `head.resize(npos)` 抛 length_error → 未捕获 → std::terminate——LAN 上任何主机一个 70 KB 洪泛包可打死整个进程（GENA 批新引入的代码）。修复为按畸形 NOTIFY 处理（回 200 断连），回归用例钉死（洪泛后服务器必须还活着且正常 NOTIFY 照常入账）。
 - **pushBytes 反压臂的可达性**：队列上限 1 MiB + 套接字缓冲吸收，2 秒小夹具永远填不满——噪声 WAV（90 秒立体声 ≈ 15.9 MB 源 ≈ 1.4 MB+ TS 输出）配一个只读响应头不再读取的客户端才到达「pump 停在队列满等待」态；stop() 必须唤醒并join。断言与内部停在哪条臂无关（不赌竞速时序，负载轮次只是少盖一条臂、不假红）。
-- **测试武装**：cast 套件 57 例（本批 +19）——生命周期边角（未 start 的 waitReady/stop、双 start 幂等）、请求头三态（静默 5s 超时臂 / 部分 head + SO_LINGER-0 RST / 任意完整 head 视作 GET）、stop 加入持流客户端、PCM 全链、无流报错、会话两分叉（垃圾源 fail before Play 带「could not start on the source」、停滞 renderer 报「stalled even on the transcoded stream」）、event server 直探（合法 NOTIFY 入账 / 无 CL 内联体 / CL>内联体的续读臂 / 无体 200 / 连接即断 / 回调为 null / 双 start / localhost 走 getaddrinfo 回退臂 / 洪泛回归）。CLI 一例 15 断言：`--cast-transcode` 经真二进制全链——renderer 收到的 URI 端口既非桥口也非 renderer 口、TS 端点回裸 200（无 Range）、play/stop 握手齐。
+- **测试武装**：cast 套件 58 例（本批 +19）——生命周期边角（未 start 的 waitReady/stop、双 start 幂等）、请求头三态（静默 5s 超时臂 / 部分 head + SO_LINGER-0 RST / 任意完整 head 视作 GET）、stop 加入持流客户端、PCM 全链、无流报错、会话两分叉（垃圾源 fail before Play 带「could not start on the source」、停滞 renderer 报「stalled even on the transcoded stream」）、event server 直探（合法 NOTIFY 入账 / 无 CL 内联体 / CL>内联体的续读臂 / 无体 200 / 连接即断 / 回调为 null / 双 start / localhost 走 getaddrinfo 回退臂 / 洪泛回归）。CLI 一例 15 断言：`--cast-transcode` 经真二进制全链——renderer 收到的 URI 端口既非桥口也非 renderer 口、TS 端点回裸 200（无 Range）、play/stop 握手齐。
 - **结构性不可计（transcode_server 86 缺行中 ~75 行，定性勿追）**：每一条 libav 调用后的 fail 臂（demuxer/probe/解码器/编码器/swr/sws/AVIO/muxer 的 OOM 与失败形态）——打靶需 fault 注入或 mock 掉被测库，违背「注入即污染」纪律，同 §3.2 定性；localIpForPeer 的不可达对端/无路由/socket 失败臂（两台服务器同款，需无路由网络环境）；bind 失败臂（临时端口 0 无法被抢占）；accept fd<0 续跑臂（ECONNABORTED 时序脆弱）；cast_session 的 transcode start 失败臂（同 bind）；start 宽限窗内暂停的记账臂、Play 传输错误臂（fault 分支已盖，传输分支需 describe 后断连的 renderer 模式）。
 - **门禁对账（本批造成的口径变化，用户令修绿后重定门禁）**：批次前 8017/8411=95.3% 行、8660/10168=85.2% 支（门禁 95.0/84.6 双绿）。本批给分母净增 ~1000 行（transcode_server.cpp 561 行 + 接线），其中转码服务器 86 缺行里 ~75 行是上条的结构性家族——诚实补测到此水位后两门禁按现值红是构造性的（缺口全部落入上述定性，与 §5「不删防御代码、不写假用例、不做进程污染」前提一致）。处置：用户令「先修绿」（2026-10-13 插单），门禁按实测水位重定为 **行 94.0 / 支 83.0**——水位 94.44%（8886/9410）/83.50%（9500/11376）减历史惯例 0.4-0.5 点余量（对齐 95.0←95.4、84.6←85.2 的旧口径），余量 ~40 行/~58 支，远超 2 行/4 支抖动带，也盖得住 CI-vs-local ~21 行级的历史偏差；按 §5 惯例后续诚实补测推高水位时门禁随之上抬。备选的 libav fault 接缝方案（§3.21 hwaccel 单缝先例）因 ~50 条接缝的规模违背注入即污染精神而未取。
 - **读数**：本地系统 gcovr 7.x（build-cov3，夹具媒体 + X11 全量跑，六树门禁 cov3 腿实测）行 **94.4%（8886/9410）**、支 **83.5%（9500/11376）**，对重定后门禁 94.0/83.0 双过；全量 ctest 六树 suite 腿 13/13 绿（system 腿一次 http_cache 固定端口抽奖 flake，串行重跑绿——todo 投屏二期节同款已记账，本批夹具全用临时端口与此无关）。
@@ -382,7 +382,7 @@ BUGS.md #4（CLI 播放 Ended 后偶发不退出）的排查批落地两件测�
 
 ## 5. 结论
 
-行 95.54% 与分支 85.15%（分支短板推进轮本地 cov3 完整口径：含夹具媒体与 X11 窗口用例的全量跑，4968/5200 行、5004/5877 分支；CI 同提交读数判门禁一律看 CI——CI 的分支分母被 `negative_hits` 过滤系统性偏小，CI 分支百分比通常比本地高约 0.5 点，定值须让两侧都绿）是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性——其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，UI 的缺口见 §3.6 的六类逐条定性，http 缓存的缺口见 §3.7 的四类逐条定性，翻译客户端的缺口见 §3.12 的家族定性，外挂 ASS 文档批的缺口见 §3.13 的家族定性，外挂文本轨画布批的缺口见 §3.14 的家族定性，内嵌轨选择语义批的缺口见 §3.15 的家族定性，分支短板推进轮的甄别与残余弧家族定性见 §3.17，`Event` 结构冻结政策与其伴随噪声见 §3.8）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
+行 94.44% 与分支 83.50%（发送端转码批/§3.24 本地 cov3 完整口径：含夹具媒体与 X11 窗口用例的全量跑，8886/9410 行、9500/11376 分支；上一版结论的 95.54%/85.15%（4968/5200 行、5004/5877 分支）是转码批前的读数——该批给分母净增约 1000 行，其中转码服务器的结构性缺口拉低了水位，门禁随之重定为 94.0/83.0；CI 同提交读数判门禁一律看 CI——CI 的分支分母被 `negative_hits` 过滤系统性偏小，CI 分支百分比通常比本地高约 0.5 点，定值须让两侧都绿）是**当前代码库在“不删防御代码、不写假用例、不做进程污染”前提下的真实上限**（逐条复核结论：剩余缺口全部落入 §3.1-§3.4 之一定性——其中队列溢出与 drain 双队列比较两处由"产出-消费同线程串行"的结构论证支撑，UI 的缺口见 §3.6 的六类逐条定性，http 缓存的缺口见 §3.7 的四类逐条定性，翻译客户端的缺口见 §3.12 的家族定性，外挂 ASS 文档批的缺口见 §3.13 的家族定性，外挂文本轨画布批的缺口见 §3.14 的家族定性，内嵌轨选择语义批的缺口见 §3.15 的家族定性，分支短板推进轮的甄别与残余弧家族定性见 §3.17，`Event` 结构冻结政策与其伴随噪声见 §3.8）。凑到字面 100% 只能：删掉防御分支、mock 掉被测库、或写不断言的假用例——三者都违背项目铁律。新增可测路径时按既有模式补测（真实文件、真实失败契约），并把门禁阈值随实测水位上抬。
 
 可测路径的三个实用模式：
 

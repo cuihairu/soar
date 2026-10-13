@@ -30,24 +30,26 @@ Soar 是一个基于 FFmpeg + SDL2 的 C++17 开源媒体播放器：封装一�
 
 ## 当前状态
 
-v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载，见下文路线图与 [docs/mvp.md](docs/mvp.md)）。桌面端是 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC），配快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）；播放中、暂停中，音频轨与字幕轨都能运行时切换，播放不中断（细节见下文及 docs/mvp.md §6）。v1.0（硬解/HDR、投屏、媒体库）尚未开始。
+v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载，见下文路线图与 [docs/mvp.md](docs/mvp.md)）。桌面端是 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC），配快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）；播放中、暂停中，音频轨与字幕轨都能运行时切换，播放不中断（细节见下文及 docs/mvp.md §6）。v1.0 有两个切片已落地：本地媒体库（监视文件夹、播放历史与续播、`B` 浮层、离线 NFO sidecar 刮削——docs/mvp.md §3）与硬解首接线（`--hwdec=`，任何失败都静默回退软解；真机 GPU 帧路径与 HDR 色彩管线仍未开始——见 docs/mvp.md §3）；DLNA 投屏已落地为 UPnP AV 控制点，配窗口浮层与 CLI `--cast=<location|auto>` 开关（自实现 SSDP/SOAP/GENA，零新依赖；构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码——docs/mvp.md §3）；插件体系尚未开始。
 
 ## 功能特性（当前已实现）
 
 - **媒体输入**：本地文件、多文件入队（`soar <a> <b> …`，首个即播其余排队）、网络流 URL（`http(s)`/HLS/DASH/RTSP 等 FFmpeg 支持的一切协议）、`.torrent` 文件与 `magnet:` 链接；打开失败时错误原因可见；
 - **播放控制**：播放 / 暂停 / 停止 / Seek（跳转）/ 倍速（Rate）/ 音量与静音；
 - **播放列表**：`N`/`Shift+N` 下一首/上一首（越界只 Toast 不绕回），自然播完自动步进（走到队尾停在 Ended，空格可重播），`P` 浮层点选即播、`x` 删除，Loop 三态（off/all/one）与 Shuffle；
+- **媒体库**：监视文件夹（递归扫描、缺失文件剪除；直接打开的条目——URL、不在任何监视文件夹内的文件——永不剪除），按源记录播放历史与续播（重开时位置过 5s 且距结尾至少 5s 才提供续播，播完即清，`--no-resume` 继续记录但永不回跳），`B` 开媒体库浮层（点选带续播播放、经目录选择器的监视模式添加监视文件夹、重新扫描），离线 NFO sidecar 刮削（`<name>.nfo` 同名旁文件的标题/简介填入媒体库行）。历史仅由窗口会话记录——headless 保持无状态——原始 magnet/.torrent URI 不入历史，桥接 URL 会记录（本地端口每会话变化）；
 - **截图与 A-B 循环**：`S` 把最近呈现的帧保存为 `screenshot.png`；`L` 三段循环（定 A → 定 B → 清除，到文件尾也回跳，手动 seek 解除）；
 - **媒体信息**：时长、是否可 Seek、轨道（Track）列表（视频 / 音频 / 字幕，含编码、语言、标题）；
 - **轨道选择**：音频轨运行时切换（播放中/暂停中无感续播）；视频轨切换不支持；字幕轨运行时切换——选中内嵌轨时解码线程在安全点换字幕解码器、cue 从新轨续流（切换点之前的历史 cue 需一次倒退 seek 重扫，无自动重扫），选中外挂轨或关闭时内嵌字幕解码门关闭（细节与边界见 [docs/mvp.md](docs/mvp.md) §6）；
 - **字幕渲染**：内嵌 ASS/SSA 经 [libass](https://github.com/libass/libass) 样式渲染（字体/颜色/定位/特效随脚本，容器附件字体即装即用），外挂 .ass/.ssa 同样式渲染、外挂 SRT/WebVTT 按仓库默认样式走同一画布（无 libass 的构建降级为纯文本），内嵌 SRT/WebVTT 文本字幕实时提取显示；`V` 显隐、`[`/`]` ±0.5s 同步偏移、字幕设置浮层（字号/同步偏移/可见性）；可选的字幕下载（`SOAR_SUBTITLE_ENDPOINT`/`_API_KEY`）与字幕翻译（`SOAR_TRANSLATE_ENDPOINT` 等，OpenAI 兼容端点）服务——零默认网络，未配置即不发起任何请求（见 docs/mvp.md §6）；
 - **事件驱动**：状态变化、进度更新、媒体信息变化、错误四类事件，UI 只需订阅回调；
-- **视频渲染**：后端解码为 YUV420P 帧并导出，应用层用 SDL2 Texture 直接上屏；
+- **视频渲染**：后端解码为 YUV420P 帧并导出，应用层用 SDL2 Texture 直接上屏；`--hwdec=` 请求硬解、失败回退软解、hwaccel 帧回传 YUV420P；
 - **音频输出**：SDL2 音频设备，重采样（Resample）到设备参数，支持音量/静音/倍速，输出端点可在音轨菜单中枚举与切换（下一个音频帧生效）；
 - **网络与下载**：HTTP(S) 顺序播放即边下边看；`--cache-dir=` 磁盘缓存——同一 URL 离线可重播、断点续播、seek 进未下载段只补目标块，`Downloading N%` 进度徽标（http:// 走缓存，https 直通；见 docs/mvp.md §5 P3）；`.torrent`/`magnet:` 经 vendored libtorrent 内核顺序下载、以本地 `http://127.0.0.1:<port>/` 桥进同一播放链路（`--torrent-store=`/`--torrent-peer=`/`--torrent-index=`/`--torrent-list`，窗口期「connecting to swarm - N peers」状态与下载徽标可见；P2P 边界见 docs/mvp.md §5 P4）；
+- **投屏**：DLNA/UPnP AV 控制点已落地——自实现 SSDP/SOAP/GENA，零新依赖；`t` 开合窗口投屏浮层，CLI `--cast=<location|auto>` 把 .torrent/magnet: 源投给指定设备描述 URL 或 auto 发现的渲染器，构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码（docs/mvp.md §3）；
 - **桌面 UI**：底部悬浮 OSC（2.5s 无输入自动隐藏，悬停/拖动/浮层/暂停时钉住），整宽 seek 条（悬停时间提示、拖动预览、松手提交）+ 按钮行（传输控制、时钟、音量、倍速、音轨、字幕、全屏）；
 - **键鼠交互**：单击切换 OSC、双击全屏、垂直滚轮调音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开（MRU×15，持久化）；GUI 版（`soarw.exe`/`--gui`）无源启动直接进空主界面——「Open a file」海报，`O` 键或点海报打开文件（Windows 弹文件对话框，其他平台降级为拖放提示 toast）；
-- **快捷键**：`Space/K` 播放暂停、`←/→ ±5s`、`Shift+←/→ ±1s`、`PgUp/PgDn ±60s`、`Home`、`0–9` 百分比、`↑/↓` 音量、`M` 静音、`,/.` 倍速、`F` 全屏、`A/C` 循环音轨/字幕、`L` A-B 循环（定 A → 定 B → 清除）、`V` 字幕显隐、`[/]` 字幕前后偏移、`S` 截图（PNG）、`P` 播放队列浮层、`N/Shift+N` 下一首/上一首、`O` 打开文件、`I/R/H` 信息/最近/帮助、`Q` 退出、`Esc` 退全屏或退出；
+- **快捷键**：`Space/K` 播放暂停、`←/→ ±5s`、`Shift+←/→ ±1s`、`PgUp/PgDn ±60s`、`Home`、`0–9` 百分比、`↑/↓` 音量、`M` 静音、`,/.` 倍速、`F` 全屏、`A/C` 循环音轨/字幕、`L` A-B 循环（定 A → 定 B → 清除）、`V` 字幕显隐、`[/]` 字幕前后偏移、`S` 截图（PNG）、`P` 播放队列浮层、`N/Shift+N` 下一首/上一首、`B` 媒体库浮层、`O` 打开文件、`I/R/H` 信息/最近/帮助、`Q` 退出、`Esc` 退全屏或退出——全部可经状态目录下的 `soar/shortcuts.txt` 重绑（`--shortcuts=FILE` 移动该文件、`--no-shortcuts` 整个禁用键位表；docs/ui-design.md §3.2）；
 - **状态提示**：暂停/缓冲指示、OSD Toast 反馈操作结果、媒体信息浮层（含错误行与轨道清单）。
 
 ## 架构
@@ -146,13 +148,27 @@ cmake --preset default && cmake --build --preset default   # Debug
 
 # 无多媒体依赖的核心行为演示
 ./build/soar --backend=null <path-or-url>
+
+# 请求 FFmpeg 硬件解码（auto，或设备名：vaapi / vdpau / d3d11va / dxva2 / videotoolbox / …）；
+# 任何失败——编码不支持、无设备、打开被拒——都回退软解
+./build/soar --hwdec=auto <path-or-url>
+
+# 记录媒体库历史但永不回跳到已存位置
+./build/soar --no-resume <path-or-url>
+
+# 仅窗口会话：把 'q' 绑到空操作、静音移到 'u'
+#（状态目录：soar/shortcuts.txt；手写，否则用默认）
+./build/soar --shortcuts=/path/to/shortcuts.txt <path-or-url>
+
+# 仅窗口会话：完全忽略键位表
+./build/soar --no-shortcuts <path-or-url>
 ```
 
 ## 路线图
 
 - **v0.1（MVP，已收口）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）——验收清单全数完成（见 [docs/ui-design.md](docs/ui-design.md) §6）；
 - **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP 冒烟、字幕体验（字体/大小/同步偏移）——均已落地；
-- **v1.0**：硬解（Hardware Decoding）与 HDR、投屏（AirPlay/Chromecast/DLNA）、媒体库与刮削、插件体系。
+- **v1.0**：硬解（Hardware Decoding）与 HDR、投屏（DLNA/UPnP）、媒体库与离线 NFO 刮削（已落地；网络刮削与多设备同步待定——docs/mvp.md §3）、插件体系。
 
 完整边界与"明确不做"清单见 [docs/mvp.md](docs/mvp.md)。
 
@@ -175,7 +191,11 @@ ctest --preset default
 | `soar_subtitle_tests` | 外挂字幕核心：SRT/WebVTT 解析、sidecar 提供器、下载/翻译客户端 | 纯逻辑，无需媒体与网络 |
 | `soar_ass_tests` | ASS 渲染器：libass 薄封装、直 alpha 合成、内嵌轨流式喂入 | 无 libass 时构建为空壳并跳过；渲染用仓库内附测试字体 |
 | `soar_ui_tests` | 窗口 UI 的纯逻辑（OSC 自动隐藏状态机、最近打开存储、Toast、时间格式化） | 无需显示器 |
+| `soar_dir_scan_tests` | 目录扫描辅助：媒体扩展名过滤、扁平/递归列举（精确路径用例仅 POSIX 钉住）、队列分组 | 纯 `std::filesystem`，无需媒体与显示器 |
+| `soar_library_tests` | 媒体库存储：监视文件夹、扫描合并/剪除、续播策略、历史 API、持久化行格式、NFO sidecar 解析 | 纯 `std::filesystem`，无需媒体与显示器 |
+| `soar_shortcut_tests` | 键位表：出厂默认、配置语法（重绑/解绑/区间/kill 开关）、查找优先级、帮助浮层命名 | 纯逻辑，基于内存文本，无需显示器与媒体 |
 | `soar_p2p_tests` | P2P 桥接：TorrentStream 启停契约、本地 HTTP 服务（Range/多文件/超时） | 进程内建种自足（libtorrent 哈希校验预填充），无 swarm；POSIX socket，Windows 跳过 |
+| `soar_cast_tests` | DLNA 投屏控制点：SSDP/设备 XML/SOAP 纯字符串逻辑全平台可跑；POSIX 用例经真实 socket 驱动进程内最小 MediaRenderer（环回发现、描述拉取、动作交换、网桥 LAN 改绑） | POSIX socket 用例 Windows 跳过；转码用例需 FFmpeg 后端 |
 | `soar_cli_tests` | `soar` 子进程冒烟（`--headless` 退出码与报错路径） | 仅当应用目标被构建时注册；Xvfb 用例额外需 `SOAR_TEST_X11=1` |
 
 FFmpeg 媒体测试的媒体文件全部由 `scripts/generate_test_media.sh` 现场合成（纯 lavfi，无网络、无外部素材），脚本打印 `KEY=VALUE` 形式的环境变量供测试定位文件：

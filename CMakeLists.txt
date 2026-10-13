@@ -232,7 +232,7 @@ if(SOAR_BUILD_APP)
   endif()
 
   if(SOAR_ENABLE_SDL2)
-    # 2.0.18 is the floor: the ImGui sdlrenderer2 backend needs 2.0.17
+    # 2.0.18 is the floor: the ImGui sdlrenderer2 backend needs 2.0.18
     # (SDL_RenderGeometry) and the window layer's key-repeat suppression
     # uses SDL_KeyboardEvent::repeat, added in 2.0.18. Asking for it here
     # turns "too old" into the same degrade-to-CLI path as "not found"

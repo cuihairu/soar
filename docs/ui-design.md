@@ -65,8 +65,8 @@ v0.1 是**单窗口应用**：一个播放页承载一切，二级功能全部�
 soar 主窗口
 ├── 视频区（信箱式留黑，等比缩放）
 │   ├── 暂停指示（大图标，1s 淡出）          ← v0.1 简化为状态文案
-│   ├── 缓冲指示（左上角 "缓冲中…"）          ← BufferingStarted/Ended 事件驱动
-│   ├── 下载指示（左上角 "下载中 N%"）         ← DownloadProgress 事件驱动，缓存填满即隐
+│   ├── 缓冲指示（左上角 "Buffering..."）     ← BufferingStarted/Ended 事件驱动
+│   ├── 下载指示（左上角 "Downloading N%"）    ← DownloadProgress 事件驱动，缓存填满即隐
 │   ├── OSD Toast（顶部居中，800ms 淡出）     ← 音量/倍速/切轨操作反馈
 │   └── 无媒体海报区（文件名 + 状态文案）      ← 纯音频/null 后端时
 ├── OSC 控制栏（底部悬浮，自动隐藏，双行）
@@ -76,9 +76,10 @@ soar 主窗口
 │   └── 弹出菜单：倍速 / 音轨 / 字幕（各一组，当前项打勾）
 ├── 信息浮层（I 键）：文件、状态、时长、可否 seek、后端、轨道清单（类型/编号/编码/语言/标题/选中）
 ├── 最近打开浮层（R 键）：MRU 列表，点击重开；无历史时提示
-├── 媒体库浮层（B 键，v0.3）：监视文件夹行 + 源条目（续播位置标注、离线 NFO 边车标题优先），点击重开；Add folder... 走监视模式 DirPick
+├── 媒体库浮层（B 键）：监视文件夹行 + 源条目（续播位置标注、离线 NFO 边车标题优先），点击重开；Add folder... 走监视模式 DirPick
 ├── 快捷键帮助浮层（H 键）：键位列实时渲染（跟随当前绑定，默认配置下与出厂表逐字节一致）
 ├── 播放队列浮层（P 键，v0.2）：队列点选即播、`x` 删除，Loop 三态与 Shuffle
+├── 投屏浮层（t 键）：SSDP 发现 renderer、点选即投、相位/位置读出、Stop casting/Search again；CLI 走 `--cast=<location|auto>`
 ├── 字幕设置浮层（v0.2）：字号滑条、同步偏移、可见性开关
 └── 退出路径：Esc（全屏时先退全屏）/ 窗口关闭按钮
 ```
@@ -101,6 +102,9 @@ soar 主窗口
 钉住条件（任一满足即不隐藏）：
   指针位于控制栏或其弹出菜单上 / seek 条拖动中 / 任一浮层打开 / 播放器处于 Paused / Stopped / Error
 ```
+
+注：状态机里「鼠标移动」已成立——SDL_MOUSEMOTION 自本轮 OSC 批起计入唤醒
+（player_window.cpp:712），该条目前与码一致。
 
 - IINA 取 2.5s 默认；暂停钉住采纳自 vidstack（暂停时用户正要操作，隐藏是反直觉的）。
 - 拖动 seek 期间不提交，只显示预览时间；`IsItemDeactivated`（松手）才调 `Player::seek`——FFmpeg 后端的 seek 由解码线程异步执行，拖动中连续提交既浪费也抖动（vidstack scrub-preview 同语义）。
@@ -127,8 +131,9 @@ soar 主窗口
 | `P` | 播放队列浮层（v0.2） | IINA 播放列表习惯 |
 | `N` / `Shift+N` | 队列下一首 / 上一首（v0.2，越界不绕回） | mpv 语义 |
 | `O` | 打开文件（Windows 文件对话框；其他平台降级拖放提示 toast，BUGS.md #3） | mpv/IINA `Ctrl+O` 习惯的单键化 |
-| `B` | 媒体库浮层（v0.3）：监视文件夹与播放历史，点击重开（含续播跳转） | IINA 媒体库习惯 |
+| `B` | 媒体库浮层：监视文件夹与播放历史，点击重开（含续播跳转） | IINA 媒体库习惯 |
 | `I` / `R` / `H` | 信息 / 最近打开 / 快捷键帮助 | IINA 信息面板习惯 |
+| `t` | 投屏浮层（DLNA 控制点）：SSDP 发现 renderer、点选即投、相位/位置读出、Stop casting/Search again | 本项目自有（docs/mvp.md §3 投屏） |
 | `Q` | 退出程序（v0.2） | mpv 语义 |
 | `Esc` | 全屏时退出全屏；否则退出程序 | mpv.net/vidstack 语义，兼容现有 CLI 测试契约 |
 
@@ -176,10 +181,10 @@ shortcuts = off            # 全局开关（on 恢复默认表）
 ## 4. 视觉风格
 
 - **暗色为默认且唯一主题**（§1.6-7）。色板（设计令牌化，集中在 `ui_theme` 常量区，不散落）：
-  - 背景/留黑 `#0A0B0E`；面板 `rgba(16,18,24,0.92)`（半透明压在视频上）；描边 `rgba(255,255,255,0.08)`。
+  - 背景/留黑 `#0A0B0E`；面板 `rgba(16,18,24,0.94)`（半透明压在视频上）；描边 `rgba(255,255,255,0.08)`。
   - 文本主 `#E8EAF0` / 次 `rgba(232,234,240,0.55)`；强调（进度、选中、悬停）`#4C8DFF`；危险/错误 `#FF5D5D`。
   - 对比度：文本主对背景 > 12:1，次文本 > 4.5:1（WCAG AA）。
-- **布局栅格**：4px 基准网格；OSC 高 ~52px、内边距 8×6、控件间距 8；浮层宽上限 720px、行高 24。视频区恒信箱式等比（黑边即背景色）。
+- **布局栅格**：4px 基准网格；OSC 高 ~80px、内边距 8×6、控件间距 8；浮层宽上限 480px、OSC 条宽上限 920px、行高 24。视频区恒信箱式等比（黑边即背景色）。
 - **动效**：OSC 显隐与 Toast 用 160ms 透明度过渡（帧循环内线性插值，`disableAnimations` 不设开关，v0.1 常开）；无位移类动画（视频上方的 UI 不遮挡观看是第一原则）。暂停/缓冲指示 1s 淡出。
 - **字体**：优先加载系统 UI 字体（每平台候选路径列表：Linux `Noto Sans CJK`/`DejaVu Sans`、macOS `PingFang`、Windows `Microsoft YaHei`），失败回退 ImGui 内嵌位图字体（仅 ASCII）——不捆绑字体文件，保持零新增分发物。
 
@@ -226,7 +231,7 @@ tests/test_ui_state.cpp     # ui_state 的 doctest 单测（soar_ui_tests）
 tests/test_cli.cpp          # 新增 Xvfb + XTEST 键盘驱动用例（沿用现有注入器模式）
 ```
 
-CMake：`SOAR_ENABLE_IMGUI`（默认 ON）取 ImGui v1.91.9b（含 `imgui_impl_sdl2` + `imgui_impl_sdlrenderer2` 后端）。SDL 下限取 **2.0.18**：后端自身要求 2.0.17（`SDL_RenderGeometry`），而窗口层的按键重复抑制用了 2.0.18 才有的 `SDL_KeyboardEvent::repeat`，因此 `find_package(SDL2 2.0.18 CONFIG QUIET)` 把"太旧"也并入降级路径。拉取方式是**显式 `git clone --depth 1` 到 `<build>/_deps/imgui-src`**而非 `FetchContent`：后者拉不到就直接让 configure 失败，与本项目"可选能力缺失即降级"的约定（SDL2/FFmpeg 同款）冲突；显式克隆把失败变成一次降级提示，已存在的目录直接复用。ImGui 源码在构建目录，不进仓库、不进 gcovr 统计口径（`--filter src --filter include` 天然排除）。CI 的 `no-imgui` job 用 `-DSOAR_ENABLE_IMGUI=OFF` 构建并跑窗口用例，钉住这条降级路径。运行时 `io.IniFilename` 置 `nullptr`：所有窗口都是 `NoSavedSettings`，让 ImGui 往用户工作目录写 `imgui.ini` 没有收益。
+CMake：`SOAR_ENABLE_IMGUI`（默认 ON）取 ImGui v1.91.9b（含 `imgui_impl_sdl2` + `imgui_impl_sdlrenderer2` 后端）。SDL 下限取 **2.0.18**：后端自身要求 2.0.18（`SDL_RenderGeometry`），窗口层的按键重复抑制同样用了 2.0.18 才有的 `SDL_KeyboardEvent::repeat`，因此 `find_package(SDL2 2.0.18 CONFIG QUIET)` 把"太旧"也并入降级路径。拉取方式是**显式 `git clone --depth 1` 到 `<build>/_deps/imgui-src`**而非 `FetchContent`：后者拉不到就直接让 configure 失败，与本项目"可选能力缺失即降级"的约定（SDL2/FFmpeg 同款）冲突；显式克隆把失败变成一次降级提示，已存在的目录直接复用。ImGui 源码在构建目录，不进仓库、不进 gcovr 统计口径（`--filter src --filter include` 天然排除）。CI 的 `no-imgui` job 用 `-DSOAR_ENABLE_IMGUI=OFF` 构建并跑窗口用例，钉住这条降级路径。运行时 `io.IniFilename` 置 `nullptr`：所有窗口都是 `NoSavedSettings`，让 ImGui 往用户工作目录写 `imgui.ini` 没有收益。
 
 ## 6. v0.1 验收清单
 
