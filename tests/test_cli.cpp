@@ -6151,6 +6151,24 @@ TEST_CASE("windowed run over a stalled network source shows the buffering state"
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }
+  // The socket check must answer for OUR Xvfb: a stale Xvfb from an
+  // earlier session can already own the pid-derived display, so the fork
+  // dies on "Server is already active" while the stat succeeds against
+  // the leftover's socket. A losing fork lands within moments; require
+  // the process to still be alive after a short settle, else the window
+  // would be managed by a foreign X server and the injected keys would
+  // never reach the child.
+  int xvfb_status = 0;
+  bool xvfb_dead = false;
+  for (int i = 0; i < 10 && !xvfb_dead; ++i) {
+    ::usleep(100 * 1000);
+    xvfb_dead = ::waitpid(xvfb, &xvfb_status, WNOHANG) == xvfb;
+  }
+  if (xvfb_dead) {
+    MESSAGE("Xvfb failed to start; skipping the buffering window test");
+    server.stop();
+    return;
+  }
   if (!server_up) {
     MESSAGE("Xvfb failed to start; skipping the buffering window test");
     ::kill(xvfb, SIGTERM);
@@ -6410,6 +6428,23 @@ TEST_CASE("headless FFmpeg run over local HTTP server plays network source") {
     if (!ready) {
       ::usleep(100 * 1000);
     }
+  }
+
+  // The readiness check must answer for OUR server: on a shared box the
+  // pid-derived port can be held by someone else's listener, so connect
+  // succeeds while the forked server dies on bind. A dying server lands
+  // within moments; require the process to still be alive after a short
+  // settle, else the child would play the fixture through a foreign
+  // server and hang for its full budget.
+  int server_status = 0;
+  bool server_dead = false;
+  for (int i = 0; i < 10 && !server_dead; ++i) {
+    ::usleep(100 * 1000);
+    server_dead = ::waitpid(server, &server_status, WNOHANG) == server;
+  }
+  if (server_dead) {
+    MESSAGE("local HTTP server died on bind; port already taken; skipping");
+    return;
   }
 
   if (!ready) {
