@@ -789,10 +789,28 @@ void TranscodeServer::pumpLoop() {
     return true;
   }();
 
+  bool produced = false;
+  {
+    std::lock_guard<std::mutex> lock(bytes_mu_);
+    produced = first_bytes_;
+  }
   {
     std::lock_guard<std::mutex> lock(error_mu_);
-    if (!ok && !stopping_.load(std::memory_order_acquire) && last_error_.empty())
+    if (stopping_.load(std::memory_order_acquire)) {
+      // stop() ended the pump: waitReady exits on stopping_, and a verdict
+      // here would race the caller instead of explaining it.
+    } else if (!ok && last_error_.empty()) {
       last_error_ = "cast: transcode failed";
+    } else if (ok && !produced) {
+      // The source opened, transcode ran to the end, and not one byte came
+      // out: nothing playable travels. That is the same verdict as a
+      // stream-less container, and it must not depend on how this ffmpeg
+      // build classified a track that holds nothing (a demuxer can hand a
+      // timecode track over as a decodable video stream) — without this the
+      // pump finishes as a silent success with an empty error.
+      last_error_ =
+          "cast: transcode found no video or audio stream in the source";
+    }
   }
   {
     std::lock_guard<std::mutex> lock(bytes_mu_);

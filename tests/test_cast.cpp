@@ -2501,6 +2501,39 @@ std::string makeNoiseWav(const char* tag, int seconds) {
   return dir + "/noise.wav";
 }
 
+std::string makeEmptyWav(const char* tag) {
+  // A valid PCM header with a zero-length data chunk: the demuxer hands the
+  // pump a real audio stream that yields no packets at all.
+  const int rate = 44100, channels = 2;
+  const auto le = [](unsigned v, int n) {
+    std::string s;
+    for (int i = 0; i < n; ++i) {
+      s.push_back(static_cast<char>(v & 0xff));
+      v >>= 8;
+    }
+    return s;
+  };
+  std::string h = "RIFF" + le(36, 4) + "WAVEfmt " + le(16, 4) + le(1, 2) +
+                  le(channels, 2) + le(rate, 4) + le(rate * channels * 2, 4) +
+                  le(channels * 2, 2) + le(16, 2) + "data" + le(0, 4);
+  const std::string dir = makeTempDir(tag);
+  writeBytes(dir + "/empty.wav", h);
+  return dir + "/empty.wav";
+}
+
+TEST_CASE("transcode reports a source that opens but holds no media") {
+  // A stream can be declared and still yield nothing: a zero-sample track
+  // opens fine and reads EOF at once, and the pump must not finish as a
+  // silent success with an empty error — that same shape arrives through a
+  // demuxer that hands a timecode track over as a video stream.
+  cast::TranscodeServer ts;
+  std::string err;
+  REQUIRE(ts.start(makeEmptyWav("tsempty"), &err));
+  REQUIRE_MESSAGE(ts.waitReady(20000) == false, ts.lastError());
+  CHECK(ts.lastError().find("no video or audio stream") != std::string::npos);
+  ts.stop();
+}
+
 TEST_CASE("transcode copies an already-compatible source to MPEG-TS") {
   cast::TranscodeServer ts;
   std::string err;
@@ -2835,7 +2868,7 @@ TEST_CASE("transcode reports a source with no playable streams") {
   cast::TranscodeServer ts;
   std::string err;
   REQUIRE(ts.start(castFixture("cast_data_only.mov"), &err));
-  CHECK_FALSE(ts.waitReady(20000));
+  REQUIRE_MESSAGE(ts.waitReady(20000) == false, ts.lastError());
   CHECK(ts.lastError().find("no video or audio stream") != std::string::npos);
   ts.stop();
 }
