@@ -2530,7 +2530,9 @@ TEST_CASE("transcode reports a source that opens but holds no media") {
   std::string err;
   REQUIRE(ts.start(makeEmptyWav("tsempty"), &err));
   REQUIRE_MESSAGE(ts.waitReady(20000) == false, ts.lastError());
-  CHECK(ts.lastError().find("no video or audio stream") != std::string::npos);
+  // A failed text match is undiagnosable without the actual verdict.
+  CHECK_MESSAGE(ts.lastError().find("no video or audio stream") != std::string::npos,
+                ts.lastError());
   ts.stop();
 }
 
@@ -2869,7 +2871,9 @@ TEST_CASE("transcode reports a source with no playable streams") {
   std::string err;
   REQUIRE(ts.start(castFixture("cast_data_only.mov"), &err));
   REQUIRE_MESSAGE(ts.waitReady(20000) == false, ts.lastError());
-  CHECK(ts.lastError().find("no video or audio stream") != std::string::npos);
+  // A failed text match is undiagnosable without the actual verdict.
+  CHECK_MESSAGE(ts.lastError().find("no video or audio stream") != std::string::npos,
+                ts.lastError());
   ts.stop();
 }
 
