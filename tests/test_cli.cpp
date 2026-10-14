@@ -1429,30 +1429,40 @@ if mode == "library":
     # this folder" records + scans + saves, landing back on the Library
     # overlay with the folder and its two files. Click order is
     # load-bearing: a row click navigates, only the bottom button watches
-    # the ENTERED folder.
+    # the ENTERED folder. The sidebar buckets then take over: Resume and
+    # Finished must not leak entries (a click aimed at an empty slot is
+    # asserted harmless from the store), and Recent must order the
+    # fixture's two files by their change tokens (a2's file is an hour
+    # newer) so its row-1 "x" forgets exactly a2.
     # Coordinates probed under SOAR_UI_BITMAP_FONT=1 on a 1280x800 Xvfb
     # against the -O0 coverage build, in the injector's own frame: the
     # SDL window is 960x540 centred at (160,130), and moved() warps
-    # window-relative. The overlay window centres at (381,190) 520x420
-    # root — "Add folder..." at (287,100) here; the watch-mode picker
-    # (checkbox hidden, rows one pitch higher than the import layout)
-    # shows ".." ~127, ".cache/" ~144, "media_a/" ~161, with "Watch
-    # this folder (2 media files, with subfolders)" bottom-left anchored
-    # at (418,459). argv[4] is the store path; the mode polls it for the
-    # "f " line so a lagged click cannot slip past the quit storm
-    # unnoticed (the test side re-asserts the full contents).
+    # window-relative. The overlay is 520x420 centred in the window —
+    # "Add folder..." at (287,100), "Rescan" at (375,100); the watch-mode
+    # picker (checkbox hidden, rows one pitch higher than the import
+    # layout) shows ".." ~127, ".cache/" ~144, "media_a/" ~161, with
+    # "Watch this folder (2 media files, with subfolders)" bottom-left
+    # anchored at (418,459). Below the folder block sits the browse
+    # split: bucket rows All/Recent/Resume/Finished at x~280,
+    # y~163/181/200/219, entry rows at x~480 on the first two pitches,
+    # and every entry row's "x" right-aligns to x~716 whatever the
+    # label's length. argv[4] is the store path; every destructive click
+    # is confirmed against it before the next step.
     time.sleep(2.2)
     focus()
     store = sys.argv[4] if len(sys.argv) > 4 else ""
 
-    def has_folder_line():
+    def store_txt():
         if not store:
-            return True
+            return ""
         try:
             with open(store) as f:
-                return any(line.startswith("f ") for line in f)
+                return f.read()
         except OSError:
-            return False
+            return ""
+
+    def has_folder_line():
+        return any(line.startswith("f ") for line in store_txt().splitlines())
 
     def sclick(x, y):
         moved(x, y); time.sleep(0.15)
@@ -1472,11 +1482,7 @@ if mode == "library":
     def wait_no(match, timeout=8.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            try:
-                with open(store) as f:
-                    if match not in f.read():
-                        return True
-            except OSError:
+            if match not in store_txt():
                 return True
             time.sleep(0.25)
         return False
@@ -1489,20 +1495,43 @@ if mode == "library":
     home = sys.argv[5] if len(sys.argv) > 5 else ""
     folder_x = 233 + len(home + "/media_a") * 7 + 15
 
-    # Back on the Library overlay, folder row on top, the two entries
-    # below (a1 carries the test's seeded history, so its row renders the
-    # resume marker). Park the pointer on the folder row, then the a1 row
-    # (its tooltip shows path + duration + play count), Rescan, then the
-    # "x" buttons: a2's entry row, then the folder row — each step is
-    # confirmed from the store before the next click.
+    # Back on the Library overlay: park the pointer on the folder row,
+    # then a1's row (row 1 of All; its tooltip shows path + duration +
+    # play count), then Rescan.
     moved(245, 136)
     time.sleep(0.8)
-    moved(245, 161)
+    moved(480, 163)
     time.sleep(0.8)
     sclick(375, 100)   # "Rescan" -> scan + save again (store unchanged)
     time.sleep(0.6)
-    sclick(291, 181)   # a2.mkv row's "x" -> removeEntry + save
-    wait_no("a2.mkv")
+
+    # Resume holds only a1 (the seeded 5:21 of a 10-minute file): a click
+    # at the second slot must be a no-op — a2 vanishing here means the
+    # bucket filter leaks (exit 6).
+    sclick(280, 200)   # the Resume bucket
+    time.sleep(0.5)
+    sclick(716, 181)   # second slot is empty under Resume
+    time.sleep(0.5)
+    if store and "a2.mkv" not in store_txt():
+        sys.exit(6)
+
+    # Finished holds nothing (nothing reached the end): the first slot
+    # must be empty too.
+    sclick(280, 219)   # the Finished bucket
+    time.sleep(0.5)
+    sclick(716, 163)
+    time.sleep(0.5)
+    if store and "a1.mkv" not in store_txt():
+        sys.exit(6)
+
+    # Recent orders by the scan's change tokens: a2's file is an hour
+    # newer (the test pins the mtimes), so row 1 is a2 and its "x"
+    # forgets exactly a2.
+    sclick(280, 181)   # the Recent bucket
+    time.sleep(0.5)
+    sclick(716, 163)   # row 1 = a2's "x" -> removeEntry + save
+    if store and not wait_no("a2.mkv"):
+        sys.exit(7)
     sclick(folder_x, 136)   # folder row's "x" -> removeFolder + save
     wait_no("\nf ")
     time.sleep(0.4)
@@ -4070,6 +4099,24 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
     ::waitpid(xvfb, nullptr, 0);
     return;
   }
+  // The socket must answer for OUR Xvfb: a stale Xvfb from an earlier
+  // session can own the pid-derived display, so the fork dies on "Server
+  // is already active" while the stat succeeds against the leftover's
+  // socket. A losing fork lands within moments; require the process to be
+  // alive after a short settle, else the overlay would be managed by a
+  // foreign X server and the injected clicks would never reach it.
+  int xvfb_status = 0;
+  bool xvfb_dead = false;
+  for (int i = 0; i < 10 && !xvfb_dead; ++i) {
+    ::usleep(100 * 1000);
+    xvfb_dead = ::waitpid(xvfb, &xvfb_status, WNOHANG) == xvfb;
+  }
+  if (xvfb_dead) {
+    MESSAGE("Xvfb failed to start; skipping the library overlay test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
 
   // Same staged-HOME scheme as the dir-picker case: ".cache" pins the
   // sorted row order (a dot-directory always sorts first), media_a holds
@@ -4097,6 +4144,18 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
     nfo << "<movie><title>Sample Movie</title><plot>Calibration plot.</plot>"
           "</movie>\n";
   }
+  // The Recent bucket orders by the scan's change tokens: pin the files
+  // an hour apart so a2 (newer) sorts ahead of a1 and the drive's
+  // Recent-row click means the same thing on every run. The token's
+  // epoch is the platform's file_clock — only the spacing matters here.
+  std::error_code mt_ec;
+  const auto ft_now = std::filesystem::file_time_type::clock::now();
+  std::filesystem::last_write_time(home_dir + "/media_a/a1.mkv",
+                                   ft_now - std::chrono::hours(2), mt_ec);
+  REQUIRE_FALSE(mt_ec);
+  std::filesystem::last_write_time(home_dir + "/media_a/deep/a2.mkv",
+                                   ft_now - std::chrono::hours(1), mt_ec);
+  REQUIRE_FALSE(mt_ec);
   const std::string store = state_home + "/soar/library.txt";
   // a1 carries seeded history (5:21 of a 10-minute file, played 3x): the
   // watch's scan merge keeps it, so the overlay renders the resume marker
@@ -4131,7 +4190,8 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
   std::printf("x11 library overlay test: cli exit=%d, output:\n%s\n", run.exit_code,
               run.output.c_str());
 
-  ::waitpid(injector, nullptr, 0);
+  int injector_status = 0;
+  ::waitpid(injector, &injector_status, 0);
   ::kill(xvfb, SIGTERM);
   ::waitpid(xvfb, nullptr, 0);
 
@@ -4142,16 +4202,24 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
     return;
   }
   REQUIRE(run.exit_code == 0);
+  // The drive's own verdict: 0 = every step landed. 6 = a bucket-filter
+  // no-op click removed a surviving entry (the sidebar leaks), 7 = a2
+  // survived its Recent-row "x" (the bucket order or the right-aligned
+  // button drifted). Both mean the wiring broke, not just the layout.
+  REQUIRE(WIFEXITED(injector_status));
+  REQUIRE(WEXITSTATUS(injector_status) == 0);
 
   // The drive's tail end, asserted from the store it left behind: the
-  // injector watched media_a, rescanned, then "x"-ed a2's entry row and
-  // the folder row — each confirmed against the store before the next
-  // click. What remains proves the wiring end to end:
+  // injector watched media_a, rescanned, walked the sidebar buckets
+  // (Resume and Finished proved leak-free by no-op clicks), removed a2
+  // through the Recent bucket and unwatched the folder row — each
+  // destructive step confirmed against the store before the next click.
+  // What remains proves the wiring end to end:
   //   - a1 survives with its seeded history intact (the scan merge keeps
   //     it, removeFolder must not touch non-watched entries, nothing
   //     played so nothing re-recorded);
-  //   - a2 is gone (removeEntry) and the folder line is gone
-  //     (removeFolder).
+  //   - a2 is gone (removeEntry via the Recent bucket) and the folder
+  //     line is gone (removeFolder).
   std::ifstream lib(store);
   if (!lib.good()) {
     FAIL("library.txt was not written under XDG_STATE_HOME");

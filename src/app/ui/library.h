@@ -64,6 +64,30 @@ struct NfoInfo {
 // "replay the last five seconds"). Returns the position in ms, 0 = none.
 std::int64_t resumePositionMs(const LibraryEntry& e);
 
+// Library sidebar buckets (docs/todo.md 原型对齐批): the same record set
+// read as a state machine — what joined recently, what carries a resume
+// point, what was watched to the end. Pure predicates, so the window layer
+// stays a renderer and the bucket membership is unit-testable.
+enum class LibraryCategory { All, Recent, Resume, Finished };
+
+// Whether an entry belongs to the bucket. Recent reads the file's mtime:
+// the store keeps no add-time, and a scanned file's content time is the
+// closest acquisition signal there is (0 = unknown — URLs, sources never
+// scanned — and those are never "recent"). The token's epoch is the
+// platform's file_clock (libstdc++ dates from 2174, so current files
+// carry negative tokens), so only 0 is the marker — never a sign test.
+// Resume is the open flow's own policy (resumePositionMs). Finished is
+// the watched-to-end edge: the playback loop clears the position at EOF,
+// so a played entry with no position left has nothing to resume; an
+// entry never played (play_count 0) or with an unknown duration cannot
+// count, and one quit inside the 5s noise floor lands in no bucket — it
+// simply shows under All.
+bool matchesCategory(const LibraryEntry& e, LibraryCategory c);
+
+// The Recent bucket's order: newest content first, path as the tiebreak
+// (the store's own order is path-only).
+bool compareRecent(const LibraryEntry& a, const LibraryEntry& b);
+
 class MediaLibrary {
  public:
   // Bound on the persisted entry count: a runaway download directory must

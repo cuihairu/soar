@@ -214,6 +214,25 @@ std::int64_t resumePositionMs(const LibraryEntry& e) {
   return e.position_ms;
 }
 
+bool matchesCategory(const LibraryEntry& e, LibraryCategory c) {
+  switch (c) {
+    case LibraryCategory::All:
+      return true;
+    case LibraryCategory::Recent:
+      return e.mtime != 0;
+    case LibraryCategory::Resume:
+      return resumePositionMs(e) > 0;
+    case LibraryCategory::Finished:
+      return e.play_count > 0 && e.position_ms == 0 && e.duration_ms > 0;
+  }
+  return false;
+}
+
+bool compareRecent(const LibraryEntry& a, const LibraryEntry& b) {
+  if (a.mtime != b.mtime) return a.mtime > b.mtime;
+  return a.path < b.path;
+}
+
 void MediaLibrary::load() {
   folders_.clear();
   entries_.clear();

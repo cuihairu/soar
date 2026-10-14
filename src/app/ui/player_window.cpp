@@ -2596,9 +2596,9 @@ class PlayerHud {
   }
 
   // The media library browse (docs/mvp.md §3): watched folders on top,
-  // the known sources below with the resume state each carries. A row
-  // click plays the source (openSource applies the resume jump); the
-  // trailing "x" forgets a source / unwatches a folder. Snapshots before
+  // then the category buckets beside the rows they select. A row click
+  // plays the source (openSource applies the resume jump); the trailing
+  // "x" forgets a source / unwatches a folder. Snapshots before
   // iterating: a click rewrites the store (recordOpen re-sorts entries_,
   // an unwatch mutates folders_) and the loop must not walk a vector
   // being mutated — the Recent overlay learned this first.
@@ -2639,58 +2639,127 @@ class PlayerHud {
           }
           ImGui::Separator();
         }
+        // The browse split (docs/todo.md 原型对齐批): the buckets read the
+        // entries' state, the rows obey. The bucket is session state, so
+        // reopening the overlay lands where the user left off.
         const std::vector<LibraryEntry> entries = library_->entries();
-        if (entries.empty()) {
-          if (!folders.empty()) ImGui::TextDisabled("%s", "No media files found.");
-        }
-        for (const LibraryEntry& e : entries) {
-          ImGui::PushID(e.path.c_str());
-          // The NFO sidecar title wins the row when a scan picked one up
-          // (docs/mvp.md §3 offline scrape); the file name is the
-          // fallback. Sources outside every watched folder have no scrape.
-          const NfoInfo* nfo = library_->nfoFor(e.path);
-          std::string label =
-              (nfo != nullptr && !nfo->title.empty()) ? nfo->title
-                                                      : displayName(e.path);
-          const std::int64_t resume = resumePositionMs(e);
-          if (resume > 0) {
-            label += "  (at " + formatClock(std::chrono::milliseconds(resume)) + ")";
-          }
-          if (ImGui::Selectable(label.c_str(), e.path == current_uri_,
-                                ImGuiSelectableFlags_AllowOverlap)) {
-            openSource(e.path);
-            st_.overlay = Overlay::None;
-          }
-          if (ImGui::IsItemHovered()) {
-            std::string tip = e.path;
-            if (e.duration_ms > 0) {
-              tip += "\nduration " +
-                     formatClock(std::chrono::milliseconds(e.duration_ms));
-            }
-            if (e.play_count > 0) {
-              tip += "\nplayed " + std::to_string(e.play_count) + "x";
-            }
-            if (nfo != nullptr && !nfo->plot.empty()) {
-              tip += "\n" + nfo->plot;
-            }
-            ImGui::SetTooltip("%s", tip.c_str());
-          }
-          if (e.duration_ms > 0) {
-            ImGui::SameLine();
-            ImGui::TextDisabled(
-                "%s", formatClock(std::chrono::milliseconds(e.duration_ms)).c_str());
-          }
-          ImGui::SameLine();
-          if (ImGui::SmallButton("x")) {
-            library_->removeEntry(e.path);
-            library_->save();
-          }
-          ImGui::PopID();
-        }
+        drawLibraryBuckets(entries);
+        ImGui::SameLine();
+        drawLibraryEntries(entries, !folders.empty());
       }
     }
     ImGui::End();
     if (!open) st_.overlay = Overlay::None;
+  }
+
+  // The bucket column: one row per category, each showing its live count
+  // over the same snapshot the row side renders. All is the default and
+  // the unfiltered view — with it selected the overlay reads exactly like
+  // the pre-sidebar layout.
+  void drawLibraryBuckets(const std::vector<LibraryEntry>& entries) {
+    static const char* const kLabels[] = {"All", "Recent", "Resume", "Finished"};
+    ImGui::BeginChild("library-buckets", ImVec2(110, 0));
+    for (int i = 0; i < 4; ++i) {
+      const LibraryCategory cat = static_cast<LibraryCategory>(i);
+      std::size_t count = 0;
+      for (const LibraryEntry& e : entries) {
+        if (matchesCategory(e, cat)) ++count;
+      }
+      const std::string label =
+          std::string(kLabels[i]) + " (" + std::to_string(count) + ")";
+      if (ImGui::Selectable(label.c_str(), st_.library_category == cat)) {
+        st_.library_category = cat;
+      }
+    }
+    ImGui::EndChild();
+  }
+
+  // The row side of the split: the selected bucket's entries. Only Recent
+  // reorders (compareRecent — newest content first); the rest keep the
+  // store's path order. The remove button right-aligns to the column's
+  // edge, so one x fits every row regardless of the label's length (the
+  // X11 drive pins a single coordinate).
+  void drawLibraryEntries(const std::vector<LibraryEntry>& entries, bool watching) {
+    std::vector<const LibraryEntry*> shown;
+    shown.reserve(entries.size());
+    for (const LibraryEntry& e : entries) {
+      if (matchesCategory(e, st_.library_category)) shown.push_back(&e);
+    }
+    if (st_.library_category == LibraryCategory::Recent) {
+      std::sort(shown.begin(), shown.end(),
+                [](const LibraryEntry* a, const LibraryEntry* b) {
+                  return compareRecent(*a, *b);
+                });
+    }
+    ImGui::BeginChild("library-entries", ImVec2(0, 0));
+    if (shown.empty()) {
+      // The bucket's filter and the store's emptiness are different facts:
+      // a watched folder with no media says one thing, a filtered bucket
+      // with nothing left says the other.
+      if (!entries.empty()) {
+        ImGui::TextDisabled("%s", "No entries in this bucket.");
+      } else if (watching) {
+        ImGui::TextDisabled("%s", "No media files found.");
+      }
+    }
+    const float x_w =
+        ImGui::CalcTextSize("x").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    for (const LibraryEntry* ep : shown) {
+      const LibraryEntry& e = *ep;
+      // The row's right edge, read at the row start (the cursor sits at
+      // the content region's left edge here, so the avail width is the
+      // whole row). SameLine takes a window-relative offset, so the
+      // button's target is that edge minus the button's own width.
+      const float row_left = ImGui::GetCursorPosX();
+      const float x_pos = ImGui::GetContentRegionAvail().x - x_w;
+      ImGui::PushID(e.path.c_str());
+      // The NFO sidecar title wins the row when a scan picked one up
+      // (docs/mvp.md §3 offline scrape); the file name is the
+      // fallback. Sources outside every watched folder have no scrape.
+      const NfoInfo* nfo = library_->nfoFor(e.path);
+      std::string label =
+          (nfo != nullptr && !nfo->title.empty()) ? nfo->title
+                                                  : displayName(e.path);
+      const std::int64_t resume = resumePositionMs(e);
+      if (resume > 0) {
+        label += "  (at " + formatClock(std::chrono::milliseconds(resume)) + ")";
+      }
+      if (ImGui::Selectable(label.c_str(), e.path == current_uri_,
+                            ImGuiSelectableFlags_AllowOverlap)) {
+        openSource(e.path);
+        st_.overlay = Overlay::None;
+      }
+      if (ImGui::IsItemHovered()) {
+        std::string tip = e.path;
+        if (e.duration_ms > 0) {
+          tip += "\nduration " +
+                 formatClock(std::chrono::milliseconds(e.duration_ms));
+        }
+        if (e.play_count > 0) {
+          tip += "\nplayed " + std::to_string(e.play_count) + "x";
+        }
+        if (nfo != nullptr && !nfo->plot.empty()) {
+          tip += "\n" + nfo->plot;
+        }
+        ImGui::SetTooltip("%s", tip.c_str());
+      }
+      if (e.duration_ms > 0) {
+        ImGui::SameLine();
+        ImGui::TextDisabled(
+            "%s", formatClock(std::chrono::milliseconds(e.duration_ms)).c_str());
+      }
+      // A label long enough to crowd the button wins the max() — the
+      // button slides right of the text instead of being drawn on top.
+      const float cursor_off = ImGui::GetCursorPosX() - row_left;
+      ImGui::SameLine(
+          std::max(x_pos, cursor_off + ImGui::GetStyle().ItemSpacing.x));
+      if (ImGui::SmallButton("x")) {
+        library_->removeEntry(e.path);
+        library_->save();
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndChild();
   }
 
   void drawHelpOverlay() {
@@ -2916,6 +2985,11 @@ class PlayerHud {
     // Playlist continuation edge flag: set when an Ended frame has been
     // serviced, cleared on the first frame that is not Ended.
     bool playlist_end_handled = false;
+
+    // Library browse bucket (docs/todo.md 原型对齐批): the sidebar keeps
+    // its selection across closing the overlay, so the list lands where
+    // the user left off.
+    LibraryCategory library_category = LibraryCategory::All;
   };
 
   static constexpr milliseconds kProgressInterval{5000};

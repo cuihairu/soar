@@ -9,6 +9,7 @@
 
 #include "ui/library.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -22,8 +23,11 @@
 #endif
 
 namespace fs = std::filesystem;
+using soar::app::compareRecent;
 using soar::app::defaultLibraryPath;
+using soar::app::LibraryCategory;
 using soar::app::LibraryEntry;
+using soar::app::matchesCategory;
 using soar::app::MediaLibrary;
 using soar::app::NfoInfo;
 using soar::app::resumePositionMs;
@@ -307,6 +311,102 @@ TEST_CASE("resume policy refuses noise, unknown duration and the tail") {
   CHECK(resumePositionMs(e) == 0);  // effectively finished
   e.position_ms = 95000;
   CHECK(resumePositionMs(e) == 95000);
+}
+
+TEST_CASE("the sidebar categories follow the entry's own state") {
+  // Never opened: only the bucket that has no filter accepts it.
+  LibraryEntry fresh;
+  fresh.path = "/new.mp4";
+  fresh.mtime = 1000;
+  CHECK(matchesCategory(fresh, LibraryCategory::All));
+  CHECK(matchesCategory(fresh, LibraryCategory::Recent));
+  CHECK_FALSE(matchesCategory(fresh, LibraryCategory::Resume));
+  CHECK_FALSE(matchesCategory(fresh, LibraryCategory::Finished));
+
+  // Mid-playback with a known duration: recently added and resumable, not done.
+  LibraryEntry mid;
+  mid.path = "/mid.mp4";
+  mid.mtime = 500;
+  mid.position_ms = 120000;
+  mid.duration_ms = 600000;
+  mid.play_count = 1;
+  CHECK(matchesCategory(mid, LibraryCategory::All));
+  CHECK(matchesCategory(mid, LibraryCategory::Recent));
+  CHECK(matchesCategory(mid, LibraryCategory::Resume));
+  CHECK_FALSE(matchesCategory(mid, LibraryCategory::Finished));
+
+  // Watched to the end: the playback loop clears the position at EOF, so a
+  // played entry with no resume point left has nothing to resume — that
+  // clear is the only "finished" signal the store keeps.
+  LibraryEntry done = mid;
+  done.position_ms = 0;
+  CHECK(matchesCategory(done, LibraryCategory::All));
+  CHECK(matchesCategory(done, LibraryCategory::Finished));
+  CHECK_FALSE(matchesCategory(done, LibraryCategory::Resume));
+
+  // The edges the buckets must not claim. Quitting inside the 5s noise
+  // floor leaves a position the resume policy refuses: not finished, not
+  // resumable, so it simply shows under All. An entry whose duration was
+  // never learned cannot be called watched-to-end either.
+  LibraryEntry early = mid;
+  early.position_ms = 3000;
+  CHECK_FALSE(matchesCategory(early, LibraryCategory::Resume));
+  CHECK_FALSE(matchesCategory(early, LibraryCategory::Finished));
+  LibraryEntry undated = mid;
+  undated.position_ms = 0;
+  undated.duration_ms = 0;
+  CHECK_FALSE(matchesCategory(undated, LibraryCategory::Finished));
+
+  // Unknown content time (a URL, a source never scanned) is not "recent":
+  // the bucket sorts by the file's own mtime, and 0 is the unknown marker.
+  LibraryEntry noMtime;
+  noMtime.path = "/u.mp4";
+  noMtime.play_count = 1;
+  CHECK_FALSE(matchesCategory(noMtime, LibraryCategory::Recent));
+
+  // The token's epoch is the platform's file_clock, so a scanned file's
+  // token can legitimately be negative (libstdc++ dates from 2174): only
+  // the zero marker is disqualifying, never a sign.
+  LibraryEntry scanned = mid;
+  scanned.mtime = -4645728431LL;
+  CHECK(matchesCategory(scanned, LibraryCategory::Recent));
+}
+
+TEST_CASE("the recent bucket orders by content time, newest first") {
+  LibraryEntry older;
+  older.path = "/older.mp4";
+  older.mtime = 1000;
+  LibraryEntry newer;
+  newer.path = "/newer.mp4";
+  newer.mtime = 2000;
+  LibraryEntry tie_a;
+  tie_a.path = "/a.mp4";
+  tie_a.mtime = 1500;
+  LibraryEntry tie_b;
+  tie_b.path = "/b.mp4";
+  tie_b.mtime = 1500;
+
+  std::vector<LibraryEntry> v = {older, tie_b, tie_a, newer};
+  std::sort(v.begin(), v.end(), compareRecent);
+  REQUIRE(v.size() == 4);
+  CHECK(v[0].path == "/newer.mp4");  // newest content first
+  CHECK(v[1].path == "/a.mp4");      // equal mtimes fall back to the path
+  CHECK(v[2].path == "/b.mp4");
+  CHECK(v[3].path == "/older.mp4");
+
+  // The same order must hold in the negative domain — the tokens a
+  // platform whose file_clock dates from the future produces.
+  LibraryEntry n_older;
+  n_older.path = "/older.mkv";
+  n_older.mtime = -4645732031LL;
+  LibraryEntry n_newer;
+  n_newer.path = "/newer.mkv";
+  n_newer.mtime = -4645728431LL;
+  std::vector<LibraryEntry> nv = {n_older, n_newer};
+  std::sort(nv.begin(), nv.end(), compareRecent);
+  REQUIRE(nv.size() == 2);
+  CHECK(nv[0].path == "/newer.mkv");
+  CHECK(nv[1].path == "/older.mkv");
 }
 
 TEST_CASE("the store file is bounded at kMaxEntries") {
