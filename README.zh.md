@@ -47,7 +47,7 @@ v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/�
 - **音频输出**：SDL2 音频设备，重采样（Resample）到设备参数，支持音量/静音/倍速，输出端点可在音轨菜单中枚举与切换（下一个音频帧生效）；
 - **网络与下载**：HTTP(S) 顺序播放即边下边看；`--cache-dir=` 磁盘缓存——同一 URL 离线可重播、断点续播、seek 进未下载段只补目标块，`Downloading N%` 进度徽标（http:// 走缓存，https 直通；见 docs/mvp.md §5 P3）；`.torrent`/`magnet:` 经 vendored libtorrent 内核顺序下载、以本地 `http://127.0.0.1:<port>/` 桥进同一播放链路（`--torrent-store=`/`--torrent-peer=`/`--torrent-index=`/`--torrent-list`，窗口期「connecting to swarm - N peers」状态与下载徽标可见；P2P 边界见 docs/mvp.md §5 P4）；
 - **投屏**：DLNA/UPnP AV 控制点已落地——自实现 SSDP/SOAP/GENA，零新依赖；`t` 开合窗口投屏浮层，CLI `--cast=<location|auto>` 把 .torrent/magnet: 源投给指定设备描述 URL 或 auto 发现的渲染器，构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码（docs/mvp.md §3）；
-- **桌面 UI**：底部悬浮 OSC（2.5s 无输入自动隐藏，悬停/拖动/浮层/暂停时钉住），整宽 seek 条（悬停时间提示、拖动预览、松手提交）+ 按钮行（传输控制、时钟、音量、倍速、音轨、字幕、全屏）；
+- **桌面 UI**：底部悬浮 OSC（2.5s 无输入自动隐藏，悬停/拖动/浮层/暂停时钉住），整宽 seek 条（悬停时间提示、拖动预览、松手提交）+ 按钮行（传输控制含上一首/下一首、时钟含剩余时间、音量、倍速、音轨/字幕轨菜单、Sub/Info/全屏、A-B 循环、CC 字幕开关、截图）；
 - **键鼠交互**：单击切换 OSC、双击全屏、垂直滚轮调音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开（MRU×15，持久化）；GUI 版（`soarw.exe`/`--gui`）无源启动直接进空主界面——「Open a file」海报，`O` 键或点海报打开文件（Windows 弹文件对话框，其他平台降级为拖放提示 toast）；
 - **快捷键**：`Space/K` 播放暂停、`←/→ ±5s`、`Shift+←/→ ±1s`、`PgUp/PgDn ±60s`、`Home`、`0–9` 百分比、`↑/↓` 音量、`M` 静音、`,/.` 倍速、`F` 全屏、`A/C` 循环音轨/字幕、`L` A-B 循环（定 A → 定 B → 清除）、`V` 字幕显隐、`[/]` 字幕前后偏移、`S` 截图（PNG）、`P` 播放队列浮层、`N/Shift+N` 下一首/上一首、`B` 媒体库浮层、`O` 打开文件、`I/R/H` 信息/最近/帮助、`Q` 退出、`Esc` 退全屏或退出——全部可经状态目录下的 `soar/shortcuts.txt` 重绑（`--shortcuts=FILE` 移动该文件、`--no-shortcuts` 整个禁用键位表；docs/ui-design.md §3.2）；
 - **状态提示**：暂停/缓冲指示、OSD Toast 反馈操作结果、媒体信息浮层（含错误行与轨道清单）。
