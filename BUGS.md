@@ -179,6 +179,10 @@
   3. run 37575751946 asan 腿同 run 的 `soar_p2p_tests` 600s 超时零踪迹
      （进程被杀时输出全在未 flush 的缓冲里）——是否同族（线程收尾挂死）
      无法归因，行缓冲 main 落地后下次复现有踪迹可判。
+  4. run 38525153344 tsan 腿（083cebf）：RTSP live 用例（test_cli.cpp:6746）
+     exit 124 挂满 600s——同族第四起、首例 RTSP；该 helper 未设
+     SOAR_HANG_DUMP 故无栈。同 SHA rerun 七腿全绿=间歇性确认。已给
+     runHeadlessOverRtsp 补 probe + 124 重试（镜像 HTTP 版三件套）。
 - **已知事实**：state=3=Ended 后主循环已按 main.cpp:322 break，挂的
   是循环后的进程收尾段（后端/解码线程 join、libtorrent session 销毁、
   SDL quit 之一，未定位）；与 sanitizer 无关（第 2 起在无 sanitizer 的

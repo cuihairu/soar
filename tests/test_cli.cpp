@@ -2099,8 +2099,21 @@ HttpCliRun runHeadlessOverRtsp(int port_base) {
     return result;
   }
 
-  result.cli = runCli({"--headless", "--backend=ffmpeg",
-                       "rtsp://127.0.0.1:" + port + "/live"});
+  // 180s per child and the BUGS.md #4 armor, same reasoning as the HTTP
+  // variant: the hang family reached this case on the tsan leg (2026-10-14,
+  // exit 124 with no stack because this helper armed no probe). Arm the
+  // in-binary hang dump and retry once — the hang is per-process and rare,
+  // so a second child exiting 0 passes; a case that hangs every time still
+  // fails on the second 124.
+  const ScopedEnv hang_dump("SOAR_HANG_DUMP", "1");
+  auto play = [&]() {
+    return runCli({"--headless", "--backend=ffmpeg",
+                   "rtsp://127.0.0.1:" + port + "/live"}, 180);
+  };
+  result.cli = play();
+  if (result.cli.exit_code == 124) {
+    result.cli = play();
+  }
   result.skipped = false;
   ::kill(server, SIGTERM);
   ::waitpid(server, nullptr, 0);
