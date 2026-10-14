@@ -197,6 +197,19 @@
   追加 36 次单核挤轧重放（taskset -c 0 覆盖构建跑 dash/master/media
   三 case 各 12 轮）依旧零挂死——runner 特定时序的假设再增强，
   仍等 SOAR_HANG_DUMP 在 CI 下一次挂死时交栈。
+  2026-10-14 晚间续审（巡检）：RTSP 案补上此前缺位的本地重放——
+  36 轮单核逐进程退出码复刻测试夹具（cov3 18 + tsan 12 + tsan-o0 6，
+  全部 1-3s 干净退出），该 bug 本地累计 142 轮重放零复现。踪迹形态
+  把挂点收窄进 stop() 本身：incident 2 的 trail 止于 state=3 且其后
+  无 state=0——stop() 收尾必发 Stopped+position，故 return 0 之后的
+  析构链（libtorrent 销毁、SDL 拆台）被排除，主线程停在 stop() 的
+  join 或其后段。该段全等待面复核无确定性缺陷：读阻塞有中断回调
+  （should_stop 即弃读，rtsp/udp 轮询环会再查）、循环顶与 pacing
+  （waitForPresentationTime）谓词均含 should_stop 且 stop() 通知的
+  正是同一 cv、队列满走丢弃不阻塞、EOF 后循环尾零阻塞、锁内无
+  emit（stop/close 的 emit 都在锁外）；stop() 后置的 selectTrack
+  （字幕）在已 join 的线程上走直接换装分支（ffmpeg_backend.cpp
+  1440-1470），无二次 join。
   同族窗口路径另查出一处确定性顺序缺陷：窗口事件循环退出后
   `SDL_Quit()` 先于播放停止——解码/音频线程仍在跑时 SDL 音频子系统已拆。
   已修：`runPlayerWindow` 在循环后、SDL 拆台之前先 `player.stop()`
