@@ -2043,9 +2043,13 @@ class PlayerHud {
         setFullscreen(!st_.fullscreen);
       }
       ImGui::SameLine();
-      // A-B loop and screenshot as buttons (the L / S shortcuts behind
-      // them — same actions, same toasts).
+      // A-B loop, subtitle visibility and screenshot as buttons (the L / V / S
+      // shortcuts behind them — same actions, same toasts). The CC button is
+      // the prototype's caption toggle: it flips whether canvas subtitles
+      // draw, independent of which subtitle stream the Sub combo selected.
       if (ImGui::Button("A-B")) cycleLoopAB(now);
+      ImGui::SameLine();
+      if (ImGui::Button("CC")) toggleSubtitleVisibility(now);
       ImGui::SameLine();
       if (ImGui::Button("Shot")) takeScreenshot(now);
     }

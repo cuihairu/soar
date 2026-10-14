@@ -543,10 +543,11 @@ if mode == "osc":
     # shown on the next key (which pauses and pins the bar for the click
     # phase). The row-2 buttons then fire through the toast mirror:
     # prev/next walk both queue boundaries AND a real handover (the
-    # launcher queued noseek-live behind sample), the A-B arm, and the
-    # null backend's screenshot refusal. Every wait failure records a
-    # code and falls through to the quit storm — leaving the CLI playing
-    # would only burn the test's own 300s budget.
+    # launcher queued noseek-live behind sample), the A-B arm, the CC
+    # caption-visibility toggle, and the null backend's screenshot
+    # refusal. Every wait failure records a code and falls through to
+    # the quit storm — leaving the CLI playing would only burn the
+    # test's own 300s budget.
     tee = sys.argv[4] if len(sys.argv) > 4 else ""
 
     def marker_count(marker):
@@ -632,7 +633,17 @@ if mode == "osc":
         bclick(838, 495)   # A-B again: pair settles somehow
         if not wait_ge("event: toast=", 4, 5.0):  # Start, End, arm, 2nd
             rc = 7
-        bclick(888, 495)   # Shot: no frames on the null backend
+        bclick(875, 495)   # CC: caption visibility off (the V shortcut's action)
+        if not wait_ge("event: toast=Subtitles off", 1, 5.0):
+            rc = 7
+        bclick(875, 495)   # CC again: back on
+        if not wait_ge("event: toast=Subtitles on", 1, 5.0):
+            rc = 7
+        # The CC button took A-B's old neighbour slot, so Shot moved right
+        # by one button width: 888 now lands on CC. Re-probed against the
+        # live bar — Shot's face spans window x 899..939 (the bar edge is
+        # 940), A-B stays at 815..851 so its pin above is undisturbed.
+        bclick(917, 495)   # Shot: no frames on the null backend
         if not wait_ge("event: toast=Screenshot needs the FFmpeg backend", 1, 5.0):
             rc = 7
     except Exception:

@@ -32,13 +32,17 @@
    Info 浮层与 OSC 时间）。
 3. **OSC 控件形态**：原型 prev/播放/next 大圆钮 + 剩余时间 `-00:02:14` +
    画质 pill（1080p 60）+ A-B/CC/截图按钮；实现为 Play/Stop + 时间文本 +
-   Mute/滑条 + 1×/Audio/Sub 下拉 + Sub/Info/Full 按钮——A-B/CC/截图/prev/next
-   只有键盘路径（L/S/V/N/Shift+N，`help.png` 为证），OSC 无按钮；无剩余
+   Mute/滑条 + 1×/Audio/Sub 下拉 + Sub/Info/Full 按钮——prev/next/A-B/CC/截图
+   原先只有键盘路径（L/S/V/N/Shift+N，`help.png` 为证），OSC 无按钮；无剩余
    时间、无画质 pill。
 
    OSC 批本轮落地：prev/next（`|<`/`>|`）、A-B、Shot 截图按钮与剩余时间
-   `-mm:ss` 均已进 OSC（player_window.cpp:1942-1944、:1946-1956、:1999-2004）；
-   CC 按钮与画质 pill 仍未出现，此两项维持原结论。
+   `-mm:ss` 均已进 OSC（player_window.cpp:1942-1944、:1946-1956、:1999-2004）。
+   （OSC 二批：CC 按钮已进 OSC，置于 A-B 与 Shot 之间——即原型
+   「A-B/CC/截图」分组（player_window.cpp:2050-2052，动作 = V 开关字幕
+   可见性，toast「Subtitles on/off」；OSC 走查点 875,495 双向验证，
+   Shot 因 CC 插入右移一个钮宽、pin 888→917。**画质 pill 仍未出现，
+   维持原结论**——需 TrackInfo 加宽高字段，属冻结核心接口变更，另批。）
 
 对齐补记（初版误判撤回）：**OSC 2.5s 自动隐藏已实现**——`HudVisibility`
 （ui_state.cpp:91，kHideDelay=2500ms 即原型值/IINA 默认），悬停/拖动/浮层/
