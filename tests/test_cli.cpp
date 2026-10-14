@@ -3291,6 +3291,18 @@ if not escape_until_gone():
 sys.exit(0)
 )PY";
 
+// The walkthrough injectors drive the window concurrently with the CLI
+// child and give up on their own deadline if the window never closes.
+// Their exit status classifies a child-side timeout: 0 means the window
+// was closed (a nonzero cli exit is then the child's own doing), while
+// the escape-until-gone timeout (4) means the injection never landed and
+// the child sat in its event loop until the watchdog fired.
+static int injectorExit(pid_t pid) {
+  int status = 0;
+  ::waitpid(pid, &status, 0);
+  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
 TEST_CASE("windowed --cast drives the overlay and the renderer end to end") {
 #ifdef _WIN32
   MESSAGE("the X11 cast walkthrough is POSIX-only; skipping");
@@ -3385,16 +3397,20 @@ TEST_CASE("windowed --cast drives the overlay and the renderer end to end") {
   // The walkthrough probes probed every coordinate under the bitmap font;
   // the scaled TTF face reflows the overlay and moves both buttons.
   const ScopedEnv font_env("SOAR_UI_BITMAP_FONT", "1");
+  // A windowed child that hangs to the watchdog must leave a stack: the
+  // streaming helpers already ride this probe, and the cast walkthrough
+  // lost a whole 124 to "no stack, no injector status" (run 38626233481).
+  const ScopedEnv hang_dump("SOAR_HANG_DUMP", "1");
   const auto run = runCli({std::string("--torrent-store=") + tmp + "/store",
                            "--torrent-peer=127.0.0.1:" + std::to_string(port),
                            std::string("--cast=http://127.0.0.1:") +
                                std::to_string(renderer_port) + "/desc.xml",
                            std::string(tmp) + "/x.torrent"},
                           300);
-  ::waitpid(injector, nullptr, 0);
+  const int injector_rc = injectorExit(injector);
   const std::string seen = renderer.logged();
-  std::printf("x11 cast walkthrough: cli exit=%d, renderer log:\n%s\n",
-              run.exit_code, seen.c_str());
+  std::printf("x11 cast walkthrough: cli exit=%d injector=%d, renderer log:\n%s\n",
+              run.exit_code, injector_rc, seen.c_str());
 
   CHECK(run.exit_code == 0);
   CHECK(run.output.find("event: media-info") != std::string::npos);
@@ -3421,8 +3437,9 @@ TEST_CASE("windowed --cast drives the overlay and the renderer end to end") {
                             "--cast=auto",
                             std::string(tmp) + "/x.torrent"},
                            300);
-  ::waitpid(injector2, nullptr, 0);
-  std::printf("x11 cast auto walkthrough: cli exit=%d\n", run2.exit_code);
+  const int injector2_rc = injectorExit(injector2);
+  std::printf("x11 cast auto walkthrough: cli exit=%d injector=%d\n",
+              run2.exit_code, injector2_rc);
   CHECK(run2.exit_code == 0);
 
   // Launch 3: a description URL that answers 404. The handshake fails
@@ -3441,8 +3458,9 @@ TEST_CASE("windowed --cast drives the overlay and the renderer end to end") {
                                 std::to_string(renderer_port) + "/missing.xml",
                             std::string(tmp) + "/x.torrent"},
                            300);
-  ::waitpid(injector3, nullptr, 0);
-  std::printf("x11 cast fail walkthrough: cli exit=%d\n", run3.exit_code);
+  const int injector3_rc = injectorExit(injector3);
+  std::printf("x11 cast fail walkthrough: cli exit=%d injector=%d\n",
+              run3.exit_code, injector3_rc);
   CHECK(run3.exit_code == 0);
   CHECK(run3.output.find("event: media-info") != std::string::npos);
 
@@ -3468,8 +3486,9 @@ TEST_CASE("windowed --cast drives the overlay and the renderer end to end") {
                                   std::to_string(dead_port) + "/desc.xml",
                               std::string(tmp) + "/x.torrent"},
                              300);
-    ::waitpid(injector4, nullptr, 0);
-    std::printf("x11 cast silent walkthrough: cli exit=%d\n", run4.exit_code);
+    const int injector4_rc = injectorExit(injector4);
+    std::printf("x11 cast silent walkthrough: cli exit=%d injector=%d\n",
+                run4.exit_code, injector4_rc);
     CHECK(run4.exit_code == 0);
     // The receiver really did accept the source before dying.
     CHECK(silent.logged().find("\nplay\n") != std::string::npos);
@@ -3486,8 +3505,9 @@ TEST_CASE("windowed --cast drives the overlay and the renderer end to end") {
     _exit(127);
   }
   const auto run5 = runCli({"--gui"}, 120);
-  ::waitpid(injector5, nullptr, 0);
-  std::printf("x11 cast notorrent walkthrough: cli exit=%d\n", run5.exit_code);
+  const int injector5_rc = injectorExit(injector5);
+  std::printf("x11 cast notorrent walkthrough: cli exit=%d injector=%d\n",
+              run5.exit_code, injector5_rc);
   CHECK(run5.exit_code == 0);
 
   // Launch 6: a trackerless magnet never serves, so the pre-armed cast
@@ -3506,8 +3526,9 @@ TEST_CASE("windowed --cast drives the overlay and the renderer end to end") {
                                 std::to_string(renderer_port) + "/desc.xml",
                             "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=cast-walkthrough"},
                            300);
-  ::waitpid(injector6, nullptr, 0);
-  std::printf("x11 cast magnet walkthrough: cli exit=%d\n", run6.exit_code);
+  const int injector6_rc = injectorExit(injector6);
+  std::printf("x11 cast magnet walkthrough: cli exit=%d injector=%d\n",
+              run6.exit_code, injector6_rc);
   CHECK(run6.exit_code == 0);
 
   ::kill(xvfb, SIGTERM);
