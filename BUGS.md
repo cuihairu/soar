@@ -166,10 +166,10 @@
   Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）
   未在真桌面环境走查。
 
-## 4. CLI 播放自然结束后进程偶发不退出（未修复，watchdog 含住）
+## 4. CLI 播放自然结束后进程偶发不退出（收尾段两处无界等待已修 c416163，根因待 CI 探针归因）
 
 - **现象**：CI 集成测试里 `soar --headless` 子进程播完流媒体后不退出，
-  被 `runCli` 的 `timeout` watchdog 杀成 exit 124，断言失败。三起：
+  被 `runCli` 的 `timeout` watchdog 杀成 exit 124，断言失败。四起：
   1. run 37575751946 tsan 腿（ab1cddf）：DASH case（test_cli.cpp:3998），
      44/45 过；
   2. run 37586409981 no-imgui fallback 腿（9d6ede5）：多变体 HLS case
@@ -183,12 +183,16 @@
      exit 124 挂满 600s——同族第四起、首例 RTSP；该 helper 未设
      SOAR_HANG_DUMP 故无栈。同 SHA rerun 七腿全绿=间歇性确认。已给
      runHeadlessOverRtsp 补 probe + 124 重试（镜像 HTTP 版三件套）。
-- **已知事实**：state=3=Ended 后主循环已按 main.cpp:322 break，挂的
-  是循环后的进程收尾段（后端/解码线程 join、libtorrent session 销毁、
-  SDL quit 之一，未定位）；与 sanitizer 无关（第 2 起在无 sanitizer 的
-  fallback 腿）；与本批改动无关（两 commit 分别只动 docs、测试日志
-  缓冲、workflow）。间歇性：同 case 在多数 run 秒级干净退出。
-- **排查**：`--log-failed` 三起对比，第 2 起的完整事件流坐实「已 Ended
+- **已知事实**：headless 路径是 open→play→seek→pause→stop 直线序，
+  没有自然结束等待循环（早版记档「主循环已按 main.cpp:322 break」
+  有误——现行 main.cpp 322 行在 backend 构造块内，无此循环）。EOF
+  处理必发 state=3（Ended），其后 stop() 收尾必发 Stopped+position：
+  incident 2 的 trail 止于 state=3，坐实主线程停在 stop() 内（收窄
+  论证见下 2026-10-14 晚间续审与 2026-10-15 段）。与 sanitizer 无关
+  （第 2 起在无 sanitizer 的 fallback 腿）；与本批改动无关（两 commit
+  分别只动 docs、测试日志缓冲、workflow）。间歇性：同 case 在多数
+  run 秒级干净退出。
+- **排查**：`--log-failed` 四起对比，第 2 起的完整事件流坐实「已 Ended
   未退出」；本地多次重放 HLS/DASH case 未复现（runner 特定时序）。
   2026-10-10 复查：headless 收尾链逐环审计（Player 薄封装、stop()/
   close() 先 join 后关 SDLAudio、SDLAudio 自带互斥、torrent_stream
