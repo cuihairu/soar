@@ -156,3 +156,6 @@ Info 浮层（`info.png`）、Recent 浮层、Help 浮层（`help.png`）、Cast
 CC、截图、剩余时间）全部落地，余画质 pill 一项分类为原型超前 v0.2+（分类
 第 5 条）。playlist 与 library 的剩余差异（行信息、hover 动作、mini-player、
 卡片网格、徽标）均属 ui-design/mvp 已定里程碑（v0.2+/v0.3），非本批范围。
+「原型超前」五项的原型侧里程碑标注已按建议落地（2026-10-14，巡检）：
+`prototypes/redesign/index.html` 增「原型超前项里程碑标注」节逐项标注，
+`prototypes/translate-panel.html` 页头标 v0.2+。

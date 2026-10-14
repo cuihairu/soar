@@ -60,5 +60,7 @@
 逐屏三档结论与截图证据见[对齐验收报告](/alignment-audit-2026-10-13)：
 有差异 3 屏（主播放窗 / 播放列表 / 媒体库），未实现 2 屏（设置面板、翻译浮层，
 ui-design §2 定 v0.1 无设置页）。实现差异 7 项已登记 todo「原型对齐验收批」；
-建议后续在原型页标注里程碑（settings / translate 为 v0.2 规划稿，缩略图
-卡片网格为 v0.3 增强）。
+原型页里程碑标注已落地（2026-10-14，巡检）：`redesign/index.html` 增「原型超前项
+里程碑标注」节（settings v0.2 规划稿、translate / 顶栏·状态 pill / OSC 画质 pill
+v0.2+、媒体库缩略图·卡片网格·来源徽标 v0.3），`prototypes/translate-panel.html`
+页头标 v0.2+。

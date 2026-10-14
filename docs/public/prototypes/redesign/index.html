@@ -114,6 +114,36 @@ table.cmp td.pg { color:var(--text-1); font-weight:600; white-space:nowrap; }
     </tr>
   </table>
 
+  <h2>原型超前项里程碑标注（对齐验收 2026-10-13，标注落地 2026-10-14）</h2>
+  <table class="cmp">
+    <tr><th style="width:170px;">页面 / 元素</th><th style="width:80px;">里程碑</th><th>依据</th></tr>
+    <tr>
+      <td class="pg">设置面板（本目录 settings）</td>
+      <td>v0.2 规划稿</td>
+      <td>ui-design §2 已定 v0.1 无设置页、v0.2 做成面板——本页是 v0.2 规划稿，不属于 v0.1 范围。</td>
+    </tr>
+    <tr>
+      <td class="pg">字幕翻译浮层</td>
+      <td>v0.2+</td>
+      <td>后端管线已在（字幕菜单 [translate] 行与 translateTextAndLoad 已接线），UI 面板未实现；原型稿见 <a href="../translate-panel.html">v1 原型 05</a>。</td>
+    </tr>
+    <tr>
+      <td class="pg">主播放窗顶栏 / 状态 pill</td>
+      <td>v0.2+</td>
+      <td>实现为单窗浮层 IA（ui-design §2 定），等价信息在 OS 窗口标题 + Info 浮层 + OSC 时间。</td>
+    </tr>
+    <tr>
+      <td class="pg">OSC 画质 pill（1080p 60）</td>
+      <td>v0.2+</td>
+      <td>媒体维度（宽/高/帧率）在 MediaInfo/TrackInfo 均无，补上即动冻结核心接口（backend.h）；与顶栏/状态 pill 同族，随 Info 浮层补维度展示一并做。</td>
+    </tr>
+    <tr>
+      <td class="pg">媒体库缩略图 / 卡片网格 / 来源徽标</td>
+      <td>v0.3 增强</td>
+      <td>数据层无缩略图缓存、库视图未区分来源类型（P2P/HLS/.torrent 徽标）。</td>
+    </tr>
+  </table>
+
   <h2>改了什么，为什么</h2>
 
   <div class="why">
