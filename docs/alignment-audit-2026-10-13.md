@@ -41,8 +41,8 @@
    （OSC 二批：CC 按钮已进 OSC，置于 A-B 与 Shot 之间——即原型
    「A-B/CC/截图」分组（player_window.cpp:2050-2052，动作 = V 开关字幕
    可见性，toast「Subtitles on/off」；OSC 走查点 875,495 双向验证，
-   Shot 因 CC 插入右移一个钮宽、pin 888→917。**画质 pill 仍未出现，
-   维持原结论**——需 TrackInfo 加宽高字段，属冻结核心接口变更，另批。）
+   Shot 因 CC 插入右移一个钮宽、pin 888→917。画质 pill 分类为原型超前
+   v0.2+，见下文分类第 5 条。）
 
 对齐补记（初版误判撤回）：**OSC 2.5s 自动隐藏已实现**——`HudVisibility`
 （ui_state.cpp:91，kHideDelay=2500ms 即原型值/IINA 默认），悬停/拖动/浮层/
@@ -133,12 +133,23 @@ Info 浮层（`info.png`）、Recent 浮层、Help 浮层（`help.png`）、Cast
    列为 v0.2+。
 4. **缩略图 / 卡片网格 / P2P·HLS·.torrent 徽标**：数据层无缩略图缓存、库视图
    未区分来源类型——建议标注 v0.3 增强；todo 只收分类侧栏与搜索（数据已具备）。
+5. **OSC 画质 pill（1080p 60）**（巡检 R2 分类）：MVP §1.5 不列、媒体维度
+   （宽/高/帧率）在 `MediaInfo`/`TrackInfo` 均无——补上即动冻结核心接口
+   （backend.h），且 OSC 第二行按钮在 CC 落位后已满行（Shot 右缘贴 bar 边），
+   无落位空间。与顶栏/状态 pill 同族：建议标 v0.2+，随 Info 浮层补维度展示
+   一并做（数据层扩展与显示分离）。
 
 ## 结论
 
 对上 0 屏 / 有差异 3 屏（desktop-main、playlist、library）/ 未实现 2 屏
 （settings、translate-panel）。todo 全勾不等于对齐——本验收前确实无任何
-对齐证据；现 7 屏有截图为证，7 项实现差异已登记 todo，4 项原型超前已给改稿
+对齐证据；现 7 屏有截图为证，7 项实现差异已登记 todo，5 项原型超前已给改稿
 建议。desktop-main 的 OSC 自动隐藏经源码核实为已实现（初版凭暂停态截图
 误判「常显」，已撤回）：暂停/悬停/拖动/浮层均钉住 OSC，验收取证必须区分
 钉住态与计时态。
+
+**巡检 R2 收口（2026-10-14）**：7 项「需要实现」全勾（末项 Playlist 添加/
+清空 083cebf、OSC CC a6ff677）；desktop-main 的 OSC 差异面（prev/next、A-B、
+CC、截图、剩余时间）全部落地，余画质 pill 一项分类为原型超前 v0.2+（分类
+第 5 条）。playlist 与 library 的剩余差异（行信息、hover 动作、mini-player、
+卡片网格、徽标）均属 ui-design/mvp 已定里程碑（v0.2+/v0.3），非本批范围。
