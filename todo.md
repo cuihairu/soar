@@ -39,5 +39,5 @@
 
 - [x] 挂账拍板：Welcome/DPI/亮色复审关闭，鸿蒙路线留用户拍板（294d3dc）
 - [ ] BUGS #3 Windows 真机复测
-- [ ] BUGS #4 watchdog（退出路径 stop/join 次序）
+- [x] BUGS #4 watchdog（退出路径 stop/join 次序）：两处无界等待修（c416163，stop rewind 2s 预算 + 音频背压可中断）；根因未经本地复现坐实，探针留防
 - [ ] 真实电视设备矩阵（SSDP responder 端到端）
