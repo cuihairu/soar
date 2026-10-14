@@ -160,11 +160,20 @@
     （run 37191653811：5660/5954、5795/6811）+26 行/+34 支即本批
     新代码，门禁 95.0/84.6 双过；Windows 冒烟新断言（无参空启动
     存活）与 daily-build 安装器注册表走查随该跑生效。
-- **残余（如实）**：Windows 真机复测待用户——安装版双击进空窗、
-  对话框选文件、资源管理器「打开方式 → Soar」关联播放三条链路
-  （CI runner 无交互桌面，文件对话框与关联双击无法自动化）；
-  Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）
-  未在真桌面环境走查。
+- **残余（如实，2026-10-15 收窄口径）**：三条链路的 **soar 侧行为 CI 已覆盖**——
+  双击语义（windows-latest 冒烟「soarw 无参空启动 8 秒存活」，exit 2 判 usage
+  回归）、装后文件关联注册（daily-build 安装器走查断言
+  `HKLM\Software\Classes\Soar.Media\shell\open\command` 指向 soarw.exe、
+  `.mp4\OpenWithProgids` 有 Soar.Media 候选，卸载后两者消失）、空窗与打开入口
+  三路（X11 走查 `empty` 模式：O 键 → 点击 → Escape，断言 exit 0 且无 Usage
+  文本）、argv 传播的关联播放行为（所有 CLI 用例都在跑）。**仍待真机的只有
+  操作系统壳行为**：资源管理器里实际双击 /「打开方式 → Soar」由 Explorer 发起
+  的那一次进程拉起（CI runner 无交互桌面；这是壳行为，soar 收到
+  `soarw.exe "%1"` 后的行为已在上面覆盖）、以及 `GetOpenFileNameW` 对话框被
+  真实点选（对话框可 UIA 自动化，但新增 Windows-only 用例在本机无 Windows
+  环境无法迭代、只能从 CI 日志定位，flake 风险高于收益）。
+  Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）未在真桌面
+  环境走查。
 
 ## 4. CLI 播放自然结束后进程偶发不退出（收尾段两处无界等待已修 c416163，根因待 CI 探针归因）
 

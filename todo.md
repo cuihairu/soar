@@ -22,6 +22,7 @@
 - [x] 三期 GENA 事件订阅（1838e7e；fe8aa7d stop/serve 竞态修）
 - [x] 三期 发送端转码：copy/重编码/mpegts 端点 + 会话分叉（7339cd8；f1b245d、179e9ad 跟进；test_cast 58 用例）
 - [x] macOS ffmpeg 9 tmcd 自引用轨打不开的判定分叉修（047b6c9）
+- [x] 三期 本机 SSDP 应答器夹具：`--cast=auto` 发现端到端（headless 一例 13 断言）+ 浮层发现行走查（launch 7 auto found[0]、launch 8 手动发现 + 行点击）（2026-10-15）
 
 ## 快捷键可配置（2026-10-11）
 
@@ -38,6 +39,6 @@
 ## 挂账
 
 - [x] 挂账拍板：Welcome/DPI/亮色复审关闭，鸿蒙路线留用户拍板（294d3dc）
-- [ ] BUGS #3 Windows 真机复测
+- [ ] BUGS #3 Windows 真机复测：soar 侧行为 CI 已覆盖（无参空启动存活/关联注册/空窗入口/argv 传播），剩 OS 壳行为（Explorer 发起的拉起、真文件对话框点选）待真机（2026-10-15 收窄口径）
 - [x] BUGS #4 watchdog（退出路径 stop/join 次序）：两处无界等待修（c416163，stop rewind 2s 预算 + 音频背压可中断）；根因未经本地复现坐实，探针留防
-- [ ] 真实电视设备矩阵（SSDP responder 端到端）
+- [ ] 真实电视设备矩阵（硬件侧）：夹具侧 SSDP 应答器已收编（2026-10-15，`--cast=auto` 发现端到端 + 浮层发现行走查），厂商 SSDP 互操作面（MX 延迟/组播路由/应答形态/跨子网）待真机

@@ -2417,17 +2417,22 @@ namespace {
 // handed. Every observed event goes to the log file as one line:
 //   seturi <url> | fetch <status> <bytes> | fetch-fail <reason> | play | stop
 constexpr char kDlnaRendererScript[] = R"PY(
-import re, socket, sys, time, urllib.request
+import re, socket, sys, threading, time, urllib.request
 
 port = int(sys.argv[1])
 log_path = sys.argv[2]
-mode = sys.argv[3]  # "ok" has AVTransport; "noav" only RenderingControl
+mode = sys.argv[3]  # "ok" has AVTransport; "noav" only RenderingControl;
+                    # "ssdp" is "ok" plus the discovery responder
+
+SSDP_GROUP = "239.255.255.250"
+SSDP_PORT = 1900
+AVT = "urn:schemas-upnp-org:service:AVTransport:1"
 
 def log(line):
     with open(log_path, "a") as f:
         f.write(line + "\n")
 
-SERVICE = ('urn:schemas-upnp-org:service:AVTransport:1' if mode != "noav"
+SERVICE = (AVT if mode != "noav"
            else 'urn:schemas-upnp-org:service:RenderingControl:1')
 DESC = ('<?xml version="1.0" encoding="utf-8"?>'
         '<root xmlns="urn:schemas-upnp-org:device-1-0">'
@@ -2455,10 +2460,74 @@ def action_ok(action):
             'xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"/>'
             '</s:Body></s:Envelope>')
 
+def ssdp_responder(up, down):
+    # Answers the control point's M-SEARCH bursts on the SSDP group so the
+    # discovery half of --cast=auto runs against this fixture's device.
+    # The reply is unicast to the requester's source port: the control
+    # point listens on an ephemeral port, not the group port. It answers
+    # at once rather than honouring MX, so our fixture wins found[0] over
+    # any real device that respects the MX delay.
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        s.bind(("", SSDP_PORT))
+        # Join on the default interface: the control point sends without
+        # pinning one, so the answer must come from the same interface.
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                     socket.inet_aton(SSDP_GROUP) + socket.inet_aton("0.0.0.0"))
+        s.settimeout(0.5)
+        up.set()
+        while True:
+            try:
+                data, addr = s.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            head = data.decode("iso-8859-1", "replace")
+            if not head.startswith("M-SEARCH"):
+                continue
+            st = ""
+            for line in head.split("\r\n")[1:]:
+                if line[:3].upper() == "ST:":
+                    st = line.split(":", 1)[1].strip()
+            if st != AVT and st != "ssdp:all" and st != "upnp:rootdevice":
+                continue
+            body = ("HTTP/1.1 200 OK\r\n"
+                    "CACHE-CONTROL: max-age=1800\r\nEXT:\r\n"
+                    "LOCATION: http://127.0.0.1:" + str(port) + "/desc.xml\r\n"
+                    "SERVER: soar-test/1.0 UPnP/1.0\r\n"
+                    "ST: " + AVT + "\r\n"
+                    "USN: uuid:soar-test-renderer::" + AVT + "\r\n\r\n")
+            try:
+                s.sendto(body.encode(), addr)
+            except OSError:
+                pass
+    except Exception:
+        if not up.is_set():
+            down.set()
+
 srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 srv.bind(("127.0.0.1", port))
 srv.listen(4)
+
+if mode == "ssdp":
+    ssdp_up = threading.Event()
+    ssdp_down = threading.Event()
+    threading.Thread(target=ssdp_responder, args=(ssdp_up, ssdp_down),
+                     daemon=True).start()
+    # Only the fixture may own the group port; if the join fails the
+    # wrapper reports the fixture down and the case skips.
+    waited = 0.0
+    while not ssdp_up.is_set() and not ssdp_down.is_set() and waited < 5.0:
+        time.sleep(0.02)
+        waited += 0.02
+    if not ssdp_up.is_set():
+        print("ssdp-down", flush=True)
+        sys.exit(1)
 print("ready", flush=True)  # harness reads this line over a pipe
 
 t0 = None  # the position clock starts at the first poll
@@ -2620,7 +2689,10 @@ struct Seeder {
 // that publishes a device description, answers the AVTransport SOAP actions,
 // and writes everything it saw to a log file the case reads after the CLI
 // has exited. `mode` picks the description flavor: "ok" carries the
-// AVTransport service the control point needs, "noav" only RenderingControl.
+// AVTransport service the control point needs, "noav" only RenderingControl,
+// "ssdp" is "ok" plus an SSDP responder on the group port so --cast=auto
+// discovers this device. start() reports a failure when the responder cannot
+// take the group port, so a case skips instead of flaking.
 struct DlnaRenderer {
   pid_t pid = -1;
   std::string log_path;
@@ -2887,6 +2959,107 @@ TEST_CASE("headless --cast drives a fake DLNA renderer through the bridge") {
   CHECK(cast_port != bridge_port);
   // And the rewritten URL really serves bytes: the fake renderer fetched
   // the source the way a real DMR would right after accepting it.
+  const bool bridge_served = seen.find("fetch 206 ") != std::string::npos ||
+                             seen.find("fetch 200 ") != std::string::npos;
+  CHECK(bridge_served);
+  CHECK(seen.find("\nplay\n") != std::string::npos);
+  CHECK(seen.find("\nstop\n") != std::string::npos);
+  std::filesystem::remove_all(tmp);
+#endif
+#endif
+}
+
+// The discovery half of the same handshake: --cast=auto runs M-SEARCH on
+// the SSDP group and must end up casting to the device the responder
+// describes, not just to a URL handed to it on the command line. The
+// responder answers at once, so the fixture wins found[0] over any real
+// device that honours the MX delay.
+TEST_CASE("headless --cast=auto discovers the mock renderer over ssdp") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the ssdp discovery cast test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_AUDIO_ONLY", media)) {
+    MESSAGE("SOAR_TEST_AUDIO_ONLY not set; skipping the ssdp discovery cast test");
+    return;
+  }
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("no python3; skipping the ssdp discovery cast test");
+    return;
+  }
+  std::string tmpl = "/tmp/soar_cli_ssdp_XXXXXX";
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+  const char* tmp = ::mkdtemp(buf.data());
+  REQUIRE(tmp != nullptr);
+  const std::string payload = std::string(tmp) + "/payload";
+  REQUIRE(std::filesystem::create_directories(payload));
+  REQUIRE(std::filesystem::copy_file(media, payload + "/00_media.mkv"));
+  for (int i = 0; i < 39; ++i) {
+    std::ofstream out(payload + "/f" + std::to_string(i) + ".bin", std::ios::binary);
+    out << std::string(64, 'x');
+  }
+  const int port = 26200 + (::getpid() % 400);
+  const int renderer_port = 26400 + (::getpid() % 400);
+  const std::string log_path = std::string(tmp) + "/renderer.log";
+  Seeder seeder;
+  DlnaRenderer renderer;
+  if (!seeder.start(payload, std::string(tmp) + "/x.torrent", port) ||
+      !renderer.start(log_path, renderer_port, "ssdp")) {
+    MESSAGE("fixture did not come up; skipping");
+    renderer.stop();
+    seeder.stop();
+    std::filesystem::remove_all(tmp);
+    return;
+  }
+  const auto run = runCli({"--headless",
+                           std::string("--torrent-store=") + tmp + "/store",
+                           "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                           "--cast=auto",
+                           std::string(tmp) + "/x.torrent"},
+                          240);
+  seeder.stop();
+  renderer.stop();
+  CHECK(run.exit_code == 0);
+  // The session named the device from the discovered description, which is
+  // only possible if M-SEARCH reached the responder and the location it
+  // advertised resolved back to this fixture.
+  CHECK(run.output.find("cast: Test Renderer <- ") != std::string::npos);
+
+  const std::string seen = renderer.logged();
+  INFO(seen);
+  const std::string uri_marker = "seturi http://127.0.0.1:";
+  const size_t uri_at = seen.find(uri_marker);
+  REQUIRE(uri_at != std::string::npos);
+  const size_t uri_begin = uri_at + uri_marker.size();
+  size_t uri_end = uri_begin;
+  while (uri_end < seen.size() && seen[uri_end] >= '0' && seen[uri_end] <= '9') {
+    ++uri_end;
+  }
+  const std::string cast_port = seen.substr(uri_begin, uri_end - uri_begin);
+  REQUIRE(!cast_port.empty());
+
+  // exposeToLan rebinds the bridge to a fresh port before the old listener
+  // retires, so the URL handed over can never reuse the startup line's.
+  const std::string bridge_marker = "-> http://127.0.0.1:";
+  const size_t bridge_at = run.output.find(bridge_marker);
+  REQUIRE(bridge_at != std::string::npos);
+  const size_t bridge_begin = bridge_at + bridge_marker.size();
+  size_t bridge_end = bridge_begin;
+  while (bridge_end < run.output.size() && run.output[bridge_end] >= '0' &&
+         run.output[bridge_end] <= '9') {
+    ++bridge_end;
+  }
+  const std::string bridge_port =
+      run.output.substr(bridge_begin, bridge_end - bridge_begin);
+  CHECK(cast_port != bridge_port);
+  // And the rewritten URL really serves bytes, the way a real DMR would
+  // have fetched the source right after accepting it.
   const bool bridge_served = seen.find("fetch 206 ") != std::string::npos ||
                              seen.find("fetch 200 ") != std::string::npos;
   CHECK(bridge_served);
@@ -3168,6 +3341,41 @@ def brightness(x, y):
     except Exception:
         return 0.0
 
+def text_rows():
+    # The overlay is centred on the soar window's client area at 520x420,
+    # so its top-left is the window centre less half of that. Fetch the
+    # whole region once: a row carrying glyph strokes has a high horizontal
+    # variance, a flat row does not. The discovered renderer row is the
+    # overlay's last item, so the last band is it — the "No renderers
+    # found yet." line sits in the same place, and the renderer log
+    # afterwards decides which one was clicked. The Search again button is
+    # the third band from the bottom in every phase (checkbox, row).
+    ox = max(0, cx - 260)
+    oy = max(0, cy - 210)
+    try:
+        img = d.screen().root.get_image(ox, oy, 520, 420, X.ZPixmap, 0xffffffff)
+    except Exception:
+        return [], ox
+    hot = []
+    for y in range(420):
+        row = img.data[y * 520 * 4:(y + 1) * 520 * 4]
+        vals = [(row[x * 4] + row[x * 4 + 1] + row[x * 4 + 2]) // 3
+                for x in range(20, 500, 3)]
+        mean = sum(vals) / len(vals)
+        hot.append(sum((v - mean) ** 2 for v in vals) / len(vals) > 25.0)
+    rows = []
+    y = 0
+    while y < 420:
+        if not hot[y]:
+            y += 1
+            continue
+        start = y
+        while y < 420 and hot[y]:
+            y += 1
+        if y - start >= 4:  # a text line, not a 1px separator rule
+            rows.append((oy + start, oy + y))
+    return rows, ox
+
 def escape_until_gone():
     esc = d.keysym_to_keycode(0xFF1B)  # XK_Escape
     deadline = time.monotonic() + 60.0
@@ -3184,7 +3392,7 @@ def escape_until_gone():
         time.sleep(0.5)
     return find_win() is None
 
-if mode == "direct":
+if mode in ("direct", "autolive"):
     live = False
     for _ in range(240):
         try:
@@ -3250,6 +3458,47 @@ elif mode == "auto":
     # burst its full 3s window (plus toast margin) before the quit storm,
     # so the discovery path actually runs.
     time.sleep(12.0)
+elif mode == "autolive":
+    # --cast=auto against a responder that answers: the pre-window wait
+    # already let the auto handoff go live, so there is nothing to click.
+    pass
+elif mode == "discover":
+    # Manual discovery: no --cast was pre-armed, so the overlay's own
+    # Search again button drives the burst and the discovered row is the
+    # way into the cast. No probed coordinate is safe here — the Casting
+    # phase's extra lines move the Search button by tens of pixels — so the
+    # rows are located from the rendered pixels instead.
+    try:
+        win.set_input_focus(X.RevertToParent, X.CurrentTime)
+        sync()
+        press(d.keysym_to_keycode(ord("t")))
+    except Exception:
+        pass
+    time.sleep(2.0)
+    rows, ox = text_rows()
+    if len(rows) >= 3:
+        click(ox + 40, (rows[-3][0] + rows[-3][1]) // 2)  # Search again
+    time.sleep(4.5)  # the 3s discovery window plus its margin
+    live = False
+    for _ in range(3):
+        rows, ox = text_rows()
+        if not rows:
+            break
+        click(ox + 40, (rows[-1][0] + rows[-1][1]) // 2)  # the renderer row
+        for _ in range(6):
+            try:
+                if "\nplay\n" in open(rlog).read():
+                    live = True
+                    break
+            except FileNotFoundError:
+                pass
+            time.sleep(1.0)
+        if live:
+            break
+    if not live:
+        escape_until_gone()
+        sys.exit(3)
+    time.sleep(1.5)
 else:
     # "fail"/"silent": open the overlay immediately — the async torrent is
     # usually still preparing, so the not-yet-serving line shows — and
@@ -3532,6 +3781,69 @@ TEST_CASE("windowed --cast drives the overlay and the renderer end to end") {
   std::printf("x11 cast magnet walkthrough: cli exit=%d injector=%d\n",
               run6.exit_code, injector6_rc);
   CHECK(run6.exit_code == 0);
+
+  // Launches 7 and 8: a responder that answers the SSDP bursts, so the
+  // discovery half of the cast actually finds a device. Launch 7 pre-arms
+  // --cast=auto and lets the window's own burst hand off to found[0];
+  // launch 8 leaves --cast unset, so the overlay's Search again button
+  // drives the burst and the discovered row is the way into the cast. The
+  // responder answers at once, so the fixture wins found[0] over any real
+  // device that honours the MX delay. It comes up only here: an earlier
+  // launch must not see it, or launch 2's "no renderer answered" path
+  // would start succeeding.
+  const int ssdp_port = 25800 + (::getpid() % 400);
+  DlnaRenderer ssdp_renderer;
+  const std::string ssdp_log = std::string(tmp) + "/ssdp.log";
+  if (!ssdp_renderer.start(ssdp_log, ssdp_port, "ssdp")) {
+    MESSAGE("the ssdp responder did not come up; skipping those launches");
+  } else {
+    pid_t injector7 = ::fork();
+    REQUIRE(injector7 >= 0);
+    if (injector7 == 0) {
+      ::execlp("python3", "python3", "-c", kCastWalkthroughScript, display.c_str(),
+               ssdp_log.c_str(), "autolive", static_cast<char*>(nullptr));
+      _exit(127);
+    }
+    const auto run7 = runCli({std::string("--torrent-store=") + tmp + "/store7",
+                              "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                              "--cast=auto",
+                              std::string(tmp) + "/x.torrent"},
+                             300);
+    const int injector7_rc = injectorExit(injector7);
+    std::printf("x11 cast auto responder walkthrough: cli exit=%d injector=%d\n",
+                run7.exit_code, injector7_rc);
+    CHECK(run7.exit_code == 0);
+    // The seturi is the end-to-end proof: this device answered the burst,
+    // the auto handoff picked it, and the handshake reached it.
+    const std::string auto_seen = ssdp_renderer.logged();
+    INFO(auto_seen);
+    CHECK(auto_seen.find("seturi ") != std::string::npos);
+    CHECK(auto_seen.find("\nplay\n") != std::string::npos);
+    CHECK(auto_seen.find("\nstop\n") != std::string::npos);
+
+    pid_t injector8 = ::fork();
+    REQUIRE(injector8 >= 0);
+    if (injector8 == 0) {
+      ::execlp("python3", "python3", "-c", kCastWalkthroughScript, display.c_str(),
+               ssdp_log.c_str(), "discover", static_cast<char*>(nullptr));
+      _exit(127);
+    }
+    const auto run8 = runCli({std::string("--torrent-store=") + tmp + "/store8",
+                              "--torrent-peer=127.0.0.1:" + std::to_string(port),
+                              std::string(tmp) + "/x.torrent"},
+                             300);
+    const int injector8_rc = injectorExit(injector8);
+    std::printf("x11 cast discover walkthrough: cli exit=%d injector=%d\n",
+                run8.exit_code, injector8_rc);
+    CHECK(run8.exit_code == 0);
+    // The injector's row click is what put the cast on this device: with
+    // no --cast, nothing else could have started the session.
+    const std::string discover_seen = ssdp_renderer.logged();
+    INFO(discover_seen);
+    CHECK(discover_seen.find("seturi ") != std::string::npos);
+    CHECK(discover_seen.find("\nplay\n") != std::string::npos);
+  }
+  ssdp_renderer.stop();
 
   ::kill(xvfb, SIGTERM);
   ::waitpid(xvfb, nullptr, 0);
