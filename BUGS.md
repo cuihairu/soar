@@ -189,7 +189,10 @@
   2026-10-10 复查：headless 收尾链逐环审计（Player 薄封装、stop()/
   close() 先 join 后关 SDLAudio、SDLAudio 自带互斥、torrent_stream
   声明序先于 player 析构）未找到确定性缺陷；本地 70 次重放（hls_hi/
-  master/dash，per-run server 复刻测试生命周期）零挂死。
+  master/dash，per-run server 复刻测试生命周期）零挂死。2026-10-14
+  追加 36 次单核挤轧重放（taskset -c 0 覆盖构建跑 dash/master/media
+  三 case 各 12 轮）依旧零挂死——runner 特定时序的假设再增强，
+  仍等 SOAR_HANG_DUMP 在 CI 下一次挂死时交栈。
   同族窗口路径另查出一处确定性顺序缺陷：窗口事件循环退出后
   `SDL_Quit()` 先于播放停止——解码/音频线程仍在跑时 SDL 音频子系统已拆。
   已修：`runPlayerWindow` 在循环后、SDL 拆台之前先 `player.stop()`
