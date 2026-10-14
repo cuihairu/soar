@@ -1427,6 +1427,7 @@ class PlayerHud {
   // first use still lands somewhere browsable.
   void openDirPicker() {
     dirpick_for_library_ = false;  // a plain open imports into the queue
+    dirpick_files_ = false;        // ... and picks folders, not files
     if (dirpick_path_.empty()) {
       const std::vector<std::string>& dirs = recent_dirs_.entries();
       if (!dirs.empty()) {
@@ -1446,6 +1447,37 @@ class PlayerHud {
   void openDirPickerWatch() {
     openDirPicker();
     dirpick_for_library_ = true;
+  }
+
+  // Same picker, file mode (todo.md 原型对齐批): the rows gain file
+  // checkboxes and the action button adds the checked set to the queue —
+  // the picker for when a folder import is more than the user wanted.
+  void openDirPickerFiles() {
+    openDirPicker();
+    dirpick_files_ = true;
+    dirpick_checked_.clear();
+  }
+
+  // The file-mode action: queue the checked files in the order they were
+  // ticked (a pick across directories keeps the user's order, not an
+  // alphabetical one), then hand the user back to the Playlist overlay
+  // that sent them here — the same shape importDirectory and
+  // watchDirectory end on.
+  void addCheckedFiles(milliseconds now) {
+    if (recent_dirs_.add(dirpick_path_)) recent_dirs_.save();
+    const bool was_empty =
+        playlist_.empty() || playlist_.current() == PlaylistStore::kNone;
+    const std::size_t n = dirpick_checked_.size();
+    for (const std::string& f : dirpick_checked_) playlist_.add(f);
+    dirpick_checked_.clear();
+    st_.overlay = Overlay::Playlist;
+    // A fresh queue plays its first pick immediately (importDirectory's
+    // rule); on an open failure the backend's toast is the one to keep.
+    if (was_empty && !openPlaylistEntry(playlist_.size() - n, now)) return;
+    st_.toast.show((was_empty ? "Imported " : "Added ") + std::to_string(n) +
+                       " file" + (n == 1 ? "" : "s") +
+                       (was_empty ? "" : " to queue"),
+                   now);
   }
 
   // Watch action from the picker's library mode: the folder joins the
@@ -2444,11 +2476,13 @@ class PlayerHud {
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_Appearing);
-    if (ImGui::Begin("Open folder", &open, ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::Begin(dirpick_files_ ? "Add files" : "Open folder", &open,
+                     ImGuiWindowFlags_NoSavedSettings)) {
       ImGui::TextDisabled("%s", dirpick_path_.c_str());
       // Library watch mode is always recursive (a library watches a tree,
-      // not a folder shelf); the toggle only governs queue imports.
-      if (!dirpick_for_library_) {
+      // not a folder shelf); file mode picks individual files, so the
+      // toggle governs nothing there either. It only governs queue imports.
+      if (!dirpick_for_library_ && !dirpick_files_) {
         ImGui::Checkbox("Include subfolders", &dirpick_recursive_);
       }
       const bool effective_recursive = dirpick_for_library_ || dirpick_recursive_;
@@ -2463,8 +2497,11 @@ class PlayerHud {
         }
       }
 
-      // Directory rows. The child region keeps the import button pinned
-      // below the scrollable list.
+      // Directory rows, and in file mode the current directory's media
+      // files below them. The child region keeps the action button pinned
+      // below the scrollable list. The files list flat (no recursion) —
+      // a deep pick walks the tree directory by directory, which is what
+      // the checkboxes are for.
       if (ImGui::BeginChild("dirs", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()))) {
         const std::string up = parentOfDir(dirpick_path_);
         if (!up.empty() && ImGui::Selectable("..")) dirpick_path_ = up;
@@ -2473,32 +2510,62 @@ class PlayerHud {
           if (ImGui::Selectable((s + "/").c_str())) dirpick_path_ = joinDir(dirpick_path_, s);
         }
         if (up.empty() && subs.empty()) ImGui::TextDisabled("%s", "No subfolders");
+        if (dirpick_files_) {
+          for (const std::string& f : listMediaFiles(dirpick_path_, false)) {
+            // Membership by scan, mutation by the checkbox's own verdict:
+            // the vector keeps click order across directory changes, which
+            // is the order the queued set will take.
+            const auto at = std::find(dirpick_checked_.begin(),
+                                      dirpick_checked_.end(), f);
+            bool checked = at != dirpick_checked_.end();
+            if (ImGui::Checkbox(baseName(f).c_str(), &checked)) {
+              if (checked && at == dirpick_checked_.end()) {
+                dirpick_checked_.push_back(f);
+              } else if (!checked && at != dirpick_checked_.end()) {
+                dirpick_checked_.erase(at);
+              }
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", f.c_str());
+          }
+        }
       }
       ImGui::EndChild();
 
-      if (dirpick_count_valid_ && dirpick_counted_path_ == dirpick_path_ &&
-          dirpick_counted_recursive_ == effective_recursive) {
-        // cache hit — the walk below is skipped
-      } else {
-        dirpick_count_ = listMediaFiles(dirpick_path_, effective_recursive).size();
-        dirpick_counted_path_ = dirpick_path_;
-        dirpick_counted_recursive_ = effective_recursive;
-        dirpick_count_valid_ = true;
-      }
-      ImGui::BeginDisabled(dirpick_count_ == 0);
-      char label[160];
-      std::snprintf(label, sizeof(label), "%s this folder (%zu media file%s%s)",
-                    dirpick_for_library_ ? "Watch" : "Import",
-                    dirpick_count_, dirpick_count_ == 1 ? "" : "s",
-                    effective_recursive ? ", with subfolders" : "");
-      if (ImGui::Button(label)) {
-        if (dirpick_for_library_) {
-          watchDirectory(dirpick_path_, nowMs());
-        } else {
-          importDirectory(dirpick_path_, nowMs());
+      if (dirpick_files_) {
+        // File mode's action: the checked set, not the walked tree — no
+        // recursive count to cache, the vector's size is the count.
+        ImGui::BeginDisabled(dirpick_checked_.empty());
+        if (ImGui::Button(("Add " + std::to_string(dirpick_checked_.size()) +
+                           " file" + (dirpick_checked_.size() == 1 ? "" : "s"))
+                              .c_str())) {
+          addCheckedFiles(nowMs());
         }
+        ImGui::EndDisabled();
+      } else {
+        if (dirpick_count_valid_ && dirpick_counted_path_ == dirpick_path_ &&
+            dirpick_counted_recursive_ == effective_recursive) {
+          // cache hit — the walk below is skipped
+        } else {
+          dirpick_count_ = listMediaFiles(dirpick_path_, effective_recursive).size();
+          dirpick_counted_path_ = dirpick_path_;
+          dirpick_counted_recursive_ = effective_recursive;
+          dirpick_count_valid_ = true;
+        }
+        ImGui::BeginDisabled(dirpick_count_ == 0);
+        char label[160];
+        std::snprintf(label, sizeof(label), "%s this folder (%zu media file%s%s)",
+                      dirpick_for_library_ ? "Watch" : "Import",
+                      dirpick_count_, dirpick_count_ == 1 ? "" : "s",
+                      effective_recursive ? ", with subfolders" : "");
+        if (ImGui::Button(label)) {
+          if (dirpick_for_library_) {
+            watchDirectory(dirpick_path_, nowMs());
+          } else {
+            importDirectory(dirpick_path_, nowMs());
+          }
+        }
+        ImGui::EndDisabled();
       }
-      ImGui::EndDisabled();
     }
     ImGui::End();
     if (!open) st_.overlay = Overlay::None;
@@ -2508,15 +2575,29 @@ class PlayerHud {
   // ">" marker; a row click jumps to it (the overlay stays open so the
   // list can be stepped through), the trailing "x" removes the entry —
   // removing the playing one only re-points the queue, playback runs on.
-  // Header buttons own the loop/shuffle toggles; no keys are spent on them
-  // (L is the A-B loop, and mpv leaves shuffle unbound too).
+  // Header buttons: the two pickers (files, then a whole folder) and the
+  // loop/shuffle toggles; no keys are spent on them (L is the A-B loop,
+  // and mpv leaves shuffle unbound too). "Clear queue" wipes the list in
+  // two clicks: the first arms it, the second (inside the arm window)
+  // executes — one click at one button's width away from a destroyed
+  // queue is too little intent for a store with no undo.
   void drawPlaylistOverlay() {
     bool open = true;
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(460, 340), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(560, 340), ImGuiCond_Appearing);
     if (ImGui::Begin("Playlist", &open, ImGuiWindowFlags_NoSavedSettings)) {
+      // The arm expires: a user who armed it and walked away must not
+      // destroy the queue with their next visit's stray click.
+      if (playlist_clear_armed_ &&
+          nowMs() - playlist_clear_armed_at_ > std::chrono::seconds(4)) {
+        playlist_clear_armed_ = false;
+      }
+      if (ImGui::SmallButton("Add files...")) {
+        openDirPickerFiles();
+      }
+      ImGui::SameLine();
       if (ImGui::SmallButton("Open folder...")) {
         openDirPicker();
       }
@@ -2534,6 +2615,20 @@ class PlayerHud {
                                                  : "Shuffle: off")) {
         playlist_.setShuffle(!playlist_.shuffle());
       }
+      ImGui::SameLine();
+      ImGui::BeginDisabled(playlist_.empty());
+      if (ImGui::SmallButton(playlist_clear_armed_ ? "Clear: sure?"
+                                                   : "Clear queue")) {
+        if (playlist_clear_armed_) {
+          playlist_.clear();
+          playlist_clear_armed_ = false;
+          st_.toast.show("Playlist cleared", nowMs());
+        } else {
+          playlist_clear_armed_ = true;
+          playlist_clear_armed_at_ = nowMs();
+        }
+      }
+      ImGui::EndDisabled();
       ImGui::Separator();
       if (playlist_.empty()) {
         ImGui::TextDisabled("%s", "Playlist is empty — opened files queue here.");
@@ -3079,6 +3174,16 @@ class PlayerHud {
   // Picker mode: false imports the picked folder into the queue, true
   // watches it into the media library (the "Add folder..." entry).
   bool dirpick_for_library_ = false;
+  // Third mode (todo.md 原型对齐批): file picking. Media rows gain
+  // checkboxes and the action button queues the checked set — click
+  // order kept, across directory changes too.
+  bool dirpick_files_ = false;
+  std::vector<std::string> dirpick_checked_;
+  // The clear button's two-click confirm (see drawPlaylistOverlay): armed
+  // on the first click, executed on the second, disarmed by the arm's
+  // own expiry.
+  bool playlist_clear_armed_ = false;
+  milliseconds playlist_clear_armed_at_{0};
   // The library's once-per-session auto-scan (first overlay open).
   bool library_scanned_ = false;
   // Cached "how many media files are under the browsed folder" — re-walked

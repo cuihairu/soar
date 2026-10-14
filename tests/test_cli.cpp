@@ -1155,16 +1155,21 @@ if mode == "playlist":
     # run — overlay windows do not swallow keys, only combo popups do.
     # Coordinates probed under SOAR_UI_BITMAP_FONT=1, re-probed for v0.2.1
     # with hover-band scans and label-hash click checks on a live Xvfb:
-    # the header is [Open folder...][Loop][Shuffle] with the button band at
-    # y~131-147 and Loop spanning x~383-462 (center 422,139 — the slot
-    # Loop occupied before v0.2.1 now belongs to "Open folder...", and
-    # anything above y~130 is the overlay title bar, which eats clicks).
-    # Each row's trailing "x" button follows the row text (SameLine), so
-    # its x moves with the entry name and with the "> " current marker
-    # (one character narrower): for these siblings it sits at
-    # ~(343/352/379, 165/182/203). A click landing just right of the
-    # button hits the row Selectable instead (jump semantics), which is
-    # why the x is probed per row.
+    # the header is [Add files...][Open folder...][Loop][Shuffle][Clear
+    # queue] (todo.md 原型对齐批) with the button band at y~131-148, centers
+    # (262/377/482/581/683, 140) — anything above y~130 is the overlay
+    # title bar, which eats clicks. The window widened 460->560, so every
+    # row-anchored pin moved -50 in x. Each row's trailing "x" button
+    # follows the row text (SameLine), so its x moves with the entry name
+    # and with the "> " current marker (one character narrower): for these
+    # siblings it sits at ~(293/302/329, 165/182/203). A click landing just
+    # right of the button hits the row Selectable instead (jump semantics),
+    # which is why the x is probed per row.
+    # The file picker ("Add files...") opens at $HOME = the queue scratch
+    # dir: rows ..//.cache//one.mkv/two.mkv at y~137/154/171/188 (the
+    # recursive toggle is hidden in file mode, one pitch above the
+    # watch-mode picker), checkboxes at x~240, "Add N files" bottom-left at
+    # (273,459).
     # Expected media-info
     # trail, launch included, each step tagged with the gesture that
     # produced it (the two fixtures are told apart by track count, so the
@@ -1173,12 +1178,15 @@ if mode == "playlist":
     #   3 (auto-advance at the first entry's EOF)
     #   1 (Loop::All wrap at the queued entry's EOF)
     #   1 (single-entry replay under Loop::One)
+    #   1 (the file pick's auto-play of one.mkv — todo.md 原型对齐批)
     # The dead path is removed with an "x" click once the failed opens
     # are done, so both later EOF advances land on real entries; the
     # failed opens, the removals and the empty-queue n emit no content
-    # media-info, so nothing may follow the last replay. Manual n under
-    # a loop mode wraps (next() at the tail re-opens the head), which is
-    # why every n here either targets a real entry or an empty queue.
+    # media-info. The pick replays ~1s before its clear lands, so the
+    # replay's EOF finds an emptied queue and nothing follows the pick.
+    # Manual n under a loop mode wraps (next() at the tail re-opens the
+    # head), which is why every n here either targets a real entry or an
+    # empty queue.
     time.sleep(2.2)
     focus()
     # The beat is events-driven: the CLI tees its output to a file (the
@@ -1187,9 +1195,10 @@ if mode == "playlist":
     # markers instead of trusting a hard-coded sleep budget — fixture
     # open latency and long coverage-build frames made every fixed
     # budget a coin flip (clicks routinely landed after the EOF they
-    # were supposed to precede). Exit code 5 = a marker never arrived;
-    # the test's own assertions would flag the run anyway, this just
-    # says the injector is the one that saw it.
+    # were supposed to precede). Exit code 5 = a marker never arrived,
+    # 6 = the clear's arm click already cleared; the test's own
+    # assertions would flag the run anyway, this just says the injector
+    # is the one that saw it.
     tee = sys.argv[4] if len(sys.argv) > 4 else ""
 
     def marker_count(marker):
@@ -1223,12 +1232,12 @@ if mode == "playlist":
     key(n)                          # Shift+N: back to the first entry
     xtest.fake_input(d, X.KeyRelease, sh); d.sync()
     time.sleep(0.8)
-    moved(379, 203); time.sleep(0.15)
+    moved(329, 203); time.sleep(0.15)
     holdclick(1); time.sleep(0.5)   # "x" on row 3 ("   missing.mp4"):
                                     # drop the dead entry from the queue
     if not wait_marker("tracks=3 selected", 2):
         sys.exit(5)                 # one EOF auto-advanced into two
-    moved(422, 139); time.sleep(0.15)
+    moved(482, 140); time.sleep(0.15)
     holdclick(1); time.sleep(0.5)   # Loop button: off -> all (two mid-play)
     if not wait_marker("tracks=1 selected", 3):
         sys.exit(5)                 # two EOF wrapped into one under All
@@ -1238,18 +1247,44 @@ if mode == "playlist":
     time.sleep(0.4)                 # single-valued, so re-open the queue)
     key(p)                          # p: Playlist overlay again
     time.sleep(0.6)
-    moved(422, 139); time.sleep(0.15)
+    moved(482, 140); time.sleep(0.15)
     holdclick(1); time.sleep(0.5)   # Loop button: all -> one (one mid-play)
     if not wait_marker("tracks=1 selected", 4):
         sys.exit(5)                 # one EOF replayed under One
-    moved(352, 182); time.sleep(0.15)
+    moved(302, 182); time.sleep(0.15)
     holdclick(1); time.sleep(0.7)   # "x" on row 2: drop the queued entry
-    moved(343, 165); time.sleep(0.15)
+    moved(293, 165); time.sleep(0.15)
     holdclick(1); time.sleep(0.7)   # "x" on row 1: queue is empty, hint
                                     # shows (removing the playing entry
                                     # only re-points, playback runs on)
     key(n)                          # n on an empty queue: toast, no crash
     time.sleep(0.8)
+    # The two new header buttons (todo.md 原型对齐批): "Add files..." opens
+    # the picker in file mode at $HOME — the scratch queue dir, so the two
+    # fixtures are right there as browsable rows. The checkboxes queue in
+    # click order; the queue was empty, so the first pick auto-plays and
+    # the toast reads "Imported". "Clear queue" wipes in two clicks: the
+    # first arms (the label flips to "Clear: sure?"), the second executes —
+    # one click at one button's width from a destroyed queue is too little
+    # intent for a store with no undo.
+    moved(262, 140); time.sleep(0.15)
+    holdclick(1); time.sleep(0.8)   # "Add files...": picker in file mode
+    moved(240, 171); time.sleep(0.15)
+    holdclick(1); time.sleep(0.5)   # tick one.mkv
+    moved(240, 188); time.sleep(0.15)
+    holdclick(1); time.sleep(0.5)   # tick two.mkv
+    moved(273, 459); time.sleep(0.15)
+    holdclick(1); time.sleep(0.9)   # "Add 2 files": first auto-plays
+    if not wait_marker("event: toast=Imported 2 files", 1):
+        sys.exit(5)                 # the file pick did not import
+    moved(683, 140); time.sleep(0.15)
+    holdclick(1); time.sleep(0.6)   # "Clear queue": arms only
+    if marker_count("event: toast=Playlist cleared") != 0:
+        sys.exit(6)                 # one click destroyed the queue
+    moved(683, 140); time.sleep(0.15)
+    holdclick(1); time.sleep(0.6)   # "Clear: sure?": executes
+    if not wait_marker("event: toast=Playlist cleared", 1):
+        sys.exit(5)                 # the confirm click did not clear
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
@@ -1305,9 +1340,11 @@ if mode == "dirpick":
     # pushes the rows to ".." ~188, .cache ~205, media_a ~223, media_b
     # ~243; expanded, its first entry is at (259,187) regardless of entry
     # count. In the playlist tree view the group headers are at y~164
-    # (media_a) and ~222 (media_b) with "Play group" at x~428, member rows
-    # ~20.5 below their header; clicking the folder-node label (310,164)
-    # collapses the group.
+    # (media_a) and ~222 (media_b) with "Play group" at x~378, member rows
+    # ~20.5 below their header; clicking the folder-node label (260,164)
+    # collapses the group. (The tree lives in the playlist window, which
+    # the add/clear batch widened 460->560: centered, so every x here
+    # shifted -50 from the first probes.)
     # The trail tells the fixtures apart by track count, so every step is
     # asserted from the teed media-info lines alone:
     #   1 (recursive import auto-plays a1) 3 (a1 EOF advanced into the
@@ -1375,10 +1412,10 @@ if mode == "dirpick":
                                      # current — jump arm, no-op here)
     key(d.keysym_to_keycode(0x70))   # P: two directories -> tree view
     time.sleep(0.9)
-    pick(428, 222)                   # media_b "Play group": b1 opens
+    pick(378, 222)                   # media_b "Play group": b1 opens
     if not wait_marker("tracks=1 selected", 2):
         sys.exit(5)
-    pick(310, 164)                   # collapse the media_a folder node
+    pick(260, 164)                   # collapse the media_a folder node
     time.sleep(0.8)
 
     # Wheel dial tour (IINA scroll-action defaults): the playlist overlay
@@ -1830,11 +1867,17 @@ RunResult runCli(const std::vector<std::string>& args, int child_timeout_secs = 
   // long coverage frames made every hard-coded budget a coin flip.
   FILE* tee = tee_path.empty() ? nullptr : std::fopen(tee_path.c_str(), "w");
   char buffer[512];
-  std::size_t n = 0;
-  while ((n = fread(buffer, 1, sizeof(buffer), pipe)) > 0) {
-    result.output.append(buffer, n);
+  // fgets, not fread: fread loops until the full request or EOF, so a child
+  // that goes quiet strands its tail bytes inside the pipe and the tee file
+  // freezes mid-trail. The injector polls that file — a toast sitting in the
+  // stranded tail (the playlist clear's confirmation) never reached it, the
+  // quit storm never fired, and the run burned the whole 600s budget on an
+  // app that was actually done. fgets returns on every newline, so the file
+  // stays current line-by-line as the comment above promises.
+  while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+    result.output.append(buffer);
     if (tee != nullptr) {
-      std::fwrite(buffer, 1, n, tee);
+      std::fputs(buffer, tee);
       std::fflush(tee);
     }
   }
@@ -5726,11 +5769,15 @@ TEST_CASE("windowed FFmpeg run walks the play queue end to end") {
   // path that does not exist. The CLI also tees its output to a file so
   // the injector can drive its clicks off observed playback state
   // (docs note in the injector's playlist branch) — hence this block
-  // lives before the fork.
+  // lives before the fork. .cache pins the file picker's sorted rows the
+  // same way the dir-picker tour pins its own HOME (a dot-directory
+  // always sorts first), and HOME points at the scratch tree so the
+  // "Add files..." picker of the file-mode walkthrough opens right on it.
   const std::string queue_dir = "/tmp/soar_playlist_queue_" + std::to_string(::getpid());
   std::error_code queue_ec;
   std::filesystem::remove_all(queue_dir, queue_ec);
   REQUIRE(std::filesystem::create_directories(queue_dir, queue_ec));
+  REQUIRE(std::filesystem::create_directories(queue_dir + "/.cache", queue_ec));
   const std::string first_q = queue_dir + "/one.mkv";
   const std::string second_q = queue_dir + "/two.mkv";
   const std::string dead_q = queue_dir + "/missing.mp4";
@@ -5752,6 +5799,10 @@ TEST_CASE("windowed FFmpeg run walks the play queue end to end") {
   const std::string state_home = "/tmp/soar_playlist_xdg_" + std::to_string(::getpid());
   ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
   const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // $HOME is the file picker's start directory (openDirPicker's ladder),
+  // so point it at the scratch tree: the "Add files..." walkthrough ticks
+  // one.mkv and two.mkv straight off it instead of the real home.
+  const ScopedEnv home_env("HOME", queue_dir.c_str());
   // The embedded bitmap font pins widget metrics so the injector's
   // coordinates mean the same thing on every machine.
   const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
@@ -5804,13 +5855,32 @@ TEST_CASE("windowed FFmpeg run walks the play queue end to end") {
   const std::size_t replay = run.output.find(kT1, loop_wrap + kT1.size());
   CHECK(replay != std::string::npos);
   // The removed entry never comes back: after the queue dropped to one
-  // entry, no later open may surface the 3-track fixture again. The same
-  // goes for the 1-track fixture — the failed open onto the dead entry
-  // ends content playback, and an emptied queue must not advance.
+  // entry, no later open may surface the 3-track fixture again.
   if (replay != std::string::npos) {
-    const std::size_t after_replay = replay + kT1.size();
-    CHECK(run.output.find(kT3, after_replay) == std::string::npos);
-    CHECK(run.output.find(kT1, after_replay) == std::string::npos);
+    CHECK(run.output.find(kT3, replay + kT1.size()) == std::string::npos);
+  }
+  // The file-mode walkthrough (todo.md 原型对齐批): with the queue empty,
+  // "Add 2 files" imports one.mkv + two.mkv and auto-plays the first — a
+  // seventh media-info marker, the 1-track fixture again. The two-click
+  // clear then wipes the queue ~1s into that replay, so its EOF finds an
+  // emptied queue: no further open of either fixture.
+  const std::size_t picked = run.output.find(kT1, replay + kT1.size());
+  CHECK(picked != std::string::npos);
+  if (picked != std::string::npos) {
+    const std::size_t after_pick = picked + kT1.size();
+    CHECK(run.output.find(kT3, after_pick) == std::string::npos);
+    CHECK(run.output.find(kT1, after_pick) == std::string::npos);
+  }
+  // The pick's and the clear's toasts. "Imported" is the was-empty
+  // branch; exactly one clear toast means the arm click really only
+  // armed (the injector's wait-no guards the same thing from the other
+  // side, exit 6).
+  CHECK(run.output.find("event: toast=Imported 2 files") != std::string::npos);
+  const std::string kCleared = "event: toast=Playlist cleared";
+  const std::size_t cleared = run.output.find(kCleared);
+  CHECK(cleared != std::string::npos);
+  if (cleared != std::string::npos) {
+    CHECK(run.output.find(kCleared, cleared + kCleared.size()) == std::string::npos);
   }
   std::filesystem::remove_all(queue_dir, queue_ec);
 #endif
