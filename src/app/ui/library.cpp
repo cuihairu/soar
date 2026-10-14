@@ -233,6 +233,22 @@ bool compareRecent(const LibraryEntry& a, const LibraryEntry& b) {
   return a.path < b.path;
 }
 
+bool matchesLibraryFilter(const LibraryEntry& e, const NfoInfo* nfo,
+                          const std::string& filter) {
+  // ASCII-only fold: a locale-independent rule, and the overlay's bitmap
+  // font is ASCII anyway.
+  auto fold = [](std::string s) {
+    for (char& c : s) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return s;
+  };
+  const std::string needle = fold(filter);
+  if (needle.empty()) return true;
+  if (fold(e.path).find(needle) != std::string::npos) return true;
+  return nfo != nullptr && fold(nfo->title).find(needle) != std::string::npos;
+}
+
 void MediaLibrary::load() {
   folders_.clear();
   entries_.clear();

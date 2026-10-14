@@ -88,6 +88,14 @@ bool matchesCategory(const LibraryEntry& e, LibraryCategory c);
 // (the store's own order is path-only).
 bool compareRecent(const LibraryEntry& a, const LibraryEntry& b);
 
+// The search box's rule (docs/todo.md 原型对齐批): a case-folded substring
+// over the row's label source (the NFO title when a scan scraped one) and
+// the path, which is also the label's fallback — so a file name always
+// matches. The fold is ASCII-only on purpose: no locale in the predicate.
+// An empty filter matches everything.
+bool matchesLibraryFilter(const LibraryEntry& e, const NfoInfo* nfo,
+                          const std::string& filter);
+
 class MediaLibrary {
  public:
   // Bound on the persisted entry count: a runaway download directory must

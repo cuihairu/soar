@@ -1431,9 +1431,12 @@ if mode == "library":
     # load-bearing: a row click navigates, only the bottom button watches
     # the ENTERED folder. The sidebar buckets then take over: Resume and
     # Finished must not leak entries (a click aimed at an empty slot is
-    # asserted harmless from the store), and Recent must order the
-    # fixture's two files by their change tokens (a2's file is an hour
-    # newer) so its row-1 "x" forgets exactly a2.
+    # asserted harmless from the store). The search box takes the first
+    # pitch of the entries column: "/" focuses it, typed keys narrow the
+    # bucket's rows, and the needle composes with the bucket — Recent plus
+    # "a" still lists both files in Recent order (a2 first, its file is an
+    # hour newer), so row 1's "x" forgets exactly a2 and a1 surviving is
+    # the filter-leak tripwire.
     # Coordinates probed under SOAR_UI_BITMAP_FONT=1 on a 1280x800 Xvfb
     # against the -O0 coverage build, in the injector's own frame: the
     # SDL window is 960x540 centred at (160,130), and moved() warps
@@ -1444,10 +1447,12 @@ if mode == "library":
     # "Watch this folder (2 media files, with subfolders)" bottom-left
     # anchored at (418,459). Below the folder block sits the browse
     # split: bucket rows All/Recent/Resume/Finished at x~280,
-    # y~163/181/200/219, entry rows at x~480 on the first two pitches,
-    # and every entry row's "x" right-aligns to x~716 whatever the
-    # label's length. argv[4] is the store path; every destructive click
-    # is confirmed against it before the next step.
+    # y~163/181/200/219; the entries column starts with the search box
+    # (its hint text spans y~164-174), so entry rows sit one pitch lower
+    # than the buckets — row 1 y~194, row 2 y~213 — with the row's "x"
+    # right-aligned to x~716 whatever the label's length. argv[4] is the
+    # store path; every destructive click is confirmed against it before
+    # the next step.
     time.sleep(2.2)
     focus()
     store = sys.argv[4] if len(sys.argv) > 4 else ""
@@ -1500,7 +1505,7 @@ if mode == "library":
     # play count), then Rescan.
     moved(245, 136)
     time.sleep(0.8)
-    moved(480, 163)
+    moved(480, 194)
     time.sleep(0.8)
     sclick(375, 100)   # "Rescan" -> scan + save again (store unchanged)
     time.sleep(0.6)
@@ -1510,7 +1515,7 @@ if mode == "library":
     # bucket filter leaks (exit 6).
     sclick(280, 200)   # the Resume bucket
     time.sleep(0.5)
-    sclick(716, 181)   # second slot is empty under Resume
+    sclick(716, 213)   # second slot is empty under Resume
     time.sleep(0.5)
     if store and "a2.mkv" not in store_txt():
         sys.exit(6)
@@ -1519,19 +1524,47 @@ if mode == "library":
     # must be empty too.
     sclick(280, 219)   # the Finished bucket
     time.sleep(0.5)
-    sclick(716, 163)
+    sclick(716, 194)
     time.sleep(0.5)
     if store and "a1.mkv" not in store_txt():
         sys.exit(6)
 
-    # Recent orders by the scan's change tokens: a2's file is an hour
-    # newer (the test pins the mtimes), so row 1 is a2 and its "x"
-    # forgets exactly a2.
+    # The search half (docs/todo.md 原型对齐批): the Recent bucket, then
+    # "/" focuses the box and a typed needle narrows the bucket's rows.
+    # The needle "a" matches both file paths, so the list keeps the
+    # bucket's order — and Recent's scan tokens put the hour-newer a2
+    # first: row 1's "x" must forget exactly a2, with a1 surviving as the
+    # proof the filter did not leak past the needle.
     sclick(280, 181)   # the Recent bucket
     time.sleep(0.5)
-    sclick(716, 163)   # row 1 = a2's "x" -> removeEntry + save
+    key(d.keysym_to_keycode(0x2f))  # / -> focus the search box
+    time.sleep(0.5)
+    key(d.keysym_to_keycode(0x61))  # a
+    time.sleep(0.6)
+    sclick(716, 194)   # row 1 = a2's "x" (Recent order under the needle)
     if store and not wait_no("a2.mkv"):
         sys.exit(7)
+    if store and "a1.mkv" not in store_txt():
+        sys.exit(8)
+
+    # Clear the needle (the box is refocused by the same "/") so the
+    # remaining steps see the buckets unfiltered: a stale needle would
+    # empty the next slot and turn its "x" click into a no-op the final
+    # wait would catch.
+    key(d.keysym_to_keycode(0x2f))  # / -> refocus the search box
+    time.sleep(0.5)
+    key(d.keysym_to_keycode(0xff08))  # backspace clears the lone "a"
+    time.sleep(0.6)
+
+    # Recent keeps only a1 now; the second slot must be an empty no-op —
+    # a1 vanishing means a stale row landed where nothing should be.
+    sclick(280, 181)   # the Recent bucket
+    time.sleep(0.5)
+    sclick(716, 213)
+    time.sleep(0.5)
+    if store and "a1.mkv" not in store_txt():
+        sys.exit(6)
+
     sclick(folder_x, 136)   # folder row's "x" -> removeFolder + save
     wait_no("\nf ")
     time.sleep(0.4)
@@ -4204,17 +4237,20 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
   REQUIRE(run.exit_code == 0);
   // The drive's own verdict: 0 = every step landed. 6 = a bucket-filter
   // no-op click removed a surviving entry (the sidebar leaks), 7 = a2
-  // survived its Recent-row "x" (the bucket order or the right-aligned
-  // button drifted). Both mean the wiring broke, not just the layout.
+  // survived its Recent-row "x" (the bucket order, the needle or the
+  // right-aligned button drifted), 8 = a1 died under the needle (the
+  // search filter leaked). All mean the wiring broke, not just the
+  // layout.
   REQUIRE(WIFEXITED(injector_status));
   REQUIRE(WEXITSTATUS(injector_status) == 0);
 
   // The drive's tail end, asserted from the store it left behind: the
   // injector watched media_a, rescanned, walked the sidebar buckets
-  // (Resume and Finished proved leak-free by no-op clicks), removed a2
-  // through the Recent bucket and unwatched the folder row — each
-  // destructive step confirmed against the store before the next click.
-  // What remains proves the wiring end to end:
+  // (Resume and Finished proved leak-free by no-op clicks), focused the
+  // search box with "/" and removed a2 through a needle narrowed over
+  // the Recent bucket, then unwatched the folder row — each destructive
+  // step confirmed against the store before the next click. What remains
+  // proves the wiring end to end:
   //   - a1 survives with its seeded history intact (the scan merge keeps
   //     it, removeFolder must not touch non-watched entries, nothing
   //     played so nothing re-recorded);

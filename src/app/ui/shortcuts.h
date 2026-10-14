@@ -138,6 +138,7 @@ enum class ShortcutAction {
   Info, Recent, Help,
   Cast,               // t: the DLNA cast overlay (docs/mvp.md §3)
   Quit,
+  SearchLibrary,      // /: focus the library overlay's search box
 };
 
 class ShortcutMap {
@@ -181,7 +182,7 @@ class ShortcutMap {
   std::string bindingNames(ShortcutAction action) const;
 
   static constexpr int kActionCount =
-      static_cast<int>(ShortcutAction::Quit) + 1;
+      static_cast<int>(ShortcutAction::SearchLibrary) + 1;
 
  private:
   std::vector<ShortcutKey> bindings_[kActionCount];

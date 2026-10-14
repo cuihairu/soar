@@ -567,6 +567,12 @@ class PlayerHud {
           return;
         }
         st_.hud.noteActivity(now);
+        // A focused text field owns the keyboard (the library search box):
+        // typing a "v" must not toggle subtitles. WantCaptureKeyboard is
+        // ImGui's own verdict for the frame, so the shortcut map simply
+        // stands aside; noteActivity above still counts the keypress as
+        // the user being present, so the OSC stays awake while typing.
+        if (ImGui::GetIO().WantCaptureKeyboard) return;
         // SDL reports uppercase letter syms under Shift/CapsLock and defines
         // no SDLK_Q-style constants — normalize so one case label covers both.
         SDL_Keycode key = e.key.keysym.sym;
@@ -688,6 +694,15 @@ class PlayerHud {
             return;
           case ShortcutAction::Library:
             openLibrary();  // media library (docs/mvp.md §3)
+            return;
+          case ShortcutAction::SearchLibrary:
+            // The search half of the browse split (docs/todo.md 原型对齐
+            // 批): open the overlay when needed, then put the caret in
+            // the box — the flag is consumed by the next frame's draw.
+            if (st_.overlay != Overlay::Library) openLibrary();
+            if (st_.overlay == Overlay::Library) {
+              st_.library_search_focus = true;
+            }
             return;
           case ShortcutAction::Cast:
             openCast();  // DLNA cast overlay (docs/mvp.md §3)
@@ -2683,7 +2698,13 @@ class PlayerHud {
     std::vector<const LibraryEntry*> shown;
     shown.reserve(entries.size());
     for (const LibraryEntry& e : entries) {
-      if (matchesCategory(e, st_.library_category)) shown.push_back(&e);
+      if (!matchesCategory(e, st_.library_category)) continue;
+      // The search box narrows within the bucket: the bucket filters by
+      // state, the box by text, and the two compose (library.h owns the
+      // match rule).
+      const NfoInfo* nfo = library_->nfoFor(e.path);
+      if (!matchesLibraryFilter(e, nfo, st_.library_filter)) continue;
+      shown.push_back(&e);
     }
     if (st_.library_category == LibraryCategory::Recent) {
       std::sort(shown.begin(), shown.end(),
@@ -2691,7 +2712,21 @@ class PlayerHud {
                   return compareRecent(*a, *b);
                 });
     }
+    // The search box (docs/todo.md 原型对齐批): it narrows the bucket's
+    // rows, so the two halves compose — the sidebar filters by state, the
+    // box by text. It lives INSIDE this child on purpose: it shares the
+    // buckets' line, and a line's height is its tallest item (the buckets
+    // child takes all of it), so a box drawn next to that child would
+    // push everything after it past the window edge. SetKeyboardFocusHere
+    // has to precede the item it targets, so the / action's one-shot flag
+    // is consumed on the frame the box is drawn.
     ImGui::BeginChild("library-entries", ImVec2(0, 0));
+    if (st_.library_search_focus) {
+      st_.library_search_focus = false;
+      ImGui::SetKeyboardFocusHere(0);
+    }
+    ImGui::InputTextWithHint("##library-filter", "Filter title or path ( / )",
+                             st_.library_filter, sizeof(st_.library_filter));
     if (shown.empty()) {
       // The bucket's filter and the store's emptiness are different facts:
       // a watched folder with no media says one thing, a filtered bucket
@@ -2824,6 +2859,8 @@ class PlayerHud {
           {ShortcutAction::Escape, ShortcutAction::None,
            "Leave fullscreen / quit"},
           {ShortcutAction::Quit, ShortcutAction::None, "Quit"},
+          {ShortcutAction::SearchLibrary, ShortcutAction::None,
+           "Focus the library search"},
       };
       std::vector<std::string> keys;
       keys.reserve(sizeof(kRows) / sizeof(kRows[0]));
@@ -2990,6 +3027,14 @@ class PlayerHud {
     // its selection across closing the overlay, so the list lands where
     // the user left off.
     LibraryCategory library_category = LibraryCategory::All;
+    // The search box's needle, which survives closing the overlay too —
+    // the user's narrowed view comes back as they left it. A char buffer
+    // instead of a std::string on purpose: ImGui's string overload lives
+    // in imgui_stdlib.cpp, a translation unit this app does not build.
+    char library_filter[64] = {};
+    // The one-shot caret request the / action leaves behind; the draw
+    // consumes it on the frame the box is drawn.
+    bool library_search_focus = false;
   };
 
   static constexpr milliseconds kProgressInterval{5000};

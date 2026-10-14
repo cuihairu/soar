@@ -28,6 +28,7 @@ using soar::app::defaultLibraryPath;
 using soar::app::LibraryCategory;
 using soar::app::LibraryEntry;
 using soar::app::matchesCategory;
+using soar::app::matchesLibraryFilter;
 using soar::app::MediaLibrary;
 using soar::app::NfoInfo;
 using soar::app::resumePositionMs;
@@ -407,6 +408,27 @@ TEST_CASE("the recent bucket orders by content time, newest first") {
   REQUIRE(nv.size() == 2);
   CHECK(nv[0].path == "/newer.mkv");
   CHECK(nv[1].path == "/older.mkv");
+}
+
+TEST_CASE("the search box folds case and matches the scraped title or the path") {
+  LibraryEntry e;
+  e.path = "/films/my Movie.mkv";
+  NfoInfo nfo;
+  nfo.title = "The Great Adventure";
+
+  // An empty needle keeps everything: the box starts blank and must not
+  // hide the list it sits above.
+  CHECK(matchesLibraryFilter(e, &nfo, ""));
+  // The path half — the needle folds, the haystack folds, either case.
+  CHECK(matchesLibraryFilter(e, &nfo, "movie"));
+  CHECK(matchesLibraryFilter(e, &nfo, "MOVIE"));
+  CHECK(matchesLibraryFilter(e, &nfo, "My movie"));
+  // The title half fires only with a scrape.
+  CHECK(matchesLibraryFilter(e, &nfo, "great"));
+  CHECK(matchesLibraryFilter(e, &nfo, "THE GREAT"));
+  CHECK_FALSE(matchesLibraryFilter(e, &nfo, "missing"));
+  CHECK_FALSE(matchesLibraryFilter(e, nullptr, "great"));
+  CHECK(matchesLibraryFilter(e, nullptr, "my movie"));
 }
 
 TEST_CASE("the store file is bounded at kMaxEntries") {
