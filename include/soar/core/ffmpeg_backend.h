@@ -427,6 +427,13 @@ private:
   std::atomic<bool> network_stall_reported_{false};
   std::atomic<bool> network_stall_exceeded_{false};
 
+  // Deadline (steady-clock ms) for an avio operation outside a watched media
+  // read: the stall watchdog above is armed only around av_read_frame, so a
+  // seek that makes FFmpeg re-fetch a playlist has no watchdog at all. While
+  // non-zero the interrupt callback aborts the read past the deadline instead
+  // of waiting on a source that never answers (BUGS.md #4: stop()'s rewind).
+  std::atomic<std::chrono::milliseconds::rep> bounded_io_deadline_ms_{0};
+
   std::condition_variable decode_cv_;
   std::mutex decode_mutex_;
 

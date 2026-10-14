@@ -214,6 +214,46 @@
   `SDL_Quit()` 先于播放停止——解码/音频线程仍在跑时 SDL 音频子系统已拆。
   已修：`runPlayerWindow` 在循环后、SDL 拆台之前先 `player.stop()`
   （join 先于子系统拆台；空窗/无媒体两路 stop() 均有早退保护）。
+  2026-10-15 收尾段缺陷定位与修复（巡检 R0233）：把 stop() 收尾段的
+  全部等待面逐环过一遍后，定位到两处「无界且对中断不敏感」的等待——
+  都是代码可证的缺陷，但触发条件本地都构造不出：
+
+  1. **stop() 的 rewind seek 无界**：stop() 先把 should_stop_decoding_
+     复位为 false，再做 rewind seek（seekToTimestamp(0)）。复位使中断
+     回调不再 abort 这次 avio；而 stall watchdog 只在 av_read_frame 周围
+     布防（network_read_started_ms_），rewind 的 seek 完全不在其覆盖内。
+     若 demuxer 的 seek 会重新拉取 playlist/manifest（HLS/DASH 类），
+     源已死时这次 seek 可以永久挂住，且它持着 decode_mutex_ 与调用方
+     线程——正是「state=3 后主线程停在 stop()」的形态。
+     修复：给 stop() 的 rewind 加 2s 预算（bounded_io_deadline_ms_ +
+     kStopRewindLimit），中断回调在预算耗尽时 abort 这次 avio；seek 超时
+     则失败返回，play() 另有自己的 rewind 路径，position 已清零。
+  2. **playAudioFrame 的音频背压循环对中断不敏感**：
+     `while (queuedBytes() > max_queued) SDL_Delay(5)` 的唯一出口是设备
+     把队列排空。设备一旦停止排空（SDL 音频设备异常/被抢占），解码线程
+     就停在 SDL_Delay 里，stop() 的 join 跟着挂死。
+     修复：循环条件加 should_stop_decoding_ / seek_requested_ 谓词，退出
+     后若队列仍满则丢弃该帧（seek 会清空设备队列，stop 不排空）。
+
+  踪迹形态复核（修正本条此前的 trail 重建）：stderr 是逐行无缓冲
+  （strace 证实每行一次 write(2)），故 incident 2 的 trail 完整有序；
+  但 streaming 用例不传 --cache-dir，use_cache=false，DownloadProgress
+  只从 avioReadCallback（缓存路径）发出——`download 100%` 不可能来自
+  HLS master 用例，本条此前把同日志其他用例的 trail 拼进了 incident 2。
+  HLS master 夹具不可 seek（media_info_.seekable=false），seek(1s) 立即
+  失败；本地该 run ~0.2s 收尾，因为 main 抢在 EOF 前 stop() 杀掉解码循环。
+  EOF 处理无歧义（playback_state_=Ended; emit(StateChanged); break;），
+  故 state=3 坐实解码线程已退出、main 未到 pause() 的 emit——挂点确在
+  stop() 内。
+
+  复现尝试（如实）：本地累计 ~182 轮重放（142 轮既有 + 本轮 40 轮
+  tsan 树三用例连跑，~2s/轮）零复现；gdb 强制竞态（main 停在 seek 行、
+  解码线程跑）因 cov3 解码 ~0.15x 实时 + ALSA 开失败 ~100ms/帧，9s 内
+  解码线程只到 1400ms/6037ms，未能逼出「Ended 后 seek」路径。两处缺陷
+  的触发条件分别是「设备停止排空」与「rewind seek 做阻塞网络 I/O」，
+  本地夹具（VOD ENDLIST，rewind 不做网络 I/O，strace 证实）都无法构造。
+  结论：根因是代码可证的缺陷族，非本地可复现；SOAR_HANG_DUMP 探针
+  保持布防，等下次 CI 挂死交栈以最终归因。
 - **缓解**：watchdog 按设计把挂死转成干净断言失败（exit 124 带完整
   输出），套件不再整段超时；p2p 套件自定义 main 行缓冲 stdout
   （14226b2），下次挂死日志保底有 banner 与最后开始的 test case。
@@ -228,5 +268,7 @@
   helper 的重试先打印首子末 4096 字节（hangDumpTail 截尾，带单测）
   并 fflush 再重试；自此单次挂死也在绿腿日志留下栈，且即使重试子
   再挂死套件被 ctest 收割，已 flush 的尾巴不丢（p2p 行缓冲教训）。
-- **残余（如实）**：根因未修，方向是收尾段的线程 join 与销毁顺序
-  排查；runner 上间歇复现、本地未复现，等探针在下次挂死时交出堆栈。
+- **残余（如实）**：两处收尾段缺陷已修（见上 2026-10-15 段），但根因
+  未经本地复现坐实——触发条件（设备停止排空 / rewind seek 阻塞网络 I/O）
+  本地夹具构造不出。SOAR_HANG_DUMP 探针保持布防，下次 CI 挂死交栈即可
+  最终归因；若栈落在别处，按栈再查。

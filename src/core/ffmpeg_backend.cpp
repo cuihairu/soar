@@ -50,6 +50,18 @@ constexpr auto kPositionEmitGranularity = std::chrono::milliseconds(200);
 constexpr auto kNetworkStallReportMs = std::chrono::milliseconds(10'000);
 constexpr auto kNetworkStallLimitMs = std::chrono::milliseconds(60'000);
 
+// A stop() must not stall out on a source that never answers: the rewind
+// seek at the end of stop() is the only avio outside a watched read, so it
+// gets this budget instead of the decode read's stall tolerance.
+constexpr std::chrono::milliseconds kStopRewindLimit = std::chrono::milliseconds(2000);
+
+// Steady-clock ms since an unspecified epoch: the shared clock for the
+// network stall watchdog and the bounded-io deadline above.
+static std::chrono::milliseconds::rep steadyNowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+           std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 // Hardware decode (docs/mvp.md §3). The get_format callback picks the
 // hwaccel pixel format the backend negotiated from the decoder's offered
 // list; which one is wanted is carried per-instance through
@@ -844,7 +856,17 @@ bool FFmpegBackend::stop() {
     // beginning" (matching NullBackend). Without this, the next play()
     // would resume reading at the old offset and jump the position back
     // into the middle of the media.
+    //
+    // Bounded: the rewind runs with should_stop_decoding_ already reset, so
+    // the interrupt callback would not abort it, and the stall watchdog is
+    // not armed (it only timestamps av_read_frame). A demuxer whose seek
+    // re-fetches a manifest could otherwise sit on a dead source for good,
+    // holding this lock and the caller's thread with it (BUGS.md #4). A
+    // seek that outlives the budget fails instead; play() then rewinds by
+    // its own path and the position is already zeroed below.
+    bounded_io_deadline_ms_.store(steadyNowMs() + kStopRewindLimit.count());
     (void)seekToTimestamp(std::chrono::milliseconds(0), /*emit_event=*/false);
+    bounded_io_deadline_ms_.store(0);
   }
 
   if (sdl_audio_) {
@@ -2229,6 +2251,14 @@ int FFmpegBackend::ffmpegInterruptCallback(void* opaque) {
   if (self->should_stop_decoding_.load()) {
     return 1;
   }
+  // Bounded avio outside a watched media read: the stall watchdog below is
+  // armed only around av_read_frame, so a seek that makes FFmpeg re-fetch a
+  // playlist would otherwise wait on a dead source for good. Checked before
+  // the started_ms early-out, since such a read carries no timestamp.
+  const auto deadline_ms = self->bounded_io_deadline_ms_.load();
+  if (deadline_ms != 0 && steadyNowMs() >= deadline_ms) {
+    return 1;
+  }
   const auto started_ms = self->network_read_started_ms_.load();
   if (started_ms == 0) {
     // Not inside a watched media read (open/probe phase, paused, or between
@@ -3488,12 +3518,22 @@ void FFmpegBackend::playAudioFrame(const AVFrame* frame) {
     }
   }
 
-  // Backpressure: cap queued audio to ~500ms.
+  // Backpressure: cap queued audio to ~500ms. The loop bails on a stop or a
+  // pending seek: without the check its only exit was the device draining the
+  // queue, so a device that stopped draining would park the decode thread in
+  // SDL_Delay and stop()'s join would hang with it (BUGS.md #4).
   const std::size_t bytes_per_second =
     static_cast<std::size_t>(out_rate) * static_cast<std::size_t>(out_channels) * sizeof(float);
   const std::size_t max_queued = bytes_per_second / 2;
-  while (sdl_audio_->queuedBytes() > max_queued) {
+  while (sdl_audio_->queuedBytes() > max_queued &&
+         !should_stop_decoding_ && !seek_requested_.load()) {
     SDL_Delay(5);
+  }
+  if (sdl_audio_->queuedBytes() > max_queued) {
+    // A stop or seek won the race; the backlog is the audio for the position
+    // we are leaving, so drop this frame instead of adding to it (the seek
+    // clears the device queue, the stop drains nothing).
+    return;
   }
 
   const std::size_t out_bytes = frames * static_cast<std::size_t>(out_channels) * sizeof(float);
