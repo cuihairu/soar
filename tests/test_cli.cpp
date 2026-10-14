@@ -3297,11 +3297,13 @@ sys.exit(0)
 // was closed (a nonzero cli exit is then the child's own doing), while
 // the escape-until-gone timeout (4) means the injection never landed and
 // the child sat in its event loop until the watchdog fired.
+#ifndef _WIN32
 static int injectorExit(pid_t pid) {
   int status = 0;
   ::waitpid(pid, &status, 0);
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
+#endif
 
 TEST_CASE("windowed --cast drives the overlay and the renderer end to end") {
 #ifdef _WIN32
