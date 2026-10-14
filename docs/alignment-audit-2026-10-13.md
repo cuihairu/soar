@@ -47,9 +47,12 @@
 对齐补记（初版误判撤回）：**OSC 2.5s 自动隐藏已实现**——`HudVisibility`
 （ui_state.cpp:91，kHideDelay=2500ms 即原型值/IINA 默认），悬停/拖动/浮层/
 暂停四钉住 + 单击显隐 Force 切换 + 0.16s 淡出（player_window.cpp:835）。
-初版截图全部摄于暂停态，暂停钉住 OSC，故误判「常显」；播放中静置的
-`osc-playing.png`/`osc-hidden.png` 证据对因六树门禁占用构建树暂缓补拍，
-入 evidence/ 后在 OSC 批提交补账。剩余小差异：**鼠标移动不算输入**
+初版截图全部摄于暂停态，暂停钉住 OSC，故误判「常显」；播放中静置证据对
+`osc-playing.png`/`osc-hidden.png` 因六树门禁占用构建树暂缓，现已补入
+evidence/（2026-10-14：Xvfb :118 1280x720 根截图，null 后端；两帧同为播放态
+（「Playing」标签为证），hidden 帧摄于指针移出窗口静置 2.5s 淡出完成之后，
+app 日志 `event: osc=hidden` 佐证；null 后端位置钟不走动，两帧时钟皆 00:00
+属夹具性质）。剩余小差异：**鼠标移动不算输入**
 （SDL_MOUSEMOTION 无处理，仅 key/wheel/click 唤醒；原型「无输入」含移动），
 已登记 todo。（OSC 批本轮落地：SDL_MOUSEMOTION 已计入唤醒
 （player_window.cpp:712），鼠标移动现已算输入，本条闭合。）
