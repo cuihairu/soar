@@ -1903,6 +1903,19 @@ RunResult runCli(const std::vector<std::string>& args, int child_timeout_secs = 
   return result;
 }
 
+// BUGS.md #4: the retry-on-124 in the streaming helpers below keeps the
+// leg green when only one child times out — and the in-binary hang dump
+// (SOAR_HANG_DUMP) rides the timed-out child's captured output, which the
+// retry discards. The tail printed at the retry site puts a single caught
+// hang's backtrace into the run log; the common (exit 0) path never calls
+// it. Bounded so a child that hung mid-download cannot flood the log.
+std::string hangDumpTail(const std::string& output, std::size_t max_bytes) {
+  if (output.size() <= max_bytes) {
+    return output;
+  }
+  return output.substr(output.size() - max_bytes);
+}
+
 // Shared by the adaptive-protocol (HLS/DASH) cases: fork a python3
 // http.server rooted at dir, wait until it accepts connections, run the
 // headless CLI against http://127.0.0.1:<port><url_path>, and reap the
@@ -1973,8 +1986,17 @@ HttpCliRun runHeadlessOverHttpDir(const std::string& dir, const std::string& url
   // which the child watchdog turns into exit 124. Retry once while the
   // fixture server is still up: the hang is per-process and rare, so a
   // second child exiting 0 passes; a case that hangs every time still
-  // fails on the second 124.
+  // fails on the second 124. Print the first child's tail first and
+  // flush: a passing retry would otherwise keep the dump hidden in the
+  // discarded capture, and an unflushed buffer is lost if the retry child
+  // hangs the suite into a ctest kill (the p2p suite's line-buffering
+  // lesson).
   if (result.cli.exit_code == 124) {
+    std::fprintf(stdout,
+                 "BUGS.md #4: first child timed out; its hang dump tail, "
+                 "then one retry:\n%s\n",
+                 hangDumpTail(result.cli.output, 4096).c_str());
+    std::fflush(stdout);
     result.cli = play();
   }
   result.skipped = false;
@@ -2123,6 +2145,11 @@ HttpCliRun runHeadlessOverRtsp(int port_base) {
   };
   result.cli = play();
   if (result.cli.exit_code == 124) {
+    std::fprintf(stdout,
+                 "BUGS.md #4: first child timed out; its hang dump tail, "
+                 "then one retry:\n%s\n",
+                 hangDumpTail(result.cli.output, 4096).c_str());
+    std::fflush(stdout);
     result.cli = play();
   }
   result.skipped = false;
@@ -6765,6 +6792,16 @@ TEST_CASE("headless FFmpeg run over local HTTP server plays a DASH manifest") {
   CHECK(run.cli.output.find("=== Media Info ===") != std::string::npos);
   CHECK(run.cli.output.find("Duration: 6") != std::string::npos);
 #endif
+}
+
+TEST_CASE("hangDumpTail keeps the end and stays bounded") {
+  // The retry sites print this tail so a single caught hang still lands
+  // its in-binary dump in the run log (BUGS.md #4); the semantics here
+  // are the whole string when short, else exactly the last max_bytes.
+  CHECK(hangDumpTail("", 16) == "");
+  CHECK(hangDumpTail("short", 16) == "short");
+  CHECK(hangDumpTail("exactly16chars!!", 16) == "exactly16chars!!");
+  CHECK(hangDumpTail("0123456789abcdefghij", 4) == "ghij");
 }
 
 TEST_CASE("headless FFmpeg run over a local RTSP server plays a live audio stream") {
