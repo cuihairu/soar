@@ -222,7 +222,9 @@
      WARNING（handler 里 backtrace 的 malloc）——warning 级不抢退出码，
      dump 完整打印，属预期噪声。该 case 的 retry 子进程干净退 1（非
      挂死）导致用例判负——exit 1 形态此前未见，疑夹具复放时序 flake，
-     与 #4 独立，待同 SHA rerun 区分。
+     与 #4 独立。后续 SHA（1b9d37a，run 38816561980）的 tsan 腿全绿：
+     该 flake 未复现、#4 族也未复现（一次运行不足以坐实归因，留作
+     挂账观察）。
 - **已知事实**：headless 路径是 open→play→seek→pause→stop 直线序，
   没有自然结束等待循环（早版记档「主循环已按 main.cpp:322 break」
   有误——现行 main.cpp 322 行在 backend 构造块内，无此循环）。EOF
