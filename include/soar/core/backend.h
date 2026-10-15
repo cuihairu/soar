@@ -50,6 +50,11 @@ struct MediaInfo {
   TrackId selected_video{-1};
   TrackId selected_audio{-1};
   TrackId selected_subtitle{-1};
+  // True when the video stream is tagged HDR (SMPTE2084/HDR10 or
+  // ARIB-STD-B67/HLG transfer): the FFmpeg backend tone-maps those frames
+  // to SDR before they reach the render path (docs/mvp.md §3). Other
+  // backends leave it false.
+  bool hdr_video{false};
 };
 
 enum class PlaybackState {

@@ -50,6 +50,7 @@ if(SOAR_ENABLE_FFMPEG)
     pkg_check_modules(FFMPEG IMPORTED_TARGET
       libavformat
       libavcodec
+      libavfilter
       libavutil
       libswresample
       libswscale

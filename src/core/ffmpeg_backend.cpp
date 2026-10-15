@@ -7,6 +7,9 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libavformat/avformat.h>
 #include <libavformat/avio.h>
 #include <libavutil/avutil.h>
@@ -60,6 +63,15 @@ constexpr std::chrono::milliseconds kStopRewindLimit = std::chrono::milliseconds
 // build stage first refuses it (the transcode pump folds the same EEXIST
 // case into its kNoStreamsVerdict).
 constexpr const char* kNoStreamsVerdict = "no video or audio stream found";
+
+// HDR transfer characteristics: SMPTE2084 (HDR10) and ARIB-STD-B67 (HLG)
+// both encode luma above the SDR reference, so such frames need the
+// tone-map graph before the render path can show them at all (docs/mvp.md
+// §3). Primaries and matrix are not part of the test: the graph converts
+// both, and the transfer alone says "HDR source".
+inline bool isHdrTransfer(AVColorTransferCharacteristic trc) {
+  return trc == AVCOL_TRC_SMPTE2084 || trc == AVCOL_TRC_ARIB_STD_B67;
+}
 
 // Steady-clock ms since an unspecified epoch: the shared clock for the
 // network stall watchdog and the bounded-io deadline above.
@@ -282,6 +294,40 @@ struct FFmpegBackend::VideoConvertState {
     }
   }
 };
+
+// HDR → SDR tone map (docs/mvp.md §3): a filter graph built once on the
+// first HDR frame with that frame's geometry, used for every frame after.
+// The destructor releases the graph, which owns both end contexts, so that
+// alone is the whole teardown. Decode-thread only, like video_convert_;
+// released in cleanupDecoders next to it.
+struct FFmpegBackend::HdrToneMap {
+  AVFilterGraph* graph{nullptr};
+  AVFilterContext* src{nullptr};
+  AVFilterContext* sink{nullptr};
+
+  ~HdrToneMap() {
+    avfilter_graph_free(&graph);
+  }
+};
+
+namespace {
+
+// The tone-map recipe, a fixed string so tests can reason about its output
+// (the fixture's measured luma window is in the test file). It is zimg's
+// zscale pipeline: linearize at 100 nits (the SDR reference), convert to
+// BT.709 primaries, hable tone map, then re-encode to BT.709 gamma. The
+// alternatives were rejected on measurement: the stock tonemap filter
+// needs linear-light input, and a graph without zscale has no EOTF step,
+// so it warns "Tonemapping works on linear light only" and tone maps the
+// raw HDR code values — a wrong picture. A build without libzimg therefore
+// passes HDR frames through untouched (HdrToneMapState::PassThrough)
+// rather than shipping that.
+
+constexpr const char* kHdrToneMapZscale =
+    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+    "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+
+} // namespace
 
 #ifdef SOAR_WITH_SDL2
 struct FFmpegBackend::SDLAudio {
@@ -560,6 +606,26 @@ bool FFmpegBackend::open(const MediaSource& source) {
     media_info_.selected_audio = audio_stream_index_;
     media_info_.selected_subtitle = -1; // default: subtitles off
 
+    // HDR is a transfer property, read once per open: the decoder's own
+    // copy of the stream header (it reads the bitstream VUI) with the
+    // container tag as the fallback for streams without one. A stream's
+    // color space does not change mid-playback, so there is no per-frame
+    // re-check; the per-frame path still repairs an untagged frame from
+    // the decoder (runHdrToneMap).
+    AVColorTransferCharacteristic trc = AVCOL_TRC_UNSPECIFIED;
+    if (video_stream_index_ >= 0 &&
+        video_stream_index_ < static_cast<int>(format_ctx_->nb_streams) &&
+        format_ctx_->streams[video_stream_index_]->codecpar) {
+      trc = format_ctx_->streams[video_stream_index_]->codecpar->color_trc;
+    }
+    if (video_decoder_ && video_decoder_->color_trc != AVCOL_TRC_UNSPECIFIED) {
+      trc = video_decoder_->color_trc;
+    }
+    hdr_video_ = isHdrTransfer(trc);
+    media_info_.hdr_video = hdr_video_;
+    hdr_state_.store(hdr_video_ ? HdrToneMapState::Armed : HdrToneMapState::Off,
+                     std::memory_order_relaxed);
+
     for (unsigned int i = 0; i < format_ctx_->nb_streams; ++i) {
       AVStream* stream = format_ctx_->streams[i];
       if (!stream || !stream->codecpar) {
@@ -659,6 +725,8 @@ void FFmpegBackend::close() {
     // has no source to reopen.
     opened_source_ = MediaSource{};
     hwdec_.clear();
+    hdr_video_ = false;
+    hdr_state_.store(HdrToneMapState::Off, std::memory_order_relaxed);
 
     // Drop any audio-track switch that never reached the decode loop.
     {
@@ -2705,6 +2773,10 @@ void FFmpegBackend::cleanupDecoders() {
 
   video_convert_.reset();
 
+  // The HDR tone-map graph belongs to the decode thread like the convert
+  // state above; the decode thread is stopped whenever this runs.
+  hdr_tone_map_.reset();
+
 }
 
 // Drop a live hwaccel arm: release both references to the device context
@@ -3278,6 +3350,126 @@ void FFmpegBackend::processSubtitleFrame(const AVSubtitle& sub, std::chrono::mil
   }
 }
 
+bool FFmpegBackend::buildHdrToneMap(const AVFrame* frame) {
+  if (!frame || frame->width <= 0 || frame->height <= 0 ||
+      frame->format == AV_PIX_FMT_NONE) {
+    return false;
+  }
+
+  auto tm = std::make_unique<HdrToneMap>();
+  tm->graph = avfilter_graph_alloc();
+  if (!tm->graph) {
+    return false;
+  }
+
+  // zscale is the only correct recipe (see the file-local comment above);
+  // a build without libzimg gets PassThrough instead of a wrong picture.
+  if (!avfilter_get_by_name("zscale")) {
+    return false;
+  }
+
+  // The input node takes the decoded frame's own shape; the recipe ends in
+  // format=yuv420p, so the caller treats the output like the plain convert
+  // path's output. A missing aspect falls back to square pixels (the buffer
+  // filter refuses 0/1). No color properties are passed: which ones this
+  // build's buffer filter accepts differs by version, and the pushed frame
+  // already carries its own tags (runHdrToneMap restores the transfer tag
+  // from the decoder when a frame arrives untagged).
+  AVRational tb{1, 1};
+  if (format_ctx_ && video_stream_index_ >= 0 &&
+      video_stream_index_ < static_cast<int>(format_ctx_->nb_streams) &&
+      format_ctx_->streams[video_stream_index_]->time_base.den > 0) {
+    tb = format_ctx_->streams[video_stream_index_]->time_base;
+  }
+  const AVRational sar = frame->sample_aspect_ratio.num > 0 &&
+                                 frame->sample_aspect_ratio.den > 0
+                             ? frame->sample_aspect_ratio
+                             : AVRational{1, 1};
+  const std::string input_args = fmt::format(
+      "video_size={}x{}:pix_fmt={}:time_base={}/{}:pixel_aspect={}/{}",
+      frame->width, frame->height, static_cast<int>(frame->format),
+      tb.num, tb.den, sar.num, sar.den);
+
+  const AVFilter* in_filter = avfilter_get_by_name("buffer");
+  const AVFilter* out_filter = avfilter_get_by_name("buffersink");
+  if (!in_filter || !out_filter ||
+      avfilter_graph_create_filter(&tm->src, in_filter, "in", input_args.c_str(),
+                                   nullptr, tm->graph) < 0 ||
+      avfilter_graph_create_filter(&tm->sink, out_filter, "out", nullptr,
+                                   nullptr, tm->graph) < 0) {
+    return false; // tm owns the graph; its destructor releases everything
+  }
+
+  AVFilterInOut* outputs = avfilter_inout_alloc();
+  AVFilterInOut* inputs = avfilter_inout_alloc();
+  int ret = -1;
+  if (outputs && inputs) {
+    outputs->name = av_strdup("in");
+    outputs->filter_ctx = tm->src;
+    outputs->pad_idx = 0;
+    inputs->name = av_strdup("out");
+    inputs->filter_ctx = tm->sink;
+    inputs->pad_idx = 0;
+    ret = avfilter_graph_parse_ptr(tm->graph, kHdrToneMapZscale, &inputs,
+                                   &outputs, nullptr);
+    if (ret >= 0) {
+      ret = avfilter_graph_config(tm->graph, nullptr);
+    }
+  }
+  avfilter_inout_free(&inputs);
+  avfilter_inout_free(&outputs);
+  if (ret < 0) {
+    return false;
+  }
+
+  hdr_tone_map_ = std::move(tm);
+  hdr_state_.store(HdrToneMapState::Zscale, std::memory_order_relaxed);
+  return true;
+}
+
+bool FFmpegBackend::runHdrToneMap(const AVFrame* frame, AVFrame** out) {
+  HdrToneMap* tm = hdr_tone_map_.get();
+  if (!tm || !frame) {
+    return false;
+  }
+
+  // A hardware-download or some demux paths hand over frames without the
+  // transfer tag; restore it from the decoder so the graph applies the
+  // right EOTF instead of treating the HDR code values as SDR gamma.
+  AVFrame* video = const_cast<AVFrame*>(frame);
+  if (video->color_trc == AVCOL_TRC_UNSPECIFIED && video_decoder_ &&
+      video_decoder_->color_trc != AVCOL_TRC_UNSPECIFIED) {
+    video->color_trc = video_decoder_->color_trc;
+  }
+
+  // KEEP_REF: the caller keeps owning the decoded frame (processVideoFrame
+  // frees it after renderVideoFrame returns).
+  if (av_buffersrc_add_frame_flags(tm->src, video, AV_BUFFERSRC_FLAG_KEEP_REF) < 0) {
+    return false;
+  }
+
+  // The sink fills a caller-owned frame (6.x through 9.x alike).
+  AVFrame* mapped = av_frame_alloc();
+  if (!mapped) {
+    return false;
+  }
+  const int ret = av_buffersink_get_frame(tm->sink, mapped);
+  if (ret == AVERROR(EAGAIN)) {
+    // Nothing came back for this push: pass the frame through the plain
+    // convert path. Every recipe is a 1:1 chain with no internal queueing
+    // (no frame threading is enabled on the graph), so this cannot leave a
+    // stale frame behind for the next pull.
+    av_frame_free(&mapped);
+    return false;
+  }
+  if (ret < 0) {
+    av_frame_free(&mapped);
+    return false;
+  }
+  *out = mapped;
+  return true;
+}
+
 void FFmpegBackend::renderVideoFrame(const AVFrame* frame) {
   if (!frame) {
     return;
@@ -3289,9 +3481,29 @@ void FFmpegBackend::renderVideoFrame(const AVFrame* frame) {
     return;
   }
 
-  const auto src_fmt = static_cast<AVPixelFormat>(frame->format);
+  // HDR sources: convert the frame to SDR before anything downstream sees
+  // it. The graph is built once on the first HDR frame; if it cannot be
+  // built the source stays on PassThrough (the plain convert path, like
+  // the hwdec's silent software fallback) instead of failing playback.
+  AVFrame* tone_mapped = nullptr;
+  if (hdr_video_) {
+    if (!hdr_tone_map_ && !buildHdrToneMap(frame)) {
+      hdr_state_.store(HdrToneMapState::PassThrough, std::memory_order_relaxed);
+    }
+    if (hdr_tone_map_) {
+      AVFrame* mapped = nullptr;
+      if (runHdrToneMap(frame, &mapped)) {
+        tone_mapped = mapped;
+      }
+    }
+  }
 
-  const AVFrame* src = frame;
+  // A tone-mapped frame is yuv420p by construction, so the swscale block
+  // below is skipped exactly when a graph frame is live.
+  const AVFrame* src = tone_mapped ? tone_mapped : frame;
+  const auto src_fmt =
+      tone_mapped ? AV_PIX_FMT_YUV420P : static_cast<AVPixelFormat>(frame->format);
+
   if (src_fmt != AV_PIX_FMT_YUV420P) {
     if (!video_convert_) {
       video_convert_ = std::make_unique<VideoConvertState>();
@@ -3410,6 +3622,12 @@ void FFmpegBackend::renderVideoFrame(const AVFrame* frame) {
       src->data[2] + static_cast<std::size_t>(row * src->linesize[2]),
       static_cast<std::size_t>(staging_video_frame_.stride_v)
     );
+  }
+
+  // Last use of the tone-mapped frame was the copies above; release it
+  // before the mailbox swap.
+  if (tone_mapped) {
+    av_frame_free(&tone_mapped);
   }
 
   {

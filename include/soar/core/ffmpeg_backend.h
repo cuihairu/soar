@@ -108,6 +108,20 @@ public:
     return ass_document_active_.load(std::memory_order_relaxed);
   }
 
+  // HDR → SDR tone mapping (docs/mvp.md §3): what happens to the current
+  // source's video frames. Off: the source is not tagged HDR, frames take
+  // the plain convert path. Armed: the source is HDR but no frame has been
+  // converted yet (before the first frame decodes). Zscale: the live
+  // recipe — zimg's zscale graph, which linearizes at the SDR reference
+  // and re-encodes to BT.709 (see mvp.md §3). PassThrough: no zimg in
+  // this FFmpeg build (or the graph failed to build), so HDR frames are
+  // handed over untouched — the hwdec-style silent fallback. Atomic
+  // because the decode thread sets it and the UI/test thread reads it.
+  enum class HdrToneMapState { Off, Armed, Zscale, PassThrough };
+  HdrToneMapState hdrToneMap() const {
+    return hdr_state_.load(std::memory_order_relaxed);
+  }
+
   bool setLoopAB(std::chrono::milliseconds a, std::chrono::milliseconds b) override;
   bool clearLoopAB() override;
   bool loopAB(std::chrono::milliseconds& out_a, std::chrono::milliseconds& out_b) const override;
@@ -220,6 +234,16 @@ private:
   // Rendering (to be implemented)
   void renderVideoFrame(const AVFrame* frame);
   void playAudioFrame(const AVFrame* frame);
+
+  // HDR → SDR tone map (docs/mvp.md §3). buildHdrToneMap runs once, on the
+  // first HDR frame (the graph takes that frame's geometry and pixel
+  // format); runHdrToneMap converts one frame through it and leaves *out
+  // owning a fresh AVFrame the caller must av_frame_free, or returns false
+  // with *out untouched (the caller then takes the plain convert path for
+  // that frame). Both are decode-thread only; the graph is torn down with
+  // the convert state in cleanupDecoders.
+  bool buildHdrToneMap(const AVFrame* frame);
+  bool runHdrToneMap(const AVFrame* frame, AVFrame** out);
 
   // Seeking
   bool flushDecoders();
@@ -385,6 +409,9 @@ private:
   struct VideoConvertState;
   std::unique_ptr<VideoConvertState> video_convert_;
 
+  struct HdrToneMap;
+  std::unique_ptr<HdrToneMap> hdr_tone_map_;
+
   struct SDLAudio;
   std::unique_ptr<SDLAudio> sdl_audio_;
 
@@ -483,6 +510,15 @@ private:
   std::string hwdec_;
   struct AVBufferRef* hw_device_ctx_{nullptr};
   int hw_pix_fmt_{-1};
+
+  // HDR → SDR (docs/mvp.md §3). hdr_video_ is the source-level tag read at
+  // the end of a successful open (the decoder's transfer characteristic,
+  // with the stream header as its fallback) and read on the decode thread
+  // from the first frame on — open runs before the decode thread starts,
+  // so the store and the load are ordered. hdr_state_ tracks the live
+  // conversion for the caller; both reset on close().
+  bool hdr_video_{false};
+  std::atomic<HdrToneMapState> hdr_state_{HdrToneMapState::Off};
 };
 
 /**

@@ -3904,6 +3904,135 @@ TEST_CASE("the stream-less verdict holds when the open itself is refused") {
   CHECK(sink.errors.load() >= 1);
 }
 
+TEST_CASE("an HDR transfer tag is reported in the media info") {
+  // hdr10_gray.mov / hlg_gray.mov are flat-gray 10-bit HEVC clips whose
+  // only difference from an SDR source is the transfer tag (SMPTE2084 vs
+  // ARIB-STD-B67): the flag must follow that tag alone, and a regular
+  // BT.709 source must stay false. The fixtures are committed, so every
+  // leg runs this (the recipe may differ per build; detection may not).
+  auto backend = soar::makeFFmpegBackend();
+
+  REQUIRE(backend->open(soar::MediaSource{std::string(SOAR_TEST_CAST_FIXTURES) +
+                                          "/hdr10_gray.mov"}));
+  CHECK(backend->mediaInfo().hdr_video);
+  CHECK(static_cast<soar::FFmpegBackend*>(backend.get())->hdrToneMap() ==
+        soar::FFmpegBackend::HdrToneMapState::Armed);
+  backend->close();
+  CHECK(static_cast<soar::FFmpegBackend*>(backend.get())->hdrToneMap() ==
+        soar::FFmpegBackend::HdrToneMapState::Off);
+
+  REQUIRE(backend->open(soar::MediaSource{std::string(SOAR_TEST_CAST_FIXTURES) +
+                                          "/hlg_gray.mov"}));
+  CHECK(backend->mediaInfo().hdr_video);
+  backend->close();
+
+  REQUIRE(backend->open(soar::MediaSource{std::string(SOAR_TEST_CAST_FIXTURES) +
+                                          "/cast_h264_aac.mp4"}));
+  CHECK_FALSE(backend->mediaInfo().hdr_video);
+  CHECK(static_cast<soar::FFmpegBackend*>(backend.get())->hdrToneMap() ==
+        soar::FFmpegBackend::HdrToneMapState::Off);
+  backend->close();
+}
+
+TEST_CASE("HDR10 frames are tone-mapped to SDR before the render path") {
+  // hdr10_gray.mov is a flat PQ gray at code 512 — PQ mid, ~100 nits, an
+  // SDR-referenced mid gray. The plain convert path keeps the raw code
+  // values (measured Y mean 125); the tone-map graph applies the PQ EOTF
+  // and re-encodes to BT.709. The window is measured for the only recipe
+  // this backend ships — zimg's zscale, which linearizes at the SDR
+  // reference (npl=100) and lands mid SDR (measured Y mean 152) — and it
+  // excludes the naive 125, so a graph that silently stopped converting is
+  // caught. A build without libzimg reports PassThrough instead; the test
+  // then witnesses that the frames are genuinely untouched rather than
+  // failing, because a wrong-but-darker stock tonemap recipe (FFmpeg's own
+  // tonemap filter warns "Tonemapping works on linear light only" without
+  // an EOTF step) was rejected on measurement.
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+
+  REQUIRE(backend->open(soar::MediaSource{std::string(SOAR_TEST_CAST_FIXTURES) +
+                                          "/hdr10_gray.mov"}));
+  REQUIRE(backend->play());
+
+  soar::DecodedVideoFrame frame;
+  bool got = false;
+  for (int i = 0; i < 1000 && !got; ++i) {
+    got = ffmpeg->tryGetVideoFrame(frame);
+    if (!got) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  REQUIRE(got);
+
+  const auto recipe = ffmpeg->hdrToneMap();
+
+  CHECK(frame.width == 128);
+  CHECK(frame.height == 72);
+  REQUIRE(static_cast<std::size_t>(frame.stride_y * frame.height) <= frame.y.size());
+  double y_mean = 0;
+  for (int row = 0; row < frame.height; ++row) {
+    const auto* line = frame.y.data() + static_cast<std::size_t>(row * frame.stride_y);
+    for (int col = 0; col < frame.width; ++col) {
+      y_mean += line[col];
+    }
+  }
+  y_mean /= static_cast<double>(frame.width * frame.height);
+  if (recipe == soar::FFmpegBackend::HdrToneMapState::Zscale) {
+    CHECK_MESSAGE(true, "tone-map graph engaged");
+    CHECK(y_mean > 130.0);
+    CHECK(y_mean < 180.0);
+  } else {
+    CHECK(recipe == soar::FFmpegBackend::HdrToneMapState::PassThrough);
+    CHECK(y_mean > 118.0);
+    CHECK(y_mean < 132.0);
+  }
+
+  backend->stop();
+  backend->close();
+}
+
+TEST_CASE("HLG frames flow through the tone map") {
+  // hlg_gray.mov tags the same flat gray as HLG. Unlike HDR10 there is no
+  // pixel-window assertion: HLG's own design keeps mid gray at the SDR
+  // reference, so a correctly tone-mapped HLG frame lands near the plain
+  // convert path's value for this content (zimg measured 122 vs the naive
+  // 125) — luma cannot witness the conversion here. What must hold: the
+  // source is flagged, the graph engages, and frames keep flowing as
+  // valid YUV420P.
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+
+  REQUIRE(backend->open(soar::MediaSource{std::string(SOAR_TEST_CAST_FIXTURES) +
+                                          "/hlg_gray.mov"}));
+  CHECK(backend->mediaInfo().hdr_video);
+  REQUIRE(backend->play());
+
+  soar::DecodedVideoFrame frame;
+  bool got = false;
+  for (int i = 0; i < 1000 && !got; ++i) {
+    got = ffmpeg->tryGetVideoFrame(frame);
+    if (!got) {
+      std::this_thread::sleep_for(10ms);
+    }
+  }
+  REQUIRE(got);
+
+  const auto recipe = ffmpeg->hdrToneMap();
+  const bool tone_mapped =
+      recipe == soar::FFmpegBackend::HdrToneMapState::Zscale ||
+      recipe == soar::FFmpegBackend::HdrToneMapState::PassThrough;
+  CHECK_MESSAGE(tone_mapped, "tone-map graph did not engage");
+
+  CHECK(frame.width == 128);
+  CHECK(frame.height == 72);
+  CHECK_FALSE(frame.y.empty());
+  CHECK_FALSE(frame.u.empty());
+  CHECK_FALSE(frame.v.empty());
+
+  backend->stop();
+  backend->close();
+}
+
 TEST_CASE("a video codec with no FFmpeg decoder fails to open") {
   std::string unknown;
   if (!envMedia("SOAR_TEST_UNKNOWN_CODEC", unknown)) {
