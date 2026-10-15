@@ -68,6 +68,7 @@
 
 #  ifdef SOAR_WITH_IMGUI
 #    include "imgui.h"
+#    include "imgui_internal.h"  // ClearActiveID: the Tab escape from the search box
 #    include "backends/imgui_impl_sdl2.h"
 #    include "backends/imgui_impl_sdlrenderer2.h"
 #  endif
@@ -581,6 +582,87 @@ class PlayerHud {
     library_->save();
   }
 
+  // ---- App-drawn keyboard focus (V7b, docs/ui-design.md §5.2「焦点可见」).
+  // ImGui nav stays off — §3.2's rebindable shortcut map keeps every key —
+  // so the ring is plain state moved by keys nobody else owns: Tab
+  // (+Shift backward) on the playlist/library overlays (unbound in §3.2)
+  // and arrows inside a popup menu, where the map already stands aside
+  // (handleEvent returns above while a popup is open). Enter replays the
+  // focused row through its own click path on the next draw. Row counts
+  // are re-published every frame by the drawing side, so focus can never
+  // point past a list that shrank between frames (clamp in drawOverlays).
+  UiFocus ui_focus_;
+  int playlist_rows_ = 0;        // queue rows the last playlist draw saw
+  int library_rows_ = 0;         // source rows the last library draw saw
+  int menu_rows_ = 0;            // rows drawn so far in the open popup
+  int menu_count_ = 0;           // rows the open popup had last frame
+  bool blur_text_next_ = false;  // Tab left the library search box's caret
+
+  // The ring: 2px accent drawn 4px outside the focused row (the
+  // prototype's :focus-visible; geometry pinned in ui_tokens.h). Call
+  // right after the row's widget so GetItemRect* still reads that row.
+  void drawFocusRing() {
+    const ImVec2 lo = ImGui::GetItemRectMin();
+    const ImVec2 hi = ImGui::GetItemRectMax();
+    ImGui::GetWindowDrawList()->AddRect(
+        ImVec2(lo.x - kFocusRingExpand, lo.y - kFocusRingExpand),
+        ImVec2(hi.x + kFocusRingExpand, hi.y + kFocusRingExpand),
+        ImGui::GetColorU32(theme::kAccent), 0.0f, 0, kFocusRingWidth);
+  }
+
+  // Per-row protocol for the popup menus: read before the widget (did
+  // Enter pick this row?), ring+count after it. One pair per focusable
+  // row site keeps the index order identical to the visual order.
+  bool menuRowEnter() {
+    return ui_focus_.takesActivation(UiFocus::Face::MenuItems, menu_rows_);
+  }
+  void menuRowRing() {
+    if (ui_focus_.holds(UiFocus::Face::MenuItems, menu_rows_)) drawFocusRing();
+    ++menu_rows_;
+  }
+
+  // Arrows/Tab/Enter inside an open combo popup. handleEvent stands aside
+  // there, so these keys are nobody else's — the arrows are not dual-role
+  // (outside a popup they keep their §3.2 seek/volume meaning).
+  void focusMenuKey(SDL_Keycode key, bool shift) {
+    if (menu_count_ <= 0) return;  // popup is drawing its first frame
+    if (key == SDLK_TAB) {
+      ui_focus_.advance(UiFocus::Face::MenuItems, shift ? -1 : 1, menu_count_);
+    } else if (key == SDLK_DOWN) {
+      ui_focus_.advance(UiFocus::Face::MenuItems, 1, menu_count_);
+    } else if (key == SDLK_UP) {
+      ui_focus_.advance(UiFocus::Face::MenuItems, -1, menu_count_);
+    } else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+      ui_focus_.armActivate();
+    }
+  }
+
+  // Tab/Enter on the playlist/library overlays. Returns true when the key
+  // was consumed.
+  bool focusOverlayKey(SDL_Keycode key, bool shift) {
+    UiFocus::Face face = UiFocus::Face::None;
+    if (st_.overlay == Overlay::Playlist) face = UiFocus::Face::PlaylistRows;
+    else if (st_.overlay == Overlay::Library) face = UiFocus::Face::LibraryRows;
+    else return false;
+    if (key == SDLK_TAB) {
+      const int count =
+          face == UiFocus::Face::PlaylistRows ? playlist_rows_ : library_rows_;
+      ui_focus_.advance(face, shift ? -1 : 1, count);
+      // The caret (if any) leaves the search box: the ring is moving
+      // onto the rows, and they must be able to take the next key.
+      if (face == UiFocus::Face::LibraryRows) blur_text_next_ = true;
+      return ui_focus_.active();  // a zero-row face leaves the key alone
+    }
+    if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+      // While the filter box has the caret it also owns Enter (typing a
+      // needle must not fire a row); Tab above is the way out.
+      if (ImGui::GetIO().WantCaptureKeyboard) return false;
+      ui_focus_.armActivate();
+      return true;
+    }
+    return false;
+  }
+
   // App-level input (docs §3). `quit` is set on the exit paths. The UI's
   // widgets have already seen the event (ImGui_ImplSDL2_ProcessEvent runs
   // first in the caller); events the UI claims are skipped here.
@@ -592,23 +674,29 @@ class PlayerHud {
         return;
       case SDL_KEYDOWN: {
         if (e.key.repeat != 0) return;  // held key: no repeat actions in v0.1
-        // An open combo popup owns the keyboard (arrows move its
-        // selection); app shortcuts must not fire through it.
+        // SDL reports uppercase letter syms under Shift/CapsLock and defines
+        // no SDLK_Q-style constants — normalize so one case label covers both.
+        SDL_Keycode key = e.key.keysym.sym;
+        if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
+        // An open combo popup owns the keyboard (arrows drive the app-drawn
+        // menu focus, docs §5.2); app shortcuts must not fire through it.
         if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId |
                                              ImGuiPopupFlags_AnyPopupLevel)) {
+          focusMenuKey(key, (e.key.keysym.mod & KMOD_SHIFT) != 0);
           return;
         }
+        // Tab/Enter are bound to nothing in §3.2: they move and fire the
+        // app-drawn overlay focus (V7b, docs §5.2).
+        if (focusOverlayKey(key, (e.key.keysym.mod & KMOD_SHIFT) != 0)) return;
         st_.hud.noteActivity(now);
         // A focused text field owns the keyboard (the library search box):
         // typing a "v" must not toggle subtitles. WantCaptureKeyboard is
         // ImGui's own verdict for the frame, so the shortcut map simply
         // stands aside; noteActivity above still counts the keypress as
         // the user being present, so the OSC stays awake while typing.
+        // (Tab already slipped past via focusOverlayKey — it is how focus
+        // escapes the box onto the rows.)
         if (ImGui::GetIO().WantCaptureKeyboard) return;
-        // SDL reports uppercase letter syms under Shift/CapsLock and defines
-        // no SDLK_Q-style constants — normalize so one case label covers both.
-        SDL_Keycode key = e.key.keysym.sym;
-        if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
         const ShortcutKey pressed{
             static_cast<std::uint32_t>(key),
             (e.key.keysym.mod & KMOD_SHIFT) != 0,
@@ -1180,19 +1268,20 @@ class PlayerHud {
       if (!c->language.empty()) {
         item += " (" + c->language + ")";
       }
-      if (!ImGui::Selectable(item.c_str())) {
-        continue;
+      const bool enter = menuRowEnter();
+      if (ImGui::Selectable(item.c_str()) || enter) {
+        TrackId id = -1;
+        if (player_.loadExternalSubtitle(c->path, id) &&
+            player_.selectTrack(TrackType::Subtitle, id)) {
+          loaded_external_paths_[externalTrackTitle(c->path)] = c->path;
+          st_.toast.show("Loaded " + c->title, now);
+        } else {
+          // A missing or cue-less file is a normal outcome, so this is a
+          // toast, not an error dialog.
+          st_.toast.show("Sidecar load failed", now);
+        }
       }
-      TrackId id = -1;
-      if (player_.loadExternalSubtitle(c->path, id) &&
-          player_.selectTrack(TrackType::Subtitle, id)) {
-        loaded_external_paths_[externalTrackTitle(c->path)] = c->path;
-        st_.toast.show("Loaded " + c->title, now);
-      } else {
-        // A missing or cue-less file is a normal outcome, so this is a
-        // toast, not an error dialog.
-        st_.toast.show("Sidecar load failed", now);
-      }
+      menuRowRing();
     }
 
     // Remote candidates: everything already downloaded this session is
@@ -1213,10 +1302,11 @@ class PlayerHud {
       if (!c.language.empty()) {
         item += " (" + c.language + ")";
       }
-      if (!ImGui::Selectable(item.c_str())) {
-        continue;
+      const bool enter = menuRowEnter();
+      if (ImGui::Selectable(item.c_str()) || enter) {
+        downloadAndLoad(c, now);
       }
-      downloadAndLoad(c, now);
+      menuRowRing();
     }
 
     // The [translate] section: one row per loaded external track that has
@@ -1239,14 +1329,15 @@ class PlayerHud {
         // suffix keeps ImGui's ids distinct without changing the label.
         item += "##tr" + std::to_string(track->id);
       }
-      if (!ImGui::Selectable(item.c_str())) {
-        continue;
+      const bool enter = menuRowEnter();
+      if (ImGui::Selectable(item.c_str()) || enter) {
+        if (path != nullptr) {
+          translateAndLoad(track->title, *path, now);
+        } else {
+          exportTranslateAndLoad(*track, now);
+        }
       }
-      if (path != nullptr) {
-        translateAndLoad(track->title, *path, now);
-      } else {
-        exportTranslateAndLoad(*track, now);
-      }
+      menuRowRing();
     }
   }
 
@@ -2217,16 +2308,20 @@ class PlayerHud {
     char label[16];
     std::snprintf(label, sizeof(label), "%.2gx", st_.last_rate);
     if (!ImGui::BeginCombo("##rate", label)) return;
+    menu_rows_ = 0;  // the open popup republishes its rows every frame
     for (const double r : kRates) {
       const bool selected = std::abs(r - st_.last_rate) < 1e-9;
       char item[16];
       std::snprintf(item, sizeof(item), "%.2gx", r);
-      if (ImGui::Selectable(item, selected) && !selected) {
+      const bool enter = menuRowEnter();
+      if ((ImGui::Selectable(item, selected) || enter) && !selected) {
         st_.last_rate = r;
         player_.setRate(r);
         st_.toast.show(std::string(item) + " speed", now);
       }
+      menuRowRing();
     }
+    menu_count_ = menu_rows_;
     ImGui::EndCombo();
   }
 
@@ -2251,13 +2346,16 @@ class PlayerHud {
     if (!ImGui::BeginCombo(type == TrackType::Audio ? "##audio" : "##sub", label)) {
       return;
     }
+    menu_rows_ = 0;  // the open popup republishes its rows every frame
     // Current value marked, one level of nesting max (docs §1.4-4).
     if (type == TrackType::Subtitle) {
       const bool off = selected < 0;
-      if (ImGui::Selectable("Off", off) && !off) {
+      const bool enter = menuRowEnter();
+      if ((ImGui::Selectable("Off", off) || enter) && !off) {
         player_.disableSubtitles();
         st_.toast.show("Subtitles off", now);
       }
+      menuRowRing();
       ImGui::Separator();
     }
     for (const auto* t : tracks) {
@@ -2265,7 +2363,8 @@ class PlayerHud {
           "#" + std::to_string(t->id) + " " + t->codec;
       if (!t->language.empty()) item += " (" + t->language + ")";
       const bool is_sel = t->id == selected;
-      if (ImGui::Selectable(item.c_str(), is_sel) && !is_sel) {
+      const bool enter = menuRowEnter();
+      if ((ImGui::Selectable(item.c_str(), is_sel) || enter) && !is_sel) {
         if (player_.selectTrack(type, t->id)) {
           st_.toast.show((type == TrackType::Audio ? "Audio track "
                                                    : "Subtitle track ") +
@@ -2275,6 +2374,7 @@ class PlayerHud {
           st_.toast.show("Track switch failed", now);
         }
       }
+      menuRowRing();
     }
     // Output endpoint under the audio combo (v0.2): the tracks above pick
     // the stream, these entries pick where it comes out. Enumerated only
@@ -2286,7 +2386,8 @@ class PlayerHud {
       const std::string current = player_.currentAudioOutputDevice();
       auto deviceItem = [&](const char* label, const std::string& value) {
         const bool is_sel = current == value;
-        if (ImGui::Selectable(label, is_sel) && !is_sel) {
+        const bool enter = menuRowEnter();
+        if ((ImGui::Selectable(label, is_sel) || enter) && !is_sel) {
           if (player_.selectAudioOutputDevice(value)) {
             st_.toast.show(value.empty() ? "Output: default"
                                          : "Output: " + value.substr(0, 24),
@@ -2295,6 +2396,7 @@ class PlayerHud {
             st_.toast.show("Device switch failed", now);
           }
         }
+        menuRowRing();
       };
       deviceItem("Output: default", "");
       for (const auto& d : player_.audioOutputDevices()) {
@@ -2306,6 +2408,7 @@ class PlayerHud {
       // container (docs/mvp.md §6).
       drawSidecarEntries(info, now);
     }
+    menu_count_ = menu_rows_;
     ImGui::EndCombo();
   }
 
@@ -2533,6 +2636,26 @@ class PlayerHud {
   }
 
   void drawOverlays() {
+    // V7b focus upkeep: a face exists only while its surface is up — the
+    // overlay enum is authoritative (overlays close by enum writes in the
+    // row handlers), a popup menu by ImGui's own verdict — and focus
+    // clamps to the counts the last draw published.
+    const bool popup_open = ImGui::IsPopupOpen(
+        nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    if (ui_focus_.face() == UiFocus::Face::PlaylistRows &&
+        st_.overlay != Overlay::Playlist) {
+      ui_focus_.clear();
+    }
+    if (ui_focus_.face() == UiFocus::Face::LibraryRows &&
+        st_.overlay != Overlay::Library) {
+      ui_focus_.clear();
+    }
+    if (ui_focus_.face() == UiFocus::Face::MenuItems && !popup_open) {
+      ui_focus_.clear();
+    }
+    ui_focus_.clamp(UiFocus::Face::PlaylistRows, playlist_rows_);
+    ui_focus_.clamp(UiFocus::Face::LibraryRows, library_rows_);
+    if (popup_open) ui_focus_.clamp(UiFocus::Face::MenuItems, menu_count_);
     switch (st_.overlay) {
       case Overlay::None: return;
       case Overlay::Info: drawInfoOverlay(); return;
@@ -2815,6 +2938,9 @@ class PlayerHud {
       // the loop's index dangling (the Recent overlay learned this first).
       const std::vector<std::string> entries = playlist_.entries();
       const std::vector<DirGroup> groups = groupByDirectory(entries);
+      // V7b: the focus face indexes every queue entry exactly once (tree
+      // leaves included), so the cycle covers the same rows a mouse sees.
+      playlist_rows_ = static_cast<int>(entries.size());
       if (groups.size() > 1) {
         // Folder tree (v0.2.1): one node per parent directory, first
         // occurrence order, expanded on first sight (Cond_Once — the user
@@ -2867,9 +2993,17 @@ class PlayerHud {
     // AllowOverlap: the Selectable fills the row width and would otherwise
     // hold the hover over the SameLine "x" button, whose clicks would never
     // land (hover goes to the first claimant).
+    // Enter replays on the focused row (V7b); the ring reads the row's
+    // rect before the tooltip can steal the last-item pointer.
+    const bool enter = ui_focus_.takesActivation(
+        UiFocus::Face::PlaylistRows, static_cast<int>(i));
     if (ImGui::Selectable(label.c_str(), i == playlist_.current(),
-                          ImGuiSelectableFlags_AllowOverlap)) {
+                          ImGuiSelectableFlags_AllowOverlap) ||
+        enter) {
       openPlaylistEntry(i, nowMs());
+    }
+    if (ui_focus_.holds(UiFocus::Face::PlaylistRows, static_cast<int>(i))) {
+      drawFocusRing();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", entries[i].c_str());
     ImGui::SameLine();
@@ -2984,6 +3118,9 @@ class PlayerHud {
                   return compareRecent(*a, *b);
                 });
     }
+    // V7b: the source rows are the library's focusable face (the category
+    // sidebar and folder rows stay mouse-only this batch).
+    library_rows_ = static_cast<int>(shown.size());
     // The search box (docs/todo.md 原型对齐批): it narrows the bucket's
     // rows, so the two halves compose — the sidebar filters by state, the
     // box by text. It lives INSIDE this child on purpose: it shares the
@@ -2996,6 +3133,12 @@ class PlayerHud {
     if (st_.library_search_focus) {
       st_.library_search_focus = false;
       ImGui::SetKeyboardFocusHere(0);
+    }
+    if (blur_text_next_) {
+      // Tab moved the focus ring onto the rows (V7b): the caret leaves
+      // the box so the next key lands on the ring, not in the needle.
+      blur_text_next_ = false;
+      ImGui::ClearActiveID();
     }
     ImGui::InputTextWithHint("##library-filter", "Filter title or path ( / )",
                              st_.library_filter, sizeof(st_.library_filter));
@@ -3011,6 +3154,7 @@ class PlayerHud {
     }
     const float x_w =
         ImGui::CalcTextSize("x").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    int focus_i = 0;  // V7b: the focus face's index over `shown`
     for (const LibraryEntry* ep : shown) {
       const LibraryEntry& e = *ep;
       // The row's right edge, read at the row start (the cursor sits at
@@ -3031,10 +3175,16 @@ class PlayerHud {
       if (resume > 0) {
         label += "  (at " + formatClock(std::chrono::milliseconds(resume)) + ")";
       }
+      const bool enter =
+          ui_focus_.takesActivation(UiFocus::Face::LibraryRows, focus_i);
       if (ImGui::Selectable(label.c_str(), e.path == current_uri_,
-                            ImGuiSelectableFlags_AllowOverlap)) {
+                            ImGuiSelectableFlags_AllowOverlap) ||
+          enter) {
         openSource(e.path);
         st_.overlay = Overlay::None;
+      }
+      if (ui_focus_.holds(UiFocus::Face::LibraryRows, focus_i)) {
+        drawFocusRing();
       }
       if (ImGui::IsItemHovered()) {
         std::string tip = e.path;
@@ -3065,6 +3215,7 @@ class PlayerHud {
         library_->save();
       }
       ImGui::PopID();
+      ++focus_i;
     }
     ImGui::EndChild();
   }
@@ -3192,27 +3343,33 @@ class PlayerHud {
                       selected < 0 ? 0 : static_cast<int>(selected),
                       static_cast<int>(sub_tracks.size()));
         if (ImGui::BeginCombo("##sub_select", label)) {
-          if (ImGui::Selectable("Off", selected < 0) && selected >= 0) {
+          menu_rows_ = 0;  // the open popup republishes its rows every frame
+          const bool enter = menuRowEnter();
+          if ((ImGui::Selectable("Off", selected < 0) || enter) && selected >= 0) {
             player_.disableSubtitles();
             st_.toast.show("Subtitles off", nowMs());
           }
+          menuRowRing();
           ImGui::Separator();
           for (const auto* t : sub_tracks) {
             std::string item = "#" + std::to_string(t->id) + " " + t->codec;
             if (!t->language.empty()) item += " (" + t->language + ")";
             if (!t->title.empty()) item += " - " + t->title;
             const bool is_sel = t->id == selected;
-            if (ImGui::Selectable(item.c_str(), is_sel) && !is_sel) {
+            const bool enter = menuRowEnter();
+            if ((ImGui::Selectable(item.c_str(), is_sel) || enter) && !is_sel) {
               if (player_.selectTrack(TrackType::Subtitle, t->id)) {
                 st_.toast.show("Subtitle track " + std::to_string(t->id), nowMs());
               } else {
                 st_.toast.show("Subtitle switch failed", nowMs());
               }
             }
+            menuRowRing();
           }
           // Sidecar files join the container's own tracks in the same
           // popup; the open popup is what gates the directory walk.
           drawSidecarEntries(info, nowMs());
+          menu_count_ = menu_rows_;
           ImGui::EndCombo();
         }
       }

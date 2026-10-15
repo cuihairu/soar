@@ -15,7 +15,7 @@
 - [x] 播放键改 64px 圆形 accent 钮（原型 desktop-main.html:255）：暂停时全屏压暗 + 居中 64px 圆形 accent 播放钮 + 提示 pill，点击即续播（3835768；cli 68/68·574 断言 + ui 37/37·258 断言绿；像素探针实测圆 (76,141,255)、三角 (16,18,22)、压暗底 (8,9,12)，XTEST 按住点击窗口相对 (480,254) 使 state 1→2）
 - [x] 圆角/字号令牌对齐 v2（`--r-panel 10px`/`--r-ctl 7px`、11px 字号地板）：`ui_tokens.h` 落 kPanelRounding 10（window+popup）/ kControlRounding 7（frame+grab）/ kPillRounding 999（statechip + 暂停 floatpill）/ kMinFontSize 11 + kUiFontSize 16，static_assert 地板约束；ui 单测钉值（d7e7bf6；cli 68/68·574 断言 + ui 38/38·266 断言绿；像素探针实测 OSC 面板圆角 10、暂停 pill 端帽半圆 profile 9/4/1/0/1/3/9）
 - [x] reduced-motion 开关——有意偏离收口（审计 V7a 改判 b492682：`ui-design.md:188` §4 明文「`disableAnimations` 不设开关，v0.1 常开」，现状即规格要求，不动实现）
-- [ ] 焦点可见环（审计 V7b）——待用户拍板：(a) 启用 ImGui 键盘导航（§3.2 快捷键合同需重排）/ (b) app 自绘焦点模型（零快捷键冲突，要自建焦点序）/ (c) 延后 v0.2 并改 `ui-design.md:216` 口径
+- [x] 焦点可见环——已代决 2026-10-15 选 (b)：app 自绘焦点模型，不启用 ImGui nav（否决 (a)：`WantCaptureKeyboard` 早退会重排 §3.2 全表合同；否决 (c)：`ui-design.md:216` 当前规格就要求焦点可见）。Tab/Shift+Tab/Enter 三键均不在 §3.2 表内，弹层菜单内方向键走早退路径，零快捷键冲突；Enter 按行自身点击路径重放；环为原型同款 2px accent 外扩 4px（`ui_tokens.h` 的 `kFocusRingWidth`/`kFocusRingExpand`）；焦点序只覆盖播放列表行/媒体库行/弹层菜单项；搜索框 Tab 离开清 `ActiveId`（`ui_state.h` 的 `UiFocus` + `player_window.cpp` 的 `drawFocusRing`/`focusOverlayKey`/`focusMenuKey`；ui 44/44·296 断言 + shortcut 16/16·213 断言绿，X11 走查播放列表行环与弹层菜单环实测落位、Enter 触发倍速行；机制口径写入 `ui-design.md` §5.2）
 - [x] 顶栏——已代决 2026-10-15 选 (a)：保持无顶栏，v2 原型主播放窗四帧顶栏移除并写明理由（入口走 OSC + 快捷键 I/R/H/F、片名走 OS 窗口标题；顶栏/亮色记为 v0.2 候选，ui-design.md §2/§4 与 prototypes.md 同步；主播放窗两版 PNG 为移除前定稿帧，无渲染环境未重摄，差异已注记；docs-only → `npm run docs:build` 绿）
 - [x] 文档站原型图纠偏（审计 §7）：界面预览原型卡改指 v2 定稿截图（补 playlist/library 卡、删 translate-panel 卡）+ v1 六页页头标废弃 + 投放合同 `prototypes/README.md` 同步（8143168；docs-only → `npm run docs:build` 4.28s 绿）
 

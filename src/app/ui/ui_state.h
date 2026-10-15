@@ -111,6 +111,89 @@ class Toast {
   std::chrono::milliseconds shown_at_{-kDuration};
 };
 
+// App-drawn keyboard focus (V7b, docs/ui-design.md §5.2「焦点可见」): Dear
+// ImGui nav stays off — §3.2's rebindable shortcut map must keep owning
+// every key — so the ring's focus is plain state this class owns. Tab
+// (+Shift for backward) cycles the rows of the open overlay; arrows do the
+// same inside a popup menu, where the shortcut map already stands aside;
+// Enter fires the focused row by replaying its click on its next draw. One
+// face holds focus at a time (overlays are mutually exclusive, docs §2,
+// and a popup menu belongs to the OSC or one overlay).
+class UiFocus {
+ public:
+  enum class Face { None, PlaylistRows, LibraryRows, MenuItems };
+
+  bool active() const { return face_ != Face::None; }
+  Face face() const { return face_; }
+  int index() const { return index_; }
+
+  // True when this face+index is where focus sits (the ring's draw check).
+  bool holds(Face face, int index) const {
+    return face_ == face && index_ == index;
+  }
+
+  // Steps focus by delta (+1 Tab/Down, -1 Shift+Tab/Up — unit steps only,
+  // the wrap arithmetic below does not pretend to serve larger jumps)
+  // across `count` rows of `face`. The first step onto a face parks on its
+  // first row; a count of 0 (empty queue/bucket, no menu rows) parks
+  // nowhere.
+  void advance(Face face, int delta, int count) {
+    if (count <= 0) {
+      clear();
+      return;
+    }
+    // Any movement disarms a pending activation: the arm named the row
+    // focus sat on, and after a step it would name a different one.
+    armed_ = false;
+    if (face_ != face) {
+      face_ = face;
+      index_ = 0;
+    } else {
+      index_ += delta;
+      if (index_ < 0) index_ = count - 1;  // one step past the top wraps
+      if (index_ >= count) index_ = 0;     // one step past the bottom wraps
+    }
+  }
+
+  // The face's row count changed between frames (an entry left the queue
+  // mid-focus): clamp before drawing, or drop focus when nothing remains.
+  void clamp(Face face, int count) {
+    if (face_ != face) return;
+    if (count <= 0) {
+      clear();
+    } else if (index_ >= count) {
+      index_ = count - 1;
+      armed_ = false;  // the slide moved focus off the armed row
+    }
+  }
+
+  // Enter on a focused row. The row's own draw site replays it next frame
+  // — the exact code path a click takes — via takesActivation(face, i).
+  void armActivate() {
+    if (active()) armed_ = true;
+  }
+
+  // Consumes the armed activation when it lands on this face+index. A
+  // stale arm — the target row vanished before the replay frame — dies on
+  // the next advance/clear.
+  bool takesActivation(Face face, int index) {
+    if (!armed_ || !holds(face, index)) return false;
+    armed_ = false;
+    return true;
+  }
+
+  void clear() {
+    face_ = Face::None;
+    index_ = -1;
+    armed_ = false;
+  }
+
+ private:
+  Face face_ = Face::None;
+  int index_ = -1;
+  bool armed_ = false;
+};
+
 // MRU list of opened sources (docs/ui-design.md §2): mpv.net remembers 15
 // (its --recent-count default), IINA records recent files by default — the
 // v0.1 cap matches. Persisted as one URI per line via tmp+rename (the same

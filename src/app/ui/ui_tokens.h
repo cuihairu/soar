@@ -31,6 +31,14 @@ constexpr float kMinFontSize = 11.0f;
 constexpr float kUiFontSize = 16.0f;
 static_assert(kUiFontSize >= kMinFontSize,
               "the UI font must sit at or above the floor");
+// The focus-visible ring (V7b, docs/ui-design.md §5.2): the prototype's
+// :focus-visible outline — 2px accent drawn 4px outward from the focused
+// row (the same geometry ImGui's own nav cursor uses, kept because the
+// app draws the ring itself and nav stays off).
+constexpr float kFocusRingWidth = 2.0f;
+constexpr float kFocusRingExpand = 4.0f;
+static_assert(kFocusRingWidth > 0.0f && kFocusRingExpand >= kFocusRingWidth,
+              "the focus ring must be visible past the row it names");
 
 }  // namespace soar::app
 

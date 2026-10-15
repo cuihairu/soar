@@ -771,3 +771,116 @@ TEST_CASE("parentOfDir walks up and stops at roots") {
   CHECK(parentOfDir("/a///") == "/");
   CHECK(parentOfDir("C:/x") == "C:");
 }
+
+TEST_CASE("UiFocus first step parks on the first row, then cycles both ends") {
+  using soar::app::UiFocus;
+  const auto face = UiFocus::Face::PlaylistRows;
+  UiFocus f;
+  CHECK_FALSE(f.active());
+
+  // First Tab parks on the top row (nothing else owns the ring yet).
+  f.advance(face, +1, 3);
+  CHECK(f.active());
+  CHECK(f.face() == face);
+  CHECK(f.index() == 0);
+
+  // Tab walks down and wraps past the bottom; Shift+Tab wraps back up.
+  f.advance(face, +1, 3);
+  CHECK(f.index() == 1);
+  f.advance(face, +1, 3);
+  CHECK(f.index() == 2);
+  f.advance(face, +1, 3);
+  CHECK(f.index() == 0);
+  f.advance(face, -1, 3);
+  CHECK(f.index() == 2);
+  f.advance(face, -1, 3);
+  CHECK(f.index() == 1);
+}
+
+TEST_CASE("UiFocus empty face parks nowhere and face switches restart at zero") {
+  using soar::app::UiFocus;
+  UiFocus f;
+  // An empty queue/bucket/popup consumes the step but parks nothing.
+  f.advance(UiFocus::Face::PlaylistRows, +1, 0);
+  CHECK_FALSE(f.active());
+
+  // Focus moves between faces (overlay switch): the index restarts so the
+  // ring never lands past the new face's last row.
+  f.advance(UiFocus::Face::PlaylistRows, +1, 4);
+  f.advance(UiFocus::Face::PlaylistRows, +1, 4);
+  CHECK(f.index() == 1);
+  f.advance(UiFocus::Face::LibraryRows, +1, 5);
+  CHECK(f.face() == UiFocus::Face::LibraryRows);
+  CHECK(f.index() == 0);
+}
+
+TEST_CASE("UiFocus clamp survives a shrinking list and drops on empty") {
+  using soar::app::UiFocus;
+  const auto face = UiFocus::Face::MenuItems;
+  UiFocus f;
+  f.advance(face, +1, 3);
+  f.advance(face, +1, 3);
+  f.advance(face, +1, 3);
+  CHECK(f.index() == 2);
+  // A track left the popup between frames: the ring slides onto the new
+  // last row instead of pointing past it.
+  f.clamp(face, 2);
+  CHECK(f.index() == 1);
+  // And the whole face going away drops focus (disarmed with it).
+  f.armActivate();
+  f.clamp(face, 0);
+  CHECK_FALSE(f.active());
+
+  // Clamp is per-face: an unrelated face's count must not touch focus.
+  f.advance(UiFocus::Face::PlaylistRows, +1, 3);
+  f.advance(UiFocus::Face::PlaylistRows, +1, 3);
+  f.clamp(UiFocus::Face::LibraryRows, 0);
+  CHECK(f.active());
+  CHECK(f.face() == UiFocus::Face::PlaylistRows);
+  CHECK(f.index() == 1);
+}
+
+TEST_CASE("UiFocus enter replays through the row's draw site exactly once") {
+  using soar::app::UiFocus;
+  const auto face = UiFocus::Face::PlaylistRows;
+  UiFocus f;
+  f.advance(face, +1, 3);
+  f.advance(face, +1, 3);  // row 1
+  f.armActivate();
+  // Only the focused row consumes, and only once: the draw site runs one
+  // replay per arm, like the click it stands in for.
+  CHECK_FALSE(f.takesActivation(face, 0));
+  CHECK(f.takesActivation(face, 1));
+  CHECK_FALSE(f.takesActivation(face, 1));
+  CHECK_FALSE(f.takesActivation(face, 2));
+}
+
+TEST_CASE("UiFocus arming without focus is inert and advance disarms") {
+  using soar::app::UiFocus;
+  const auto face = UiFocus::Face::LibraryRows;
+  UiFocus f;
+  f.armActivate();
+  CHECK_FALSE(f.takesActivation(face, 0));
+
+  // A stale arm (the target row vanished before the replay frame) dies on
+  // the next step instead of firing some later row.
+  f.advance(face, +1, 2);
+  f.armActivate();
+  f.advance(face, +1, 2);
+  CHECK_FALSE(f.takesActivation(face, 0));
+  CHECK_FALSE(f.takesActivation(face, 1));
+
+  // clear() is the overlay-closed path: same reset, no surprises.
+  f.armActivate();
+  f.clear();
+  CHECK_FALSE(f.active());
+  CHECK_FALSE(f.takesActivation(face, 0));
+}
+
+TEST_CASE("focus ring tokens pin the prototype geometry") {
+  // The prototype's :focus-visible: 2px accent outline, outline-offset 2
+  // — the app draws the ring 4px outward so the 2px stroke sits outside
+  // the row with a 2px gap, matching ImGui's own nav cursor shape.
+  CHECK(soar::app::kFocusRingWidth == 2.0f);
+  CHECK(soar::app::kFocusRingExpand == 4.0f);
+}
