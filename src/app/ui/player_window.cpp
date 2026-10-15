@@ -3086,13 +3086,19 @@ class PlayerHud {
         // with an endpoint configured, so an offline session never shows a
         // button that could only fail. Each click is capped (the scrape
         // budget) and every attempt costs up to the configured timeout, same
-        // UI-thread precedent as the subtitle download.
-        ImGui::SameLine();
-        if (meta_ready_ && ImGui::SmallButton("Scrape")) {
-          const std::size_t n = library_->scrapeEntries(MediaLibrary::kScrapeBudget);
-          st_.toast.show(
-              n == 1 ? "Scraped 1 entry" : "Scraped " + std::to_string(n) + " entries",
-              nowMs());
+        // UI-thread precedent as the subtitle download. The SameLine rides
+        // inside the gate: an unconditional one would pull the "Watched
+        // folders" caption onto the button row and lift every row below it
+        // one pitch (the walkthrough's bucket pins mis-clicked Resume for
+        // Recent that way — BUGS.md #7).
+        if (meta_ready_) {
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Scrape")) {
+            const std::size_t n = library_->scrapeEntries(MediaLibrary::kScrapeBudget);
+            st_.toast.show(
+                n == 1 ? "Scraped 1 entry" : "Scraped " + std::to_string(n) + " entries",
+                nowMs());
+          }
         }
         const std::vector<std::string> folders = library_->folders();
         if (folders.empty()) {

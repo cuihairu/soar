@@ -1873,7 +1873,12 @@ RunResult runCli(const std::vector<std::string>& args, int child_timeout_secs = 
   // that prints the stuck thread's backtrace before dying. timeout still
   // exits 124 either way, so the retry-on-124 logic is unchanged;
   // --kill-after escalates to KILL only if a child ever survives ABRT.
-  cmd.insert(0, "timeout -s ABRT --kill-after=10 " +
+  // The probe rides every Linux child via the prefix (2026-10-16: the
+  // library overlay walkthrough hung to a bare core dump, run
+  // 38792276031 — arming had stayed case-scoped and the newer
+  // walkthroughs never picked it up); the headless helpers' own
+  // ScopedEnv sites become redundant but harmless.
+  cmd.insert(0, "SOAR_HANG_DUMP=1 timeout -s ABRT --kill-after=10 " +
                     std::to_string(child_timeout_secs) + " ");
 #endif
 
@@ -4661,13 +4666,19 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
   // time; every state change comes from the overlay clicks.
   const auto run = runCli({"--gui", "--backend=null"}, 600);
 
-  std::printf("x11 library overlay test: cli exit=%d, output:\n%s\n", run.exit_code,
-              run.output.c_str());
-
+  // injector≠0 ⇒ the click injection never landed (window missing or
+  // died early); injector=0 with a cli 124 ⇒ the injection completed
+  // while the process refused to exit — the true BUGS.md #4 tail hang.
+  // Both land in the log before any assertion: run 38792276031 hung
+  // here and the verdict was discarded by the failing REQUIRE.
   int injector_status = 0;
   ::waitpid(injector, &injector_status, 0);
   ::kill(xvfb, SIGTERM);
   ::waitpid(xvfb, nullptr, 0);
+  std::printf("x11 library overlay test: cli exit=%d injector=%d, output:\n%s\n",
+              run.exit_code,
+              WIFEXITED(injector_status) ? WEXITSTATUS(injector_status) : -1,
+              run.output.c_str());
 
   if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
     MESSAGE("no accelerated renderer under this X server; skipping");

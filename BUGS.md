@@ -178,7 +178,8 @@
 ## 4. CLI 播放自然结束后进程偶发不退出（收尾段两处无界等待已修 c416163，根因待 CI 探针归因）
 
 - **现象**：CI 集成测试里 `soar --headless` 子进程播完流媒体后不退出，
-  被 `runCli` 的 `timeout` watchdog 杀成 exit 124，断言失败。五起：
+  被 `runCli` 的 `timeout` watchdog 杀成 exit 124，断言失败。五起
+  （原第六起已改判划归 #7，见下）：
   1. run 37575751946 tsan 腿（ab1cddf）：DASH case（test_cli.cpp:3998），
      44/45 过；
   2. run 37586409981 no-imgui fallback 腿（9d6ede5）：多变体 HLS case
@@ -203,6 +204,14 @@
      SOAR_HANG_DUMP + 六处 injector 退出码进结果行（injector≠0 ⇒ 注入
      没落地；injector=0 且 cli 124 ⇒ 窗口已关进程未退=真收尾挂死），
      下次复现自带分类与栈。
+  6. ~~run 38792276031 coverage 腿（4e554bb）：library overlay 走查
+     （test_cli.cpp:4678）cli 124 挂满 600s~~——**改判：非 #4 族，划归
+     #7**。当时的补救（runCli 统一 `SOAR_HANG_DUMP=1` 前缀 + 本用例
+     injector 退出码进结果行）落地后本地 2/2 复现成功，且证据反挂死：
+     结果行 `cli exit=124 injector=7`，SIGABRT 栈停在
+     `SDL_RenderSimulateVSync`（进程健康、纯空转）——124 是 injector
+     判负 7 后弃窗离场，把子进程留给 watchdog 的伴生现象，不是收尾
+     挂死。根因与修复见 #7。
 - **已知事实**：headless 路径是 open→play→seek→pause→stop 直线序，
   没有自然结束等待循环（早版记档「主循环已按 main.cpp:322 break」
   有误——现行 main.cpp 322 行在 backend 构造块内，无此循环）。EOF
@@ -342,3 +351,32 @@
 - **改进**：两个同形 renderer 失败用例（4035/4055）
   `CHECK` → `CHECK_MESSAGE` 携带 child output——下次命中，
   race 报告直接出现在 CI 日志，归因不再靠猜。
+## 7. scrape 批把库 overlay 整体抬高一行，走查坐标错位（已修复）
+
+- **现象**：run 38792276031 coverage 腿（4e554bb）library overlay 走查
+  （test_cli.cpp:4678）cli 124；本地 2/2 复现，结果行
+  `cli exit=124 injector=7`——7 定义为「a2 在 Recent 行的 x 下幸存」。
+- **根因**：13c695d（scrape 批）在 `drawLibraryOverlay` 头部按钮后加了
+  **无条件** `ImGui::SameLine()` 再判断 `meta_ready_ && SmallButton
+  ("Scrape")`——无端点的会话按钮不渲染但 SameLine 已生效，
+  「Watched folders (1)」标题被拉上按钮行，overlay 内其下所有内容
+  （文件夹行、分隔线、bucket 列、搜索框、条目行）整体上移一行距
+  （约 19px）。走查坐标钉在 f5ab9b3（搜索框批，13c695d 之前）：
+  「Recent」点击 (280,181) 落进 Resume 带（实测 177-187），Resume
+  下仅 a1 一行，第二槽空 → a2 的 x 点击落空 → a2 幸存 → injector
+  判 7 弃窗离场 → 子进程空转到 watchdog（SIGABRT 栈在
+  `SDL_RenderSimulateVSync`，进程健康）→ cli 124 假象。
+- **取证手段**（一并落地，4e554bb 后测试批）：X11 探针逐输入截图 +
+  位图字体字形模板解码——bucket 标签实测 All@144/Recent@163/
+  Resume@182/Finished@201（钉值 163/181/200/219，整差一行距），
+  搜索框提示实测 150（钉值 ~169）、条目行 175/193（钉值 194/213）。
+- **CI 为何漏过**：13c695d 之后全测试套从未完整跑绿——38784277423
+  取消、38786141262 取消（4e554bb push 的 cancel-in-progress），
+  38784277357「绿」是 deploy-only 轮（无测试腿）。1e2c09a 的 38772332024
+  是最后一个真绿，早于 13c695d。
+- **修复**：SameLine 移进 `if (meta_ready_)` 门内——无端点会话标题
+  回到自己的行，overlay 恢复 13c695d 前几何（标题@119、文件夹行
+  @138、bucket 163/182/201/220、搜索框 158-174、条目行 193/213，
+  与钉值一致），有端点会话的 UI 不变。本地验证：走查用例修前 2/2
+  红（injector=7）、修后绿；`soar_cli_tests` 全套（X11 口径）120.8s
+  过、tsan 口径 5.4s 过、ui/metadata/library 三套过。
