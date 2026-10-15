@@ -11,7 +11,7 @@
 - [x] Library 搜索框：/ 聚焦，按标题过滤列表
 - [x] Playlist 添加文件与清空队列按钮（清空经确认）
 - [x] 主题令牌化：`applyTheme` 字面量收敛为具名常量（53ae80b；对齐 ui-design.md:183）
-- [ ] OSC 行 1 补左右时间码（原型 desktop-main.html:196-202）——会缩窄 seek 条、移动其几何，X11 走查 seek 拖拽坐标需同步重校（test_cli.cpp:148/469）
+- [x] OSC 行 1 补左右时间码（原型 desktop-main.html:196-202）：行 1 = 左时间码 | seek 轨 | 右 -剩余，行 2 时钟移除（39f7ed5；全夹具 cli 68/68·573 断言 + ui 37/37·258 + shortcut 16/16·213 绿；走查 19 处行 2/弹层 pin 按实测 -106px 重校，audiodrive 旧 637/685 漂移 pin 一并钉回实测位）
 - [ ] 播放键改 64px 圆形 accent 钮（原型 desktop-main.html:255）
 - [ ] 圆角/字号令牌对齐 v2（`--r-panel 10px`/`--r-ctl 7px`、11px 字号地板）
 - [ ] 焦点可见态 + reduced-motion 开关（v2 无障碍承诺，当前无焦点环）
