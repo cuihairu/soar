@@ -314,43 +314,65 @@ bool fileExists(const std::string& path) {
 
 #ifdef SOAR_WITH_IMGUI
 
-// Theme tokens (docs/ui-design.md §4): one dark palette, no scattered
-// literals — every color the UI draws comes from here.
+// Theme tokens (docs/ui-design.md §4): one dark palette. Every color and
+// radius the UI draws is named here — the draw code reads tokens, never
+// bare literals. Hex comments are the spec values.
+namespace theme {
+constexpr ImVec4 kText{0.910f, 0.918f, 0.941f, 1.0f};             // #E8EAF0
+constexpr ImVec4 kTextDim{0.910f, 0.918f, 0.941f, 0.55f};         // secondary
+constexpr ImVec4 kAccent{0.298f, 0.553f, 1.0f, 1.0f};             // #4C8DFF
+constexpr ImVec4 kDanger{1.0f, 0.365f, 0.365f, 1.0f};             // #FF5D5D
+constexpr ImVec4 kPanelBg{0.063f, 0.071f, 0.094f, 0.94f};         // over video
+constexpr ImVec4 kPopupBg{0.10f, 0.11f, 0.15f, 0.98f};
+constexpr ImVec4 kBorder{1.0f, 1.0f, 1.0f, 0.08f};
+constexpr ImVec4 kFrameBg{1.0f, 1.0f, 1.0f, 0.10f};
+constexpr ImVec4 kFrameBgHovered{1.0f, 1.0f, 1.0f, 0.16f};
+constexpr ImVec4 kFrameBgActive{1.0f, 1.0f, 1.0f, 0.20f};
+constexpr ImVec4 kButton{1.0f, 1.0f, 1.0f, 0.10f};
+constexpr ImVec4 kButtonHovered{1.0f, 1.0f, 1.0f, 0.18f};
+constexpr ImVec4 kHeader{1.0f, 1.0f, 1.0f, 0.08f};
+constexpr ImVec4 kHeaderHovered{1.0f, 1.0f, 1.0f, 0.14f};
+constexpr float kWindowRounding = 8.0f;
+constexpr float kFrameRounding = 6.0f;
+constexpr float kGrabRounding = 4.0f;
+constexpr float kPopupRounding = 6.0f;
+}  // namespace theme
+
 void applyTheme() {
   ImGuiStyle& st = ImGui::GetStyle();
   ImGui::StyleColorsDark(&st);
-  st.WindowRounding = 8.0f;
-  st.FrameRounding = 6.0f;
-  st.GrabRounding = 4.0f;
-  st.PopupRounding = 6.0f;
+  st.WindowRounding = theme::kWindowRounding;
+  st.FrameRounding = theme::kFrameRounding;
+  st.GrabRounding = theme::kGrabRounding;
+  st.PopupRounding = theme::kPopupRounding;
   st.WindowBorderSize = 1.0f;
   st.WindowPadding = ImVec2(12, 8);
   st.FramePadding = ImVec2(8, 6);
   st.ItemSpacing = ImVec2(8, 6);
 
-  const ImVec4 accent = ImVec4(0.298f, 0.553f, 1.0f, 1.0f);  // #4C8DFF
+  using theme::kAccent;
   ImVec4* c = st.Colors;
-  c[ImGuiCol_Text] = ImVec4(0.910f, 0.918f, 0.941f, 1.0f);        // #E8EAF0
-  c[ImGuiCol_TextDisabled] = ImVec4(0.910f, 0.918f, 0.941f, 0.55f);
-  c[ImGuiCol_WindowBg] = ImVec4(0.063f, 0.071f, 0.094f, 0.94f);   // panel
-  c[ImGuiCol_PopupBg] = ImVec4(0.10f, 0.11f, 0.15f, 0.98f);
-  c[ImGuiCol_Border] = ImVec4(1, 1, 1, 0.08f);
-  c[ImGuiCol_FrameBg] = ImVec4(1, 1, 1, 0.10f);
-  c[ImGuiCol_FrameBgHovered] = ImVec4(1, 1, 1, 0.16f);
-  c[ImGuiCol_FrameBgActive] = ImVec4(1, 1, 1, 0.20f);
+  c[ImGuiCol_Text] = theme::kText;
+  c[ImGuiCol_TextDisabled] = theme::kTextDim;
+  c[ImGuiCol_WindowBg] = theme::kPanelBg;
+  c[ImGuiCol_PopupBg] = theme::kPopupBg;
+  c[ImGuiCol_Border] = theme::kBorder;
+  c[ImGuiCol_FrameBg] = theme::kFrameBg;
+  c[ImGuiCol_FrameBgHovered] = theme::kFrameBgHovered;
+  c[ImGuiCol_FrameBgActive] = theme::kFrameBgActive;
   c[ImGuiCol_TitleBg] = c[ImGuiCol_WindowBg];
   c[ImGuiCol_TitleBgActive] = c[ImGuiCol_WindowBg];
-  c[ImGuiCol_Button] = ImVec4(1, 1, 1, 0.10f);
-  c[ImGuiCol_ButtonHovered] = ImVec4(1, 1, 1, 0.18f);
-  c[ImGuiCol_ButtonActive] = accent;
-  c[ImGuiCol_SliderGrab] = accent;
-  c[ImGuiCol_SliderGrabActive] = accent;
-  c[ImGuiCol_Header] = ImVec4(1, 1, 1, 0.08f);
-  c[ImGuiCol_HeaderHovered] = ImVec4(1, 1, 1, 0.14f);
-  c[ImGuiCol_HeaderActive] = accent;
-  c[ImGuiCol_CheckMark] = accent;
-  c[ImGuiCol_Separator] = ImVec4(1, 1, 1, 0.08f);
-  c[ImGuiCol_TextSelectedBg] = accent;
+  c[ImGuiCol_Button] = theme::kButton;
+  c[ImGuiCol_ButtonHovered] = theme::kButtonHovered;
+  c[ImGuiCol_ButtonActive] = kAccent;
+  c[ImGuiCol_SliderGrab] = kAccent;
+  c[ImGuiCol_SliderGrabActive] = kAccent;
+  c[ImGuiCol_Header] = theme::kHeader;
+  c[ImGuiCol_HeaderHovered] = theme::kHeaderHovered;
+  c[ImGuiCol_HeaderActive] = kAccent;
+  c[ImGuiCol_CheckMark] = kAccent;
+  c[ImGuiCol_Separator] = theme::kBorder;
+  c[ImGuiCol_TextSelectedBg] = kAccent;
 }
 
 // Best-effort system UI font: the ImGui embedded font is ASCII-only bitmap,
@@ -2414,7 +2436,7 @@ class PlayerHud {
       }
       const std::string err = player_.lastError();
       if (!err.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.365f, 0.365f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::kDanger);
         ImGui::TextWrapped("Error: %s", err.c_str());
         ImGui::PopStyleColor();
       }
