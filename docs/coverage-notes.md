@@ -377,6 +377,14 @@ BUGS.md #4（CLI 播放 Ended 后偶发不退出）的排查批落地两件测�
 - **门禁对账（本批造成的口径变化，用户令修绿后重定门禁）**：批次前 8017/8411=95.3% 行、8660/10168=85.2% 支（门禁 95.0/84.6 双绿）。本批给分母净增 ~1000 行（transcode_server.cpp 561 行 + 接线），其中转码服务器 86 缺行里 ~75 行是上条的结构性家族——诚实补测到此水位后两门禁按现值红是构造性的（缺口全部落入上述定性，与 §5「不删防御代码、不写假用例、不做进程污染」前提一致）。处置：用户令「先修绿」（2026-10-13 插单），门禁按实测水位重定为 **行 94.0 / 支 83.0**——水位 94.44%（8886/9410）/83.50%（9500/11376）减历史惯例 0.4-0.5 点余量（对齐 95.0←95.4、84.6←85.2 的旧口径），余量 ~40 行/~58 支，远超 2 行/4 支抖动带，也盖得住 CI-vs-local ~21 行级的历史偏差；按 §5 惯例后续诚实补测推高水位时门禁随之上抬。备选的 libav fault 接缝方案（§3.21 hwaccel 单缝先例）因 ~50 条接缝的规模违背注入即污染精神而未取。
 - **读数**：本地系统 gcovr 7.x（build-cov3，夹具媒体 + X11 全量跑，六树门禁 cov3 腿实测）行 **94.4%（8886/9410）**、支 **83.5%（9500/11376）**，对重定后门禁 94.0/83.0 双过；全量 ctest 六树 suite 腿 13/13 绿（system 腿一次 http_cache 固定端口抽奖 flake，串行重跑绿——todo 投屏二期节同款已记账，本批夹具全用临时端口与此无关）。
 
+### 3.25 无流判定跨构建统一（tmcd/EEXIST 归并补进主后端 open 路径）
+
+047b6c9 把「FFmpeg 9 在 `avformat_open_input` 处以 EEXIST 拒收 tmcd 自引用轨、8.x 开成功后由流扫描判无流」归并进转码泵的无流判词，但主后端 `FFmpegBackend::openContext` 没跟着改：同一个 `cast_data_only.mov` 在 FFmpeg 9 上报通用「failed to open」，在 8.x 上报「no video or audio stream found」——判词随构建失败点漂移，与那条修定下的原则相悖（macOS arm64 每日构建 run 38360513228 在 f1b245d 上翻红的正是转码侧那一处，同族分叉在主播放路径上是静默的）。修复：`kNoStreamsVerdict` 常量共享给 open 的 EEXIST 臂与 findStreamInfo 的扫描臂两处报告点，扫描臂原文一字不改（既有断言匹配的是子串）。
+
+新增后端用例 `the stream-less verdict holds when the open itself is refused`，断言**判词而非失败点**：夹具是提交在库的 `cast_data_only.mov`（tests/fixtures，无 env 门——相邻那条 `SOAR_TEST_SUBS_ONLY` 门控用例在 env 缺失的腿上会跳过，所以这条是跨腿哨兵）。本机 8.x 走扫描臂，macOS brew 9 走 EEXIST 臂，同一断言两臂皆绿；修复前 macOS 腿会红（判词为「failed to open」）。
+
+诚实记档：**EEXIST 臂在本机与 ubuntu CI 腿不可达**（那里的 demuxer 开成功，只落扫描臂），只有 macOS brew 9 的腿覆盖它——本地全量跑该臂 0 命中，读数按缺行计（约 2 行），与 §3.22「本地 FFmpeg 8 vs CI 版本差异」同款跨腿分叉，属已知的构建差异而非缺口。验证：媒体套件 96→97 例、1006 断言全绿（cov3，夹具 env + `SOAR_TEST_X11=1` + `SDL_AUDIODRIVER=dummy`），`soar_backend_tests` 5/5·35、`soar_cli_tests` 68/68·565 回归绿。
+
 ## 4. 测试纪律
 
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。

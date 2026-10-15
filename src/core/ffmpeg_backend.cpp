@@ -55,6 +55,12 @@ constexpr auto kNetworkStallLimitMs = std::chrono::milliseconds(60'000);
 // gets this budget instead of the decode read's stall tolerance.
 constexpr std::chrono::milliseconds kStopRewindLimit = std::chrono::milliseconds(2000);
 
+// The stream-less verdict shared by the open and scan report sites: a
+// container with nothing playable is judged by its content, not by which
+// build stage first refuses it (the transcode pump folds the same EEXIST
+// case into its kNoStreamsVerdict).
+constexpr const char* kNoStreamsVerdict = "no video or audio stream found";
+
 // Steady-clock ms since an unspecified epoch: the shared clock for the
 // network stall watchdog and the bounded-io deadline above.
 static std::chrono::milliseconds::rep steadyNowMs() {
@@ -2357,6 +2363,16 @@ bool FFmpegBackend::openContext(const MediaSource& source, AVFormatContext** out
       }
       avio_cache_.reset();
     }
+    // A demuxer can refuse a container it finished parsing: FFmpeg 9's
+    // timecode handling lists a self-referencing tmcd track in its stream
+    // group twice and fails the whole open with EEXIST, while an 8.x build
+    // opens the same file and the stream scan below calls it stream-less.
+    // Nothing playable travels either way, so the verdict must not depend
+    // on the build's failure point.
+    if (ret == AVERROR(EEXIST)) {
+      return fatal(fmt::format("open: '{}': {}", source.uri, kNoStreamsVerdict),
+                   /*emit_event=*/false);
+    }
     return fatal(fmt::format("open: failed to open '{}': {}", source.uri, avError(ret)), /*emit_event=*/false);
   }
 
@@ -2395,7 +2411,8 @@ bool FFmpegBackend::findStreamInfo() {
   subtitle_stream_index_ = pickBestStreamIndex(format_ctx_, AVMEDIA_TYPE_SUBTITLE);
 
   if (video_stream_index_ < 0 && audio_stream_index_ < 0) {
-    return fatal("findStreamInfo: no video or audio stream found", /*emit_event=*/false);
+    return fatal(fmt::format("findStreamInfo: {}", kNoStreamsVerdict),
+                 /*emit_event=*/false);
   }
 
   return true;

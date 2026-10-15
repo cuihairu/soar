@@ -3880,6 +3880,30 @@ TEST_CASE("a container with no audio or video streams fails to open") {
   backend->close();
 }
 
+TEST_CASE("the stream-less verdict holds when the open itself is refused") {
+  // cast_data_only.mov carries only a timecode track: an FFmpeg 8 build
+  // opens it and the stream scan above calls it stream-less, while an
+  // FFmpeg 9 build refuses the container at avformat_open_input with
+  // EEXIST (its timecode handling lists the self-referencing track twice).
+  // Nothing playable travels either way, so the verdict is what gets
+  // asserted, not the failure point — the same fold the transcode pump
+  // gets for that error. The fixture is committed, so unlike the case
+  // above this one runs on every leg, FFmpeg 9 among them.
+  CountingSink sink;
+  auto backend = soar::makeFFmpegBackend();
+  backend->setEventSink(&sink);
+
+  const std::string tmcd =
+      std::string(SOAR_TEST_CAST_FIXTURES) + "/cast_data_only.mov";
+  CHECK_FALSE(backend->open(soar::MediaSource{tmcd}));
+  CHECK_MESSAGE(backend->lastError().find("no video or audio stream") !=
+                    std::string::npos,
+                backend->lastError());
+  CHECK(backend->state() == soar::PlaybackState::Error);
+  CHECK(backend->mediaInfo().tracks.empty());
+  CHECK(sink.errors.load() >= 1);
+}
+
 TEST_CASE("a video codec with no FFmpeg decoder fails to open") {
   std::string unknown;
   if (!envMedia("SOAR_TEST_UNKNOWN_CODEC", unknown)) {

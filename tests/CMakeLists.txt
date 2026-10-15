@@ -34,7 +34,11 @@ target_link_libraries(soar_backend_media_tests PRIVATE soar::core doctest::docte
 # container attachments, so the renderer needs the checked-in face for
 # deterministic glyph resolution (ASS_FONTPROVIDER_NONE).
 target_compile_definitions(soar_backend_media_tests PRIVATE
-  SOAR_TEST_FONT_FILE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/NotoMono-Regular.ttf")
+  SOAR_TEST_FONT_FILE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/NotoMono-Regular.ttf"
+  # The committed cast fixtures double as the cross-build stream-less
+  # verdict probe: cast_data_only.mov is the tmcd mov an FFmpeg 9 demuxer
+  # refuses at open with EEXIST.
+  SOAR_TEST_CAST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 
 add_test(NAME soar_backend_media_tests COMMAND soar_backend_media_tests)
 
