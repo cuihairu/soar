@@ -10,6 +10,16 @@
 - [x] Library 分类侧栏：全部/最近加入/续播/已看完 + 计数，点分类过滤列表（b6c57de）
 - [x] Library 搜索框：/ 聚焦，按标题过滤列表
 - [x] Playlist 添加文件与清空队列按钮（清空经确认）
+- [x] 主题令牌化：`applyTheme` 字面量收敛为具名常量（53ae80b；对齐 ui-design.md:183）
+- [ ] OSC 行 1 补左右时间码（原型 desktop-main.html:196-202）——会缩窄 seek 条、移动其几何，X11 走查 seek 拖拽坐标需同步重校（test_cli.cpp:148/469）
+- [ ] 播放键改 64px 圆形 accent 钮（原型 desktop-main.html:255）
+- [ ] 圆角/字号令牌对齐 v2（`--r-panel 10px`/`--r-ctl 7px`、11px 字号地板）
+- [ ] 焦点可见态 + reduced-motion 开关（v2 无障碍承诺，当前无焦点环）
+- [ ] 顶栏——待用户拍板：(a) 保持无顶栏并改原型（推荐）/ (b) 加顶栏并改 ui-design.md / (c) 混合
+
+> 依据 `docs/prototype-alignment-audit.md` §5。已复核**不适用**的两条（勿再立项）：
+> 状态徽标（已实现于 `drawChips()`，`player_window.cpp:2199-2225`）、分辨率 pill
+> （MK_R2A 已代决：`MediaInfo` 无宽高、核心接口冻结）。
 
 ## 投屏
 
