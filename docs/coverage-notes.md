@@ -401,6 +401,16 @@ CI 38685025303 七腿全绿（首轮 coverage 腿挂钟超时=该用例走 null 
 
 CI 38699380328 七腿全绿：coverage 腿行 **94.4%（9153/9691）**、支 **84.1%（9837/11697）** 双过门禁 94.0/83.0。与 §3.26（4040192）的 9155/9692 行、9838/11699 支相比：命中 **-2 行 / -1 支**、分母 **-1 行 / -2 支**——全部落在 §1 记录的抖动带（±1-2 行 / ±4 支）内，**分母与 4040192 一致**，正是零几何重构的预期形状（令牌化不产生可计行，字面量换常量名而已）。
 
+### 3.28 暂停续播钮 + v2 圆角/字号令牌（UI 几何变更批）
+
+**3835768** 暂停态全屏压暗 + 居中 64px 圆形 accent 播放钮 + 提示 pill，点击即续播。夹具在 CC 点击后注入 `bclick(480,254)` 并 `wait_ge("event: state=2", 2)`，C++ 断言 `count_of(output, "event: state=2") >= 2`——断的是续播事件真发生，不是等预算超时。
+
+**d7e7bf6** 圆角/字号令牌落成无依赖头 `ui_tokens.h`（`soar_app_ui` 不链 imgui，令牌要能被单测钉就必须独立头）：`kPanelRounding 10`（window+popup）/`kControlRounding 7`（frame+grab）/`kPillRounding 999`/`kMinFontSize 11`/`kUiFontSize 16` + `static_assert` 地板约束；`chip()` 与暂停提示 pill 改 draw-list 渲染。
+
+**⭐ 999 圆角不能走 `WindowRounding`**：`CalcWindowMinSize`（imgui.cpp:6307）把窗口最小高度抬到 `rounding - 1`，`AlwaysAutoResize` 窗被撑满视口——像素探针实测 249px 宽的 pill 渲染成 540px 高满高带；而同一个 999 走 draw list 时被钳在 `imgui_draw.cpp:1421-1422` 的 `ImMin(rounding, 半宽/半高 - 1)` = 矩形自身半高 = 正 pill。正解 = `NoBackground` + `WindowBorderSize=0` + `AddRectFilled`/`AddRect(kPillRounding)`。**这条回退臂无法用断言钉**：imgui 的窗口尺寸计算不可从应用侧断言，防线是像素探针 + 代码注释，不是用例。修复后探针实测 OSC 面板圆角 10、暂停 pill 251×23 端帽半圆 profile 9/4/1/0/1/3/9。
+
+CI 38731794595 七腿全绿：coverage 腿行 **94.5%（9215/9754）**、支 **84.2%（9899/11760）** 双过门禁 94.0/83.0。与 §3.27（0a4ce7e）的 9153/9691 行、9837/11697 支相比：**命中 +62 行 / +62 支，分母 +63 行 / +63 支**——本批新代码（令牌头 + 暂停续播路径 + pill 绘面）全部进分母且全部覆盖，比率各涨 0.1 点。
+
 ## 4. 测试纪律
 
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。
