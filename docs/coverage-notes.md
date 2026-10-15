@@ -383,7 +383,7 @@ BUGS.md #4（CLI 播放 Ended 后偶发不退出）的排查批落地两件测�
 
 新增后端用例 `the stream-less verdict holds when the open itself is refused`，断言**判词而非失败点**：夹具是提交在库的 `cast_data_only.mov`（tests/fixtures，无 env 门——相邻那条 `SOAR_TEST_SUBS_ONLY` 门控用例在 env 缺失的腿上会跳过，所以这条是跨腿哨兵）。本机 8.x 走扫描臂，macOS brew 9 走 EEXIST 臂，同一断言两臂皆绿；修复前 macOS 腿会红（判词为「failed to open」）。
 
-诚实记档：**EEXIST 臂在本机与 ubuntu CI 腿不可达**（那里的 demuxer 开成功，只落扫描臂），只有 macOS brew 9 的腿覆盖它——本地全量跑该臂 0 命中，读数按缺行计（约 2 行），与 §3.22「本地 FFmpeg 8 vs CI 版本差异」同款跨腿分叉，属已知的构建差异而非缺口。验证：媒体套件 96→97 例、1006 断言全绿（cov3，夹具 env + `SOAR_TEST_X11=1` + `SDL_AUDIODRIVER=dummy`），`soar_backend_tests` 5/5·35、`soar_cli_tests` 68/68·565 回归绿。
+诚实记档：**EEXIST 臂在本机与 ubuntu CI 腿不可达**（那里的 demuxer 开成功，只落扫描臂），只有 macOS brew 9 的腿覆盖它——本地全量跑该臂 0 命中，读数按缺行计（CI 38672466025 coverage 腿实测：分母 9585→9589 净 +4 行、命中 +1、缺 +3，正是该臂；门禁 94.6%/84.3% 双过），与 §3.22「本地 FFmpeg 8 vs CI 版本差异」同款跨腿分叉，属已知的构建差异而非缺口。验证：媒体套件 96→97 例、1006 断言全绿（cov3，夹具 env + `SOAR_TEST_X11=1` + `SDL_AUDIODRIVER=dummy`），`soar_backend_tests` 5/5·35、`soar_cli_tests` 68/68·565 回归绿；CI 七腿全绿，macOS 腿媒体套件 97 例 0 跳过（哨兵在 brew 9 上真跑）。
 
 ## 4. 测试纪律
 
