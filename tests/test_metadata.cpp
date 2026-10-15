@@ -180,6 +180,54 @@ TEST_CASE("metadata_scraper_config_drives_the_offline_contract") {
     s.configure(empty);
     CHECK_FALSE(s.online());
   }
+
+  // The url parser is the only thing between a user-typed endpoint and the
+  // socket call. Every shape it refuses must fail before a connection is
+  // even attempted - no network in these cases, no fixture server.
+  SUBCASE("urls the parser cannot use fail without a connection") {
+    const char* urls[] = {
+        "http://",                  // no host at all
+        "http://[::1:1/",           // bracket never closed
+        "http://[::1]x80/",         // junk after the bracket
+        "http://127.0.0.1:12ab/"};  // a non-numeric port
+    for (const char* url : urls) {
+      HttpMetadataScraper s;
+      HttpMetadataConfig cfg;
+      cfg.endpoint = url;
+      cfg.timeout = 2000ms;
+      s.configure(cfg);
+      REQUIRE(s.online());
+      std::string err;
+      CHECK_FALSE(s.scrape("Anything", nullptr, &err));
+      CHECK(err.find("not a usable http:// url") != std::string::npos);
+    }
+  }
+
+  SUBCASE("a bracketed ipv6 literal reaches the socket by address") {
+    HttpMetadataScraper s;
+    HttpMetadataConfig cfg;
+    cfg.endpoint = "http://[::1]:1/";
+    cfg.timeout = 2000ms;
+    s.configure(cfg);
+    std::string err;
+    CHECK_FALSE(s.scrape("Anything", nullptr, &err));
+    // Loopback refuses quickly, so this stays an instant no-metadata.
+    CHECK(err.find("cannot connect") != std::string::npos);
+  }
+
+  SUBCASE("a host that cannot resolve fails without hanging") {
+    HttpMetadataScraper s;
+    HttpMetadataConfig cfg;
+    // A single label longer than 63 octets is rejected by the resolver
+    // before any query goes out, so this neither needs DNS nor can it hang
+    // on a connect retry like a name the sandbox happens to resolve.
+    cfg.endpoint = "http://" + std::string(300, 'a') + "/";
+    cfg.timeout = 2000ms;
+    s.configure(cfg);
+    std::string err;
+    CHECK_FALSE(s.scrape("Anything", nullptr, &err));
+    CHECK(err.find("cannot resolve") != std::string::npos);
+  }
 }
 
 // =========================================================================
@@ -460,5 +508,99 @@ TEST_CASE("metadata_scraper_configured_without_a_key_sends_no_header") {
   // A null answer pointer is tolerated on the success path too: the scrape
   // happened, the caller just did not want the copy.
   CHECK(s.scrape("No Key", nullptr, nullptr));
+#endif
+}
+
+// =========================================================================
+// Wire misbehavior: the fixture answers in shapes a real service can
+// produce, and the client must come back with a plain "no metadata" - never
+// a hang, never a crash, never a half-decoded title.
+// =========================================================================
+
+TEST_CASE("metadata_scraper_rejects_wire_shapes_it_cannot_use") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping metadata tests");
+    return;
+  }
+
+  struct Wire {
+    const char* mode;
+    const char* err_needle;  // a substring of the expected failure
+    std::chrono::milliseconds timeout;
+  };
+  const Wire wires[] = {
+      {"bighead", "headers exceed", 5000ms},
+      {"garbage", "malformed status line", 5000ms},
+      {"stallbody", "timeout while receiving body", 700ms},
+      {"bigbody", "exceeds", 5000ms},
+      {"badhex", "no title", 5000ms},
+      {"badlowhex", "no title", 5000ms},
+  };
+  for (const Wire& w : wires) {
+    const TempDir root;
+    const test_servers::RangeServer srv =
+        test_servers::startMetadataServer(root.path, w.mode, "");
+    REQUIRE(srv.pid >= 0);
+    HttpMetadataScraper s;
+    HttpMetadataConfig cfg;
+    cfg.endpoint = srv.base_url;
+    cfg.timeout = w.timeout;
+    s.configure(cfg);
+    ScrapedMetadata out{"keep", "keep"};
+    std::string err;
+    CHECK_FALSE(s.scrape("Anything", &out, &err));
+    CHECK(err.find(w.err_needle) != std::string::npos);
+    CHECK(out.title == "keep");  // a failed scrape leaves the answer untouched
+    CHECK(out.plot == "keep");
+  }
+#endif
+}
+
+TEST_CASE("metadata_scraper_decodes_json_escapes_it_will_read") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping metadata tests");
+    return;
+  }
+  SUBCASE("every escape the JSON vocabulary defines decodes") {
+    const TempDir root;
+    const test_servers::RangeServer srv =
+        test_servers::startMetadataServer(root.path, "escapes", "");
+    REQUIRE(srv.pid >= 0);
+    HttpMetadataScraper s;
+    HttpMetadataConfig cfg;
+    cfg.endpoint = srv.base_url;
+    cfg.timeout = 5000ms;
+    s.configure(cfg);
+    ScrapedMetadata out;
+    REQUIRE(s.scrape("Escapes", &out, nullptr));
+    // \" \\ \/ \b \f \n \r \t, then 你 (a 3-byte code point) and É (the
+    // uppercase-hex arm of \uXXXX).
+    CHECK(out.title == "a\"b\\c/d\be\ff\ng\rh\ti你jÉ");
+  }
+
+  SUBCASE("a high surrogate followed by a non-low escape is U+FFFD") {
+    const TempDir root;
+    const test_servers::RangeServer srv =
+        test_servers::startMetadataServer(root.path, "highnonlow", "");
+    REQUIRE(srv.pid >= 0);
+    HttpMetadataScraper s;
+    HttpMetadataConfig cfg;
+    cfg.endpoint = srv.base_url;
+    cfg.timeout = 5000ms;
+    s.configure(cfg);
+    ScrapedMetadata out;
+    REQUIRE(s.scrape("High", &out, nullptr));
+    // The high half has no code point of its own: U+FFFD, and the A
+    // behind it still decodes to 'A'.
+    CHECK(out.title == "\xEF\xBF\xBD" "A");
+  }
 #endif
 }

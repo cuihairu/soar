@@ -1877,7 +1877,15 @@ RunResult runCli(const std::vector<std::string>& args, int child_timeout_secs = 
   // library overlay walkthrough hung to a bare core dump, run
   // 38792276031 — arming had stayed case-scoped and the newer
   // walkthroughs never picked it up); the headless helpers' own
-  // ScopedEnv sites become redundant but harmless.
+  // ScopedEnv sites become redundant but harmless. Under TSan the
+  // handler's own backtrace malloc draws a "signal-unsafe call inside
+  // of a signal" WARNING on the instrumented child (run 38803623890) —
+  // expected noise, not a new race: the dump still prints and the
+  // watchdog still owns the exit code (signal-unsafe is warning-class,
+  // halt_on_error only stops error-class reports). Keep it armed there
+  // too: the sanitizer legs are where the 124 family lives, and this
+  // run's stack — Player::stop() stuck in thread join (player.cpp:46)
+  // — is the first hard location for BUGS.md #4.
   cmd.insert(0, "SOAR_HANG_DUMP=1 timeout -s ABRT --kill-after=10 " +
                     std::to_string(child_timeout_secs) + " ");
 #endif

@@ -175,7 +175,7 @@
   Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）未在真桌面
   环境走查。
 
-## 4. CLI 播放自然结束后进程偶发不退出（收尾段两处无界等待已修 c416163，根因待 CI 探针归因）
+## 4. CLI 播放自然结束后进程偶发不退出（收尾段两处无界等待已修 c416163；挂点栈已取 38803623890：backend stop() 的 thread join，解码线程退出链待归因）
 
 - **现象**：CI 集成测试里 `soar --headless` 子进程播完流媒体后不退出，
   被 `runCli` 的 `timeout` watchdog 杀成 exit 124，断言失败。五起
@@ -212,6 +212,17 @@
      `SDL_RenderSimulateVSync`（进程健康、纯空转）——124 是 injector
      判负 7 后弃窗离场，把子进程留给 watchdog 的伴生现象，不是收尾
      挂死。根因与修复见 #7。
+  7. run 38803623890 tsan 腿（19a9df1）：RTSP live 用例（test_cli.cpp:7185）
+     第一子进程挂死，**SOAR_HANG_DUMP 交出本缺陷首个栈**：主线程
+     `Player::stop()`（player.cpp:46，实为 backend stop()）卡在
+     `std::thread::join()`，调用方 soarAppMain main.cpp:546（headless
+     收尾的 seek→pause→stop 序）；trail 止于 live-seek 报错后，与
+     「state=3 后停在 stop()」形态一致、且坐实 join 段而非 rewind/
+     背压两处已修点。探针自身在 tsan 下会引来一条 signal-unsafe
+     WARNING（handler 里 backtrace 的 malloc）——warning 级不抢退出码，
+     dump 完整打印，属预期噪声。该 case 的 retry 子进程干净退 1（非
+     挂死）导致用例判负——exit 1 形态此前未见，疑夹具复放时序 flake，
+     与 #4 独立，待同 SHA rerun 区分。
 - **已知事实**：headless 路径是 open→play→seek→pause→stop 直线序，
   没有自然结束等待循环（早版记档「主循环已按 main.cpp:322 break」
   有误——现行 main.cpp 322 行在 backend 构造块内，无此循环）。EOF

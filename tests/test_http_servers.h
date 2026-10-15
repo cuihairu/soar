@@ -699,6 +699,13 @@ srv.serve_forever()
 //               rather than invalid UTF-8.
 //   "badescape" an undefined JSON escape - the client must reject the
 //               answer instead of guessing.
+//   "escapes"   every escape the JSON vocabulary defines, plus an uppercase
+//               \uXXXX hex arm, in a single title.
+//   "badhex"    bad hex in a \u escape - the answer must be rejected.
+//   "badlowhex" bad hex in the low half of a surrogate pair.
+//   "highnonlow" a high surrogate followed by a \u escape that is not a low
+//                surrogate: the high half becomes U+FFFD and the second one
+//                still decodes.
 //   "emptyresults" results: [] (nothing to report).
 //   "notitle"   a result with no "title" field.
 //   "emptytitle"  "title": "" (a hit with no name is still a miss).
@@ -709,6 +716,13 @@ srv.serve_forever()
 //               read-until-close body path.
 //   "biglen"    a Content-Length far past the client's cap, no body - the
 //               pre-read cap check.
+//   "bighead"   raw headers past the client's 64 KiB header cap.
+//   "garbage"   a status line with no space - not parseable as HTTP.
+//   "stallbody" a length-less 200 that answers one body byte then goes
+//               quiet - the receive-timeout arm of the unbounded body read.
+//   "bigbody"   no Content-Length, then more than the 1 MiB download cap -
+//               the mid-read cap check (the biglen twin for the
+//               read-until-close path).
 //   "shortbody" promises 100 bytes, delivers 3 and hangs up - the mid-body
 //               disconnect.
 //   "stall"     accepts, then sleeps 40s before answering - the client's
@@ -759,6 +773,43 @@ class MetaHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(9 * 1024 * 1024))
             self.end_headers()
             return
+        if MODE == "bighead":
+            # More than the client's 64 KiB header cap: it must refuse the
+            # answer before any status line is parsed.
+            try:
+                self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Junk: " +
+                                 b"x" * (80 * 1024) + b"\r\n\r\n")
+            except OSError:
+                pass  # the client hangs up the moment its cap fires
+            self.close_connection = True
+            return
+        if MODE == "garbage":
+            # A status line with no space in it: not parseable as HTTP.
+            self.wfile.write(b"NOHTTP\r\n\r\n")
+            self.close_connection = True
+            return
+        if MODE == "stallbody":
+            # Length-less 200 that answers one byte and then goes quiet:
+            # only the client's receive timeout ends the body read.
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b"{")
+            self.wfile.flush()
+            time.sleep(40)
+            return
+        if MODE == "bigbody":
+            # No Content-Length, then more than the 1 MiB download cap.
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                self.wfile.write(b"x" * ((1 << 20) + 1))
+                self.wfile.flush()
+            except OSError:
+                pass  # the client hangs up the moment its cap fires
+            self.close_connection = True
+            return
         if MODE == "badjson":
             data = b"<html>oops</html>"
             self.send_response(200)
@@ -791,6 +842,16 @@ class MetaHandler(BaseHTTPRequestHandler):
             data = b'{"results":[{"title":"Lone \\udc00 surrogate"}]}'
         elif MODE == "badescape":
             data = b'{"results":[{"title":"bad \\q escape"}]}'
+        elif MODE == "escapes":
+            # Every escape the JSON vocabulary defines, plus an uppercase
+            # \uXXXX hex arm, in one title.
+            data = b'{"results":[{"title":"a\\"b\\\\c\\/d\\be\\ff\\ng\\rh\\ti\\u4F60j\\u00C9"}]}'
+        elif MODE == "badhex":
+            data = b'{"results":[{"title":"\\uZZZZ"}]}'
+        elif MODE == "badlowhex":
+            data = b'{"results":[{"title":"Hi \\ud800\\uZZZZ"}]}'
+        elif MODE == "highnonlow":
+            data = b'{"results":[{"title":"\\ud800\\u0041"}]}'
         elif MODE == "emptyresults":
             data = b'{"results":[]}'
         elif MODE == "notitle":
