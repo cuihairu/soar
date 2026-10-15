@@ -105,11 +105,11 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
 |---|---|---|---|---|
 | V1 | **强调色**：橙 `#ff6b35` vs 蓝 `#4C8DFF` | v2 `--accent` | `player_window.cpp:331` | 有意偏离（`ui-design.md:185`） |
 | V2 | **主题**：亮暗双主题 + 切换钮 vs 暗色硬编码不可切换 | `desktop-main.html:154`、CSS `:45-47`、`:97-101` | `:318-352` | 有意偏离（`ui-design.md:57` §1.6-7） |
-| V3 | **圆角**：`--r-panel 10px` / `--r-ctl 7px` / 徽标 pill / 图标钮圆形 | v2 令牌 | `ui_tokens.h`：`kPanelRounding 10`（window+popup）/ `kControlRounding 7`（frame+grab）/ `kPillRounding 999`（statechip + 暂停 floatpill，走 draw list——`CalcWindowMinSize` 会把窗口最小高度抬到 `rounding-1`，999 走 `WindowRounding` 会把自动尺寸窗口撑满视口，实测 249px pill 渲染成 540px 高） | 已补 d7e7bf6（图标钮圆形随 V6 按钮形态落，当前无图标钮消费者） |
+| V3 | **圆角**：`--r-panel 10px` / `--r-ctl 7px` / 徽标 pill / 图标钮圆形 | v2 令牌 | `ui_tokens.h`：`kPanelRounding 10`（window+popup）/ `kControlRounding 7`（frame+grab）/ `kPillRounding 999`（statechip + 暂停 floatpill，走 draw list——`CalcWindowMinSize` 会把窗口最小高度抬到 `rounding-1`，999 走 `WindowRounding` 会把自动尺寸窗口撑满视口，实测 249px pill 渲染成 540px 高） | 已补 d7e7bf6（图标钮圆形态随 V6 改判不追——规格按钮词汇是文本/emoji，见 V6 行；当前无图标钮消费者） |
 | V4 | **字号地板 11px** 未成文 | v2 口径（`prototypes.md:55`） | `ui_tokens.h` `kMinFontSize 11` + `kUiFontSize 16`，`static_assert` 地板约束；ImGui 内嵌默认 13px 亦在地板上 | 已补 d7e7bf6 |
 | V5 | **播放键形态**：64×64 圆形 accent 键 vs 54px 文本钮 | `desktop-main.html:255` | `:1960-2042` | 已补 3835768（压暗 + 圆钮 + 提示 pill，点击续播） |
-| V6 | **按钮形态**：原型圆形/分段 chip（`.tsmall`/`.seg`）vs 矩形文本钮 | `:205-222` | `:1992-2071` | **漏做** |
-| V7 | **焦点可见态 + reduced-motion 守卫**：原型有 `:focus-visible` 2px accent 环与 `prefers-reduced-motion` 守卫 | v2 口径（`prototypes.md:55`） | 无焦点环、无动画开关（ImGui overlay 无 CSS） | **漏做** |
+| V6 | **按钮形态**：原型 SVG 圆钮/分段 chip（`.tsmall`/`.seg`）vs 矩形文本钮 | `desktop-main.html:205-222` | `player_window.cpp:1992-2071`；钮面圆角已随 V3 落 v2（`kControlRounding 7`） | 有意偏离（2026-10-15 R1015E 改判：规格按钮词汇是文本/emoji——`ui-design.md:74` §2 IA「⏯ 播放/暂停、⏹ 停止…ⓘ 信息、⛶ 全屏」，唯一图标项明文简化为文案 `ui-design.md:67`；SVG 圆钮从未落进规格，真要做需先落规格 + 图标字体决策。seg chip 形态已由 I2（下拉）/I5（OSC 按钮）代决） |
+| V7 | **焦点可见态 + reduced-motion 守卫**：原型有 `:focus-visible` 2px accent 环与 `prefers-reduced-motion` 守卫 | v2 口径（`prototypes.md:55`） | 拆两条看（2026-10-15 R1015E）：**V7a 动画开关**——规格明文不设（`ui-design.md:188` §4「`disableAnimations` 不设开关，v0.1 常开」），现状即规格要求；**V7b 焦点环**——当前无键盘焦点模型（全仓无 `ImGuiConfigFlags` 设置，`NavEnableKeyboard` 默认关），环无处可画 | V7a 有意偏离（规格明文延后）；V7b **待拍板**（规格要求见 `ui-design.md:216`「焦点可见」；开启键盘导航要改 §3.2 合同：`WantCaptureKeyboard` 转真使快捷键映射早退 `player_window.cpp:575-660`，`ConfigNavCaptureKeyboard=false` 则方向键双职——既 seek 又移焦点。选项见 §5-P2-8） |
 | V8 | **设计令牌化**：规格要求「集中在 `ui_theme` 常量区」 | `ui-design.md:183` | 有集中区（`:317` 注释「every color the UI draws comes from here」）但全是字面量 `ImVec4`，无命名令牌 | **漏做**（半达标） |
 
 > 一致项（不计入差异）：危险/错误色 `#FF5D5D`（`ui-design.md:185` ↔ `:2417`）、
@@ -140,8 +140,8 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
 | M7 | seek 悬停缩略图预览 | `ui-design.md:55` §1.6-5 | 无 | 有意延后（v0.2） |
 | M8 | 翻译面板 | v1 `translate-panel.html` | 无 | 随 v1 废弃 |
 
-**漏做合计（修订后）：L3、V3、V4、V5、V6、V7、V8 = 7 条。**（2026-10-15 R1015D 点火单起陆续落地：L3 已补 39f7ed5、V8 已落 53ae80b、V5 已补 3835768、V3/V4 已补 d7e7bf6，剩 V6/V7 两条）
-**有意偏离/延后合计：L1、L4、L5、V1、V2、I1、I2、M1、M3、M4、M5、M6、M7、M8 = 14 条。**
+**漏做合计（修订后）：L3、V3、V4、V5、V6、V7、V8 = 7 条，处置为 4 落地 + 2 改判有意偏离 + 1 仍开放。**（落地：L3 39f7ed5、V8 53ae80b、V5 3835768、V3/V4 d7e7bf6；改判：V6 有意偏离＝原型超前，V7 拆 V7a/V7b 且 V7a 有意偏离＝规格明文延后；仍开放：V7b 焦点环，规格依据 `ui-design.md:216`，与顶栏同列用户拍板＝P2-8）
+**有意偏离/延后合计：L1、L4、L5、V1、V2、V6、V7a、I1、I2、M1、M3、M4、M5、M6、M7、M8 = 16 条。**（V6/V7a 为 R1015E 改判）
 **已实现形态差异：L2、M2 = 2 条（初版误判漏做，修订改正）。实现超前：L6 = 1 条。
 已对齐验证项：I3、I4、I5、I6 = 4 条（不计入差异）。**
 
@@ -161,18 +161,19 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
 | 无库卡片网格/缩略图 | `redesign/index.html` 标 v0.3 | 原型自己标了版本 |
 | 无迷你模式、无 seek 缩略图 | `ui-design.md:250` §7 | 后续边界 |
 | 无分辨率 pill | MK_R2A 巡检已代决 | `MediaInfo` 无宽高（核心接口冻结）、MVP §1.5 不列、OSC 行 2 已满行——原型超前项已按「原型超前不追」处理 |
+| 按钮用文本钮而非 SVG 圆钮（V6） | `ui-design.md:74` §2 IA、`:67` | 规格按钮词汇是文本/emoji（⏯/⏹/🔇/ⓘ/⛶），唯一图标项明文「简化为状态文案」；SVG 圆钮/seg chip 是原型语言，从未落进规格（seg 形态已由 I2 下拉、I5 OSC 按钮代决）；v2 圆角已随 V3 全量上钮 |
+| 无 reduced-motion 开关（V7a） | `ui-design.md:188` §4 | 规格明文「`disableAnimations` 不设开关，v0.1 常开」；动效仅 160ms 透明度过渡，无位移类动画，常开不影响观感 |
 
 ### 4.2 漏做（v2 定稿的设计语言，实现缺位，**应补**）
 
 | 项 | 影响 | 为什么是漏做 |
 |---|---|---|
 | **OSC 行 1 时间码**（L3）— **已补**（39f7ed5） | 中 | 行 1 = 左时间码 | seek 轨 | 右 -剩余，行 2 时钟移除不重复。成本如约发生：走查行 2/弹层 19 处 pin 按实测 -106px 重校（probe 前后两建对照），audiodrive 旧 637/685 漂移 pin 一并钉回实测位；`test_cli.cpp` 拖拽点 (cx±80, h-76) 实测仍在轨内未动 |
-| **令牌化**（V8） | 中 | `ui-design.md:183` 明文要求「集中在 `ui_theme` 常量区」；当前色值集中在 `applyTheme` 一处但全是无名 `ImVec4` 字面量，后续主题/焦点态/圆角对齐都以它为前置 |
-| **焦点可见态 + reduced-motion**（V7） | 中 | v2 无障碍承诺；ImGui overlay 当前无焦点环、无动画开关 |
-| **圆角令牌**（V3） | 低 | v2 成文 `--r-panel 10`/`--r-ctl 7`；实现 8/6/4/6 是另一套数 |
-| **字号地板 11px**（V4） | 低 | v2 口径；实现无成文地板 |
-| **播放键 64 圆钮**（V5） | 低 | 「像不像」的第一印象项，改动小 |
-| **按钮形态**（V6） | 低 | 原型圆形/分段 chip vs 实现矩形文本钮 |
+| **令牌化**（V8）— **已落**（53ae80b，`ui_tokens.h` 具名令牌） | 中 | `ui-design.md:183` 明文要求「集中在 `ui_theme` 常量区」；当前色值集中在 `applyTheme` 一处但全是无名 `ImVec4` 字面量，后续主题/焦点态/圆角对齐都以它为前置 |
+| **焦点可见环**（V7b，原 V7 焦点半边） | 中 | 规格要求（`ui-design.md:216` 把「焦点可见」列为 ImGui 无障碍短板的缓解）；当前无键盘焦点模型，开导航会改 §3.2 合同，待拍板（§5-P2-8）。reduced-motion 半边（V7a）已改判有意偏离，见 4.1 |
+| **圆角令牌**（V3）— **已补**（d7e7bf6） | 低 | v2 成文 `--r-panel 10`/`--r-ctl 7`；实现 8/6/4/6 是另一套数 |
+| **字号地板 11px**（V4）— **已补**（d7e7bf6） | 低 | v2 口径；实现无成文地板 |
+| **播放键 64 圆钮**（V5）— **已补**（3835768） | 低 | 「像不像」的第一印象项，改动小 |
 
 ---
 
@@ -190,7 +191,7 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
 ### P1 — 视觉细节（第二波）
 
 4. **播放键改 64 圆形 accent 钮**（V5）——「像不像」的第一印象项，改动小、收益直接。
-5. **焦点可见态 + reduced-motion 语义开关**（V7）——v2 无障碍承诺，当前完全缺失。
+5. ~~焦点可见态 + reduced-motion 语义开关~~（V7）——拆分收口：V7a reduced-motion 为有意偏离（`ui-design.md:188` 明文「不设开关，v0.1 常开」），不动实现；V7b 焦点环移入 P2-8 等拍板。
 6. **圆角/字号令牌对齐 v2**（V3、V4）——随 P0-1（令牌化）一起改。
 
 ### P2 — 结构项（**需用户拍板，先别动**）
@@ -202,6 +203,19 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
    - (b) 加顶栏，同步改 `ui-design.md` §1.6-7 与 §2 的 IA 树。
    - (c) 混合：只把「全屏/最近/帮助」进顶栏，信息仍留 OSC。
    **在用户拍板前，这一项不动实现也不动原型。**
+
+8. **焦点可见环**（V7b）：规格把「焦点可见」列为 ImGui 无障碍短板的缓解（`ui-design.md:216`），
+   但当前**无键盘焦点模型**（全仓无 `ImGuiConfigFlags` 设置，`NavEnableKeyboard` 默认关），环无处可画。
+   三个选项：
+   - **(a) 启用 ImGui 键盘导航**：环用内置 nav cursor（`RenderNavCursor` 是 2px `AddRect`
+     外扩 4px，与原型 `outline:2px` + `outline-offset:2px` 同构），着色 `ImGuiCol_NavCursor`
+     为 accent 即达标；代价是 `WantCaptureKeyboard` 转真、快捷键映射早退
+     （`player_window.cpp:575-660`），§3.2 全表合同要重排；
+     `ConfigNavCaptureKeyboard=false` 可保快捷键但方向键双职（既 seek 又移焦点）。
+   - (b) app 自绘焦点模型：不启用 ImGui nav，按自家状态画 accent 环——零快捷键冲突，
+     但要自建 Tab/方向键焦点序，等于重造一遍 nav。
+   - (c) 延后 v0.2：同步把 `ui-design.md:216` 的「焦点可见」改口径为 v0.2 承诺。
+   **在用户拍板前，这一项不动实现。**
 
 ### 明确不做（避免把实现改差）
 
@@ -248,3 +262,7 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
   （前者已实现于 `drawChips()`，后者 MK_R2A 已代决），漏做 11→7 条，P0 重排。
 - 实施顺序：P0-1（令牌化）→ P1（视觉细节）→ P0-2（OSC 行 1 时间码，需走查坐标重校）；
   P2-7 顶栏等用户拍板 (a)/(b)/(c)。
+- 2026-10-15 R1015E 收口改判：V6（按钮形态）改判**有意偏离**——规格按钮词汇是文本/emoji
+  （`ui-design.md:74` §2 IA），唯一图标项明文简化为文案（`:67`），SVG 圆钮从未落进规格，
+  seg chip 形态已由 I2/I5 代决；V7 拆分——V7a reduced-motion **有意偏离**（`ui-design.md:188`
+  明文延后），V7b 焦点环保留开放并移入 P2-8（与顶栏同列用户拍板）。漏做 7 条全部落地或改判。
