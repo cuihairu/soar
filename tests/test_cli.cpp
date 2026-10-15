@@ -4032,7 +4032,7 @@ TEST_CASE("renderer selection fails cleanly under the dummy video driver") {
     MESSAGE("SDL2 not compiled in; renderer block absent; skipping");
     return;
   }
-  CHECK(run.exit_code == 1);
+  CHECK_MESSAGE(run.exit_code == 1, "child output:\n", run.output);
 }
 
 TEST_CASE("queue positionals drop empty and option-shaped arguments") {
@@ -4052,7 +4052,10 @@ TEST_CASE("queue positionals drop empty and option-shaped arguments") {
     MESSAGE("SDL2 not compiled in; queue loop absent; skipping");
     return;
   }
-  CHECK(run.exit_code == 1);
+  // The child's merged output rides the CHECK (run 38786141262: the tsan
+  // leg exited 66 here — a detected race — and the report stayed trapped
+  // in this string while the log showed only "66 != 1", undiagnosable).
+  CHECK_MESSAGE(run.exit_code == 1, "child output:\n", run.output);
 }
 
 TEST_CASE("windowed run plays on a real X server and exits cleanly on Escape") {

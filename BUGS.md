@@ -322,3 +322,23 @@
   `@rpath/`libbrotlicommon）：旧脚本 staged 2 个（缺 brotlicommon，
   即 CI 死状），修复后 staged 3 个全闭包；真机验证看后续 CI macOS
   腿与 nightly。
+
+## 6. CI tsan 腿 `queue positionals` 用例退 66（间歇，待复现归因）
+
+- **现象**：run 38786141262（3ecb72f）tsan 腿 13/14，
+  `test_cli.cpp:4055`（queue positionals 用例）
+  `CHECK( run.exit_code == 1 )` 实得 **66**；全套其余用例与
+  asan/coverage/各平台腿全绿。
+- **签名判读**：66 = TSan 检出 race 后的默认退出码
+  （`halt_on_error=1` 下首报即退）——与 #4 的 124（挂死超时）不同类。
+  race 报告本体被 `runCli` 捕获进 `run.output`（stderr 已合并），
+  但断言只打印数值，报告从未落 CI 日志——本次不可归因。
+- **间歇证据**：同一 SHA 的平行 run 38784277357 tsan 全绿
+  （3ecb72f 对 13c695d 零代码差：只动打包脚本与本文档）；本地
+  build-tsan1016（CI 同配方 `-fsanitize=thread -g` +
+  `halt_on_error=1`）27 次尝试零复现（直跑同命令 20 轮 + 带夹具
+  媒体全套 2 轮——38.2s 与 CI 35.8s 同量级 + 单核 taskset 钉死
+  6 轮）。判间歇，按 c416163 先例同 SHA rerun。
+- **改进**：两个同形 renderer 失败用例（4035/4055）
+  `CHECK` → `CHECK_MESSAGE` 携带 child output——下次命中，
+  race 报告直接出现在 CI 日志，归因不再靠猜。
