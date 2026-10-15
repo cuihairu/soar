@@ -641,6 +641,13 @@ if mode == "osc":
         bclick(769, 495)   # CC again: back on
         if not wait_ge("event: toast=Subtitles on", 1, 5.0):
             rc = 7
+        # The paused overlay's round play button (drawn at the window
+        # center, 16px above it): a click resumes, exactly like Space.
+        # The bar stays up for the Shot click below — the resume restarts
+        # the idle window, which is longer than the click gap.
+        bclick(480, 254)
+        if not wait_ge("event: state=2", 2, 5.0):
+            rc = 7
         # The clock moved from row 2 up to the seek row, so everything
         # right of it shifted left by its width (~106px). Re-probed
         # against the live bar: A-B's face spans window x 710..745, CC
@@ -5046,6 +5053,10 @@ TEST_CASE("windowed null-backend run hides the OSC on idle and wakes it on motio
   // (the null backend has no frames to save).
   CHECK(count_of(run.output, "event: media-info") >= 3);
   CHECK(run.output.find("seekable=false") != std::string::npos);
+  // The paused overlay's round play button resumes: the injector clicks it
+  // at the window centre after the pause, so a second state=2 follows the
+  // state=1 the space key produced (the first is the null backend opening).
+  CHECK(count_of(run.output, "event: state=2") >= 2);
   CHECK(run.output.find("event: toast=Start of playlist") != std::string::npos);
   CHECK(run.output.find("event: toast=End of playlist") != std::string::npos);
   CHECK(run.output.find("event: toast=Loop point A set at") != std::string::npos);

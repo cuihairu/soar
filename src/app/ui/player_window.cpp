@@ -321,6 +321,7 @@ namespace theme {
 constexpr ImVec4 kText{0.910f, 0.918f, 0.941f, 1.0f};             // #E8EAF0
 constexpr ImVec4 kTextDim{0.910f, 0.918f, 0.941f, 0.55f};         // secondary
 constexpr ImVec4 kAccent{0.298f, 0.553f, 1.0f, 1.0f};             // #4C8DFF
+constexpr ImVec4 kInkOnAccent{0.063f, 0.071f, 0.086f, 1.0f};      // #101216
 constexpr ImVec4 kDanger{1.0f, 0.365f, 0.365f, 1.0f};             // #FF5D5D
 constexpr ImVec4 kPanelBg{0.063f, 0.071f, 0.094f, 0.94f};         // over video
 constexpr ImVec4 kPopupBg{0.10f, 0.11f, 0.15f, 0.98f};
@@ -900,6 +901,7 @@ class PlayerHud {
     st_.hud_alpha = std::clamp(st_.hud_alpha, 0.0f, 1.0f);
 
     if (!video_active) drawPoster();
+    drawPauseOverlay();
     if (st_.hud_alpha > 0.01f) drawHud(now);
     drawChips();
     drawSubtitles(now);
@@ -1941,6 +1943,104 @@ class PlayerHud {
            io.MousePos.y >= y0 && io.MousePos.y < y0 + bar_h;
   }
 
+  // Paused: dim the video and center a round 64px accent play button with
+  // a resume hint (the prototype's paused overlay, redesign/desktop-main.html).
+  // This replaces the old Paused chip — the pill carries the state name. The
+  // dim is input-transparent; only the button takes clicks (click = resume,
+  // same as Space). Drawn before the HUD so the bar, chips and canvas
+  // subtitles stay crisp above the dim.
+  //
+  // Window order matters here and is counterintuitive: ImGui 1.91 pushes a
+  // new NoBringToFrontOnFocus window to the FRONT of g.Windows, and g.Windows
+  // is drawn front-to-back — so the LAST of these three Begin() calls lands at
+  // the BACK of the stack. The dim is therefore begun last even though it is
+  // the first thing seen; reordering these blocks puts the button under the
+  // dim (verified by pixel probe: a 38%-black rect over #4C8DFF reads
+  // (49,89,161) instead of (76,141,255)).
+  void drawPauseOverlay() {
+    if (player_.state() != PlaybackState::Paused) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    const float cx = io.DisplaySize.x * 0.5f;
+    const float cy = io.DisplaySize.y * 0.5f - 16.0f;
+
+    ImGui::SetNextWindowPos(ImVec2(cx, cy), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    if (ImGui::Begin("##pauseplay", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoScrollbar |
+                         ImGuiWindowFlags_NoBackground |
+                         ImGuiWindowFlags_AlwaysAutoResize)) {
+      // Bitmap fonts carry no triangle glyph, so the face is drawn: a
+      // filled circle in the accent (brightened on hover/press) with the
+      // ink play triangle. InvisibleButton supplies the hit box.
+      if (ImGui::InvisibleButton("##resume", ImVec2(64.0f, 64.0f))) {
+        togglePlayPause();
+      }
+      const bool hover = ImGui::IsItemHovered();
+      const bool press = ImGui::IsItemActive();
+      ImVec4 face = theme::kAccent;
+      face.x += press ? 0.10f : (hover ? 0.06f : 0.0f);
+      face.y += press ? 0.10f : (hover ? 0.06f : 0.0f);
+      face.z += press ? 0.10f : (hover ? 0.06f : 0.0f);
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const ImVec2 bmin = ImGui::GetItemRectMin();
+      const ImVec2 center(bmin.x + 32.0f, bmin.y + 32.0f);
+      dl->AddCircleFilled(center, 32.0f,
+                          ImGui::ColorConvertFloat4ToU32(face), 48);
+      dl->AddTriangleFilled(ImVec2(center.x - 6.0f, center.y - 9.0f),
+                            ImVec2(center.x - 6.0f, center.y + 9.0f),
+                            ImVec2(center.x + 10.0f, center.y),
+                            ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent));
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+
+    ImGui::SetNextWindowPos(ImVec2(cx, cy + 32.0f + 14.0f + 11.0f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kPanelBg);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 5.0f));
+    if (ImGui::Begin("##pausehint", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoScrollbar |
+                         ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoInputs)) {
+      ImGui::TextUnformatted("Paused - Space or click to resume");
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+
+    // Begun last so it is the back-most of the three (see the ordering note
+    // above). NoInputs: a capturing fullscreen window would set
+    // WantCaptureMouse and swallow the app-level click gestures (OSC toggle,
+    // double-click fullscreen) while paused.
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    if (ImGui::Begin("##pausedim", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoScrollbar |
+                         ImGuiWindowFlags_NoBackground |
+                         ImGuiWindowFlags_NoInputs)) {
+      // rgba(4,5,7,.38) over the video, as in the prototype.
+      ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f),
+                                                io.DisplaySize,
+                                                IM_COL32(4, 5, 7, 97));
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+  }
+
   void drawHud(milliseconds now) {
     const ImGuiIO& io = ImGui::GetIO();
     const float w = io.DisplaySize.x;
@@ -2231,12 +2331,11 @@ class PlayerHud {
   }
 
   void drawChips() {
-    // Paused chip while paused; buffering chip while the backend reports a
-    // stall (P1 events); download chip while the disk cache is still
-    // filling (P3c events). All fade with the theme, never block input.
-    if (player_.state() == PlaybackState::Paused) {
-      chip("##paused", "Paused", 12.0f);
-    }
+    // Buffering chip while the backend reports a stall (P1 events);
+    // download chip while the disk cache is still filling (P3c events).
+    // (The Paused chip is gone: the paused overlay's pill carries the
+    // state name — one indicator, not two.) All fade with the theme,
+    // never block input.
     if (cfg_.buffering && cfg_.buffering->load(std::memory_order_relaxed)) {
       chip("##buffering", "Buffering...", 12.0f);
     }
