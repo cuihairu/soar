@@ -64,3 +64,18 @@ ui-design §2 定 v0.1 无设置页）。实现差异 7 项已登记 todo「原�
 里程碑标注」节（settings v0.2 规划稿、translate / 顶栏·状态 pill / OSC 画质 pill
 v0.2+、媒体库缩略图·卡片网格·来源徽标 v0.3），`prototypes/translate-panel.html`
 页头标 v0.2+。
+
+## 文档站一致性（2026-10-15 收口）
+
+首页「界面预览」的原型卡此前指向 **v1** 的 PNG（`prototypes/desktop-main.png` 等），
+与本页只链 v2 自相矛盾——同一站点一处说 v2 定稿、一处放 v1 旧图。本次收口：
+
+- **原型卡改指 v2 定稿截图**：`redesign/desktop-main-dark.png`、`redesign/settings-dark.png`，
+  并补上此前从未在站内出现的 `redesign/playlist-dark.png`、`redesign/library-dark.png`
+  （走「投放即生效」登记，文件已在库）。
+- **删除 translate-panel 卡**：v2 重设计未重出该页（翻译功能在实现里走字幕菜单
+  `[translate]` 行，已由该组两张真实截图覆盖）。
+- **v1 原型集页头标废弃**：`prototypes/` 下六页（含 `index.html` 总览）的 docbar
+  前置「v1 旧稿（已废弃，v2 见 …）」并链到对应 v2 页；v1 页保留不删——v2 各页的
+  「旧稿对照」链仍指向它们。translate-panel 页注明 v2 未重出该页。
+- 移动端卡（`mobile.png`）维持占位：移动壳尚无 UI 可对（见[对齐审计](/prototype-alignment-audit) §6 平台分列），无 v2 稿可指。

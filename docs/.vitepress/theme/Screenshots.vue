@@ -9,6 +9,8 @@
 // docs/public/prototypes/<file>；文件未到时加载失败，降级渲染占位卡
 // （虚线框 + 待供图说明 + 投放路径），绝不显示破图。图放进去、下次
 // 构建部署后 200 命中，同一张卡自动换成真图——组件零改动。
+// 原型卡一律指 v2 定稿（redesign/*.html 的截图）；v1 的 PNG（同目录下
+// 不带 redesign/ 前缀的那几张）自 2026-10-15 起不再被引用。
 import { onMounted, onUnmounted, ref } from 'vue'
 import { withBase } from 'vitepress'
 
@@ -52,9 +54,19 @@ const groups = [
         '快捷键 —— H 呼出全清单：seek、音量、音轨/字幕切换、A-B loop、截图一屏可查',
       ),
       proto(
-        'desktop-main.png',
-        '桌面主界面原型稿',
-        '桌面主界面（原型）—— 设计稿待供图，放入 docs/public/prototypes/desktop-main.png 后本卡自动换成真图',
+        'redesign/desktop-main-dark.png',
+        '桌面主界面原型稿（v2 定稿）',
+        '桌面主界面（v2 原型）—— 底部悬浮 OSC、状态徽标与注解浮层；实现落点见 UI 设计',
+      ),
+      proto(
+        'redesign/playlist-dark.png',
+        '播放列表原型稿（v2 定稿）',
+        '播放列表（v2 原型）—— 队列视图与 Loop 三态 / Shuffle；实现为 P 键浮层',
+      ),
+      proto(
+        'redesign/library-dark.png',
+        '媒体库原型稿（v2 定稿）',
+        '媒体库（v2 原型）—— 侧栏分类 + 海报网格 + 搜索；v0.3 范围，实现现为列表式',
       ),
     ],
   },
@@ -72,11 +84,8 @@ const groups = [
         '译文字幕轨播放画面',
         '译文字幕播放中 —— 时间轴与原轨一致，原字幕轨不受影响',
       ),
-      proto(
-        'translate-panel.png',
-        '字幕翻译面板原型稿',
-        '字幕翻译面板（原型）—— 设计稿待供图，放入 docs/public/prototypes/translate-panel.png 后本卡自动换成真图',
-      ),
+      // v1 的 translate-panel 页 v2 已删（重设计未重出该页）；翻译功能在实现里走
+      // 字幕菜单的 [translate] 行，已由上面两张真实截图覆盖，故不再挂原型卡。
     ],
   },
   {
@@ -89,9 +98,9 @@ const groups = [
         'Subtitle Settings —— 轨道下拉直接切换，[translate] 行一键送译',
       ),
       proto(
-        'settings.png',
-        '设置面板原型稿',
-        '设置面板（原型）—— 设计稿待供图，放入 docs/public/prototypes/settings.png 后本卡自动换成真图',
+        'redesign/settings-dark.png',
+        '设置面板原型稿（v2 定稿）',
+        '设置面板（v2 原型）—— v0.2 规划稿；v0.1 无设置页（ui-design §2）',
       ),
     ],
   },
