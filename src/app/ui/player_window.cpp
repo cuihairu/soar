@@ -1963,11 +1963,31 @@ class PlayerHud {
                          ImGuiWindowFlags_NoFocusOnAppearing |
                          ImGuiWindowFlags_NoBringToFrontOnFocus |
                          ImGuiWindowFlags_NoScrollbar)) {
-      // Row 1: the seek bar, full width. Hover/drag tooltip shows the time
-      // under the pointer; dragging previews, release commits (docs §3.1).
+      // Row 1: elapsed | seek rail | -remaining, the prototype's seekrow
+      // (redesign/desktop-main.html). The clocks used to sit in row 2; the
+      // audit's L3 moved them up beside the bar. Hover/drag tooltip shows
+      // the time under the pointer; dragging previews, release commits
+      // (docs §3.1).
       const bool seekable = info.seekable && dur > 0.0;
+      const std::string left_tc =
+          (st_.seek_dragging ? "> " : "") +
+          formatClock(milliseconds(static_cast<long long>(shown)));
+      std::string right_tc;
+      if (dur > 0.0) {
+        const auto remaining = std::max(
+            milliseconds(0),
+            info.duration - milliseconds(static_cast<long long>(shown)));
+        right_tc = "-" + formatClock(remaining);
+      }
+      ImGui::TextUnformatted(left_tc.c_str());
+      ImGui::SameLine();
       if (!seekable) ImGui::BeginDisabled();
-      ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
+      const float right_w =
+          right_tc.empty() ? 0.0f : ImGui::CalcTextSize(right_tc.c_str()).x;
+      const float rail_w =
+          ImGui::GetContentRegionAvail().x - right_w -
+          (right_w > 0.0f ? ImGui::GetStyle().ItemSpacing.x : 0.0f);
+      ImGui::PushItemWidth(std::max(rail_w, 40.0f));
       double v = shown;
       const double v_min = 0.0;
       // Core imgui has no SliderDouble; the generic double slider does.
@@ -1996,8 +2016,12 @@ class PlayerHud {
       }
       if (!seekable) ImGui::EndDisabled();
       ImGui::PopItemWidth();
+      if (!right_tc.empty()) {
+        ImGui::SameLine();
+        ImGui::TextUnformatted(right_tc.c_str());
+      }
 
-      // Row 2: transport, clock, volume, rate, tracks, overlays, tools.
+      // Row 2: transport, volume, rate, tracks, overlays, tools.
       const bool playing = player_.state() == PlaybackState::Playing;
       if (ImGui::Button(playing ? "Pause" : "Play", ImVec2(54, 0))) {
         togglePlayPause();
@@ -2012,20 +2036,8 @@ class PlayerHud {
       ImGui::SameLine();
       if (ImGui::Button(">|", ImVec2(30, 0))) playlistStep(false, now);
       ImGui::SameLine();
-      // Elapsed with the remaining time beside it (prototype "-00:02:14");
-      // the absolute duration stays in the Info overlay — the bar row has
-      // no room for three clocks.
-      std::string clock =
-          (st_.seek_dragging ? "> " : "") +
-          formatClock(milliseconds(static_cast<long long>(shown)));
-      if (info.duration > milliseconds::zero()) {
-        const auto remaining = std::max(
-            milliseconds(0),
-            info.duration - milliseconds(static_cast<long long>(shown)));
-        clock += " (-" + formatClock(remaining) + ")";
-      }
-      ImGui::TextUnformatted(clock.c_str());
-      ImGui::SameLine();
+      // (The clock used to sit here; it moved to the seek row when the
+      // audit's L3 flanked the rail with timecodes — no duplicate.)
       if (ImGui::Button(st_.last_muted ? "Unmute" : "Mute")) toggleMute(now);
       ImGui::SameLine();
       ImGui::PushItemWidth(56.0f);

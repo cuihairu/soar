@@ -439,35 +439,37 @@ if mode == "drive":
         wclick(59, 495)    # resume
         wclick(117, 495)   # Stop
         wclick(59, 495)    # play again from Stopped
-        wclick(354, 495)   # Mute (row gained |< >| after Stop and the
-                           # clock became "elapsed (-remaining)"; label
-                           # widens to "Unmute" and the volume slider
-                           # shifts right — the drag below stays in the
-                           # intersection of both label variants)
-        moved(405, 495); time.sleep(0.15)
+        wclick(248, 495)   # Mute (row gained |< >| after Stop; the clock
+                           # used to sit between them but moved to the
+                           # seek row, so everything here shifted left by
+                           # its width; label widens to "Unmute" and the
+                           # volume slider shifts right — the drag below
+                           # stays in the intersection of both variants)
+        moved(299, 495); time.sleep(0.15)
         xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.1)
-        moved(430, 495); time.sleep(0.1)
+        moved(324, 495); time.sleep(0.1)
         xtest.fake_input(d, X.ButtonRelease, 1); d.sync(); time.sleep(0.3)
-        wclick(484, 495)   # rate combo open (popup flips up: no room below)
+        wclick(378, 495)   # rate combo open (popup flips up: no room below)
         focus(); key(d.keysym_to_keycode(0x69)); time.sleep(0.2)  # suppressed
-        wclick(484, 468)   # pick 2x (bottom row, clear of the 1.0x default)
-        wclick(555, 495)   # audio combo open (single item fits below)
-        wclick(584, 522)   # pick the audio track
-        wclick(633, 495)   # subtitle combo open (flips up)
-        wclick(655, 468)   # pick the subtitle track ...
-        wclick(633, 495)   # ... reopen; "Off" only acts as a change when a
-        wclick(655, 443)   # track is currently selected, so the order matters
-        wclick(692, 495)   # Sub overlay (the Sub button sits between the
-        wclick(692, 495)   # subtitle combo and Info; open, then close)
-        wclick(736, 495)   # Info overlay (shifted right by the Sub button)
-        wclick(736, 495)   # (close again)
-        wclick(788, 495)   # fullscreen toggle button (also shifted)
+        wclick(378, 468)   # pick 2x (bottom row, clear of the 1.0x default)
+        wclick(449, 495)   # audio combo open (single item fits below)
+        wclick(478, 522)   # pick the audio track
+        wclick(527, 495)   # subtitle combo open (flips up)
+        wclick(549, 468)   # pick the subtitle track ...
+        wclick(527, 495)   # ... reopen; "Off" only acts as a change when a
+        wclick(549, 443)   # track is currently selected, so the order matters
+        wclick(586, 495)   # Sub overlay (the Sub button sits between the
+        wclick(586, 495)   # subtitle combo and Info; open, then close)
+        wclick(630, 495)   # Info overlay (shifted right by the Sub button)
+        wclick(630, 495)   # (close again)
+        wclick(682, 495)   # fullscreen toggle button (also shifted)
         focus(); key(d.keysym_to_keycode(0xFF1B)); time.sleep(0.3)
-        # Seek bar: the row-1 slider sits at y 452..477 under the OSC top
-        # edge. A press-drag-back-release first (the value returns to where
-        # it started, so the gesture is a cancelled drag that must not
-        # seek), then a press-drag-release so the scrub preview and the
-        # release-commit arcs both run.
+        # Seek bar: the row-1 rail sits at y 452..477 under the OSC top
+        # edge, flanked by the elapsed/remaining timecodes (they narrowed
+        # it; the drag points stay well inside). A press-drag-back-release
+        # first (the value returns to where it started, so the gesture is a
+        # cancelled drag that must not seek), then a press-drag-release so
+        # the scrub preview and the release-commit arcs both run.
         moved(cx - 80, geo.height - 76)
         time.sleep(0.2)
         xtest.fake_input(d, X.ButtonPress, 1); d.sync()
@@ -627,23 +629,23 @@ if mode == "osc":
         bclick(163, 495)   # |< prev: back to the sample
         if not wait_ge("event: media-info", 3, 8.0):
             rc = 7
-        bclick(838, 495)   # A-B: arm point A
+        bclick(732, 495)   # A-B: arm point A
         if not wait_ge("event: toast=Loop point A set at", 1, 5.0):
             rc = 7
-        bclick(838, 495)   # A-B again: pair settles somehow
+        bclick(732, 495)   # A-B again: pair settles somehow
         if not wait_ge("event: toast=", 4, 5.0):  # Start, End, arm, 2nd
             rc = 7
-        bclick(875, 495)   # CC: caption visibility off (the V shortcut's action)
+        bclick(769, 495)   # CC: caption visibility off (the V shortcut's action)
         if not wait_ge("event: toast=Subtitles off", 1, 5.0):
             rc = 7
-        bclick(875, 495)   # CC again: back on
+        bclick(769, 495)   # CC again: back on
         if not wait_ge("event: toast=Subtitles on", 1, 5.0):
             rc = 7
-        # The CC button took A-B's old neighbour slot, so Shot moved right
-        # by one button width: 888 now lands on CC. Re-probed against the
-        # live bar — Shot's face spans window x 899..939 (the bar edge is
-        # 940), A-B stays at 815..851 so its pin above is undisturbed.
-        bclick(917, 495)   # Shot: no frames on the null backend
+        # The clock moved from row 2 up to the seek row, so everything
+        # right of it shifted left by its width (~106px). Re-probed
+        # against the live bar: A-B's face spans window x 710..745, CC
+        # 755..783, Shot 793..834 (the bar edge stays 940).
+        bclick(811, 495)   # Shot: no frames on the null backend
         if not wait_ge("event: toast=Screenshot needs the FFmpeg backend", 1, 5.0):
             rc = 7
     except Exception:
@@ -695,7 +697,7 @@ if mode == "subsdrive":
         moved(x, y); time.sleep(0.25)
         holdclick(1); time.sleep(0.9)
 
-    sclick(686, 495)   # Sub button: open the Subtitle Settings page
+    sclick(580, 495)   # Sub button: open the Subtitle Settings page
     sclick(360, 232)   # font size slider: jump to the small end
     sclick(630, 232)   # ... and to the large end
     for fx in (415, 479, 512, 544):  # ... and the 20/28/32/36 px buckets,
@@ -714,7 +716,7 @@ if mode == "subsdrive":
     sclick(459, 221)   # ... pick is the no-op arm
     sclick(459, 183)   # reopen ...
     sclick(459, 248)   # ... and re-select the track row
-    sclick(686, 495)   # close the page
+    sclick(580, 495)   # close the page
     time.sleep(0.5)
     # The OSC copy of the subtitle picker over the same real track list.
     # The first pick is a no-op by construction (the page above left the
@@ -722,22 +724,19 @@ if mode == "subsdrive":
     # short-circuits); the pair after it is the pair that matters, since
     # "Off" only acts while something is selected.
     # Row centers re-probed after the OSC row-2 rework against the live
-    # popup: the combo sits at x 590-660 (click 623) and the popup flips
+    # popup, then shifted 106px left when the clock moved to the seek
+    # row: the combo sits at x 484-554 (click 517) and the popup flips
     # up anchored to it, so the Off row's text band spans y 414-422
     # (click 418) and the single stream row y 440-450 (click 445), both
-    # clicked at x 620 inside the popup's left half (SOAR_UI_BITMAP_FONT=1).
-    # The coordinates this tour used before (combo 569, rows 591) predate
-    # the rework: 569 now lands on the Audio combo and 591 sits on the
-    # popup's edge or the bar gap, so the picks turned into silent misses
-    # or stray audio picks.
-    sclick(623, 495)   # subtitle combo open (Off + the stream, flips up)
-    sclick(620, 445)   # the track row, already selected: no-op arm
-    sclick(623, 495)   # reopen; "Off" has something to act on now ...
-    sclick(620, 418)   # ... (disableSubtitles from the OSC)
-    sclick(623, 495)   # reopen; nothing is selected, so "Off" ...
-    sclick(620, 418)   # ... is the no-op arm again
-    sclick(623, 495)   # reopen ...
-    sclick(620, 445)   # ... and re-select the track row
+    # clicked at x 514 inside the popup's left half (SOAR_UI_BITMAP_FONT=1).
+    sclick(517, 495)   # subtitle combo open (Off + the stream, flips up)
+    sclick(514, 445)   # the track row, already selected: no-op arm
+    sclick(517, 495)   # reopen; "Off" has something to act on now ...
+    sclick(514, 418)   # ... (disableSubtitles from the OSC)
+    sclick(517, 495)   # reopen; nothing is selected, so "Off" ...
+    sclick(514, 418)   # ... is the no-op arm again
+    sclick(517, 495)   # reopen ...
+    sclick(514, 445)   # ... and re-select the track row
     # Popup dismissal before the key phase (same defense as the quit loop
     # below): under -O0 coverage instrumentation a back-to-back click pair
     # can vanish inside one frame (see holdclick), a missed pick leaves
@@ -845,7 +844,7 @@ if mode == "subsdl":
         moved(x, y); time.sleep(0.25)
         holdclick(1); time.sleep(0.9)
 
-    sclick(686, 495)   # Sub button: open the Subtitle Settings page
+    sclick(580, 495)   # Sub button: open the Subtitle Settings page
     time.sleep(0.9)
     sclick(459, 190)   # Track combo: popup = Off / srt / sep / [download]
     time.sleep(1.0)
@@ -860,7 +859,7 @@ if mode == "subsdl":
     time.sleep(1.0)
     sclick(200, 400)   # bare video area: dismiss any popup, toggle nothing
     time.sleep(0.5)
-    sclick(686, 495)   # close the settings page
+    sclick(580, 495)   # close the settings page
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -896,7 +895,7 @@ if mode == "substl":
         moved(x, y); time.sleep(0.25)
         holdclick(1); time.sleep(0.9)
 
-    sclick(686, 495)   # Sub button: open the Subtitle Settings page
+    sclick(580, 495)   # Sub button: open the Subtitle Settings page
     time.sleep(0.9)
     sclick(459, 190)   # Track combo open: popup = Off / srt / sep / [download]
     time.sleep(1.0)
@@ -914,7 +913,7 @@ if mode == "substl":
     time.sleep(3.0)    # room for the chat round trip + store + load
     sclick(200, 400)   # bare video area: dismiss any popup, toggle nothing
     time.sleep(0.5)
-    sclick(686, 495)   # close the settings page
+    sclick(580, 495)   # close the settings page
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -951,7 +950,7 @@ if mode == "subsembed":
         moved(x, y); time.sleep(0.25)
         holdclick(1); time.sleep(0.9)
 
-    sclick(686, 495)   # Sub button: open the Subtitle Settings page
+    sclick(580, 495)   # Sub button: open the Subtitle Settings page
     time.sleep(0.9)
     sclick(459, 190)   # Track combo: popup = Off / srt / sep / [translate]
     time.sleep(1.0)
@@ -969,7 +968,7 @@ if mode == "subsembed":
     time.sleep(1.5)
     sclick(200, 400)   # bare video area: dismiss any popup
     time.sleep(0.5)
-    sclick(686, 495)   # close the settings page
+    sclick(580, 495)   # close the settings page
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -1008,7 +1007,7 @@ if mode == "subsdl404":
         moved(x, y); time.sleep(0.25)
         holdclick(1); time.sleep(0.9)
 
-    sclick(686, 495)   # Sub button: open the Subtitle Settings page
+    sclick(580, 495)   # Sub button: open the Subtitle Settings page
     time.sleep(0.9)
     sclick(459, 190)   # Track combo: Off / srt / sep / [download] / sep /
     time.sleep(1.0)    # [translate]
@@ -1020,7 +1019,7 @@ if mode == "subsdl404":
     time.sleep(3.0)    # room for the chat round trip + store + load
     sclick(200, 400)   # bare video area: dismiss any popup
     time.sleep(0.5)
-    sclick(686, 495)   # close the settings page
+    sclick(580, 495)   # close the settings page
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -1057,7 +1056,7 @@ if mode == "subcycle":
         moved(x, y); time.sleep(0.25)
         holdclick(1); time.sleep(0.9)
 
-    sclick(686, 495)   # Sub button: open the page (its combo build runs
+    sclick(580, 495)   # Sub button: open the page (its combo build runs
     time.sleep(0.9)    # the translatable scan over the patched codec)
     sclick(459, 190)   # Track combo: Off / srt / (patched) row 3 ...
     time.sleep(1.0)
@@ -1065,7 +1064,7 @@ if mode == "subcycle":
     time.sleep(1.0)
     sclick(200, 400)   # bare video area: dismiss the popup
     time.sleep(0.5)
-    sclick(686, 495)   # close the settings page
+    sclick(580, 495)   # close the settings page
     time.sleep(0.5)
     focus(); key(d.keysym_to_keycode(0x63))  # C: cycle selects the srt track
     time.sleep(0.6)
@@ -1108,7 +1107,7 @@ if mode == "sidecar":
         moved(x, y); time.sleep(0.25)
         holdclick(1); time.sleep(0.9)
 
-    sclick(686, 495)   # Sub button: open the Subtitle Settings page
+    sclick(580, 495)   # Sub button: open the Subtitle Settings page
     time.sleep(0.9)
     sclick(459, 190)   # Track combo: popup = Off / srt / sep / candidate
     time.sleep(1.0)
@@ -1136,7 +1135,7 @@ if mode == "sidecar":
     time.sleep(1.0)
     sclick(200, 400)   # bare video area: dismiss any popup, toggle nothing
     time.sleep(0.5)
-    sclick(686, 495)   # close the settings page
+    sclick(580, 495)   # close the settings page
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -1655,10 +1654,13 @@ if mode == "audiodrive":
         key(d.keysym_to_keycode(keysym))
         time.sleep(0.6)
 
-    dclick(637, 495)   # Sub page: "No subtitle tracks available"
-    dclick(637, 495)   # close it again
-    dclick(685, 495)   # Media Info: two titled audio rows, one selected
-    dclick(685, 495)   # close it again
+    # (Pins re-probed with the seek-row clocks: the old 637/685 pair
+    # had drifted onto the subtitle combo / Sub button — tolerated only
+    # because nothing downstream asserted on the pages.)
+    dclick(580, 495)   # Sub page: "No subtitle tracks available"
+    dclick(580, 495)   # close it again
+    dclick(630, 495)   # Media Info: two titled audio rows, one selected
+    dclick(630, 495)   # close it again
     time.sleep(0.4)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
