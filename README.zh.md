@@ -30,7 +30,7 @@ Soar 是一个基于 FFmpeg + SDL2 的 C++17 开源媒体播放器：封装一�
 
 ## 当前状态
 
-v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载，见下文路线图与 [docs/mvp.md](docs/mvp.md)）。桌面端是 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC），配快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）；播放中、暂停中，音频轨与字幕轨都能运行时切换，播放不中断（细节见下文及 docs/mvp.md §6）。v1.0 有三个切片已落地：本地媒体库（监视文件夹、播放历史与续播、`B` 浮层、离线 NFO sidecar 刮削——docs/mvp.md §3）、硬解首接线（`--hwdec=`，任何失败都静默回退软解；真机 GPU 帧路径仍未开始——见 docs/mvp.md §3）、HDR→SDR 首接线（FFmpeg 后端在 open 时识别 HDR10/HLG 转移特性标签，帧走 zimg 的 zscale 图转换后再入渲染路径；构建无 libzimg 时原样透传——见 docs/mvp.md §3）；DLNA 投屏已落地为 UPnP AV 控制点，配窗口浮层与 CLI `--cast=<location|auto>` 开关（自实现 SSDP/SOAP/GENA，零新依赖；构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码——docs/mvp.md §3）；插件体系尚未开始。
+v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载，见下文路线图与 [docs/mvp.md](docs/mvp.md)）。桌面端是 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC），配快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）；播放中、暂停中，音频轨与字幕轨都能运行时切换，播放不中断（细节见下文及 docs/mvp.md §6）。v1.0 有两个切片已落地：本地媒体库（监视文件夹、播放历史与续播、`B` 浮层、离线 NFO sidecar 刮削——docs/mvp.md §3）与硬解首接线（`--hwdec=`，任何失败都静默回退软解；真机 GPU 帧路径与 HDR 色彩管线仍未开始——见 docs/mvp.md §3）；DLNA 投屏已落地为 UPnP AV 控制点，配窗口浮层与 CLI `--cast=<location|auto>` 开关（自实现 SSDP/SOAP/GENA，零新依赖；构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码——docs/mvp.md §3）；插件体系尚未开始。
 
 ## 功能特性（当前已实现）
 
@@ -168,7 +168,7 @@ cmake --preset default && cmake --build --preset default   # Debug
 
 - **v0.1（MVP，已收口）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）——验收清单全数完成（见 [docs/ui-design.md](docs/ui-design.md) §6）；
 - **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP 冒烟、字幕体验（字体/大小/同步偏移）——均已落地；
-- **v1.0**：硬解（Hardware Decoding，首接线已落地：`--hwdec=`、静默回退软解）与 HDR→SDR 色调映射（首接线已落地：open 时识别 HDR10/HLG、解码路径走 zscale 图、无 libzimg 则透传；色调映射质量调校与真机 GPU/HDR 显示链路仍未开始）、投屏（DLNA/UPnP）、媒体库与离线 NFO 刮削（已落地；网络刮削与多设备同步待定——docs/mvp.md §3）、插件体系。
+- **v1.0**：硬解（Hardware Decoding）与 HDR、投屏（DLNA/UPnP）、媒体库与离线 NFO 刮削（已落地；网络刮削与多设备同步待定——docs/mvp.md §3）、插件体系。
 
 完整边界与"明确不做"清单见 [docs/mvp.md](docs/mvp.md)。
 
