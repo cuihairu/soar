@@ -13,7 +13,7 @@
 - [x] 主题令牌化：`applyTheme` 字面量收敛为具名常量（53ae80b；对齐 ui-design.md:183）
 - [x] OSC 行 1 补左右时间码（原型 desktop-main.html:196-202）：行 1 = 左时间码 | seek 轨 | 右 -剩余，行 2 时钟移除（39f7ed5；全夹具 cli 68/68·573 断言 + ui 37/37·258 + shortcut 16/16·213 绿；走查 19 处行 2/弹层 pin 按实测 -106px 重校，audiodrive 旧 637/685 漂移 pin 一并钉回实测位）
 - [x] 播放键改 64px 圆形 accent 钮（原型 desktop-main.html:255）：暂停时全屏压暗 + 居中 64px 圆形 accent 播放钮 + 提示 pill，点击即续播（3835768；cli 68/68·574 断言 + ui 37/37·258 断言绿；像素探针实测圆 (76,141,255)、三角 (16,18,22)、压暗底 (8,9,12)，XTEST 按住点击窗口相对 (480,254) 使 state 1→2）
-- [ ] 圆角/字号令牌对齐 v2（`--r-panel 10px`/`--r-ctl 7px`、11px 字号地板）
+- [x] 圆角/字号令牌对齐 v2（`--r-panel 10px`/`--r-ctl 7px`、11px 字号地板）：`ui_tokens.h` 落 kPanelRounding 10（window+popup）/ kControlRounding 7（frame+grab）/ kPillRounding 999（statechip + 暂停 floatpill）/ kMinFontSize 11 + kUiFontSize 16，static_assert 地板约束；ui 单测钉值（d7e7bf6；cli 68/68·574 断言 + ui 38/38·266 断言绿；像素探针实测 OSC 面板圆角 10、暂停 pill 端帽半圆 profile 9/4/1/0/1/3/9）
 - [ ] 焦点可见态 + reduced-motion 开关（v2 无障碍承诺，当前无焦点环）
 - [ ] 顶栏——待用户拍板：(a) 保持无顶栏并改原型（推荐）/ (b) 加顶栏并改 ui-design.md / (c) 混合
 
