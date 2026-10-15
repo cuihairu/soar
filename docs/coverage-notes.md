@@ -385,6 +385,16 @@ BUGS.md #4（CLI 播放 Ended 后偶发不退出）的排查批落地两件测�
 
 诚实记档：**EEXIST 臂在本机与 ubuntu CI 腿不可达**（那里的 demuxer 开成功，只落扫描臂），只有 macOS brew 9 的腿覆盖它——本地全量跑该臂 0 命中，读数按缺行计（CI 38672466025 coverage 腿实测：分母 9585→9589 净 +4 行、命中 +1、缺 +3，正是该臂；门禁 94.6%/84.3% 双过），与 §3.22「本地 FFmpeg 8 vs CI 版本差异」同款跨腿分叉，属已知的构建差异而非缺口。验证：媒体套件 96→97 例、1006 断言全绿（cov3，夹具 env + `SOAR_TEST_X11=1` + `SDL_AUDIODRIVER=dummy`），`soar_backend_tests` 5/5·35、`soar_cli_tests` 68/68·565 回归绿；CI 七腿全绿，macOS 腿媒体套件 97 例 0 跳过（哨兵在 brew 9 上真跑）。
 
+### 3.26 HDR→SDR 首接线：探测标记 + 惰性 avfilter 图 + PassThrough 兜底
+
+HDR 色彩的**第一接线**（检测 + 转换 + 诚实降级），未动 HDR 真机/硬件调色面。检测在 `open()`：读 codecpar 的 `color_trc`、再被 decoder ctx 覆盖的值校正，识别 `AVCOL_TRC_SMPTE2084`（PQ）与 `AVCOL_TRC_ARIB_STD_B67`（HLG）置 `MediaInfo::hdr_video` 与公开状态 `Armed`；首帧惰性建图（zscale 链路），每帧转换，**zscale 不可用则置 `PassThrough`**——不产出错误画面。
+
+测试三例 + 两提交夹具（`tests/fixtures/hdr10_gray.mov`、`hlg_gray.mov`，各 3578 字节，128x72@10fps 1s、yuv420p10le、bt2020nc）。**断言像素均值而非实现形态**：HDR10 的 PQ 码值 512 灰经 tone map 落到 SDR 灰（实测 Y=152，窗口 130-180），naive 无转换臂窗口 118-132——两臂皆断言通过，所以「zscale 可用则验转换、不可用则见证 PassThrough」不是放水。HLG 臂不验像素（HLG 的 EOTF 近恒等，验不出区分度），只验状态机走到转换态。
+
+诚实边界：**stock `tonemap` 滤镜被实测否决**——`format=gbrpf32le,tonemap=hable,format=yuv420p` 缺 EOTF 步时对原始 HDR 码值做 tone map（FFmpeg 告 `Tonemapping works on linear light only`，实测 Y=47，画面明显错），故无 zscale 一律 PassThrough，不设错误画面的兜底。移植性陷阱：**FFmpeg 8.0.1 的 buffer 滤镜只接受 `colorspace`**，传 `color_primaries`/`color_range`/`color_trc` 会让 `avfilter_graph_create_filter` 返回垃圾值（非 AVERROR）、建图静默失败——所以最终**零色性参数**，靠帧自带标签原样流过。
+
+CI 38685025303 七腿全绿（首轮 coverage 腿挂钟超时=该用例走 null 后端，与本批改动无因果，同 SHA rerun 即绿）：coverage 腿 13/13 套件绿、行 **94.5%（9155/9692）**、支 **84.1%（9838/11699）** 双过门禁 94.0/83.0。分母较 §3.25 的 9585/11568 净 **+107 行 / +131 支**=本批新代码全部进分母且全部覆盖。未覆盖项按既有模式定性：zscale 不可用的 PassThrough 臂只在无 libzimg 的构建可达（CI 各腿均带 zscale，与 §3.25 的 EEXIST 臂同款跨腿分叉），本地全量跑该臂 0 命中，读数按缺行计。
+
 ## 4. 测试纪律
 
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。
