@@ -20,10 +20,6 @@
 /* ===== 主播放窗：视频面 + 悬浮 OSC ===== */
 /* 视频画面与 OSC 属内容层：两主题下恒深，与真实播放器一致 */
 
-.app-title { display:flex; align-items:center; gap:8px; }
-.wing { width:22px; height:22px; font-size:13px; letter-spacing:-.5px; }
-.wing svg { width:13px; height:13px; }
-
 /* ---- 视频面：纯黑画面 + 字幕行（占位即内容，不做假画面） ---- */
 .surface { position:absolute; inset:0; background:#000; }
 .subtitle {
@@ -33,35 +29,12 @@
   white-space:nowrap;
 }
 
-/* ---- 顶栏：外壳随主题（暗=透明浮在黑画面上，亮=真浅色条） ---- */
-.topbar {
-  --tb1:#eef1f5; --tb2:#cdd3dc; --tb3:#aeb6c2;
-  --tbh:rgba(255,255,255,.08); --tbbg:transparent; --tbline:transparent;
-  position:absolute; top:0; left:0; right:0; z-index:10;
-  display:flex; align-items:center; justify-content:space-between;
-  padding:16px 22px;
-  background:var(--tbbg); border-bottom:1px solid var(--tbline);
-}
-:root[data-theme="light"] .topbar {
-  --tb1:#171a1f; --tb2:#454e5c; --tb3:#626c7d;
-  --tbh:rgba(23,26,31,.06); --tbbg:rgba(255,255,255,.92); --tbline:var(--line);
-}
-.topbar .meta { display:flex; align-items:center; gap:10px; min-width:0; }
-.topbar .title { font-size:13.5px; font-weight:600; letter-spacing:.01em; color:var(--tb1); }
-.topbar .film {
-  position:absolute; left:50%; transform:translateX(-50%);
-  font-size:12.5px; color:var(--tb2); white-space:nowrap;
-}
-.tools { display:flex; align-items:center; gap:6px; }
-.toolbtn {
-  width:30px; height:30px; border-radius:var(--r-ctl); border:none; cursor:pointer;
-  background:transparent; color:var(--tb3); display:flex; align-items:center; justify-content:center;
-}
-.toolbtn:hover { background:var(--tbh); color:var(--tb1); }
+/* ---- 无顶栏（2026-10-15 代决 a）：入口走 OSC + 快捷键（I/R/H/F 均在 §3.2 合同），
+   片名走 OS 窗口标题（实现 player_window.cpp:855），顶栏为 v0.2 候选非 v0.1 基准 ---- */
 
 /* ---- 状态徽标/浮层 pill：外壳随主题 ---- */
 .statechip {
-  position:absolute; top:60px; left:50%; transform:translateX(-50%); z-index:11;
+  position:absolute; top:18px; left:50%; transform:translateX(-50%); z-index:11;
   display:flex; align-items:center; gap:7px; padding:5px 12px;
   border-radius:999px; background:rgba(9,10,12,.72); border:1px solid rgba(255,255,255,.10);
   color:#b9c0cb; font-size:12px;
@@ -150,7 +123,7 @@
 
 <div class="docbar">
   <b>Soar 原型 v2 · 01 主播放窗</b>
-  <span>视频面 + 悬浮 OSC；底部为 暂停 / 缓冲中 / 空态 三变体；右上按钮切换亮暗主题</span>
+  <span>视频面 + 悬浮 OSC，无顶栏（2026-10-15 代决 a，理由见页内注解）；底部为 暂停 / 缓冲中 / 空态 三变体；右上按钮切换亮暗主题</span>
   <button class="themebtn" onclick="const d=document.documentElement;d.dataset.theme=d.dataset.theme==='light'?'dark':'light'">theme</button>
   <a href="../desktop-main.html">旧稿对照</a>
   <a href="index.html">← v2 总览</a>
@@ -161,30 +134,6 @@
   <div class="frame" id="primary">
     <div class="surface"></div>
     <div class="subtitle">The trail ends here.</div>
-
-    <div class="topbar">
-      <div class="meta">
-        <div class="app-title">
-          <span class="wing">S</span>
-          <span class="title">soar</span>
-        </div>
-      </div>
-      <span class="film">Tears of Steel (2012) 1080p</span>
-      <div class="tools">
-        <button class="toolbtn" title="媒体信息 (I)" aria-label="媒体信息">
-          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
-        </button>
-        <button class="toolbtn" title="最近 (R)" aria-label="最近播放">
-          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 1.8"/></svg>
-        </button>
-        <button class="toolbtn" title="帮助 (H)" aria-label="帮助">
-          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.6 2.6 0 1 1 3.4 2.5c-.8.3-1 .7-1 1.5M12 16.6h.01"/></svg>
-        </button>
-        <button class="toolbtn" title="全屏 (F)" aria-label="全屏">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M20 15v5h-5M4 15v5h5"/></svg>
-        </button>
-      </div>
-    </div>
 
     <div class="statechip">
       <svg viewBox="0 0 24 24"><path d="M7 5v14l12-7z"/></svg>
@@ -226,12 +175,13 @@
     </div>
 
     <!-- 设计注解 -->
-    <div class="note col" style="top:64px; left:22px;">
+    <div class="note col" style="top:24px; left:22px;">
       <span>OSC 2.5s 无输入自动隐藏 · 悬停/拖动/浮层/暂停时钉住</span>
       <span><kbd>Space</kbd> 播放/暂停 <kbd>←→</kbd> ±5s <kbd>F</kbd> 全屏</span>
+      <span>无顶栏：入口走 OSC + 快捷键（I/R/H/F 均在 §3.2 合同），片名走 OS 窗口标题；顶栏为 v0.2 候选，非 v0.1 基准</span>
     </div>
     <div class="note" style="bottom:170px; left:22px;"><span class="dot"></span>P2P 桥：下载/播放并行，种子离场本地续播</div>
-    <div class="note" style="bottom:148px; right:22px;"><kbd>P</kbd> 队列 / <kbd>I</kbd> 信息 / <kbd>S</kbd> 截图</div>
+    <div class="note" style="bottom:148px; right:22px;"><kbd>P</kbd> 队列 / <kbd>I</kbd> 信息 / <kbd>R</kbd> 最近 / <kbd>H</kbd> 帮助 / <kbd>S</kbd> 截图</div>
   </div>
 
   <!-- ================= 状态变体 ================= -->
@@ -243,12 +193,6 @@
       <div class="state-cap"><b>暂停</b> 画面保留 + 中央大播放键；字幕、进度、音轨信息不变</div>
       <div class="frame mini">
         <div class="surface"></div>
-        <div class="topbar">
-          <div class="meta">
-            <div class="app-title"><span class="wing">S</span><span class="title">soar</span></div>
-          </div>
-          <span class="film">Tears of Steel (2012) 1080p</span>
-        </div>
         <!-- 暂停遮罩与中央播放键 -->
         <div style="position:absolute; inset:0; background:rgba(4,5,7,.38); z-index:9;"></div>
         <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-58%); z-index:10; display:flex; flex-direction:column; align-items:center; gap:14px;">
@@ -273,7 +217,7 @@
             <span class="seg">1.0×</span><span class="seg on">A-B</span><span class="seg">CC</span>
           </div>
         </div>
-        <div class="note" style="top:64px; right:22px;">暂停不中断解码线程；音轨/字幕可运行时切换</div>
+        <div class="note" style="top:24px; right:22px;">暂停不中断解码线程；音轨/字幕可运行时切换</div>
       </div>
     </div>
 
@@ -282,10 +226,6 @@
       <div class="state-cap"><b>缓冲中</b> 网络停顿超过 10s 上报 Buffering；事件驱动，UI 只订回调解耦</div>
       <div class="frame mini">
         <div class="surface"></div>
-        <div class="topbar">
-          <div class="meta"><div class="app-title"><span class="wing">S</span><span class="title">soar</span></div></div>
-          <span class="film">bunny_hls.m3u8</span>
-        </div>
         <div style="position:absolute; inset:0; background:rgba(4,5,7,.30); z-index:9;"></div>
         <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-58%); z-index:10; display:flex; flex-direction:column; align-items:center; gap:12px;">
           <span class="spin" style="width:26px; height:26px;"></span>
@@ -305,9 +245,6 @@
       <div class="state-cap"><b>空态</b> 无源启动进空主界面：「打开文件」引导 + 拖放区 + 最近播放</div>
       <div class="frame mini" style="background:var(--surface-0);">
         <div class="surface" style="background:var(--surface-0);"></div>
-        <div class="topbar">
-          <div class="meta"><div class="app-title"><span class="wing">S</span><span class="title">soar</span></div></div>
-        </div>
         <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; z-index:10; text-align:center;">
           <div style="width:96px; height:96px; border-radius:26px; border:1.5px dashed var(--line-strong); display:flex; align-items:center; justify-content:center; color:var(--text-3);">
             <svg class="icon" viewBox="0 0 24 24" style="width:34px; height:34px;"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 20h14"/></svg>

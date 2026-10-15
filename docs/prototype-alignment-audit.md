@@ -202,7 +202,10 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
      加顶栏会引入常驻 chrome 面积，与 §1.6-1「悬浮、内容居中、自动隐藏」的调研结论冲突。
    - (b) 加顶栏，同步改 `ui-design.md` §1.6-7 与 §2 的 IA 树。
    - (c) 混合：只把「全屏/最近/帮助」进顶栏，信息仍留 OSC。
-   **在用户拍板前，这一项不动实现也不动原型。**
+   **已代决 2026-10-15：(a)。** v2 原型主播放窗四帧顶栏已移除并写明理由（片名走 OS
+   窗口标题 `player_window.cpp:855`，I/R/H/F 均在 §3.2 合同）；顶栏/亮色写为 v0.2 候选
+   非 v0.1 基准（`ui-design.md` §2/§4、`prototypes.md` 同步）；主播放窗两版 PNG 为
+   移除前定稿帧，未重摄（本仓无渲染环境），差异已注记。
 
 8. **焦点可见环**（V7b）：规格把「焦点可见」列为 ImGui 无障碍短板的缓解（`ui-design.md:216`），
    但当前**无键盘焦点模型**（全仓无 `ImGuiConfigFlags` 设置，`NavEnableKeyboard` 默认关），环无处可画。
@@ -251,7 +254,7 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
 | **v1 整套原型** | `docs/public/prototypes/*.html`（5 页含 `translate-panel.html`）已被 v2 取代；`redesign/index.html:205` 定稿；`docs/prototypes.md:18` 只链 v2 | 保留但**明确标注已废弃**（或移到 `prototypes/archive/v1/`）。v2 各页的「旧稿对照」链接（`redesign/desktop-main.html:158`）是其唯一残余用途。**已处理（8143168）**：六页（含 `index.html` 总览）docbar 前置「v1 旧稿（已废弃，v2 见 …）」并链到对应 v2 页；**保留不删**（v2 的「旧稿对照」链仍指向它们，移目录会断链） |
 | **文档站截图引用过时** | `docs/.vitepress/theme/Screenshots.vue` 仍加载 **v1** 的 PNG（`prototypes/{desktop-main,translate-panel,settings}.png`），与 `docs/prototypes.md` 链 v2 **自相矛盾** | **这是本轮最实质的文档不一致**：改指 v2 截图（`redesign/*-{light,dark}.png`），并删除 `translate-panel`（v2 已无该页）。**已处理（8143168）**：原型卡改指 `redesign/*-dark.png` 四页（并补此前站内从未出现的 playlist/library 两卡），translate-panel 卡删除；投放合同 `prototypes/README.md` 与 `prototypes.md` 同步 |
 | **翻译面板** | v1 独占，v2 已删，实现无 | 若翻译功能仍在需求内，需在 v2 重出该页；若已放弃，`docs/prototypes.md` 与 todo 不该再提。**已定档（8143168）**：功能在需求内且已落地（字幕菜单 `[translate]` 行，见 §6），v1 页保留作设计稿（页头已标 v0.2+ 规划稿 + v2 未重出）；**v2 重出该页属设计工作，未排期**，文档站与 todo 不再把它当待办 |
-| **v2 的「亮色版」定位** | v2.1 复审（`redesign/index.html:206`）已把亮色版从「恒深」改为「外壳随主题真浅色」，但 `ui-design.md` 仍写暗色唯一 | 若采纳 §5-P2-7 的选项 (a)，需同步在 v2 原型与 `ui-design.md` 里写明「顶栏/亮色均为 v0.2 候选，非 v0.1 基准」 |
+| **v2 的「亮色版」定位** | v2.1 复审（`redesign/index.html:206`）已把亮色版从「恒深」改为「外壳随主题真浅色」，但 `ui-design.md` 仍写暗色唯一 | 若采纳 §5-P2-7 的选项 (a)，需同步在 v2 原型与 `ui-design.md` 里写明「顶栏/亮色均为 v0.2 候选，非 v0.1 基准」。**已处理（2026-10-15 顶栏代决 a 同步）**：`ui-design.md` §2 增「无顶栏」段、§4 亮色版注记 v0.2 候选；`redesign/index.html` 增代决节 |
 
 ---
 
@@ -270,3 +273,6 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
   （`ui-design.md:74` §2 IA），唯一图标项明文简化为文案（`:67`），SVG 圆钮从未落进规格，
   seg chip 形态已由 I2/I5 代决；V7 拆分——V7a reduced-motion **有意偏离**（`ui-design.md:188`
   明文延后），V7b 焦点环保留开放并移入 P2-8（与顶栏同列用户拍板）。漏做 7 条全部落地或改判。
+- 2026-10-15 巡检代决：P2-7 顶栏选 **(a)**，v2 原型主播放窗四帧顶栏移除并写明理由，
+  顶栏/亮色记为 v0.2 候选非 v0.1 基准（§7 行 4 随之闭合）；主播放窗两版 PNG 未重摄
+  （无渲染环境），差异注记于投放合同与 `prototypes.md`。P2-8 焦点环代决另见该项。

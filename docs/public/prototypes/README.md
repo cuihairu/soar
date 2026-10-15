@@ -6,7 +6,7 @@
 
 | 文件名 | 归属分组 | 内容 | 状态 |
 |---|---|---|---|
-| `redesign/desktop-main-dark.png` | 播放 | 桌面主界面（v2 定稿） | ✅ 已投放（v2.1 复审 2026-10-07） |
+| `redesign/desktop-main-dark.png` | 播放 | 桌面主界面（v2 定稿） | ✅ 已投放（v2.1 复审 2026-10-07）⚠️ 主播放窗页 2026-10-15 移除顶栏后**未重摄**（本仓无浏览器渲染环境）：截图仍是含顶栏的定稿帧，待有环境重摄 |
 | `redesign/playlist-dark.png` | 播放 | 播放列表（v2 定稿） | ✅ 已投放 |
 | `redesign/library-dark.png` | 播放 | 媒体库（v2 定稿） | ✅ 已投放 |
 | `redesign/settings-dark.png` | 设置 | 设置面板（v2 定稿） | ✅ 已投放 |
