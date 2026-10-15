@@ -296,3 +296,29 @@
   未经本地复现坐实——触发条件（设备停止排空 / rewind seek 阻塞网络 I/O）
   本地夹具构造不出。SOAR_HANG_DUMP 探针保持布防，下次 CI 挂死交栈即可
   最终归因；若栈落在别处，按栈再查。
+
+## 5. macOS nightly 包解压后运行报 dyld「Library not loaded: libbrotlicommon」（已修复）
+
+- **现象**：CI 38772332064（1e2c09a）macOS 腿在打包冒烟步挂：
+  `dyld: Library not loaded: @rpath/libbrotlicommon.1.dylib，
+  Referenced from: stage-verify-mac/lib/libbrotlidec.1.dylib`，
+  `./stage-verify-mac/soar --version` 退 134。13 个测试全绿、brew 路径
+  断言也过——死在闭包缺一个二阶依赖。
+- **根因**（两层）：
+  1. vcpkg registry 漂移：freetype 的 `[brotli]` 特性引入 brotli
+     1.2.0，且该依赖以**共享库**形态进入链接（dylib 进了 otool 闭包，
+     而非此前面板以为的静态苹果三元组）；
+  2. `stage-macos-dylibs.sh` 的闭包游走把**所有** `@rpath/` 引用当作
+     「无需文件」跳过——对搬进 bundle 后的 brew/vcpkg dylib，烤进二进
+     制的 rpath 指回构建机，`libbrotlidec` 的
+     `@rpath/libbrotlicommon` 同伴因此被漏捆，包在新机器上必死。
+- **修复**：游走为每个 staged 项并行携带**原始路径**；`@rpath/` 与
+  `@loader_path/` 引用按引用方原始目录解析同名同伴（brew/vcpkg 都把
+  同 formula 的 dylib 放一目录），解析得到即入队捆包并把该引用
+  `-change` 成 `@loader_path`；解析不到维持原跳过（`@executable_path`
+  仍跳过），绝对路径引用的不可解析即失败语义不变。
+- **验证**：本机假 otool/install_name_tool/codesign 探针复刻 CI 形状
+  （exe → 绝对路径 libfreetype → `@rpath/`libbrotlidec →
+  `@rpath/`libbrotlicommon）：旧脚本 staged 2 个（缺 brotlicommon，
+  即 CI 死状），修复后 staged 3 个全闭包；真机验证看后续 CI macOS
+  腿与 nightly。

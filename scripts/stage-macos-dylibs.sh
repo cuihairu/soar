@@ -11,7 +11,11 @@
 #
 # The walk is `otool -L` over everything already staged:
 #   - /usr/lib and /System references are inbox — skipped, never copied
-#   - @rpath / @executable_path / @loader_path refs need no file
+#   - @executable_path refs need no file
+#   - @rpath / @loader_path refs name a companion dylib relative to the
+#     referencing binary; they are resolved against that binary's ORIGINAL
+#     directory (brew and vcpkg keep a formula's dylibs side by side), and
+#     a companion that resolves nowhere is left alone
 #   - anything else (absolute brew paths today) is copied into DEST/lib,
 #     every referencing binary gets install_name_tool -change'd to
 #     @loader_path[...] so the bundle is self-contained, and the bundled
@@ -42,50 +46,65 @@ refs_of() {
   "$otool_cmd" -L "$1" | tail -n +2 | sed -n 's/^[[:space:]]*\([^[:space:]]*\).*/\1/p'
 }
 
-is_system_ref() {
-  case "$1" in
-    /usr/lib/*|/System/*) return 0 ;;
-    @rpath/*|@executable_path/*|@loader_path/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 mkdir -p "$dest/lib"
 base=$(basename "$exe")
 cp "$exe" "$dest/$base"
 
 # The macOS runners still ship Apple's bash 3.2, so no associative
-# arrays: the seen-set is a newline-separated name list.
+# arrays: the seen-set is a newline-separated name list, and each queued
+# item carries its ORIGINAL path next to the staged one — the original
+# directory is where an @rpath / @loader_path companion can still be found.
 seen_names=""
 touched=("$dest/$base")
 queue=("$dest/$base")
+queue_src=("$exe")
 i=0
 while [ "$i" -lt "${#queue[@]}" ]; do
   current=${queue[$i]}
+  current_src=${queue_src[$i]}
   i=$((i + 1))
   case "$current" in
     "$dest/lib/"*) rewrite="@loader_path" ;;
     *)             rewrite="@loader_path/lib" ;;
   esac
   while read -r ref; do
-    if [ -z "$ref" ] || is_system_ref "$ref"; then
-      continue
-    fi
+    case "$ref" in
+      ""|/usr/lib/*|/System/*|@executable_path/*) continue ;;
+    esac
+    # An @rpath / @loader_path companion is not "no file": once the
+    # referencing binary moves into the bundle, the rpath baked into it
+    # points back at the machine that built it, and the bundle dies on
+    # launch (2026-10-16 macOS red: freetype's shared brotli staged fine
+    # while its @rpath/libbrotlicommon sibling was skipped). Resolve the
+    # name against the referencing binary's original directory; one that
+    # does not resolve there keeps the old skip — that ref was satisfied
+    # some other way or never will be either way.
+    src="$ref"
+    case "$ref" in
+      @rpath/*|@loader_path/*)
+        candidate="$(dirname "$current_src")/$(basename "$ref")"
+        if [ ! -f "$candidate" ]; then
+          continue
+        fi
+        src="$candidate"
+        ;;
+    esac
     name=$(basename "$ref")
     bundled="$dest/lib/$name"
     if ! printf '%s\n' "$seen_names" | grep -qxF "$name"; then
       seen_names="$seen_names$name"$'\n'
-      if [ ! -f "$ref" ]; then
+      if [ ! -f "$src" ]; then
         echo "unresolvable dylib reference: $ref (needed by $current)" >&2
         exit 1
       fi
-      cp "$ref" "$bundled"
+      cp "$src" "$bundled"
       # The bundled copy's install id is always @loader_path/<name>: the
       # file lives in lib/, next to the other bundled dylibs. Consumers
       # point at it via -change below.
       "$intool" -id "@loader_path/$name" "$bundled" 2>/dev/null || true
       touched+=("$bundled")
       queue+=("$bundled")
+      queue_src+=("$src")
     fi
     # Repoint this referencing binary (exe → lib/, dylib → same dir).
     "$intool" -change "$ref" "$rewrite/$name" "$current"
