@@ -17,6 +17,7 @@
 - [x] reduced-motion 开关——有意偏离收口（审计 V7a 改判 b492682：`ui-design.md:188` §4 明文「`disableAnimations` 不设开关，v0.1 常开」，现状即规格要求，不动实现）
 - [ ] 焦点可见环（审计 V7b）——待用户拍板：(a) 启用 ImGui 键盘导航（§3.2 快捷键合同需重排）/ (b) app 自绘焦点模型（零快捷键冲突，要自建焦点序）/ (c) 延后 v0.2 并改 `ui-design.md:216` 口径
 - [ ] 顶栏——待用户拍板：(a) 保持无顶栏并改原型（推荐）/ (b) 加顶栏并改 ui-design.md / (c) 混合
+- [x] 文档站原型图纠偏（审计 §7）：界面预览原型卡改指 v2 定稿截图（补 playlist/library 卡、删 translate-panel 卡）+ v1 六页页头标废弃 + 投放合同 `prototypes/README.md` 同步（8143168；docs-only → `npm run docs:build` 4.28s 绿）
 
 > 依据 `docs/prototype-alignment-audit.md` §5。已复核**不适用**的三条（勿再立项）：
 > 状态徽标（已实现于 `drawChips()`，`player_window.cpp:2199-2225`）、分辨率 pill

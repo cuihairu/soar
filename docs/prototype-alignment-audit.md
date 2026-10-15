@@ -248,9 +248,9 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
 
 | 项 | 现状 | 建议 |
 |---|---|---|
-| **v1 整套原型** | `docs/public/prototypes/*.html`（5 页含 `translate-panel.html`）已被 v2 取代；`redesign/index.html:205` 定稿；`docs/prototypes.md:18` 只链 v2 | 保留但**明确标注已废弃**（或移到 `prototypes/archive/v1/`）。v2 各页的「旧稿对照」链接（`redesign/desktop-main.html:158`）是其唯一残余用途 |
-| **文档站截图引用过时** | `docs/.vitepress/theme/Screenshots.vue` 仍加载 **v1** 的 PNG（`prototypes/{desktop-main,translate-panel,settings}.png`），与 `docs/prototypes.md` 链 v2 **自相矛盾** | **这是本轮最实质的文档不一致**：改指 v2 截图（`redesign/*-{light,dark}.png`），并删除 `translate-panel`（v2 已无该页） |
-| **翻译面板** | v1 独占，v2 已删，实现无 | 若翻译功能仍在需求内，需在 v2 重出该页；若已放弃，`docs/prototypes.md` 与 todo 不该再提 |
+| **v1 整套原型** | `docs/public/prototypes/*.html`（5 页含 `translate-panel.html`）已被 v2 取代；`redesign/index.html:205` 定稿；`docs/prototypes.md:18` 只链 v2 | 保留但**明确标注已废弃**（或移到 `prototypes/archive/v1/`）。v2 各页的「旧稿对照」链接（`redesign/desktop-main.html:158`）是其唯一残余用途。**已处理（8143168）**：六页（含 `index.html` 总览）docbar 前置「v1 旧稿（已废弃，v2 见 …）」并链到对应 v2 页；**保留不删**（v2 的「旧稿对照」链仍指向它们，移目录会断链） |
+| **文档站截图引用过时** | `docs/.vitepress/theme/Screenshots.vue` 仍加载 **v1** 的 PNG（`prototypes/{desktop-main,translate-panel,settings}.png`），与 `docs/prototypes.md` 链 v2 **自相矛盾** | **这是本轮最实质的文档不一致**：改指 v2 截图（`redesign/*-{light,dark}.png`），并删除 `translate-panel`（v2 已无该页）。**已处理（8143168）**：原型卡改指 `redesign/*-dark.png` 四页（并补此前站内从未出现的 playlist/library 两卡），translate-panel 卡删除；投放合同 `prototypes/README.md` 与 `prototypes.md` 同步 |
+| **翻译面板** | v1 独占，v2 已删，实现无 | 若翻译功能仍在需求内，需在 v2 重出该页；若已放弃，`docs/prototypes.md` 与 todo 不该再提。**已定档（8143168）**：功能在需求内且已落地（字幕菜单 `[translate]` 行，见 §6），v1 页保留作设计稿（页头已标 v0.2+ 规划稿 + v2 未重出）；**v2 重出该页属设计工作，未排期**，文档站与 todo 不再把它当待办 |
 | **v2 的「亮色版」定位** | v2.1 复审（`redesign/index.html:206`）已把亮色版从「恒深」改为「外壳随主题真浅色」，但 `ui-design.md` 仍写暗色唯一 | 若采纳 §5-P2-7 的选项 (a)，需同步在 v2 原型与 `ui-design.md` 里写明「顶栏/亮色均为 v0.2 候选，非 v0.1 基准」 |
 
 ---
@@ -262,6 +262,10 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
   （前者已实现于 `drawChips()`，后者 MK_R2A 已代决），漏做 11→7 条，P0 重排。
 - 实施顺序：P0-1（令牌化）→ P1（视觉细节）→ P0-2（OSC 行 1 时间码，需走查坐标重校）；
   P2-7 顶栏等用户拍板 (a)/(b)/(c)。
+- 2026-10-15 MARKR1 收口 §7 原型过时项：文档站「界面预览」原型卡从 v1 PNG 改指 v2 定稿
+  截图（并补 playlist/library 两卡、删 translate-panel 卡），v1 六页页头标废弃，投放合同
+  `prototypes/README.md` 与 `prototypes.md` 同步（8143168）。§7 的「v2 亮色版定位」仍随
+  §5-P2-7 顶栏拍板（选项 (a) 才需同步口径），未动。
 - 2026-10-15 R1015E 收口改判：V6（按钮形态）改判**有意偏离**——规格按钮词汇是文本/emoji
   （`ui-design.md:74` §2 IA），唯一图标项明文简化为文案（`:67`），SVG 圆钮从未落进规格，
   seg chip 形态已由 I2/I5 代决；V7 拆分——V7a reduced-motion **有意偏离**（`ui-design.md:188`
