@@ -107,7 +107,7 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
 | V2 | **主题**：亮暗双主题 + 切换钮 vs 暗色硬编码不可切换 | `desktop-main.html:154`、CSS `:45-47`、`:97-101` | `:318-352` | 有意偏离（`ui-design.md:57` §1.6-7） |
 | V3 | **圆角**：`--r-panel 10px` / `--r-ctl 7px` / 徽标 pill / 图标钮圆形 | v2 令牌 | `WindowRounding 8` / `FrameRounding 6` / `GrabRounding 4` / `PopupRounding 6`（`:322-325`） | **漏做**（令牌未落地） |
 | V4 | **字号地板 11px** 未成文 | v2 口径（`prototypes.md:55`） | 依赖系统字体/ImGui 默认，无地板 | **漏做** |
-| V5 | **播放键形态**：64×64 圆形 accent 键 vs 54px 文本钮 | `desktop-main.html:255` | `:1992` | **漏做**（第一印象项） |
+| V5 | **播放键形态**：64×64 圆形 accent 键 vs 54px 文本钮 | `desktop-main.html:255` | `:1960-2042` | 已补 3835768（压暗 + 圆钮 + 提示 pill，点击续播） |
 | V6 | **按钮形态**：原型圆形/分段 chip（`.tsmall`/`.seg`）vs 矩形文本钮 | `:205-222` | `:1992-2071` | **漏做** |
 | V7 | **焦点可见态 + reduced-motion 守卫**：原型有 `:focus-visible` 2px accent 环与 `prefers-reduced-motion` 守卫 | v2 口径（`prototypes.md:55`） | 无焦点环、无动画开关（ImGui overlay 无 CSS） | **漏做** |
 | V8 | **设计令牌化**：规格要求「集中在 `ui_theme` 常量区」 | `ui-design.md:183` | 有集中区（`:317` 注释「every color the UI draws comes from here」）但全是字面量 `ImVec4`，无命名令牌 | **漏做**（半达标） |
@@ -140,7 +140,7 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
 | M7 | seek 悬停缩略图预览 | `ui-design.md:55` §1.6-5 | 无 | 有意延后（v0.2） |
 | M8 | 翻译面板 | v1 `translate-panel.html` | 无 | 随 v1 废弃 |
 
-**漏做合计（修订后）：L3、V3、V4、V5、V6、V7、V8 = 7 条。**（2026-10-15 R1015D 点火单起陆续落地：L3 已补 39f7ed5、V8 已落 53ae80b，剩 V3/V4/V5/V6/V7 五条）
+**漏做合计（修订后）：L3、V3、V4、V5、V6、V7、V8 = 7 条。**（2026-10-15 R1015D 点火单起陆续落地：L3 已补 39f7ed5、V8 已落 53ae80b、V5 已补 3835768，剩 V3/V4/V6/V7 四条）
 **有意偏离/延后合计：L1、L4、L5、V1、V2、I1、I2、M1、M3、M4、M5、M6、M7、M8 = 14 条。**
 **已实现形态差异：L2、M2 = 2 条（初版误判漏做，修订改正）。实现超前：L6 = 1 条。
 已对齐验证项：I3、I4、I5、I6 = 4 条（不计入差异）。**
