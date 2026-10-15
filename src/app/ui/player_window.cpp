@@ -20,6 +20,7 @@
 #include "ui/dir_scan.h"
 #include "ui/library.h"
 #include "ui/shortcuts.h"
+#include "ui_tokens.h"
 #include "ui_state.h"
 
 #include <fmt/format.h>
@@ -333,19 +334,21 @@ constexpr ImVec4 kButton{1.0f, 1.0f, 1.0f, 0.10f};
 constexpr ImVec4 kButtonHovered{1.0f, 1.0f, 1.0f, 0.18f};
 constexpr ImVec4 kHeader{1.0f, 1.0f, 1.0f, 0.08f};
 constexpr ImVec4 kHeaderHovered{1.0f, 1.0f, 1.0f, 0.14f};
-constexpr float kWindowRounding = 8.0f;
-constexpr float kFrameRounding = 6.0f;
-constexpr float kGrabRounding = 4.0f;
-constexpr float kPopupRounding = 6.0f;
+// Radii live in ui_tokens.h (no ImGui dependency, so the suite can pin
+// them): the redesign v2 system is panel 10 / control 7 / badge pill.
+using soar::app::kPanelRounding;
+using soar::app::kControlRounding;
+using soar::app::kPillRounding;
+using soar::app::kUiFontSize;
 }  // namespace theme
 
 void applyTheme() {
   ImGuiStyle& st = ImGui::GetStyle();
   ImGui::StyleColorsDark(&st);
-  st.WindowRounding = theme::kWindowRounding;
-  st.FrameRounding = theme::kFrameRounding;
-  st.GrabRounding = theme::kGrabRounding;
-  st.PopupRounding = theme::kPopupRounding;
+  st.WindowRounding = theme::kPanelRounding;
+  st.PopupRounding = theme::kPanelRounding;
+  st.FrameRounding = theme::kControlRounding;
+  st.GrabRounding = theme::kControlRounding;
   st.WindowBorderSize = 1.0f;
   st.WindowPadding = ImVec2(12, 8);
   st.FramePadding = ImVec2(8, 6);
@@ -420,7 +423,8 @@ static SubtitleFonts loadSubtitleFonts() {
   }
   for (const std::string& path : fontCandidates()) {
     if (fileExists(path)) {
-      fonts.size_16 = io.Fonts->AddFontFromFileTTF(path.c_str(), 16.0f);
+      fonts.size_16 = io.Fonts->AddFontFromFileTTF(path.c_str(),
+                                                   theme::kUiFontSize);
       fonts.size_20 = io.Fonts->AddFontFromFileTTF(path.c_str(), 20.0f);
       fonts.size_24 = io.Fonts->AddFontFromFileTTF(path.c_str(), 24.0f);
       fonts.size_28 = io.Fonts->AddFontFromFileTTF(path.c_str(), 28.0f);
@@ -442,6 +446,9 @@ static SubtitleFonts loadSubtitleFonts() {
 // ASCII-everywhere labels keep that fallback path harmless. SOAR_UI_BITMAP_FONT
 // (set by the X11 drive test) pins the embedded font: identical glyph metrics
 // on every machine, so the OSC widget geometry the injector clicks is stable.
+// Both paths clear the v2 font floor (ui_tokens.h): the UI loads
+// theme::kUiFontSize, and ImGui's embedded default is 13px — above
+// soar::app::kMinFontSize.
 void loadOverlayFont() {
   ImGuiIO& io = ImGui::GetIO();
   if (std::getenv("SOAR_UI_BITMAP_FONT") != nullptr) {
@@ -450,7 +457,9 @@ void loadOverlayFont() {
   }
   for (const std::string& path : fontCandidates()) {
     if (fileExists(path)) {
-      if (io.Fonts->AddFontFromFileTTF(path.c_str(), 16.0f) != nullptr) return;
+      if (io.Fonts->AddFontFromFileTTF(path.c_str(), theme::kUiFontSize) !=
+          nullptr)
+        return;
     }
   }
   io.Fonts->AddFontDefault();
@@ -2000,8 +2009,10 @@ class PlayerHud {
 
     ImGui::SetNextWindowPos(ImVec2(cx, cy + 32.0f + 14.0f + 11.0f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kPanelBg);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.0f);
+    // The prototype's .floatpill: a full pill. Drawn on the draw list, for
+    // the same reason as chip() — a 999 WindowRounding would stretch the
+    // auto-resize window to the viewport (see chip's comment).
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 5.0f));
     if (ImGui::Begin("##pausehint", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
@@ -2009,13 +2020,23 @@ class PlayerHud {
                          ImGuiWindowFlags_NoFocusOnAppearing |
                          ImGuiWindowFlags_NoBringToFrontOnFocus |
                          ImGuiWindowFlags_NoScrollbar |
+                         ImGuiWindowFlags_NoBackground |
                          ImGuiWindowFlags_AlwaysAutoResize |
                          ImGuiWindowFlags_NoInputs)) {
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const ImVec2 p0 = ImGui::GetWindowPos();
+      const ImVec2 p1(p0.x + ImGui::GetWindowWidth(),
+                      p0.y + ImGui::GetWindowHeight());
+      dl->AddRectFilled(p0, p1,
+                        ImGui::ColorConvertFloat4ToU32(theme::kPanelBg),
+                        theme::kPillRounding);
+      // The prototype's .floatpill keeps its 1px hairline over the pill.
+      dl->AddRect(p0, p1, ImGui::ColorConvertFloat4ToU32(theme::kBorder),
+                  theme::kPillRounding);
       ImGui::TextUnformatted("Paused - Space or click to resume");
     }
     ImGui::End();
     ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor();
 
     // Begun last so it is the back-most of the three (see the ordering note
     // above). NoInputs: a capturing fullscreen window would set
@@ -2460,15 +2481,34 @@ class PlayerHud {
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, y), ImGuiCond_Always,
                             ImVec2(0.5f, 0.0f));
-    ImGui::SetNextWindowBgAlpha(0.6f);
+    // The prototype's .statechip: a full pill. Drawn on the draw list rather
+    // than through WindowRounding — Begin() floors a window's minimum height
+    // at (rounding - 1) [imgui.cpp CalcWindowMinSize], so a 999 rounding
+    // stretches an auto-resize window to the viewport (pixel-probed: a
+    // 249px-wide pill rendered 540px tall). PathRect clamps the same 999 to
+    // the rect's own half-height, which is exactly the pill.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     if (ImGui::Begin(name, nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                          ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoBackground |
                          ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImVec4 bg = theme::kPanelBg;
+      bg.w = 0.6f;  // the alpha SetNextWindowBgAlpha used to carry
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const ImVec2 p0 = ImGui::GetWindowPos();
+      const ImVec2 p1(p0.x + ImGui::GetWindowWidth(),
+                      p0.y + ImGui::GetWindowHeight());
+      dl->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(bg),
+                        theme::kPillRounding);
+      // The prototype's .statechip keeps its 1px hairline over the pill.
+      dl->AddRect(p0, p1, ImGui::ColorConvertFloat4ToU32(theme::kBorder),
+                  theme::kPillRounding);
       ImGui::TextUnformatted(text);
     }
     ImGui::End();
+    ImGui::PopStyleVar();
   }
 
   void drawToast(milliseconds now) {

@@ -7,6 +7,7 @@
 #include <doctest/doctest.h>
 
 #include "ui/ui_state.h"
+#include "ui/ui_tokens.h"
 
 #include <chrono>
 #include <cstdint>
@@ -57,6 +58,23 @@ void writeFile(const std::string& path, const std::string& content) {
 }
 
 }  // namespace
+
+TEST_CASE("design tokens carry the redesign v2 radius system and font floor") {
+  using namespace soar::app;
+  // docs/prototypes.md v2 ("字号地板 11px、面板 10 / 控件 7 / 徽标 pill"),
+  // the prototype's --r-panel / --r-ctl in prototypes/redesign/assets.
+  CHECK_EQ(kPanelRounding, 10.0f);
+  CHECK_EQ(kControlRounding, 7.0f);
+  CHECK_EQ(kMinFontSize, 11.0f);
+  CHECK_EQ(kUiFontSize, 16.0f);
+  // A panel never rounds less than the controls nested in it.
+  CHECK(kPanelRounding >= kControlRounding);
+  CHECK(kControlRounding >= 0.0f);
+  // A badge is a full pill: far past half of any chip height.
+  CHECK(kPillRounding >= 100.0f);
+  // The floor binds the window layer's single font size.
+  CHECK(kUiFontSize >= kMinFontSize);
+}
 
 TEST_CASE("formatClock renders mm:ss and h:mm:ss") {
   CHECK(formatClock(0ms) == "00:00");
