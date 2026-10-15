@@ -14,6 +14,7 @@
 
 #include "player_window.h"
 
+#include "soar/core/metadata_scraper.h"
 #include "soar/core/player.h"
 #include "soar/core/subtitle_provider.h"
 #include "startup_report.h"
@@ -466,6 +467,29 @@ void loadOverlayFont() {
   io.Fonts->AddFontDefault();
 }
 
+// The library's MetadataSource (ui/library.h) over the core scraper: derives
+// the query the scraper wants from the media path, and folds the answer into
+// the library's scrape shape. It lives here, not in the core, because picking
+// a metadata service is an app choice - the library only sees the interface.
+class LibraryMetadataSource : public MetadataSource {
+ public:
+  explicit LibraryMetadataSource(const soar::HttpMetadataScraper& scraper)
+      : scraper_(scraper) {}
+
+  bool scrape(const std::string& path, NfoInfo& out) const override {
+    const std::string query = scrapeQueryForPath(path);
+    if (query.empty()) return false;  // nothing to search on
+    soar::ScrapedMetadata answer;
+    if (!scraper_.scrape(query, &answer, nullptr)) return false;
+    out.title = std::move(answer.title);
+    out.plot = std::move(answer.plot);
+    return !out.title.empty() || !out.plot.empty();
+  }
+
+ private:
+  const soar::HttpMetadataScraper& scraper_;
+};
+
 // The player HUD: OSC, overlays, toast, and app-level input routing. Every
 // action goes through the Player facade — no backend knowledge (docs §5.2).
 class PlayerHud {
@@ -553,6 +577,25 @@ class PlayerHud {
     }
     translate_ready_ = !tr_cfg.endpoint.empty() && !tr_cfg.model.empty();
     translator_.configure(std::move(tr_cfg));
+    // Library network scraping (docs/mvp.md §3), same env-injection
+    // contract as the two subtitle providers: endpoint and key arrive from
+    // the environment, the core embeds neither, and with nothing configured
+    // the library never touches the network. The window holds the scraper;
+    // the library holds a non-owning pointer to the adapter below.
+    soar::HttpMetadataConfig meta;
+    if (const char* ep = std::getenv("SOAR_META_ENDPOINT")) {
+      meta.endpoint = ep;
+    }
+    if (const char* key = std::getenv("SOAR_META_API_KEY")) {
+      meta.api_key = key;
+    }
+    if (const char* t = std::getenv("SOAR_META_TIMEOUT_MS")) {
+      const long ms = std::atol(t);
+      if (ms > 0) meta.timeout = std::chrono::milliseconds(ms);
+    }
+    metadata_.configure(std::move(meta));
+    meta_ready_ = metadata_.online();
+    if (library_ != nullptr) library_->setMetadataSource(&metadata_source_);
   }
 
   // Watched-to-end bookkeeping: the final record before the window goes
@@ -3039,6 +3082,18 @@ class PlayerHud {
           library_->scan();
           library_->save();
         }
+        // The network half of the scrape (docs/mvp.md §3): only offered
+        // with an endpoint configured, so an offline session never shows a
+        // button that could only fail. Each click is capped (the scrape
+        // budget) and every attempt costs up to the configured timeout, same
+        // UI-thread precedent as the subtitle download.
+        ImGui::SameLine();
+        if (meta_ready_ && ImGui::SmallButton("Scrape")) {
+          const std::size_t n = library_->scrapeEntries(MediaLibrary::kScrapeBudget);
+          st_.toast.show(
+              n == 1 ? "Scraped 1 entry" : "Scraped " + std::to_string(n) + " entries",
+              nowMs());
+        }
         const std::vector<std::string> folders = library_->folders();
         if (folders.empty()) {
           ImGui::TextDisabled("%s", "No folders watched yet - add one to scan it.");
@@ -3552,6 +3607,13 @@ class PlayerHud {
   // translated, and translated_ids_ does the same for embedded tracks
   // (their container titles can repeat, so they key by track id).
   SubtitleTranslator translator_;
+  // Library network scraping (§3). The scraper is env-configured like the two
+  // subtitle providers; meta_ready_ false means no endpoint was configured and
+  // the library stays offline. metadata_source_ is the adapter the library
+  // holds - non-owning, pointing at the scraper above.
+  soar::HttpMetadataScraper metadata_;
+  LibraryMetadataSource metadata_source_{metadata_};
+  bool meta_ready_ = false;
   std::map<std::string, std::string> loaded_external_paths_;
   std::vector<std::string> translated_titles_;
   std::vector<TrackId> translated_ids_;

@@ -411,6 +411,20 @@ CI 38699380328 七腿全绿：coverage 腿行 **94.4%（9153/9691）**、支 **8
 
 CI 38731794595 七腿全绿：coverage 腿行 **94.5%（9215/9754）**、支 **84.2%（9899/11760）** 双过门禁 94.0/83.0。与 §3.27（0a4ce7e）的 9153/9691 行、9837/11697 支相比：**命中 +62 行 / +62 支，分母 +63 行 / +63 支**——本批新代码（令牌头 + 暂停续播路径 + pill 绘面）全部进分母且全部覆盖，比率各涨 0.1 点。
 
+### 3.29 网络刮削半批（mvp.md §3 媒体库的网络半）
+
+新套件 `soar_metadata_tests`（6 用例·117 断言，POSIX+python3，夹具服务器 fork 自 `startMetadataServer`，**不打真实外网**）与 `soar_library_tests` 扩 5 例（合计 27 用例·214 断言）。核心新面：`metadata_scraper.cpp` 的传输层（连接/收发/头部解析）、极简 JSON 读取器（键值匹配、`\uXXXX` 与代理对、坏输入一律拒收或 U+FFFD）、`scrapeEntries` 的预算与缓存语义（伪源驱动）。
+
+**wire 断言锚在夹具的 requests.log**（路径 / `X-API-Key` 头 / 解码后 query 三字段 TAB 分行落盘），所以「key 不进 URL」「无 key 不发头」「百分编码按 UTF-8 字节」都是对真实请求的断言，不是对内部状态的复读。
+
+本批抓出的三个真缺陷，全在"写时自以为对"的暗处：
+
+- **JSON 数组循环死循环**：对象成员读取失败后游标停在 `}`，数组循环把同一字节反复递给 `consumeValue` 而无人前进——`\q` 坏转义体直接挂死整轮（本地复现 120s 超时截获）。修法：数组和对象循环都把对方的花括号认作容器终点。
+- **孤高代理对漏过 U+FFFD 归一**：`\ud800` 后面不是 `\u` 时走了普通 `appendCodePoint(v)` 落成非法 UTF-8（ED A0 80）。修法：任何不成对代理一律 U+FFFD；补 `lowsur` 夹具模式钉低代理对臂。
+- **端口派生在同用例内自撞**：`getpid() % 200` 在一个 TEST_CASE 的多个 SUBCASE 里是常量，外层服务器活着时内层同端口 bind 失败。修法：`startMetadataServer` 加单调计数器错开；失败仍走 pipe 握手快速报错（不是探端口假成功）。
+
+UI 侧 "Scrape" 钮只在 `meta_ready_`（端点已配置）时渲染——CLI 走查（test_cli.cpp:1498 钉 "Add folder..." 287,100 / "Rescan" 375,100）不设 `SOAR_META_*`，按钮不出现，几何零漂移。
+
 ## 4. 测试纪律
 
 多段 h264 TS 流（分辨率/像素格式变化测试）最初用 `cat` 裸拼接字节：每段的 TS 连续性计数器在接缝处重开，demuxer 间歇性报 `Packet corrupt` 丢包——**同样的字节在同一个 CI 的不同 job 一个过一个挂**（runs 36005020299：build/asan 过、coverage 挂）。改用 concat demuxer + `-c copy` 重新封装后时间戳与计数器连续，解码全程零警告。凡 fixture 生成，交付前用 `ffmpeg -v warning -i <file> -f null -` 验到零输出为止。

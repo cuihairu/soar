@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -30,8 +31,10 @@ using soar::app::LibraryEntry;
 using soar::app::matchesCategory;
 using soar::app::matchesLibraryFilter;
 using soar::app::MediaLibrary;
+using soar::app::MetadataSource;
 using soar::app::NfoInfo;
 using soar::app::resumePositionMs;
+using soar::app::scrapeQueryForPath;
 
 namespace {
 
@@ -656,5 +659,119 @@ TEST_CASE("defaultLibraryPath walks the env ladder to the bare fallback") {
   else ::unsetenv("XDG_STATE_HOME");
   if (home_was_set) ::setenv("HOME", home_save.c_str(), 1);
   else ::unsetenv("HOME");
+}
+
+// =========================================================================
+// The network half of the scrape (docs/mvp.md §3)
+// =========================================================================
+
+// A MetadataSource for tests: canned answers keyed by the file name stem it
+// is asked about, plus a call count so a budget can be asserted. The stem
+// rule is the adapter's (scrapeQueryForPath), so the fake mirrors what the
+// window layer will hand the real scraper.
+class FakeSource : public MetadataSource {
+ public:
+  std::map<std::string, NfoInfo> answers;
+  mutable int calls = 0;
+
+  bool scrape(const std::string& path, NfoInfo& out) const override {
+    ++calls;
+    const auto it = answers.find(scrapeQueryForPath(path));
+    if (it == answers.end()) return false;
+    out = it->second;
+    return true;
+  }
+};
+
+TEST_CASE("the scrape query folds off the directory and the extension") {
+  CHECK(scrapeQueryForPath("/home/u/films/a.mp4") == "a");
+  CHECK(scrapeQueryForPath("Season One - Episode 04.mkv") ==
+        "Season One - Episode 04");
+  CHECK(scrapeQueryForPath("no-extension") == "no-extension");
+  // A blank file name has no stem to offer, so the query is empty.
+  CHECK(scrapeQueryForPath("/dir/   ") == "");
+}
+
+TEST_CASE("scrapeEntries asks the source for what a sidecar did not name") {
+  const std::string base = makeTempDir();
+  Tree tree(base);
+  MediaLibrary lib(base + "/library.txt");
+  lib.addFolder(tree.root);
+  lib.scan();
+  REQUIRE(lib.entries().size() == 4);
+
+  // No source configured: nothing happens, and no network would have run.
+  CHECK(lib.metadataSource() == nullptr);
+  CHECK(lib.scrapeEntries() == 0);
+  CHECK(lib.nfoFor(join(tree.root, "a.mp4")) == nullptr);
+
+  FakeSource src;
+  src.answers["a"] = {"Title A", "Plot A"};
+  src.answers["c"] = {"Title C", ""};
+  // "b" and "d" have no answer: the source says no, and that is not stored.
+  lib.setMetadataSource(&src);
+  REQUIRE(lib.metadataSource() == &src);
+
+  SUBCASE("the budget counts attempts, not successes") {
+    // Two attempts: a answers, b does not - then the budget is spent and
+    // neither c nor d is ever asked.
+    CHECK(lib.scrapeEntries(2) == 1);
+    CHECK(src.calls == 2);
+    const NfoInfo* a = lib.nfoFor(join(tree.root, "a.mp4"));
+    REQUIRE(a != nullptr);
+    CHECK(a->title == "Title A");
+    CHECK(a->plot == "Plot A");
+    CHECK(lib.nfoFor(join(tree.root, "season1/c.mp4")) == nullptr);
+    CHECK(lib.nfoFor(join(tree.root, "b.mkv")) == nullptr);
+    CHECK(lib.nfoFor(join(tree.root, "season1/extras/d.avi")) == nullptr);
+  }
+
+  SUBCASE("a second call only picks up what is new") {
+    CHECK(lib.scrapeEntries(10) == 2);
+    CHECK(src.calls == 4);  // a, b, c, d - b and d answered nothing
+    // The two successes are not re-requested, but the two the source could
+    // not name are still unanswered, so they are asked again - and stay
+    // unanswered, which is why an empty answer must not be cached.
+    CHECK(lib.scrapeEntries(10) == 0);
+    CHECK(src.calls == 6);
+  }
+
+  SUBCASE("a sidecar outranks the network and is never asked for") {
+    touch(join(tree.root, "a.nfo"),
+          "<title>Sidecar A</title><plot>Sidecar plot</plot>");
+    lib.scan();
+    // Only c is still scraable: a carries a sidecar now, and the local file
+    // is the truth over anything the network would say.
+    CHECK(lib.scrapeEntries(10) == 1);
+    CHECK(src.calls == 3);  // a.mp4 skipped: the sidecar named it
+    const NfoInfo* a = lib.nfoFor(join(tree.root, "a.mp4"));
+    REQUIRE(a != nullptr);
+    CHECK(a->title == "Sidecar A");
+    CHECK(a->plot == "Sidecar plot");
+  }
+
+  SUBCASE("an empty answer is not stored, so the next call asks again") {
+    src.answers["a"] = NfoInfo{};
+    CHECK(lib.scrapeEntries(10) == 1);  // only c
+    CHECK(lib.nfoFor(join(tree.root, "a.mp4")) == nullptr);
+    src.answers["a"] = {"Late A", ""};
+    CHECK(lib.scrapeEntries(10) == 1);
+    const NfoInfo* late = lib.nfoFor(join(tree.root, "a.mp4"));
+    REQUIRE(late != nullptr);
+    CHECK(late->title == "Late A");
+  }
+
+  SUBCASE("network scrapes survive a rescan; a sidecar overwrites them") {
+    CHECK(lib.scrapeEntries(10) == 2);
+    lib.scan();  // rebuilds the sidecar layer, keeps the network layer
+    const NfoInfo* kept = lib.nfoFor(join(tree.root, "a.mp4"));
+    REQUIRE(kept != nullptr);
+    CHECK(kept->title == "Title A");
+    touch(join(tree.root, "a.nfo"), "<title>Sidecar A</title>");
+    lib.scan();
+    const NfoInfo* sidecar = lib.nfoFor(join(tree.root, "a.mp4"));
+    REQUIRE(sidecar != nullptr);
+    CHECK(sidecar->title == "Sidecar A");
+  }
 }
 #endif

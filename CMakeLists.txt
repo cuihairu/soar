@@ -20,6 +20,7 @@ add_library(soar::core ALIAS soar_core)
 target_sources(soar_core PRIVATE
   src/core/ass_dialogue.cpp
   src/core/http_cache.cpp
+  src/core/metadata_scraper.cpp
   src/core/null_backend.cpp
   src/core/player.cpp
   src/core/subtitle_provider.cpp

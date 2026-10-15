@@ -57,6 +57,29 @@ struct NfoInfo {
   std::string plot;
 };
 
+// A network metadata source (docs/mvp.md §3, the network half of the scrape
+// line): what the library asks when a scanned file has no sidecar. The
+// library keeps a non-owning pointer, null = sidecars only, so the core
+// scraper stays out of this header and an unconfigured session never has to
+// talk to one.
+//
+// Contract, mirroring the SubtitleProvider's: scrape() must never throw and
+// must not hold up the caller forever - a source that is unreachable, empty
+// or misconfigured returns false and the row simply keeps the file name.
+class MetadataSource {
+ public:
+  virtual ~MetadataSource() = default;
+
+  // True when something usable was scraped. `path` is the media file's path;
+  // the source derives its own query (the file name stem) from it.
+  virtual bool scrape(const std::string& path, NfoInfo& out) const = 0;
+};
+
+// The query a scanned file offers a network source: its name with the
+// directory and the extension folded off, whitespace-trimmed. Pure, so the
+// rule is unit-testable without a source behind it.
+std::string scrapeQueryForPath(const std::string& path);
+
 // Resume policy (docs/todo.md 媒体库批): a position is worth resuming when
 // it is past the intro-scale noise (5 s — headless probes and credits
 // skips must not plant a resume), the duration is known, and the source is
@@ -130,10 +153,34 @@ class MediaLibrary {
 
   const std::vector<LibraryEntry>& entries() const { return entries_; }
 
-  // The scrape gathered by the last scan(), or null when the file has no
-  // readable <name>.nfo sidecar (or scan never ran / the file left the
-  // watched set). The pointer is stable until the next scan().
+  // The scrape to show for a path: the <name>.nfo sidecar when one exists,
+  // else the network half's cached answer, else null. The sidecar wins -
+  // it is the local, user-editable truth. The pointer is stable until the
+  // next scan() (or scrapeEntries()).
   const NfoInfo* nfoFor(const std::string& path) const;
+
+  // The network half of the scrape (docs/mvp.md §3). scan() only reads the
+  // offline sidecar, so the network stays out of the folder walk: scraping
+  // is a deliberate, capped action the caller asks for. `limit` bounds the
+  // number of source calls in one call (0 = no cap), each of which costs up
+  // to the source's own timeout - the budget counts attempts, not successes,
+  // so a source that cannot name the library must not turn one click into
+  // entries_.size() timeouts. Entries that already carry a sidecar or a
+  // cached scrape are skipped for free, so repeating the action only picks
+  // up what is new. Returns the entries scraped in this call. No source
+  // configured = no network at all.
+  std::size_t scrapeEntries(std::size_t limit = kScrapeBudget);
+
+  // The default scrape budget: five network attempts per call, each costing
+  // up to the source's own timeout. A watched folder can hold hundreds of
+  // files, so scraping it whole in one click is not on the table.
+  static constexpr std::size_t kScrapeBudget = 5;
+
+  // The source this store asks for network metadata, or null when the
+  // session has no endpoint configured (the offline contract: no source, no
+  // network). Non-owning - the window owns the scraper's lifetime.
+  void setMetadataSource(const MetadataSource* src) { metadata_source_ = src; }
+  const MetadataSource* metadataSource() const { return metadata_source_; }
 
   // Null when the path was never seen.
   const LibraryEntry* find(const std::string& path) const;
@@ -166,7 +213,13 @@ class MediaLibrary {
   std::string path_;
   std::vector<std::string> folders_;
   std::vector<LibraryEntry> entries_;  // sorted by path at all times
-  std::map<std::string, NfoInfo> nfo_;  // rebuilt whole by each scan()
+  // nfo_ is what nfoFor() serves: the sidecar layer rebuilt by each scan()
+  // with the network layer under it. scraped_ is kept separate so a rescan
+  // can rebuild the sidecar half without dropping the network half (nothing
+  // on disk says anything about it).
+  std::map<std::string, NfoInfo> nfo_;
+  std::map<std::string, NfoInfo> scraped_;
+  const MetadataSource* metadata_source_ = nullptr;  // non-owning; null = offline
 };
 
 // Same state dir as recent.txt (XDG_STATE_HOME / APPDATA): <dir>/soar/

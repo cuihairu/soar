@@ -66,6 +66,21 @@ target_link_libraries(soar_subtitle_tests PRIVATE soar::core doctest::doctest)
 
 add_test(NAME soar_subtitle_tests COMMAND soar_subtitle_tests)
 
+# Network metadata scraper core tests (docs/mvp.md §3, the network half of
+# "媒体库与刮削"): the TMDB-shaped search client behind a user-configured
+# endpoint and key. Pure logic plus one temp directory; the wire cases run
+# against a local fixture server (test_http_servers.h), never the real
+# network - which is also what makes the "unconfigured means no network"
+# arc assertable.
+add_executable(soar_metadata_tests
+  test_metadata.cpp
+)
+
+target_compile_features(soar_metadata_tests PRIVATE cxx_std_17)
+target_link_libraries(soar_metadata_tests PRIVATE soar::core doctest::doctest)
+
+add_test(NAME soar_metadata_tests COMMAND soar_metadata_tests)
+
 # ASS renderer unit tests (docs/mvp.md §6, style-faithful ASS/SSA): the
 # libass wrapper, its straight-alpha compositor, and the streaming feed
 # for embedded tracks. Pure logic over in-memory scripts + the checked-in
@@ -225,7 +240,7 @@ if(TARGET soar)
 # 10-minute mark instead, so one wedged case costs minutes, not the job.
 set_tests_properties(soar_core_tests soar_backend_tests soar_ui_tests
   soar_dir_scan_tests soar_library_tests soar_shortcut_tests
-  soar_subtitle_tests soar_ass_tests PROPERTIES TIMEOUT 600)
+  soar_subtitle_tests soar_metadata_tests soar_ass_tests PROPERTIES TIMEOUT 600)
 # soar_cli_tests needs its own, bigger budget. Under coverage
 # instrumentation (--coverage -O0 -g) the scripted window cases crawl: the
 # subtitle-settings tour alone takes ~10 min on a quiet CI runner (noted in

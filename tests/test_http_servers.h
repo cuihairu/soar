@@ -680,6 +680,151 @@ print("ready", flush=True)
 srv.serve_forever()
 )PY";
 
+// TMDB-shaped search fixture for the HttpMetadataScraper tests: a local
+// stand-in for the endpoint the scraper speaks to. Every request is recorded
+// to <root>/requests.log as one tab-separated line - path, X-API-Key, and
+// the decoded "query" value - so a test can assert the exact request shape
+// the client produced.
+//   /search/movie  requires a non-empty query parameter (a 200 answer
+//                   therefore proves the client sent a well-formed query).
+// APIKEY (argv[4], may be empty): when set, requests whose X-API-Key header
+// is not exactly that value are answered 401 - after being recorded, so a
+// test can see what leaked out.
+// MODE (argv[3]):
+//   "ok" (default) answers the documented shape: two results, the first
+//       carrying escaped and surrogate-pair strings so the client's JSON
+//       reader takes all three paths, plus fields the scraper ignores.
+//   "utf8"      raw UTF-8 bytes in the title (no escapes).
+//   "lonesur"   a lone surrogate, which the client must turn into U+FFFD
+//               rather than invalid UTF-8.
+//   "badescape" an undefined JSON escape - the client must reject the
+//               answer instead of guessing.
+//   "emptyresults" results: [] (nothing to report).
+//   "notitle"   a result with no "title" field.
+//   "emptytitle"  "title": "" (a hit with no name is still a miss).
+//   "nonstring" "title" is a JSON number, not a string.
+//   "status500" / "status404" a non-2xx answer.
+//   "badjson"   a 200 with an HTML body.
+//   "nolength"  a 200 with no Content-Length and Connection: close - the
+//               read-until-close body path.
+//   "biglen"    a Content-Length far past the client's cap, no body - the
+//               pre-read cap check.
+//   "shortbody" promises 100 bytes, delivers 3 and hangs up - the mid-body
+//               disconnect.
+//   "stall"     accepts, then sleeps 40s before answering - the client's
+//               socket timeout is what must save it.
+//   "notfound"  a path other than /search/movie.
+constexpr const char* kMetadataServerScript = R"PY(
+import json, os, socketserver, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+ROOT = os.path.abspath(sys.argv[1])
+MODE = sys.argv[3]
+APIKEY = sys.argv[4]
+
+class MetaHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *args):
+        pass
+    def deny(self, code):
+        self.send_response(code)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    def do_GET(self):
+        url = urlparse(self.path)
+        q = parse_qs(url.query)
+        with open(os.path.join(ROOT, "requests.log"), "a", encoding="utf-8") as f:
+            f.write("\t".join([self.path, self.headers.get("X-API-Key", ""),
+                               q.get("query", [""])[0]]) + "\n")
+        if url.path != "/search/movie":
+            self.deny(404)
+            return
+        if APIKEY and self.headers.get("X-API-Key") != APIKEY:
+            self.deny(401)
+            return
+        if not q.get("query") or not q["query"][0]:
+            self.deny(400)
+            return
+        if MODE == "stall":
+            time.sleep(40)
+        if MODE in ("status500", "status404"):
+            self.deny(int(MODE[6:]))
+            return
+        if MODE == "biglen":
+            # Advertise 9 MiB, send nothing: the client's cap check must
+            # fire before the first body byte.
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(9 * 1024 * 1024))
+            self.end_headers()
+            return
+        if MODE == "badjson":
+            data = b"<html>oops</html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if MODE == "shortbody":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b'{"results":[{"title":"o')
+            return
+        # Hand-built bodies: json.dumps would re-escape the backslashes
+        # these exist to put on the wire.
+        if MODE == "ok" or MODE == "nolength":
+            data = (b'{"page":1,"results":['
+                    b'{"title":"Caf\\u00e9 \\u0026 \\ud83d\\ude00",'
+                    b'"overview":"A \\u2018plot\\u2019 of sorts",'
+                    b'"release_date":"1994-07-15","poster_path":"/abc.jpg",'
+                    b'"vote_average":7.4},'
+                    b'{"title":"Second","overview":"ignored"}],"total_results":2}')
+        elif MODE == "utf8":
+            data = ('{"results":[{"title":"' + "Café 你好" + '"}]}').encode("utf-8")
+        elif MODE == "lonesur":
+            data = b'{"results":[{"title":"Lone \\ud800 surrogate"}]}'
+        elif MODE == "lowsur":
+            data = b'{"results":[{"title":"Lone \\udc00 surrogate"}]}'
+        elif MODE == "badescape":
+            data = b'{"results":[{"title":"bad \\q escape"}]}'
+        elif MODE == "emptyresults":
+            data = b'{"results":[]}'
+        elif MODE == "notitle":
+            data = b'{"results":[{"overview":"no title field","vote_average":7.4}]}'
+        elif MODE == "emptytitle":
+            data = b'{"results":[{"title":"","overview":"a plot"}]}'
+        elif MODE == "nonstring":
+            data = b'{"results":[{"title":123,"overview":"a plot"}]}'
+        else:
+            self.deny(500)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        if MODE == "nolength":
+            # HTTP/1.1 without Content-Length: the client must read to EOF,
+            # so the connection has to actually close.
+            self.send_header("Connection", "close")
+            self.close_connection = True
+        else:
+            self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+class LocalServer(ThreadingHTTPServer):  # skips getfqdn, see file header
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+srv = LocalServer(("127.0.0.1", int(sys.argv[2])), MetaHandler)
+print("ready", flush=True)
+srv.serve_forever()
+)PY";
+
 // Runs `argv` via fork/execvp with the child's stdout plumbed into a pipe
 // and waits for its "ready" line (EOF = the server never came up, e.g. the
 // port was taken). Returns the child pid, or -1 on any failure; the caller
@@ -901,6 +1046,36 @@ inline RangeServer startChatServer(const std::string& root_dir,
     const_cast<char*>("python3"),
     const_cast<char*>("-c"),
     const_cast<char*>(kChatServerScript),
+    const_cast<char*>(root_dir.c_str()),
+    const_cast<char*>(port_str.c_str()),
+    const_cast<char*>(mode.c_str()),
+    const_cast<char*>(api_key.c_str()),
+    nullptr,
+  };
+  srv.pid = startPipedServer(argv);
+  srv.base_url = "http://127.0.0.1:" + std::to_string(srv.port);
+  return srv;
+}
+
+// Forks the TMDB-shaped search fixture (kMetadataServerScript) in `mode`
+// with `api_key` as the expected X-API-Key ("" = no key check). Port base
+// 26000+: clear of the 24000s the catalog server and the 27000s the chat
+// server use. Same RAII contract as RangeServer.
+inline RangeServer startMetadataServer(const std::string& root_dir,
+                                       const std::string& mode,
+                                       const std::string& api_key) {
+  RangeServer srv;
+  // Each call needs its own port: a SUBCASE can still hold the enclosing
+  // TEST_CASE's server open when it starts its own, so the pid-derived base
+  // alone would collide inside one case. The counter keeps the whole case
+  // spread out inside the same 200-port window the pid picks.
+  static int calls = 0;
+  srv.port = 26000 + ((::getpid() % 200) + (calls++)) % 200;
+  std::string port_str = std::to_string(srv.port);
+  char* const argv[] = {
+    const_cast<char*>("python3"),
+    const_cast<char*>("-c"),
+    const_cast<char*>(kMetadataServerScript),
     const_cast<char*>(root_dir.c_str()),
     const_cast<char*>(port_str.c_str()),
     const_cast<char*>(mode.c_str()),

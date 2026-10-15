@@ -45,6 +45,7 @@
 ## 媒体库（2026-10-10）
 
 - [x] 库组件 + 断点续播接线 + 库浮层 + NFO 边车刮削（8629032、a2eb06c、7aed27c；test_library 22 用例）
+- [x] 网络刮削半批——2026-10-15 巡检代决单第 3 项：照字幕下载先例（端点+key 环境变量自配、未配置零网络）实现 TMDB 形状检索客户端 `HttpMetadataScraper`（`GET {endpoint}/search/movie?query=`，key 走 `X-API-Key` 头，自实现极简 JSON 读取器取首个结果的 title/overview，孤代理对/坏转义等一律 U+FFFD 或拒收，1 MiB 体上限）；库层经抽象 `MetadataSource` 接入（`scrapeEntries(limit)` 显式预算默认 5、边车优先、空应答不落缓存、网络刮削过 Rescan 保留），UI 库浮层 "Scrape" 钮（未配置不显示）；多端同步按代决单另立批不动。测试：metadata 6 用例·117 断言（本地 fixture HTTP 服务器，不打外网）+ library 27 用例·214 断言（伪源）全绿
 
 ## 安装包格式补全（2026-10-04）
 

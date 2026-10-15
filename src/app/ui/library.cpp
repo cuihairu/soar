@@ -233,6 +233,14 @@ bool compareRecent(const LibraryEntry& a, const LibraryEntry& b) {
   return a.path < b.path;
 }
 
+// scrapeQueryForPath (library.h): the query a scanned file offers a network
+// source. Pure, so the rule is unit-testable without a source behind it.
+std::string scrapeQueryForPath(const std::string& raw_path) {
+  std::string stem = std::filesystem::path(raw_path).stem().string();
+  trimTail(stem);
+  return stem;
+}
+
 bool matchesLibraryFilter(const LibraryEntry& e, const NfoInfo* nfo,
                           const std::string& filter) {
   // ASCII-only fold: a locale-independent rule, and the overlay's bitmap
@@ -333,6 +341,10 @@ void MediaLibrary::scan() {
   // entries: a sidecar that vanished (or a file that left a watched
   // folder) drops out by simply not being re-collected.
   nfo_.clear();
+  // Network scrapes outlive the rescan that started them: nothing on disk
+  // says anything about the network half, so a rescan only rebuilds the
+  // sidecar layer - and a sidecar that reappears overwrites its scrape.
+  nfo_ = scraped_;
 
   // Only folders that actually resolved get a say in pruning: their walk
   // is the evidence a file is gone. A missing/unreadable folder is skipped
@@ -399,6 +411,34 @@ void MediaLibrary::scan() {
 const NfoInfo* MediaLibrary::nfoFor(const std::string& path) const {
   const auto it = nfo_.find(normalizePath(path));
   return it == nfo_.end() ? nullptr : &it->second;
+}
+
+// The network half of the scrape (docs/mvp.md §3). Never called from scan():
+// each attempt costs up to the source's own timeout, and a watched folder can
+// hold hundreds of files, so this only runs when the caller asks for it -
+// capped by `limit`, and only for entries no sidecar has already named.
+std::size_t MediaLibrary::scrapeEntries(std::size_t limit) {
+  if (metadata_source_ == nullptr) return 0;
+  std::size_t asked = 0;
+  std::size_t done = 0;
+  for (const LibraryEntry& e : entries_) {
+    if (asked >= limit) break;
+    const std::string key = normalizePath(e.path);
+    if (nfo_.find(key) != nfo_.end()) continue;  // sidecar, or scraped already
+    // The budget counts attempts, not successes: a source that cannot name
+    // most of the library must not turn one click into entries_.size()
+    // timeouts - rows the walk skips do not cost anything.
+    ++asked;
+    NfoInfo nfo;
+    if (!metadata_source_->scrape(e.path, nfo)) continue;
+    // An empty answer is "no scrape", same as the sidecar half: storing it
+    // would only make every later attempt skip a file that could still match.
+    if (nfo.title.empty() && nfo.plot.empty()) continue;
+    scraped_[key] = nfo;
+    nfo_[key] = std::move(nfo);
+    ++done;
+  }
+  return done;
 }
 
 const LibraryEntry* MediaLibrary::find(const std::string& path) const {
