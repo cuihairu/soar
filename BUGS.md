@@ -175,7 +175,7 @@
   Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）未在真桌面
   环境走查。
 
-## 4. CLI 播放自然结束后进程偶发不退出（收尾段两处无界等待已修 c416163；挂点栈已取 38803623890：backend stop() 的 thread join，解码线程退出链待归因）
+## 4. CLI 播放自然结束后进程偶发不退出（收尾段两处无界等待已修 c416163；挂点栈已取 38803623890：backend stop() 的 thread join，解码线程退出链已逐点审计 R1021）
 
 - **现象**：CI 集成测试里 `soar --headless` 子进程播完流媒体后不退出，
   被 `runCli` 的 `timeout` watchdog 杀成 exit 124，断言失败。五起
@@ -300,6 +300,32 @@
   本地夹具（VOD ENDLIST，rewind 不做网络 I/O，strace 证实）都无法构造。
   结论：根因是代码可证的缺陷族，非本地可复现；SOAR_HANG_DUMP 探针
   保持布防，等下次 CI 挂死交栈以最终归因。
+  2026-10-16 退出链逐点审计（巡检 R1021，无本地复现、纯代码可证）：
+  把 decodeLoop 的每个阻塞点对照 stop() 的 should_stop_decoding_=true
+  + decode_cv_.notify_all() 逐个核，结论是**仓内已无残留无界等待**，
+  唯一条件性缺口落在 FFmpeg 内部：
+  - **join 不自死锁**：stop() 持 decode_mutex_ join（ffmpeg_backend.cpp
+    915-919），而解码循环全程不取该锁——设计如此，applyPendingAudioTrack
+    与 applyPendingSubtitleTrack 两处注释明示「the decode thread, which
+    never takes decode_mutex_ (close() joins while holding it)」
+    （3874-3877、3935-3937）。循环只取 state_/video_queue_/audio_queue_/
+    subtitle_frame_/video_frame_/audio_device_/pending_audio_/
+    pending_subtitle_ 八把锁，与 join 无交叠。
+  - **唤醒不丢**：should_stop_decoding_ 为 std::atomic<bool>
+    （include/soar/core/ffmpeg_backend.h:446），两处 cv 谓词（2831 循环顶、
+    3194 waitForPresentationTime）均含它，stop() 通知的正是同一 cv。
+  - **逐点覆盖**：drainFrameQueues（3145）循环条件即 should_stop；队列
+    推送（3101/3119）丢最旧不阻塞；renderVideoFrame（3633）/
+    playAudioFrame（3668）短互斥 + 非阻塞 SDL 写；音频背压循环
+    （3763-3766）已带 should_stop/seek_requested_ 谓词、满则丢帧
+    （3767-3772，c416163 修复在位）；fatal()（526）两把短锁即返。
+  - **唯一条件性缺口（FFmpeg 内部，仓内无对应代码）**：av_read_frame
+    （2911）的中断回调（2320-2358，should_stop 即弃读）只在 avio 的
+    retry 路径、即底层传输返回 EAGAIN 时被咨询。RTSP live 的传输若停在
+    一次从不返回 EAGAIN 的阻塞调用里，中断回调无从触发，循环停在 2911
+    行、stop() 的 join 随之挂死。这与两起已取栈（38525153344、
+    38803623890，均 RTSP live + 收尾、trail 止于 live-seek 报错）形态
+    一致，也解释间歇性：需要 stop() 恰落在读阻塞窗口内。
 - **缓解**：watchdog 按设计把挂死转成干净断言失败（exit 124 带完整
   输出），套件不再整段超时；p2p 套件自定义 main 行缓冲 stdout
   （14226b2），下次挂死日志保底有 banner 与最后开始的 test case。
@@ -314,10 +340,11 @@
   helper 的重试先打印首子末 4096 字节（hangDumpTail 截尾，带单测）
   并 fflush 再重试；自此单次挂死也在绿腿日志留下栈，且即使重试子
   再挂死套件被 ctest 收割，已 flush 的尾巴不丢（p2p 行缓冲教训）。
-- **残余（如实）**：两处收尾段缺陷已修（见上 2026-10-15 段），但根因
-  未经本地复现坐实——触发条件（设备停止排空 / rewind seek 阻塞网络 I/O）
-  本地夹具构造不出。SOAR_HANG_DUMP 探针保持布防，下次 CI 挂死交栈即可
-  最终归因；若栈落在别处，按栈再查。
+- **残余（如实）**：两处收尾段缺陷已修（见上 2026-10-15 段），退出链
+  亦已逐点审计、仓内无残留（见上 2026-10-16 段），但根因始终未经本地
+  复现坐实——触发条件（设备停止排空 / rewind seek 阻塞网络 I/O / RTSP
+  live 传输不返 EAGAIN）本地夹具构造不出。SOAR_HANG_DUMP 探针保持布防，
+  下次 CI 挂死交栈即可最终归因；若栈落在别处，按栈再查。
 
 ## 5. macOS nightly 包解压后运行报 dyld「Library not loaded: libbrotlicommon」（已修复）
 
