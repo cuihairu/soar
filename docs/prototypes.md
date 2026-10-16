@@ -4,7 +4,7 @@
 
 > Desktop player v2 redesign: four pages — main player window / playlist / settings panel / media library — in light and dark themes.
 > What follows is a **design mock** (HTML/CSS prototypes, the static pages under `docs/public/prototypes/`), not product code.
-> Where the implementation lands: see the [UI spec](/zh/ui-design). The brand mark is a neutral placeholder (solid orange block plus an S), not the official logo.
+> Where the implementation lands: see the [UI spec](/ui-design). The brand mark is a neutral placeholder (solid orange block plus an S), not the official logo.
 
 ## Live preview
 
@@ -27,7 +27,7 @@ Full rationale (the list of what was wrong with the older draft, and per-page re
 
 The shell (status chip / control bar / annotation overlay / progress groove) uses light colors in this theme; the video canvas and the subtitles on it are the content layer and stay black in both themes.
 
-> ⚠️ Both main-window screenshots were taken from the 2026-10-07 final frame and **include a top bar**; the 2026-10-15 patrol round removed the top bar from the v2 draft (no top bar is the v0.1 baseline — see the [UI spec](/zh/ui-design) §2). This repository has no browser rendering environment, so the frames were not retaken; that one known difference between the screenshots and the current prototype pages is retained until they are.
+> ⚠️ Both main-window screenshots were taken from the 2026-10-07 final frame and **include a top bar**; the 2026-10-15 patrol round removed the top bar from the v2 draft (no top bar is the v0.1 baseline — see the [UI spec](/ui-design) §2). This repository has no browser rendering environment, so the frames were not retaken; that one known difference between the screenshots and the current prototype pages is retained until they are.
 
 ### Main player window (dark)
 
@@ -74,4 +74,4 @@ The "UI preview" cards on the home page used to point at **v1** PNGs (`prototype
 
 ## Top bar removed (patrol round 2026-10-15, proxy decision a)
 
-The three items from alignment audit §5-P2-7 were proxy-decided by the user as **(a) keep no top bar**: the top bar of the four v2 main-player-window frames (brand mark + centered title + the four I/R/H/F tool buttons) was removed entirely, for the reasons the audit recommended — those entries live in OSC plus shortcuts (I/R/H/F are all in the §3.2 contract), the title goes through the OS window title, and adding a top bar introduces permanent chrome area that conflicts with the §1.6-1 research conclusion. **The top bar and the light theme are both v0.2 candidates, not v0.1 baseline** (synced in [UI spec](/zh/ui-design) §2/§4). The two main-window screenshots are pre-removal final frames and were not retaken (no rendering environment); the known difference is noted above.
+The three items from alignment audit §5-P2-7 were proxy-decided by the user as **(a) keep no top bar**: the top bar of the four v2 main-player-window frames (brand mark + centered title + the four I/R/H/F tool buttons) was removed entirely, for the reasons the audit recommended — those entries live in OSC plus shortcuts (I/R/H/F are all in the §3.2 contract), the title goes through the OS window title, and adding a top bar introduces permanent chrome area that conflicts with the §1.6-1 research conclusion. **The top bar and the light theme are both v0.2 candidates, not v0.1 baseline** (synced in [UI spec](/ui-design) §2/§4). The two main-window screenshots are pre-removal final frames and were not retaken (no rendering environment); the known difference is noted above.

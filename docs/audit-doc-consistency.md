@@ -2,6 +2,12 @@
 
 # Audit — documentation consistency (2026-10-13)
 
+> Note (2026-10-16 bilingual pass): this document's line anchors point at the snapshot taken before the
+> rename — the Chinese draft is now `*.zh.md` (a language switcher was added at the top, shifting every
+> line by +2), and the English drafts sit at the bare names (`docs/mvp.md`, `docs/ui-design.md`,
+> `docs/coverage-notes.md`, the last of which only gained a "no translation yet" page this round).
+> Read the anchors against the pre-switcher layout.
+
 Audit scope: README.md, README.zh.md, docs/index.md, docs/build.md, docs/mvp.md,
 docs/ui-design.md, docs/licensing.md, docs/coverage-notes.md, docs/prototypes.md,
 docs/alignment-audit-2026-10-13.md, plus the public-facing surfaces (GitHub description / homepage /

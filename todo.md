@@ -54,7 +54,7 @@
 ## docs 双语化（下一轮）
 
 - [x] docs 子目录补双语：`docs/public/prototypes/README.md` 翻为英文裸名 + 中文 `README.zh.md` 配对（2026-10-16）
-- [ ] docs 双语缺口补齐：`mvp` 与 `ui-design` 缺英文裸名版（本轮只接 VitePress locales 路由，不翻译）
+- [x] docs 双语缺口补齐：`mvp` 与 `ui-design` 补英文裸名版（`docs/mvp.md`、`docs/ui-design.md`，与中文稿逐项结构对齐——标题/表格行/代码块计数相同：mvp 13/13·7/7·0/0，ui-design 24/24·35/35·8/8；中文稿 `mvp.zh.md`/`ui-design.zh.md` 补语言切换器（行号 +2，审计注记口径已覆盖）；英文侧 `docs/prototypes.md` 的 UI 规格链接改指 `/ui-design`；docs-only → `npm run docs:build` 4.87s 绿，`mvp`/`ui-design` 与 `/zh/` 两页均出产物）
 
 ## 挂账
 
