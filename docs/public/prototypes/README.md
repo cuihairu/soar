@@ -1,41 +1,56 @@
-# 原型图投放目录
+# Prototype delivery directory
 
-首页「界面预览」走马灯的原型图轨道（`docs/.vitepress/theme/Screenshots.vue`）
-按以下**固定文件名**到本目录取图；文件未到时轮播里渲染占位卡，
-**放入对应文件、下次构建部署后自动换成真图**（组件零改动）。
+The prototype track of the homepage **Interface Preview** carousel
+(`docs/.vitepress/theme/Screenshots.vue`) loads images from this directory by the
+**fixed filenames** below. Until a file arrives, the carousel renders a placeholder
+card; after the matching file is added and the site is next built and deployed, the
+real image appears automatically without component changes.
 
-| 文件名 | 归属分组 | 内容 | 状态 |
+| Filename | Group | Content | Status |
 |---|---|---|---|
-| `redesign/desktop-main-dark.png` | 播放 | 桌面主界面（v2 定稿） | ✅ 已投放（v2.1 复审 2026-10-07）⚠️ 主播放窗页 2026-10-15 移除顶栏后**未重摄**（本仓无浏览器渲染环境）：截图仍是含顶栏的定稿帧，待有环境重摄 |
-| `redesign/playlist-dark.png` | 播放 | 播放列表（v2 定稿） | ✅ 已投放 |
-| `redesign/library-dark.png` | 播放 | 媒体库（v2 定稿） | ✅ 已投放 |
-| `redesign/settings-dark.png` | 设置 | 设置面板（v2 定稿） | ✅ 已投放 |
-| `mobile.png` | 移动端 | 移动端界面 | ⬚ 未到，占位卡保留（移动端不在桌面批范围） |
+| `redesign/desktop-main-dark.png` | Playback | Desktop main window (final v2) | ✅ Delivered (v2.1 review, 2026-10-07). ⚠️ Not re-captured after the top bar was removed from the main-window page on 2026-10-15 (this repository has no browser rendering environment): the screenshot remains the final frame with the top bar and awaits recapture when an environment is available. |
+| `redesign/playlist-dark.png` | Playback | Playlist (final v2) | ✅ Delivered |
+| `redesign/library-dark.png` | Playback | Media library (final v2) | ✅ Delivered |
+| `redesign/settings-dark.png` | Settings | Settings panel (final v2) | ✅ Delivered |
+| `mobile.png` | Mobile | Mobile interface | ⬚ Not delivered; keep the placeholder card (mobile is outside the desktop batch) |
 
-原型卡一律取 **v2 定稿**截图（`redesign/` 子目录，暗色版即定稿集）。**v1 的三张
-PNG（`desktop-main.png` / `settings.png` / `translate-panel.png`）自 2026-10-15
-起不再被走马灯引用**：文件保留在库（v1 页面仍在，v2 各页的「旧稿对照」链指向
-它们），但首页不再展示；`translate-panel` 卡已删——v2 重设计未重出该页，翻译
-功能在实现里走字幕菜单 `[translate]` 行，由该组的真实截图覆盖。
+Prototype cards always use the **final v2** screenshots (the `redesign/`
+subdirectory; the dark set is the definitive set). Since 2026-10-15, the three v1
+PNGs (`desktop-main.png`, `settings.png`, and `translate-panel.png`) are no longer
+referenced by the carousel. They remain in the repository because the v1 pages are
+still present and the **legacy comparison** links on each v2 page point to them,
+but the homepage no longer displays them. The `translate-panel` card was removed:
+v2 did not redesign that page, and translation in the implementation is reached
+through the `[translate]` row in the subtitle menu and will be covered by a real
+product screenshot.
 
-要求：PNG（或直接改 `Screenshots.vue` 里的扩展名），建议 16:9 比例
-（如 960×540 / 1920×1080），与真实截图同框展示。
+Requirements: PNG (or change the extension in `Screenshots.vue` directly),
+preferably 16:9 (for example 960×540 or 1920×1080), and displayed in the same
+frame as real product screenshots.
 
-## 桌面原型五页（2026-10-07 批）
+## Five desktop prototype pages (2026-10-07 batch)
 
-`desktop-main / playlist / settings / library / translate-panel` 五页 HTML
-可视稿由仓库设计（1280×800 桌面视口，共享设计语言见 `assets/proto.css`），
-**总览与逐页设计说明（布局/交互/状态）见同目录 `index.html`**
-（站点部署后为 `/prototypes/index.html`；本文件与 PNG 均为静态原样拷贝，
-不进 VitePress 页面路由，故不设站内链接）。
-**该 v1 五页自 2026-10-15 起页头标「v1 旧稿（已废弃）」，v2 重设计见 `redesign/`**
-（v2 已取代其视觉语言与 IA；v1 保留的唯一用途是 v2 各页的「旧稿对照」链）。
-`playlist.png` / `library.png` 的 v1 版不在走马灯合同内，随批投放供审核与文档引用；
-走马灯现取它们的 **v2 定稿**截图（见上表）。
+The five HTML mockups—`desktop-main`, `playlist`, `settings`, `library`, and
+`translate-panel`—were designed in this repository for a 1280×800 desktop viewport
+and share a visual language defined in `assets/proto.css`. For the overview and
+per-page design notes (layout, interaction, and state), see `index.html` in this
+directory (`/prototypes/index.html` after site deployment). This file and the PNG
+files are copied verbatim as static assets and do not enter VitePress page routing,
+so there are no in-site links here.
 
-如实说明：品牌位为中性占位（「S」字标示意位，非 logo 设计）；媒体库为
-路线图 v1.0 前瞻设计（未开始实现），其余四页对应已落地能力。设计稿非产品
-代码，页内注解（note/kbd）为评审说明。
+Since 2026-10-15, these five v1 pages have carried an **v1 legacy (deprecated)**
+header, with the v2 redesign available under `redesign/`. v2 supersedes their
+visual language and information architecture. The sole remaining use of v1 is the
+**legacy comparison** link on each v2 page. The v1 versions of `playlist.png` and
+`library.png` are outside the carousel contract but remain available for review
+and documentation references; the carousel uses their **final v2** screenshots
+(see the table above).
 
-后续若替换为外部设计稿（Figma / Sketch / 手绘皆可），按上表固定文件名
-投放即可，组件零改动。
+For transparency: the brand slot is a neutral placeholder (an indicative “S”
+glyph, not a logo design). The media library is a forward-looking design for the
+v1.0 roadmap and has not been implemented; the other four pages correspond to
+capabilities that have landed. The mockups are not product code; their notes and
+`kbd` labels are review annotations.
+
+To replace them later with external designs (Figma, Sketch, or hand sketches all
+work), deliver files under the fixed filenames above—no component change is needed.

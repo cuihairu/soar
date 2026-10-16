@@ -1,4 +1,10 @@
+[English](/audit-doc-consistency) | [中文](/zh/audit-doc-consistency)
+
 # 审计-文档一致性（2026-10-13）
+
+> 注（2026-10-16 双语化）：本文的行号锚点指向改名之前的快照——中文稿现为 `*.zh.md`（顶部新增
+> 语言切换器，行号整体后移 2 行），英文稿在裸名（`docs/mvp.md`、`docs/ui-design.md`、
+> `docs/coverage-notes.md`，后者本轮只加了「暂无译版」说明页）。对照行号时按「切换器之前」计。
 
 审计范围：README.md、README.zh.md、docs/index.md、docs/build.md、docs/mvp.md、
 docs/ui-design.md、docs/licensing.md、docs/coverage-notes.md、docs/prototypes.md、

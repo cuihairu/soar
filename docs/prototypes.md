@@ -1,93 +1,77 @@
-# 原型展示
+[English](/prototypes) | [中文](/zh/prototypes)
 
-> 桌面播放器 v2 重设计稿：主播放窗 / 播放列表 / 设置面板 / 媒体库四页，亮暗双主题。
-> 以下是**设计稿**（HTML/CSS 原型，`docs/public/prototypes/` 下的静态页），不是产品代码；
-> 实现落点见 [UI 设计](/ui-design)。品牌位为中性占位（纯色橙块 + S 字），非正式 logo。
+# Prototypes
 
-## 在线预览
+> Desktop player v2 redesign: four pages — main player window / playlist / settings panel / media library — in light and dark themes.
+> What follows is a **design mock** (HTML/CSS prototypes, the static pages under `docs/public/prototypes/`), not product code.
+> Where the implementation lands: see the [UI spec](/zh/ui-design). The brand mark is a neutral placeholder (solid orange block plus an S), not the official logo.
 
-每页均支持 `?theme=light|dark` 参数或页内按钮切换主题。截图为 1280×800 静态帧。
+## Live preview
 
-| 页面 | 交互原型 | 暗色截图 | 亮色截图 |
+Every page accepts a `?theme=light|dark` parameter or an in-page button to switch themes. Screenshots are 1280×800 static frames.
+
+| Page | Interactive prototype | Dark screenshot | Light screenshot |
 | --- | --- | --- | --- |
-| 主播放窗 | [打开](/prototypes/redesign/desktop-main.html) | [暗](/prototypes/redesign/desktop-main-dark.png) | [亮](/prototypes/redesign/desktop-main-light.png) |
-| 播放列表 | [打开](/prototypes/redesign/playlist.html) | [暗](/prototypes/redesign/playlist-dark.png) | [亮](/prototypes/redesign/playlist-light.png) |
-| 设置面板 | [打开](/prototypes/redesign/settings.html) | [暗](/prototypes/redesign/settings-dark.png) | [亮](/prototypes/redesign/settings-light.png) |
-| 媒体库 | [打开](/prototypes/redesign/library.html) | [暗](/prototypes/redesign/library-dark.png) | [亮](/prototypes/redesign/library-light.png) |
+| Main player window | [Open](/prototypes/redesign/desktop-main.html) | [Dark](/prototypes/redesign/desktop-main-dark.png) | [Light](/prototypes/redesign/desktop-main-light.png) |
+| Playlist | [Open](/prototypes/redesign/playlist.html) | [Dark](/prototypes/redesign/playlist-dark.png) | [Light](/prototypes/redesign/playlist-light.png) |
+| Settings panel | [Open](/prototypes/redesign/settings.html) | [Dark](/prototypes/redesign/settings-dark.png) | [Light](/prototypes/redesign/settings-light.png) |
+| Media library | [Open](/prototypes/redesign/library.html) | [Dark](/prototypes/redesign/library-dark.png) | [Light](/prototypes/redesign/library-light.png) |
 
-完整说明（旧稿丑点清单、逐页改动理由）见 [重设计总览](/prototypes/redesign/index.html)。
+Full rationale (the list of what was wrong with the older draft, and per-page reasons for each change) in the [redesign overview](/prototypes/redesign/index.html).
 
-## 关键帧
+## Key frames
 
-### 主播放窗（亮色）
+### Main player window (light)
 
-<img src="/prototypes/redesign/desktop-main-light.png" alt="主播放窗 亮色" width="60%">
+<img src="/prototypes/redesign/desktop-main-light.png" alt="Main player window, light" width="60%">
 
-外壳（状态徽标 / 控制栏 / 注解浮层 / 进度槽）随主题用浅色；视频画布与其上的字幕属内容层，两主题恒黑。
+The shell (status chip / control bar / annotation overlay / progress groove) uses light colors in this theme; the video canvas and the subtitles on it are the content layer and stay black in both themes.
 
-> ⚠️ 主播放窗两版截图摄于 2026-10-07 定稿帧，**含顶栏**；2026-10-15 巡检代决已把顶栏
-> 移除出 v2 稿（无顶栏为 v0.1 基准，见 [UI 设计](/ui-design) §2），本仓无浏览器渲染
-> 环境故未重摄，截图与现行原型页存在此一处已知差异（重摄前保留）。
+> ⚠️ Both main-window screenshots were taken from the 2026-10-07 final frame and **include a top bar**; the 2026-10-15 patrol round removed the top bar from the v2 draft (no top bar is the v0.1 baseline — see the [UI spec](/zh/ui-design) §2). This repository has no browser rendering environment, so the frames were not retaken; that one known difference between the screenshots and the current prototype pages is retained until they are.
 
-### 主播放窗（暗色）
+### Main player window (dark)
 
-<img src="/prototypes/redesign/desktop-main-dark.png" alt="主播放窗 暗色" width="60%">
+<img src="/prototypes/redesign/desktop-main-dark.png" alt="Main player window, dark" width="60%">
 
-### 设置面板（亮色）
+### Settings panel (light)
 
-<img src="/prototypes/redesign/settings-light.png" alt="设置面板 亮色" width="60%">
+<img src="/prototypes/redesign/settings-light.png" alt="Settings panel, light" width="60%">
 
-### 媒体库（亮色）
+### Media library (light)
 
-<img src="/prototypes/redesign/library-light.png" alt="媒体库 亮色" width="60%">
+<img src="/prototypes/redesign/library-light.png" alt="Media library, light" width="60%">
 
-### 播放列表（亮色）
+### Playlist (light)
 
-<img src="/prototypes/redesign/playlist-light.png" alt="播放列表 亮色" width="60%">
+<img src="/prototypes/redesign/playlist-light.png" alt="Playlist, light" width="60%">
 
-## 决策记录
+## Decision log
 
-### v2.1 复审拍板（2026-10-07）
+### v2.1 review sign-off (2026-10-07)
 
-- **暗色四页通过，定稿。**
-- **亮色版打回重做（本版完成）**：v2 亮色版名实不符，外壳仍整面深色。v2.1 把外壳全部主题化：顶栏、状态徽标与浮层 pill、注解浮层、OSC 控制栏、进度槽在亮色主题下都用真浅色；视频画布与其上的字幕属内容层两主题恒黑（真实播放器的正常形态，不算「假亮色」）。
-- **小改两项**：主播放窗进度槽 4px 加粗到 6px（手柄 10px 到 12px，两主题同步）；左上注解两块合一（信息密度收敛；OSC 自动隐藏机制说明保留，一次不糊四块）。
-- **复审范围**：重出亮色四页截图 + 主播放窗暗色截图（进度槽同步），其余暗色三页维持原稿。
+- **Dark set of four pages passed, finalized.**
+- **Light set sent back for rework (completed in this revision)**: the v2 light version was not what it claimed — the shell was still uniformly dark. v2.1 themes the whole shell: in the light theme the top bar, status chip and pill overlays, annotation overlay, OSC control bar and progress groove all use real light colors; the video canvas and the subtitles on it are the content layer and stay black in both themes (the normal shape for a real player, and not a case of "fake light").
+- **Two small changes**: the main-window progress groove thickened from 4px to 6px (handle 10px to 12px, both themes in sync); the two annotation blocks top-left merged into one (tighter information density; the OSC auto-hide explanation is kept — one annotation should not blur into four blocks).
+- **Review scope**: re-shoot the four light pages plus the dark main-window frame (progress groove in sync); the other three dark pages stay as drafted.
 
-### v2 重设计口径（2026-10-06）
+### v2 redesign scope (2026-10-06)
 
-- redesign-preserve：结构与信息架构不动，视觉语言收敛（渐变清零、单一信号橙强调，天蓝仅保留网络/P2P 语义、字号地板 11px、圆角成文，面板 10 / 控件 7 / 徽标 pill / 图标钮圆形、无限动画包 `prefers-reduced-motion` 守卫）。
-- 设计令牌三层（原始层 / 语义层 / 组件层），组件不吃裸色值；对比度按 WCAG AA 校验（元信息档暗底 6.0:1、亮底 4.8:1）。
+- redesign-preserve: structure and information architecture unchanged, visual language tightened (gradients removed, a single signal orange as the accent, sky blue reserved for network/P2P semantics only, 11px font-size floor, corner radii made explicit — 10 for panels, 7 for controls, pill for chips, circular for icon buttons, an infinite-animation bundle guarded by `prefers-reduced-motion`).
+- Design tokens in three layers (primitive / semantic / component); components never read bare color values. Contrast checked against WCAG AA (metadata tier: 6.0:1 on dark, 4.8:1 on light).
 
-## 对齐验收（2026-10-13）
+## Alignment acceptance (2026-10-13)
 
-逐屏三档结论与截图证据见[对齐验收报告](/alignment-audit-2026-10-13)：
-有差异 3 屏（主播放窗 / 播放列表 / 媒体库），未实现 2 屏（设置面板、翻译浮层，
-ui-design §2 定 v0.1 无设置页）。实现差异 7 项已登记 todo「原型对齐验收批」；
-原型页里程碑标注已落地（2026-10-14，巡检）：`redesign/index.html` 增「原型超前项
-里程碑标注」节（settings v0.2 规划稿、translate / 顶栏·状态 pill / OSC 画质 pill
-v0.2+、媒体库缩略图·卡片网格·来源徽标 v0.3），`prototypes/translate-panel.html`
-页头标 v0.2+。
+Per-screen three-way verdicts and screenshot evidence in the [alignment acceptance report](/alignment-audit-2026-10-13): 3 screens with differences (main player window / playlist / media library), 2 screens not implemented (settings panel, translate overlay — ui-design §2 sets v0.1 as having no settings page). The 7 implementation differences were registered in the todo as the "prototype alignment acceptance batch"; the milestone marks on the prototype pages landed (2026-10-14, patrol round): `redesign/index.html` gained a "prototype-ahead-of-spec milestone marks" section (settings is a v0.2 planning draft; translate / top bar · status pill / OSC quality pill are v0.2+; library thumbnails · card grid · source chips are v0.3), and the `prototypes/translate-panel.html` page header is marked v0.2+.
 
-## 文档站一致性（2026-10-15 收口）
+## Docs-site consistency (closed 2026-10-15)
 
-首页「界面预览」的原型卡此前指向 **v1** 的 PNG（`prototypes/desktop-main.png` 等），
-与本页只链 v2 自相矛盾——同一站点一处说 v2 定稿、一处放 v1 旧图。本次收口：
+The "UI preview" cards on the home page used to point at **v1** PNGs (`prototypes/desktop-main.png` and the like), which contradicted this page linking only v2 — the same site claiming v2 was final in one place and showing v1 frames in another. This round closed it out:
 
-- **原型卡改指 v2 定稿截图**：`redesign/desktop-main-dark.png`、`redesign/settings-dark.png`，
-  并补上此前从未在站内出现的 `redesign/playlist-dark.png`、`redesign/library-dark.png`
-  （走「投放即生效」登记，文件已在库）。
-- **删除 translate-panel 卡**：v2 重设计未重出该页（翻译功能在实现里走字幕菜单
-  `[translate]` 行，已由该组两张真实截图覆盖）。
-- **v1 原型集页头标废弃**：`prototypes/` 下六页（含 `index.html` 总览）的 docbar
-  前置「v1 旧稿（已废弃，v2 见 …）」并链到对应 v2 页；v1 页保留不删——v2 各页的
-  「旧稿对照」链仍指向它们。translate-panel 页注明 v2 未重出该页。
-- 移动端卡（`mobile.png`）维持占位：移动壳尚无 UI 可对（见[对齐审计](/prototype-alignment-audit) §6 平台分列），无 v2 稿可指。
+- **Prototype cards now point at the finalized v2 screenshots**: `redesign/desktop-main-dark.png`, `redesign/settings-dark.png`, plus `redesign/playlist-dark.png` and `redesign/library-dark.png`, which had never appeared on the site (they were registered "deploy and they're live" — the files were already in the repo).
+- **The translate-panel card was removed**: v2 did not re-draft that page (the translate feature in the implementation runs through the subtitle menu's `[translate]` row, which the two real screenshots in that group already cover).
+- **The v1 prototype set is marked deprecated**: all six pages under `prototypes/` (including the `index.html` overview) get a "v1 old draft (deprecated, v2 is at …)" line in the doc bar linking to the corresponding v2 page; the v1 pages are kept, not deleted — v2's "old draft for comparison" links still point at them. The translate-panel page notes that v2 did not re-draft it.
+- The mobile card (`mobile.png`) stays a placeholder: the mobile shell has no UI to align against yet (see [alignment audit](/prototype-alignment-audit) §6 for the per-platform split), and there is no v2 draft to point at.
 
-## 顶栏移除（2026-10-15 巡检代决 a）
+## Top bar removed (patrol round 2026-10-15, proxy decision a)
 
-对齐审计 §5-P2-7 的三项由用户代决选 **(a) 保持无顶栏**：v2 原型主播放窗四帧的顶栏
-（品牌位 + 居中片名 + I/R/H/F 工具钮）全部移除，理由沿用审计推荐——入口走 OSC + 快捷键
-（I/R/H/F 均在 §3.2 合同）、片名走 OS 窗口标题，加顶栏引入常驻 chrome 面积与 §1.6-1
-调研结论冲突。**顶栏与亮色版同属 v0.2 候选，非 v0.1 基准**（[UI 设计](/ui-design) §2/§4
-同步）。主播放窗两版截图为移除前定稿帧，未重摄（无渲染环境），已知差异见上文。
+The three items from alignment audit §5-P2-7 were proxy-decided by the user as **(a) keep no top bar**: the top bar of the four v2 main-player-window frames (brand mark + centered title + the four I/R/H/F tool buttons) was removed entirely, for the reasons the audit recommended — those entries live in OSC plus shortcuts (I/R/H/F are all in the §3.2 contract), the title goes through the OS window title, and adding a top bar introduces permanent chrome area that conflicts with the §1.6-1 research conclusion. **The top bar and the light theme are both v0.2 candidates, not v0.1 baseline** (synced in [UI spec](/zh/ui-design) §2/§4). The two main-window screenshots are pre-removal final frames and were not retaken (no rendering environment); the known difference is noted above.

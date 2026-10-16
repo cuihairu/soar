@@ -1,304 +1,346 @@
-# 原型对齐审计（2026-10-15）
+[English](/prototype-alignment-audit) | [中文](/zh/prototype-alignment-audit)
 
-触发：用户报「soar 跟设计原型图是一点都不像」。本轮**只做审计，不改实现、不改原型**。
-结论先行：**「不像」的主因不是实现漏做，而是仓库里同时存在三套互相冲突的设计基准，
-实现严格遵循了其中一套（`docs/ui-design.md`），而用户看到的是另一套（`prototypes/redesign/`）。**
-真正的漏做项集中在 3 个组件上（状态徽标、分辨率 pill、OSC 行 1 时间码），其余差异
-要么是有成文理由的有意偏离，要么是原型超前于 v0.1 范围。
+# Prototype Alignment Audit (2026-10-15)
 
-> **修订（2026-10-15 R1015D 巡检复核）**：初版的「状态徽标漏做」「分辨率 pill 漏做」两条
-> **误判，已改正**——①状态徽标已实现：`drawChips()`（`player_window.cpp:2199-2225`，`:882`
-> 每帧调用）画 Paused / Buffering… / Downloading N% / Casting 四枚顶部居中小徽标，状态、
-> 缓冲、下载百分比、投屏四语义全在，与 v2 的差别只是形态（分立小徽标 vs 单枚含时钟徽标）；
-> ②分辨率 pill 在 MK_R2A 巡检已代决不做（`MediaInfo` 无宽高、核心接口冻结、MVP §1.5 不列、
-> OSC 行 2 已满行），初版漏查了该决定。修订后**唯一真实漏做的布局项只剩 OSC 行 1 时间码位置**
-> （小改动，但会移动 seek 条几何、需走查坐标重校），其余差异全为有意偏离、已代决延后或原型超前。
+Trigger: the user reported "soar looks nothing like the design prototypes". This round is **audit only — no
+implementation changes, no prototype changes**.
+Conclusion up front: **the main cause of "looks nothing like" is not missed implementation work, but the fact
+that the repository simultaneously contains three mutually conflicting design baselines — the implementation
+strictly follows one of them (`docs/ui-design.md`), while what the user saw is another (`prototypes/redesign/`).**
+The genuinely missed items are concentrated in 3 components (the status chip, the resolution pill, the OSC row 1
+timecodes); the remaining differences are either intentional deviations with documented rationale, or cases where
+the prototype is ahead of the v0.1 scope.
+
+> **Revision (2026-10-15 R1015D patrol-round recheck)**: the initial version's "status chip missed" and
+> "resolution pill missed" findings were **misjudgments, now corrected** — ① the status chip is implemented:
+> `drawChips()` (`player_window.cpp:2199-2225`, called every frame at `:882`) draws four small top-centered
+> chips, Paused / Buffering… / Downloading N% / Casting; all four semantics — status, buffering, download
+> percentage, casting — are present, and the only difference from v2 is form (separate small chips vs a single
+> chip containing a clock); ② the resolution pill was already decided by proxy not to be done in the MK_R2A
+> patrol round (`MediaInfo` has no width/height, the core interface is frozen, MVP §1.5 does not list it, and
+> OSC row 2 is already full), and the initial version failed to check that decision. After the revision **the
+> only genuinely missed layout item left is the OSC row 1 timecode position** (a small change, but it moves the
+> seek bar geometry and requires a walkthrough coordinate recalibration); all remaining differences are
+> intentional deviations, deferred by proxy decision, or prototype-ahead cases.
 
 ---
 
-## 1. 基准版本判定
+## 1. Baseline determination
 
-仓库里有三套设计基准，**三者互相矛盾**：
+The repository contains three design baselines, **and they contradict one another**:
 
-| 基准 | 位置 | 主题 | 强调色 | 顶栏 | 状态 |
+| Baseline | Location | Theme | Accent color | Top bar | Status |
 |---|---|---|---|---|---|
-| **A. v1 原型** | `docs/public/prototypes/*.html`（5 页，含 `translate-panel.html`） | 单主题 | 橙 `--accent #ff6b35` + 天蓝 `--sky` | 有 | **已废弃**：v2 各页把它链为「旧稿对照」（`redesign/desktop-main.html:158`） |
-| **B. v2 原型（定稿）** | `docs/public/prototypes/redesign/*.html`（4 页） | 亮暗双主题 + 主题切换钮 | 单一信号橙 `--accent` | 有 | **定稿**：`redesign/index.html:205`「暗色四页通过，定稿」；`docs/prototypes.md:13-16` 只链 v2 |
-| **C. 实现规格** | `docs/ui-design.md`（254 行） | **暗色唯一、不可切换** | **蓝 `#4C8DFF`** | **无** | **实现依据**：开篇自述「作为实现依据」 |
+| **A. v1 prototype** | `docs/public/prototypes/*.html` (5 pages, including `translate-panel.html`) | Single theme | Orange `--accent #ff6b35` + sky blue `--sky` | Yes | **Deprecated**: each v2 page links to it as the "old draft for comparison" (`redesign/desktop-main.html:158`) |
+| **B. v2 prototype (final)** | `docs/public/prototypes/redesign/*.html` (4 pages) | Light + dark dual themes + theme toggle | Single signal orange `--accent` | Yes | **Final**: `redesign/index.html:205` "dark four pages pass, finalized"; `docs/prototypes.md:13-16` links only v2 |
+| **C. Implementation spec** | `docs/ui-design.md` (254 lines) | **Dark only, not switchable** | **Blue `#4C8DFF`** | **None** | **Implementation basis**: its opening self-describes it as "serves as the implementation basis" |
 
-判定（按用户指令「若有 `docs/ui-design.md` 则以它为准并说明」）：
+Determination (per the user's instruction "if `docs/ui-design.md` exists, treat it as authoritative and explain"):
 
-1. **实现侧基准 = C（`docs/ui-design.md`）**。它是成文规格、自述为实现依据，且实现逐条
-   落实了它：暗色唯一（`player_window.cpp:318-352` 硬编码、无切换）、蓝 accent
-   （`player_window.cpp:331`）、无顶栏（`ui-design.md:61` §2「v0.1 是单窗口应用…二级功能
-   全部是浮层」）、无通用设置页（`ui-design.md:91`「v0.1 无设置页，v0.2 再做成面板」）。
-2. **设计侧基准 = B（`redesign/`）**。它是文档站对外发布的定稿（`docs/prototypes.md` 只链它），
-   也是用户看到的那套。
-3. **A（v1）已废弃**，唯一残余用途是 v2 各页的「旧稿对照」链接。
-4. **B 与 C 在三个轴上正面冲突**：主题（双主题 vs 暗色唯一）、强调色（橙 vs 蓝）、
-   IA（有顶栏 vs 无顶栏）。**实现跟了 C，用户看的是 B，所以「一点都不像」。**
+1. **Implementation-side baseline = C (`docs/ui-design.md`)**. It is a written spec, self-described as the
+   implementation basis, and the implementation follows it item by item: dark-only (`player_window.cpp:318-352`
+   hardcoded, no toggle), blue accent (`player_window.cpp:331`), no top bar (`ui-design.md:61` §2 "v0.1 is a
+   single-window app… all secondary functions are overlays"), no general settings page (`ui-design.md:91` "v0.1
+   has no settings page; v0.2 will add one as a panel").
+2. **Design-side baseline = B (`redesign/`)**. It is the finalized version published on the docs site
+   (`docs/prototypes.md` links only to it), and it is the set the user saw.
+3. **A (v1) is deprecated**; its only remaining use is the "old draft for comparison" links on the v2 pages.
+4. **B and C collide head-on on three axes**: theme (dual themes vs dark-only), accent color (orange vs blue),
+   IA (top bar vs no top bar). **The implementation followed C while the user looked at B — hence "looks
+   nothing like".**
 
-> 这不是「实现没跟上原型」，而是**规格与原型从未对齐过**。`docs/ui-design.md` 的
-> §1.6-7 明确写了暗色不可切换的理由（引 mpv.net `dark-mode=always` 默认值），
-> §1.6-4 写了浮层优先——两条都是**有调研依据的主动决策**，不是漏看原型。
-
----
-
-## 2. 逐屏对照表（原型位置 ↔ 实现位置）
-
-### 2.1 主播放窗 `redesign/desktop-main.html` ↔ `src/app/ui/player_window.cpp`
-
-| 原型（v2） | 实现 | 对上？ |
-|---|---|---|
-| `desktop-main.html:149-163` 视频面 + 字幕层（`:30-36`） | `player_window.cpp:188-205` `letterboxRect` 信箱式等比；字幕画布 `##subtitle` `:2307` | ✅ |
-| `desktop-main.html:165-193` **顶栏**：品牌 `:168-171`、片名 `:172`、工具组 `:173-193`（信息 I `:174`、最近 R `:177`、帮助 H `:180`、全屏 F `:183`） | **无顶栏**。片名在 SDL 窗口标题（`player_window.cpp:823`）；四功能在 OSC 行末 `:2054-2071` + 快捷键 | ❌ 布局 |
-| `desktop-main.html:189-193` **状态徽标** `.statechip`（CSS `:63-72`）：「正在播放 01:23:30 / 01:25:44 · P2P 45%」 | `drawChips()` `:2199-2225`（`:882` 调用）：Paused / Buffering… / Downloading N% / Casting 四枚顶部居中徽标 | ⚠️ 语义全在，形态不同 |
-| `desktop-main.html:195-202` OSC 行 1：左时间码 `:197`、seek 轨（含 played+buffer `:198-200`）、右时间码 `:201`、**分辨率 pill** `:202`「1080p 60」 | 行 1 是裸全宽滑条 `:1948-1978`；时间码在行 2 文本 `:2009-2016`；无分辨率 pill | ❌ 布局 + 组件缺失 |
-| `desktop-main.html:204-224` OSC 行 2：上一首 `:205`、播放 `:208`、下一首 `:211`、音量图标+range `:216-217`、`1.0×` `:219`、A-B `:220`、CC `:221`、截图 `:222` | Play/Pause `:1992`、Stop `:1996`、`|<` `:2000`、`>|` `:2004`、Mute `:2018`、音量滑条 `:2024-2036`、倍速 combo `:2038`、音轨 combo `:2043`、字幕轨 combo `:2048`、Sub `:2054`、Info `:2057`、Full `:2060`、A-B `:2065`、CC `:2068`、Shot `:2071` | ⚠️ 功能全在，形态不同 |
-| `desktop-main.html:255` 暂停态 64×64 圆形 accent 播放键 | 54px 文本按钮「Play」`:1992` | ❌ 视觉 |
-| `desktop-main.html:154` 主题切换钮（亮/暗） | 无 | ❌ 视觉（有意偏离） |
-| `desktop-main.html:234` 快捷键注记（P/I/S） | Shortcuts 浮层 `:2905` 实时渲染键位 | ✅ |
-| —（原型无） | Stop `:1996`、Sub `:2054`、Info `:2057`、Full `:2060` 四个 OSC 按钮 | ➕ 实现超前 |
-
-### 2.2 播放列表 `redesign/playlist.html` ↔ `player_window.cpp:2594`（`Begin("Playlist")`）
-
-| 原型（v2） | 实现 | 对上？ |
-|---|---|---|
-| 独立页 + 顶栏 + 列表行（含续播位置标注） | 居中浮层 `Begin("Playlist", &open, NoSavedSettings)` `:2594` | ⚠️ 形态：页 vs 浮层（`ui-design.md:54` 定为浮层） |
-| 队列点选即播、`x` 删除、Loop 三态、Shuffle | 同语义（`ui-design.md:74` 记为 v0.2） | ✅ 语义对上 |
-
-### 2.3 媒体库 `redesign/library.html` ↔ `player_window.cpp:2725`（`Begin("Library")`）
-
-| 原型（v2） | 实现 | 对上？ |
-|---|---|---|
-| 监视文件夹行 + 源条目 + 续播位置标注 | 浮层 `:2725`，列表式 | ⚠️ 同上（页 vs 浮层） |
-| 卡片网格、缩略图、来源徽标 | **无**（`redesign/index.html` 标为 v0.3） | ❌ 组件缺失（原型超前） |
-
-### 2.4 设置 `redesign/settings.html` ↔ 无
-
-| 原型（v2） | 实现 | 对上？ |
-|---|---|---|
-| 设置面板页（四页之一） | **无通用设置页**。`Overlay` 枚举 `:183-184` 只有 `Subtitle`；仅有「Subtitle Settings」浮层 `:2997` | ❌ 组件缺失（有意延后，`ui-design.md:91`） |
-
-### 2.5 翻译面板 `prototypes/translate-panel.html`（v1 独占） ↔ 无
-
-v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独占项，随 v1 一并废弃。**
+> This is not "the implementation failed to keep up with the prototype"; it is that **the spec and the prototype
+> were never aligned**. `docs/ui-design.md` §1.6-7 explicitly documents the rationale for non-switchable dark
+> (citing the mpv.net `dark-mode=always` default), and §1.6-4 documents overlays-first — both are **proactive
+> decisions grounded in research**, not cases of overlooking the prototype.
 
 ---
 
-## 3. 差异分类（共 26 条）
+## 2. Screen-by-screen comparison (prototype location ↔ implementation location)
 
-### 3.1 布局（6 条，含 1 条实现超前）
+### 2.1 Main player window `redesign/desktop-main.html` ↔ `src/app/ui/player_window.cpp`
 
-| # | 差异 | 原型 | 实现 | 性质 |
-|---|---|---|---|---|
-| L1 | **无顶栏**（品牌/片名/信息/最近/帮助/全屏） | `desktop-main.html:165-193` | 无；四功能在 OSC `:2054-2071` | 有意偏离（`ui-design.md:54`） |
-| L2 | 状态徽标形态：v2 单枚含时钟徽标 vs 实现四枚分立小徽标（Paused/Buffering/Downloading N%/Casting） | `desktop-main.html:189-193` | `drawChips()` `:2199-2225` | 已实现，形态差异（初版误判「漏做」，修订改正） |
-| L3 | OSC 行 1 无左右时间码 | `:197`、`:201` | 行 2 文本（旧）`:2009-2016` | **已补**（39f7ed5，行 1 = 左时间码 | 轨 | 右 -剩余，行 2 时钟移除） |
-| L4 | **无分辨率 pill**（1080p 60） | `:202` | 无 | 已代决不做（`MediaInfo` 无宽高、核心接口冻结；初版漏查 MK_R2A 决定） |
-| L5 | 浮层形态：原型是整页 + 顶栏，实现是居中覆盖窗 | 四页 | `:2594`、`:2725`、`:2905`、`:2997` | 有意偏离（`ui-design.md:54`） |
-| L6 | 实现多出 Stop/Sub/Info/Full 四个 OSC 按钮 | 无 | `:1996`、`:2054`、`:2057`、`:2060` | 实现超前（非偏离） |
+| Prototype (v2) | Implementation | Match? |
+|---|---|---|
+| `desktop-main.html:149-163` video surface + subtitle layer (`:30-36`) | `player_window.cpp:188-205` `letterboxRect` letterboxed aspect-preserving fit; subtitle canvas `##subtitle` `:2307` | ✅ |
+| `desktop-main.html:165-193` **top bar**: brand `:168-171`, title `:172`, tool group `:173-193` (Info I `:174`, Recent R `:177`, Help H `:180`, Fullscreen F `:183`) | **No top bar**. The title lives in the SDL window title (`player_window.cpp:823`); the four functions sit at the OSC row end `:2054-2071` + shortcuts | ❌ layout |
+| `desktop-main.html:189-193` **status chip** `.statechip` (CSS `:63-72`): "Now playing 01:23:30 / 01:25:44 · P2P 45%" | `drawChips()` `:2199-2225` (called at `:882`): four top-centered chips, Paused / Buffering… / Downloading N% / Casting | ⚠️ all semantics present, different form |
+| `desktop-main.html:195-202` OSC row 1: left timecode `:197`, seek track (with played+buffer `:198-200`), right timecode `:201`, **resolution pill** `:202` "1080p 60" | Row 1 is a bare full-width slider `:1948-1978`; the timecodes are row 2 text `:2009-2016`; no resolution pill | ❌ layout + missing component |
+| `desktop-main.html:204-224` OSC row 2: previous `:205`, play `:208`, next `:211`, volume icon + range `:216-217`, `1.0×` `:219`, A-B `:220`, CC `:221`, Shot `:222` | Play/Pause `:1992`, Stop `:1996`, `|<` `:2000`, `>|` `:2004`, Mute `:2018`, volume slider `:2024-2036`, speed combo `:2038`, audio-track combo `:2043`, subtitle-track combo `:2048`, Sub `:2054`, Info `:2057`, Full `:2060`, A-B `:2065`, CC `:2068`, Shot `:2071` | ⚠️ all functions present, different form |
+| `desktop-main.html:255` paused-state 64×64 circular accent play button | 54px text button "Play" `:1992` | ❌ visual |
+| `desktop-main.html:154` theme toggle (light/dark) | None | ❌ visual (intentional deviation) |
+| `desktop-main.html:234` shortcut annotation (P/I/S) | Shortcuts overlay `:2905` renders the key bindings live | ✅ |
+| — (not in the prototype) | Stop `:1996`, Sub `:2054`, Info `:2057`, Full `:2060` — four OSC buttons | ➕ implementation ahead |
 
-### 3.2 视觉（8 条）
+### 2.2 Playlist `redesign/playlist.html` ↔ `player_window.cpp:2594` (`Begin("Playlist")`)
 
-| # | 差异 | 原型/规格 | 实现 | 性质 |
-|---|---|---|---|---|
-| V1 | **强调色**：橙 `#ff6b35` vs 蓝 `#4C8DFF` | v2 `--accent` | `player_window.cpp:331` | 有意偏离（`ui-design.md:185`） |
-| V2 | **主题**：亮暗双主题 + 切换钮 vs 暗色硬编码不可切换 | `desktop-main.html:154`、CSS `:45-47`、`:97-101` | `:318-352` | 有意偏离（`ui-design.md:57` §1.6-7） |
-| V3 | **圆角**：`--r-panel 10px` / `--r-ctl 7px` / 徽标 pill / 图标钮圆形 | v2 令牌 | `ui_tokens.h`：`kPanelRounding 10`（window+popup）/ `kControlRounding 7`（frame+grab）/ `kPillRounding 999`（statechip + 暂停 floatpill，走 draw list——`CalcWindowMinSize` 会把窗口最小高度抬到 `rounding-1`，999 走 `WindowRounding` 会把自动尺寸窗口撑满视口，实测 249px pill 渲染成 540px 高） | 已补 d7e7bf6（图标钮圆形态随 V6 改判不追——规格按钮词汇是文本/emoji，见 V6 行；当前无图标钮消费者） |
-| V4 | **字号地板 11px** 未成文 | v2 口径（`prototypes.md:55`） | `ui_tokens.h` `kMinFontSize 11` + `kUiFontSize 16`，`static_assert` 地板约束；ImGui 内嵌默认 13px 亦在地板上 | 已补 d7e7bf6 |
-| V5 | **播放键形态**：64×64 圆形 accent 键 vs 54px 文本钮 | `desktop-main.html:255` | `:1960-2042` | 已补 3835768（压暗 + 圆钮 + 提示 pill，点击续播） |
-| V6 | **按钮形态**：原型 SVG 圆钮/分段 chip（`.tsmall`/`.seg`）vs 矩形文本钮 | `desktop-main.html:205-222` | `player_window.cpp:1992-2071`；钮面圆角已随 V3 落 v2（`kControlRounding 7`） | 有意偏离（2026-10-15 R1015E 改判：规格按钮词汇是文本/emoji——`ui-design.md:74` §2 IA「⏯ 播放/暂停、⏹ 停止…ⓘ 信息、⛶ 全屏」，唯一图标项明文简化为文案 `ui-design.md:67`；SVG 圆钮从未落进规格，真要做需先落规格 + 图标字体决策。seg chip 形态已由 I2（下拉）/I5（OSC 按钮）代决） |
-| V7 | **焦点可见态 + reduced-motion 守卫**：原型有 `:focus-visible` 2px accent 环与 `prefers-reduced-motion` 守卫 | v2 口径（`prototypes.md:55`） | 拆两条看（2026-10-15 R1015E）：**V7a 动画开关**——规格明文不设（`ui-design.md:188` §4「`disableAnimations` 不设开关，v0.1 常开」），现状即规格要求；**V7b 焦点环**——**已代决 2026-10-15 选 (b) 并落地**（app 自绘焦点模型，见 §5-P2-8） | V7a 有意偏离（规格明文延后）；V7b **已落**（`ui_state.h` 的 `UiFocus`：Tab/Shift+Tab/Enter 移焦点，Enter 按行自身点击路径重放；环走 `ui_tokens.h` 的 `kFocusRingWidth 2` / `kFocusRingExpand 4`，画在各浮层/菜单行上；`player_window.cpp` 的 `drawFocusRing`/`focusOverlayKey`/`focusMenuKey` 接线。§3.2 合同一字未动，`test_shortcuts` 16/16 绿；`test_ui_state` 44/44 绿；X11 走查播放列表行环与弹层菜单环均实测落位） |
-| V8 | **设计令牌化**：规格要求「集中在 `ui_theme` 常量区」 | `ui-design.md:183` | 有集中区（`:317` 注释「every color the UI draws comes from here」）但全是字面量 `ImVec4`，无命名令牌 | **漏做**（半达标） |
+| Prototype (v2) | Implementation | Match? |
+|---|---|---|
+| Standalone page + top bar + list rows (with resume-position markers) | Centered overlay `Begin("Playlist", &open, NoSavedSettings)` `:2594` | ⚠️ form: page vs overlay (`ui-design.md:54` specifies an overlay) |
+| Click a queue entry to play, `x` to remove, tri-state Loop, Shuffle | Same semantics (`ui-design.md:74` records them as v0.2) | ✅ semantics match |
 
-> 一致项（不计入差异）：危险/错误色 `#FF5D5D`（`ui-design.md:185` ↔ `:2417`）、
-> 文本主色 `#E8EAF0`、面板半透明压视频、OSC 高 ~80px / 内边距 8×6 / 控件间距 8、
-> 浮层宽上限 480px、OSC 条宽上限 920px、4px 基准网格——**这些实现与规格逐条对上**。
+### 2.3 Library `redesign/library.html` ↔ `player_window.cpp:2725` (`Begin("Library")`)
 
-### 3.3 交互（4 条差异 + 2 条已对齐 + 1 条等价）
+| Prototype (v2) | Implementation | Match? |
+|---|---|---|
+| Watched-folder rows + source entries + resume-position markers | Overlay `:2725`, list-style | ⚠️ same as above (page vs overlay) |
+| Card grid, thumbnails, source chips | **None** (`redesign/index.html` marks it v0.3) | ❌ missing component (prototype ahead) |
 
-| # | 差异 | 原型 | 实现 | 性质 |
-|---|---|---|---|---|
-| I1 | **信息/最近/帮助/全屏入口位置**：常驻顶栏图标（title 带快捷键）vs 藏在 OSC 行末 + 快捷键 | `:174-183` | `:2054-2071` + I/R/H/F | 有意偏离（可用性等价，可发现性较弱） |
-| I2 | **倍速/音轨/字幕选择形态**：原型 OSC 分段 chip + 设置页完整选择 vs 全部 `BeginCombo` 下拉 | `:219-221` + `settings.html` | `:2038-2051` | 有意偏离（`ui-design.md:54` §1.6-4「二级选择收进弹出菜单」） |
-| I3 | **音量**：图标+range vs Mute 按钮+滑条 | `:216-217` | `:2018`、`:2024-2036` | 等价（非差异） |
-| I4 | **OSC 死区与自动隐藏**：中心区域死区、2.5s 自动隐藏 | `ui-design.md:26` §1.2 | 2500ms 自动隐藏已落地 | ✅ 已对齐 |
-| I5 | **A-B / 字幕显隐 / 截图**：原型 OSC 分段 chip | `:220-222` | 已补为 OSC 按钮 `:2065-2071` | ✅ 已对齐（前批落地） |
-| I6 | **上一首/下一首**：原型 OSC 有按钮 | `:205`、`:211` | 已补 `|<` / `>|` `:2000-2004` | ✅ 已对齐（前批落地） |
+### 2.4 Settings `redesign/settings.html` ↔ none
 
-### 3.4 组件缺失（8 条）
+| Prototype (v2) | Implementation | Match? |
+|---|---|---|
+| Settings panel page (one of the four pages) | **No general settings page**. The `Overlay` enum `:183-184` has only `Subtitle`; the sole overlay is "Subtitle Settings" `:2997` | ❌ missing component (intentionally deferred, `ui-design.md:91`) |
 
-| # | 缺失组件 | 原型 | 实现 | 性质 |
-|---|---|---|---|---|
-| M1 | 顶栏 | `desktop-main.html:165-193` | 无 | 有意偏离 |
-| M2 | 状态徽标（含 P2P 下载百分比） | `:189-193` | `drawChips()` `:2199-2225`（Paused/Buffering/Downloading/Casting） | 已实现，形态差异（修订改正） |
-| M3 | 分辨率/编码 pill | `:202` | 无 | 已代决不做（核心接口冻结，MK_R2A） |
-| M4 | 通用设置页 | `settings.html` | 无（仅 Subtitle Settings `:2997`） | 有意延后（v0.2） |
-| M5 | 媒体库卡片网格 / 缩略图 / 来源徽标 | `library.html` | 列表式 `:2725` | 原型超前（v0.3） |
-| M6 | 迷你模式 / 音乐模式（纯音频自动切迷你窗） | `ui-design.md:17` §1.1 调研 | 无 | 有意延后（§7 后续边界） |
-| M7 | seek 悬停缩略图预览 | `ui-design.md:55` §1.6-5 | 无 | 有意延后（v0.2） |
-| M8 | 翻译面板 | v1 `translate-panel.html` | 无 | 随 v1 废弃 |
+### 2.5 Translation panel `prototypes/translate-panel.html` (v1-only) ↔ none
 
-**漏做合计（修订后）：L3、V3、V4、V5、V6、V7、V8 = 7 条，处置为 5 落地 + 2 改判有意偏离 + 0 仍开放。**（落地：L3 39f7ed5、V8 53ae80b、V5 3835768、V3/V4 d7e7bf6、V7b 焦点环 2026-10-15 代决 b；改判：V6 有意偏离＝原型超前，V7 拆 V7a/V7b 且 V7a 有意偏离＝规格明文延后。漏做项全部落地或改判，无开放项）
-**有意偏离/延后合计：L1、L4、L5、V1、V2、V6、V7a、I1、I2、M1、M3、M4、M5、M6、M7、M8 = 16 条。**（V6/V7a 为 R1015E 改判）
-**已实现形态差异：L2、M2 = 2 条（初版误判漏做，修订改正）。实现超前：L6 = 1 条。
-已对齐验证项：I3、I4、I5、I6 = 4 条（不计入差异）。**
+v2 dropped this page (no corresponding file under `redesign/`), and the implementation does not have it either.
+**A v1-only item, deprecated together with v1.**
 
 ---
 
-## 4. 有意偏离 vs 漏做
+## 3. Difference classification (26 items total)
 
-### 4.1 有意偏离（有成文依据，**不应按原型改实现**）
+### 3.1 Layout (6 items, including 1 where the implementation is ahead)
 
-| 项 | 依据 | 说明 |
-|---|---|---|
-| 无顶栏、四图标进 OSC | `ui-design.md:61` §2、`:54` §1.6-4 | 「v0.1 是单窗口应用…二级功能全部是浮层」；§1.6-4 引 vidstack/plyr/uosc 共识「二级选择收进弹出菜单」。顶栏是窗口 chrome，与「悬浮、内容居中、自动隐藏」的调研结论（§1.6-1）冲突 |
-| 暗色唯一、不可切换 | `ui-design.md:57` §1.6-7 | 引 mpv.net `dark-mode=always` 默认值：「视频播放器的背景天然是黑的，浅色 UI 从来不是正确默认」 |
-| 蓝色 accent `#4C8DFF` | `ui-design.md:185` §4 | 规格明文；对比度 >12:1 已核算 |
-| 倍速/音轨/字幕走下拉 | `ui-design.md:54` §1.6-4 | 与「浮层优先」同一条 |
-| 无通用设置页 | `ui-design.md:91` §2 | 「v0.1 无设置页…v0.2 再做成面板」 |
-| 无库卡片网格/缩略图 | `redesign/index.html` 标 v0.3 | 原型自己标了版本 |
-| 无迷你模式、无 seek 缩略图 | `ui-design.md:250` §7 | 后续边界 |
-| 无分辨率 pill | MK_R2A 巡检已代决 | `MediaInfo` 无宽高（核心接口冻结）、MVP §1.5 不列、OSC 行 2 已满行——原型超前项已按「原型超前不追」处理 |
-| 按钮用文本钮而非 SVG 圆钮（V6） | `ui-design.md:74` §2 IA、`:67` | 规格按钮词汇是文本/emoji（⏯/⏹/🔇/ⓘ/⛶），唯一图标项明文「简化为状态文案」；SVG 圆钮/seg chip 是原型语言，从未落进规格（seg 形态已由 I2 下拉、I5 OSC 按钮代决）；v2 圆角已随 V3 全量上钮 |
-| 无 reduced-motion 开关（V7a） | `ui-design.md:188` §4 | 规格明文「`disableAnimations` 不设开关，v0.1 常开」；动效仅 160ms 透明度过渡，无位移类动画，常开不影响观感 |
+| # | Difference | Prototype | Implementation | Nature |
+|---|---|---|---|---|
+| L1 | **No top bar** (brand/title/Info/Recent/Help/Fullscreen) | `desktop-main.html:165-193` | None; the four functions sit in the OSC `:2054-2071` | Intentional deviation (`ui-design.md:54`) |
+| L2 | Status-chip form: v2 has a single chip containing a clock vs the implementation's four separate small chips (Paused/Buffering/Downloading N%/Casting) | `desktop-main.html:189-193` | `drawChips()` `:2199-2225` | Implemented, form difference (initially misjudged as "missed", corrected in revision) |
+| L3 | OSC row 1 lacks left/right timecodes | `:197`, `:201` | Row 2 text (old) `:2009-2016` | **Added** (39f7ed5, row 1 = left timecode | track | right -remaining, row 2 clock removed) |
+| L4 | **No resolution pill** (1080p 60) | `:202` | None | Decided by proxy not to do it (`MediaInfo` has no width/height, core interface frozen; the initial version missed the MK_R2A decision) |
+| L5 | Overlay form: the prototype uses full pages + a top bar, the implementation uses centered floating windows | All four pages | `:2594`, `:2725`, `:2905`, `:2997` | Intentional deviation (`ui-design.md:54`) |
+| L6 | Implementation adds four OSC buttons Stop/Sub/Info/Full | None | `:1996`, `:2054`, `:2057`, `:2060` | Implementation ahead (not a deviation) |
 
-### 4.2 漏做（v2 定稿的设计语言，实现缺位，**应补**）
+### 3.2 Visual (8 items)
 
-| 项 | 影响 | 为什么是漏做 |
-|---|---|---|
-| **OSC 行 1 时间码**（L3）— **已补**（39f7ed5） | 中 | 行 1 = 左时间码 | seek 轨 | 右 -剩余，行 2 时钟移除不重复。成本如约发生：走查行 2/弹层 19 处 pin 按实测 -106px 重校（probe 前后两建对照），audiodrive 旧 637/685 漂移 pin 一并钉回实测位；`test_cli.cpp` 拖拽点 (cx±80, h-76) 实测仍在轨内未动 |
-| **令牌化**（V8）— **已落**（53ae80b，`ui_tokens.h` 具名令牌） | 中 | `ui-design.md:183` 明文要求「集中在 `ui_theme` 常量区」；当前色值集中在 `applyTheme` 一处但全是无名 `ImVec4` 字面量，后续主题/焦点态/圆角对齐都以它为前置 |
-| **焦点可见环**（V7b，原 V7 焦点半边）— **已补**（2026-10-15 代决 b） | 中 | 规格要求（`ui-design.md:216` 把「焦点可见」列为 ImGui 无障碍短板的缓解）。代决选 app 自绘焦点模型而非开 ImGui 导航：Tab/Shift+Tab/Enter 三键均不在 §3.2 表内，弹层内方向键走早退路径，零快捷键合同冲突；环几何与原型 `:focus-visible` 一致（2px accent 外扩 4px）。reduced-motion 半边（V7a）已改判有意偏离，见 4.1 |
-| **圆角令牌**（V3）— **已补**（d7e7bf6） | 低 | v2 成文 `--r-panel 10`/`--r-ctl 7`；实现 8/6/4/6 是另一套数 |
-| **字号地板 11px**（V4）— **已补**（d7e7bf6） | 低 | v2 口径；实现无成文地板 |
-| **播放键 64 圆钮**（V5）— **已补**（3835768） | 低 | 「像不像」的第一印象项，改动小 |
+| # | Difference | Prototype/spec | Implementation | Nature |
+|---|---|---|---|---|
+| V1 | **Accent color**: orange `#ff6b35` vs blue `#4C8DFF` | v2 `--accent` | `player_window.cpp:331` | Intentional deviation (`ui-design.md:185`) |
+| V2 | **Theme**: light+dark dual themes with a toggle vs hardcoded non-switchable dark | `desktop-main.html:154`, CSS `:45-47`, `:97-101` | `:318-352` | Intentional deviation (`ui-design.md:57` §1.6-7) |
+| V3 | **Corner rounding**: `--r-panel 10px` / `--r-ctl 7px` / pill chips / circular icon buttons | v2 tokens | `ui_tokens.h`: `kPanelRounding 10` (window+popup) / `kControlRounding 7` (frame+grab) / `kPillRounding 999` (statechip + paused floatpill, via draw list — `CalcWindowMinSize` raises the window minimum height to `rounding-1`, and routing 999 through `WindowRounding` stretches an auto-sized window to fill the viewport; measured: a 249px pill rendered 540px tall) | Added in d7e7bf6 (the circular icon-button form is not pursued after the V6 reclassification — the spec's button vocabulary is text/emoji, see the V6 row; there are no icon-button consumers today) |
+| V4 | **11px font-size floor** was undocumented | v2 convention (`prototypes.md:55`) | `ui_tokens.h` `kMinFontSize 11` + `kUiFontSize 16`, with a `static_assert` floor constraint; ImGui's built-in 13px default also sits above the floor | Added in d7e7bf6 |
+| V5 | **Play-button form**: 64×64 circular accent button vs 54px text button | `desktop-main.html:255` | `:1960-2042` | Added in 3835768 (dimming + circular button + hint pill, click to resume) |
+| V6 | **Button form**: prototype SVG circular buttons / segmented chips (`.tsmall`/`.seg`) vs rectangular text buttons | `desktop-main.html:205-222` | `player_window.cpp:1992-2071`; button-face rounding already follows v2 via V3 (`kControlRounding 7`) | Intentional deviation (reclassified 2026-10-15 R1015E: the spec's button vocabulary is text/emoji — `ui-design.md:74` §2 IA "⏯ play/pause, ⏹ stop… ⓘ info, ⛶ fullscreen", the sole icon item is explicitly simplified to text `ui-design.md:67`; SVG circular buttons never entered the spec, and actually doing them would first require a spec plus an icon-font decision. The seg chip form was already decided by proxy via I2 (dropdowns) / I5 (OSC buttons)) |
+| V7 | **Focus visibility + reduced-motion guard**: the prototype has a `:focus-visible` 2px accent ring and a `prefers-reduced-motion` guard | v2 convention (`prototypes.md:55`) | Split into two items (2026-10-15 R1015E): **V7a animation toggle** — the spec explicitly does not provide one (`ui-design.md:188` §4 "`disableAnimations` gets no toggle, always on in v0.1"), and the current state is exactly what the spec requires; **V7b focus ring** — **decided by proxy 2026-10-15 as (b) and landed** (app-drawn focus model, see §5-P2-8) | V7a intentional deviation (explicitly deferred by the spec); V7b **landed** (`UiFocus` in `ui_state.h`: Tab/Shift+Tab/Enter move focus, and Enter replays the row's own click path; the ring uses `kFocusRingWidth 2` / `kFocusRingExpand 4` from `ui_tokens.h`, drawn on each overlay/menu row; wired via `drawFocusRing`/`focusOverlayKey`/`focusMenuKey` in `player_window.cpp`. The §3.2 contract is untouched by a single entry, `test_shortcuts` 16/16 green; `test_ui_state` 44/44 green; X11 walkthroughs confirmed both the playlist-row ring and the popup-menu ring land in place) |
+| V8 | **Design tokenization**: the spec requires "concentrated in the `ui_theme` constants section" | `ui-design.md:183` | There is a concentrated section (`:317` comment "every color the UI draws comes from here") but it is all literal `ImVec4` values, with no named tokens | **Missed work** (half-met) |
+
+> Matching items (not counted as differences): danger/error color `#FF5D5D` (`ui-design.md:185` ↔ `:2417`),
+> primary text color `#E8EAF0`, semi-transparent panels over the video, OSC height ~80px / padding 8×6 /
+> control spacing 8, overlay width cap 480px, OSC bar width cap 920px, 4px base grid — **the implementation
+> matches the spec on every one of these item by item**.
+
+### 3.3 Interaction (4 differences + 2 already aligned + 1 equivalent)
+
+| # | Difference | Prototype | Implementation | Nature |
+|---|---|---|---|---|
+| I1 | **Info/Recent/Help/Fullscreen entry location**: persistent top-bar icons (title carries the shortcut) vs tucked into the OSC row end + shortcuts | `:174-183` | `:2054-2071` + I/R/H/F | Intentional deviation (usability-equivalent, weaker discoverability) |
+| I2 | **Speed/audio-track/subtitle selection form**: prototype OSC segmented chips + full selection on the settings page vs everything as `BeginCombo` dropdowns | `:219-221` + `settings.html` | `:2038-2051` | Intentional deviation (`ui-design.md:54` §1.6-4 "secondary selections fold into popup menus") |
+| I3 | **Volume**: icon + range vs Mute button + slider | `:216-217` | `:2018`, `:2024-2036` | Equivalent (not a difference) |
+| I4 | **OSC dead zone and auto-hide**: center dead zone, 2.5s auto-hide | `ui-design.md:26` §1.2 | 2500ms auto-hide landed | ✅ aligned |
+| I5 | **A-B / subtitles on-off / screenshot**: prototype OSC segmented chips | `:220-222` | Added as OSC buttons `:2065-2071` | ✅ aligned (landed in an earlier batch) |
+| I6 | **Previous/Next**: prototype OSC has buttons | `:205`, `:211` | Added `|<` / `>|` `:2000-2004` | ✅ aligned (landed in an earlier batch) |
+
+### 3.4 Missing components (8 items)
+
+| # | Missing component | Prototype | Implementation | Nature |
+|---|---|---|---|---|
+| M1 | Top bar | `desktop-main.html:165-193` | None | Intentional deviation |
+| M2 | Status chip (including the P2P download percentage) | `:189-193` | `drawChips()` `:2199-2225` (Paused/Buffering/Downloading/Casting) | Implemented, form difference (corrected in revision) |
+| M3 | Resolution/codec pill | `:202` | None | Decided by proxy not to do it (core interface frozen, MK_R2A) |
+| M4 | General settings page | `settings.html` | None (only Subtitle Settings `:2997`) | Intentionally deferred (v0.2) |
+| M5 | Library card grid / thumbnails / source chips | `library.html` | List-style `:2725` | Prototype ahead (v0.3) |
+| M6 | Mini mode / music mode (auto-switch to a mini window for pure audio) | `ui-design.md:17` §1.1 research | None | Intentionally deferred (§7 future boundary) |
+| M7 | Seek hover thumbnail preview | `ui-design.md:55` §1.6-5 | None | Intentionally deferred (v0.2) |
+| M8 | Translation panel | v1 `translate-panel.html` | None | Deprecated with v1 |
+
+**Missed-work total (after revision): L3, V3, V4, V5, V6, V7, V8 = 7 items, resolved as 5 landed +
+2 reclassified as intentional deviations + 0 still open.** (Landed: L3 39f7ed5, V8 53ae80b, V5 3835768,
+V3/V4 d7e7bf6, V7b focus ring 2026-10-15 proxy decision b; reclassified: V6 intentional deviation =
+prototype ahead of the spec; V7 split into V7a/V7b with V7a an intentional deviation = explicitly deferred by
+the spec. All missed items have landed or been reclassified; there are no open items)
+
+**Intentional deviation/deferral total: L1, L4, L5, V1, V2, V6, V7a, I1, I2, M1, M3, M4, M5, M6, M7, M8 =
+16 items.** (V6/V7a reclassified in R1015E)
+
+**Implemented with form differences: L2, M2 = 2 items (misjudged as missed in the initial version, corrected in
+revision). Implementation ahead: L6 = 1 item. Verified-aligned items: I3, I4, I5, I6 = 4 items (not counted
+as differences).**
 
 ---
 
-## 5. 对齐方案（按优先级）
+## 4. Intentional deviations vs missed work
 
-### P0（修订后重排）
+### 4.1 Intentional deviations (documented rationale, **the implementation should NOT be changed to match the prototype**)
 
-1. **令牌化重构**（V8）：把 `applyTheme()`（`:318-352`）的字面量收敛为具名常量
-   （`kAccent`、`kText`、`kPanelBg`…），对齐 `ui-design.md:183`。
-   **纯重构、零几何/视觉变化、无走查坐标影响**，是 V3/V7 的前置。
-2. ~~OSC 行 1 补左右时间码~~（L3）：**已补**（39f7ed5）。实测重校走查 19 处 pin（-106px），全夹具 cli 68/68·573 断言绿。
-3. ~~状态徽标~~：**已存在**（`drawChips()`），撤销。~~分辨率 pill~~：**已代决不做**，撤销。
-   初版两条 P0 均为误判，见顶部修订说明。
+| Item | Basis | Notes |
+|---|---|---|
+| No top bar; the four icons live in the OSC | `ui-design.md:61` §2, `:54` §1.6-4 | "v0.1 is a single-window app… all secondary functions are overlays"; §1.6-4 cites the vidstack/plyr/uosc consensus "secondary selections fold into popup menus". A top bar is window chrome and conflicts with the research conclusion "floating, content-centered, auto-hiding" (§1.6-1) |
+| Dark-only, not switchable | `ui-design.md:57` §1.6-7 | Cites mpv.net's `dark-mode=always` default: "a video player's background is naturally black; a light UI has never been the correct default" |
+| Blue accent `#4C8DFF` | `ui-design.md:185` §4 | Explicit in the spec; contrast >12:1 already verified |
+| Speed/audio-track/subtitle selection via dropdowns | `ui-design.md:54` §1.6-4 | The same clause as "overlays first" |
+| No general settings page | `ui-design.md:91` §2 | "v0.1 has no settings page… v0.2 will add one as a panel" |
+| No library card grid/thumbnails | `redesign/index.html` marks v0.3 | The prototype itself carries the version tag |
+| No mini mode, no seek thumbnails | `ui-design.md:250` §7 | Future boundary |
+| No resolution pill | Already decided by proxy in the MK_R2A patrol round | `MediaInfo` has no width/height (core interface frozen), MVP §1.5 does not list it, OSC row 2 is already full — prototype-ahead items were handled per "do not chase prototype-ahead items" |
+| Text buttons instead of SVG circular buttons (V6) | `ui-design.md:74` §2 IA, `:67` | The spec's button vocabulary is text/emoji (⏯/⏹/🔇/ⓘ/⛶); the sole icon item is explicitly "simplified to status text"; SVG circular buttons/seg chips are prototype language that never entered the spec (the seg form was already decided by proxy via I2 dropdowns and I5 OSC buttons); v2 rounding has been applied to all buttons via V3 |
+| No reduced-motion toggle (V7a) | `ui-design.md:188` §4 | The spec explicitly says "`disableAnimations` gets no toggle, always on in v0.1"; the only motion is a 160ms opacity transition, with no translation-type animations, so always-on does not affect look and feel |
 
-### P1 — 视觉细节（第二波）
+### 4.2 Missed work (v2-finalized design language absent from the implementation, **should be added**)
 
-4. **播放键改 64 圆形 accent 钮**（V5）——「像不像」的第一印象项，改动小、收益直接。
-5. ~~焦点可见态 + reduced-motion 语义开关~~（V7）——拆分收口：V7a reduced-motion 为有意偏离（`ui-design.md:188` 明文「不设开关，v0.1 常开」），不动实现；V7b 焦点环 2026-10-15 代决 (b) 后已落地（见 P2-8），移出 P2。
-6. **圆角/字号令牌对齐 v2**（V3、V4）——随 P0-1（令牌化）一起改。
+| Item | Impact | Why it is missed work |
+|---|---|---|
+| **OSC row 1 timecodes** (L3) — **added** (39f7ed5) | Medium | Row 1 = left timecode | seek track | right -remaining; the row 2 clock was removed to avoid duplication. The cost materialized as predicted: 19 walkthrough pins across row 2/popup layers were recalibrated by a measured -106px (comparing builds before/after the probe), and the drifted audiodrive pins at old 637/685 were re-pinned to their measured positions; the `test_cli.cpp` drag points (cx±80, h-76) were verified to still land on the track and were left unchanged |
+| **Tokenization** (V8) — **landed** (53ae80b, named tokens in `ui_tokens.h`) | Medium | `ui-design.md:183` explicitly requires "concentrated in the `ui_theme` constants section"; color values are currently concentrated in `applyTheme` but all as unnamed `ImVec4` literals, and later theme/focus-state/rounding alignment all depend on it as a prerequisite |
+| **Focus visibility ring** (V7b, the focus half of the original V7) — **added** (2026-10-15 proxy decision b) | Medium | Required by the spec (`ui-design.md:216` lists "focus visibility" as a mitigation for ImGui's accessibility shortfalls). The proxy decision chose an app-drawn focus model over enabling ImGui navigation: Tab/Shift+Tab/Enter are all absent from the §3.2 table, and arrow keys inside popups take the early-exit path, so there are zero shortcut-contract conflicts; the ring geometry matches the prototype's `:focus-visible` (2px accent expanded by 4px). The reduced-motion half (V7a) was reclassified as an intentional deviation, see 4.1 |
+| **Rounding tokens** (V3) — **added** (d7e7bf6) | Low | v2 documents `--r-panel 10`/`--r-ctl 7`; the implementation's 8/6/4/6 is a different set of numbers |
+| **11px font-size floor** (V4) — **added** (d7e7bf6) | Low | The v2 convention; the implementation had no documented floor |
+| **64px circular play button** (V5) — **added** (3835768) | Low | The first-impression item for "does it look like the prototype", small change |
 
-### P2 — 结构项（**需用户拍板，先别动**）
+---
 
-7. **顶栏**（L1/M1）：这是唯一需要决策的项。三个选项：
-   - **(a) 按 `ui-design.md` 保持无顶栏，改 v2 原型去掉顶栏并写明理由**（推荐）。
-     理由：实现侧无顶栏是 §1.6-4「浮层」共识的产物，且 OSC + 快捷键已覆盖全部入口；
-     加顶栏会引入常驻 chrome 面积，与 §1.6-1「悬浮、内容居中、自动隐藏」的调研结论冲突。
-   - (b) 加顶栏，同步改 `ui-design.md` §1.6-7 与 §2 的 IA 树。
-   - (c) 混合：只把「全屏/最近/帮助」进顶栏，信息仍留 OSC。
-   **已代决 2026-10-15：(a)。** v2 原型主播放窗四帧顶栏已移除并写明理由（片名走 OS
-   窗口标题 `player_window.cpp:855`，I/R/H/F 均在 §3.2 合同）；顶栏/亮色写为 v0.2 候选
-   非 v0.1 基准（`ui-design.md` §2/§4、`prototypes.md` 同步）；主播放窗两版 PNG 为
-   移除前定稿帧，未重摄（本仓无渲染环境），差异已注记。
+## 5. Alignment plan (by priority)
 
-8. ~~**焦点可见环**（V7b）：规格把「焦点可见」列为 ImGui 无障碍短板的缓解（`ui-design.md:216`），
-   但当前**无键盘焦点模型**（全仓无 `ImGuiConfigFlags` 设置，`NavEnableKeyboard` 默认关），环无处可画。
-   三个选项：~~
-   - ~~(a) 启用 ImGui 键盘导航……~~
-   - ~~(b) app 自绘焦点模型……~~
-   - ~~(c) 延后 v0.2……~~
-   **在用户拍板前，这一项不动实现。**
+### P0 (reordered after revision)
 
-   **已代决 2026-10-15：(b)，并已落地。** 三个选项的比较与结论：
+1. **Tokenization refactor** (V8): collapse the literals in `applyTheme()` (`:318-352`) into named constants
+   (`kAccent`, `kText`, `kPanelBg`…), aligning with `ui-design.md:183`. **Pure refactor, zero geometric/visual
+   change, no walkthrough-coordinate impact**, and a prerequisite for V3/V7.
+2. ~~Add left/right timecodes to OSC row 1~~ (L3): **added** (39f7ed5). Walkthrough pins recalibrated by
+   measurement, 19 places (-106px); full-fixture cli 68/68 · 573 assertions green.
+3. ~~Status chip~~: **already exists** (`drawChips()`), withdrawn. ~~Resolution pill~~: **already decided by
+   proxy not to do**, withdrawn. Both initial P0 items were misjudgments; see the revision note at the top.
 
-   | 选项 | 结论 |
+### P1 — Visual details (second wave)
+
+4. **Change the play button to a 64px circular accent button** (V5) — the first-impression item for "does it
+   look like the prototype", small change, direct payoff.
+5. ~~Focus visibility + reduced-motion semantic toggle~~ (V7) — closed out via the split: V7a reduced-motion is an
+   intentional deviation (`ui-design.md:188` explicitly says "no toggle, always on in v0.1"), implementation
+   untouched; V7b focus ring landed after the 2026-10-15 proxy decision (b) (see P2-8) and was moved out of P2.
+6. **Align rounding/font-size tokens with v2** (V3, V4) — changed together with P0-1 (tokenization).
+
+### P2 — Structural items (**need a user decision, do not touch yet**)
+
+7. **Top bar** (L1/M1): the only item that needs a decision. Three options:
+   - **(a) Keep no top bar per `ui-design.md`, and change the v2 prototype to drop the top bar with the
+     rationale written out** (recommended). Rationale: the implementation's lack of a top bar is the product of
+     the §1.6-4 "overlay" consensus, and the OSC + shortcuts already cover every entry point; adding a top bar
+     would introduce persistent chrome area, conflicting with the §1.6-1 research conclusion "floating,
+     content-centered, auto-hiding".
+   - (b) Add a top bar and update the `ui-design.md` §1.6-7 and §2 IA trees in sync.
+   - (c) Hybrid: move only "Fullscreen/Recent/Help" into a top bar, leaving Info in the OSC.
+   **Decided by proxy 2026-10-15: (a).** The top bar was removed from all four main-player-window frames of the
+   v2 prototype with the rationale written out (the title goes through the OS window title
+   `player_window.cpp:855`, and I/R/H/F are all in the §3.2 contract); the top bar/light theme were written up as
+   v0.2 candidates, not the v0.1 baseline (`ui-design.md` §2/§4, `prototypes.md` synced); the two
+   main-player-window PNGs are the finalized pre-removal frames and were not re-shot (this repo has no rendering
+   environment), with the difference annotated.
+
+8. ~~**Focus visibility ring** (V7b): the spec lists "focus visibility" as a mitigation for ImGui's accessibility
+   shortfalls (`ui-design.md:216`), but there is currently **no keyboard focus model** (no `ImGuiConfigFlags`
+   setting anywhere in the repo, `NavEnableKeyboard` off by default), so the ring has nowhere to be drawn. Three
+   options:~~
+   - ~~(a) Enable ImGui keyboard navigation…~~
+   - ~~(b) An app-drawn focus model…~~
+   - ~~(c) Defer to v0.2…~~
+   **Until the user decides, this item leaves the implementation untouched.**
+
+   **Decided by proxy 2026-10-15: (b), and landed.** Comparison and verdict for the three options:
+
+   | Option | Verdict |
    |---|---|
-   | (a) 启用 ImGui 键盘导航 | **否决**。`WantCaptureKeyboard` 转真使快捷键映射早退（`player_window.cpp:575-660`），§3.2 全表合同要重排；`ConfigNavCaptureKeyboard=false` 可保快捷键但方向键双职（既 seek 又移焦点）。 |
-   | **(b) app 自绘焦点模型** | **选定**。不启用 nav，按自家状态画 accent 环——零快捷键冲突。焦点移走只用 Tab / Shift+Tab / Enter，三键**均不在 §3.2 表内**（`ui-design.md:114-141`）；弹层菜单内方向键同效，因为 `handleEvent` 遇弹层开启即早退，方向键此时不与 seek 双职。 |
-   | (c) 延后 v0.2 | **否决**。`ui-design.md:216` 当前规格就要求焦点可见，改口径属降级。 |
+   | (a) Enable ImGui keyboard navigation | **Rejected**. `WantCaptureKeyboard` turning true makes the shortcut mapping early-exit (`player_window.cpp:575-660`), and the entire §3.2 table contract would need reworking; `ConfigNavCaptureKeyboard=false` preserves the shortcuts but leaves the arrow keys dual-duty (both seeking and moving focus). |
+   | **(b) App-drawn focus model** | **Selected**. Navigation stays off and the accent ring is drawn from our own state — zero shortcut conflicts. Focus movement uses only Tab / Shift+Tab / Enter, and all three keys are **absent from the §3.2 table** (`ui-design.md:114-141`); arrow keys inside popup menus work the same way because `handleEvent` early-exits when a popup is open, so the arrow keys are not dual-duty with seeking at that point. |
+   | (c) Defer to v0.2 | **Rejected**. `ui-design.md:216` has the current spec already requiring focus visibility; changing that wording would be a downgrade. |
 
-   落点：`ui_state.h` 的 `UiFocus`（纯逻辑，无 SDL/ImGui 依赖，单测可驱动）持有
-   面 + 行号 + 「已 arm 待触发」三态；`ui_tokens.h` 钉 `kFocusRingWidth 2` / `kFocusRingExpand 4`
-   （与原型 `:focus-visible` 及 ImGui `RenderNavCursor` 同几何）；`player_window.cpp` 的
-   `drawFocusRing` / `focusOverlayKey` / `focusMenuKey` 与各浮层、弹层菜单的行绘制接线。
-   Enter 触发聚焦行时按该行**自身点击路径**重放（`takesActivation` 返回真与 `Selectable`
-   结果或进同一分支），不另设事件分发。焦点序只覆盖现有可聚焦面：播放列表行、媒体库行、
-   弹层菜单项——浮层互斥（§2），弹层从属于 OSC 或某一浮层，故同时只有一个面持有焦点。
-   搜索框聚焦仍走 `/`（§3.2），Tab 离开时 `ImGui::ClearActiveID()` 释放。
+   Landed as: `UiFocus` in `ui_state.h` (pure logic, no SDL/ImGui dependencies, drivable from unit tests) holds
+   surface + row index + an "armed awaiting trigger" tri-state; `ui_tokens.h` pins `kFocusRingWidth 2` /
+   `kFocusRingExpand 4` (same geometry as the prototype's `:focus-visible` and ImGui's `RenderNavCursor`);
+   `drawFocusRing` / `focusOverlayKey` / `focusMenuKey` in `player_window.cpp` wire into the row drawing of each
+   overlay and popup menu. When Enter triggers the focused row, it replays that row's **own click path**
+   (`takesActivation` returning true enters the same branch as the `Selectable` result), with no separate event
+   dispatch. The focus order covers only the existing focusable surfaces: playlist rows, library rows, and popup
+   menu items — overlays are mutually exclusive (§2) and popups belong to the OSC or to one overlay, so only one
+   surface holds focus at a time. Search-box focus still goes through `/` (§3.2), and Tab away releases it via
+   `ImGui::ClearActiveID()`.
 
-   验证：`test_ui_state.cpp` 新增 7 例（44/44·296 断言）钉住跨端回绕、空面、收缩夹取、
-   Enter 一次性重放与 arm 失效；`test_shortcuts.cpp` 16/16·213 断言绿（§3.2 合同未动）；
-   X11 走查（Xvfb + XTEST + 像素扫描）实测播放列表行环随 Tab 换行、弹层菜单环随
-   方向键换行且 Enter 触发倍速行（OSC `1x`→`0.75x`、弹层关闭）。机制口径已写入
-   `ui-design.md` §5.2。
+   Verification: `test_ui_state.cpp` gained 7 cases (44/44 · 296 assertions) pinning end-around wrap, empty
+   surfaces, shrink clamping, one-shot Enter replay, and arm invalidation; `test_shortcuts.cpp` 16/16 · 213
+   assertions green (§3.2 contract untouched); X11 walkthroughs (Xvfb + XTEST + pixel scanning) confirmed the
+   playlist row ring advances with Tab, the popup-menu ring advances with the arrow keys, and Enter triggers the
+   speed row (OSC `1x`→`0.75x`, popup closes). The mechanism's wording has been written into `ui-design.md` §5.2.
 
-### 明确不做（避免把实现改差）
+### Explicitly not doing (to avoid making the implementation worse)
 
-- **强调色改橙、加主题切换**（V1、V2）：与原型冲突但有成文理由（`ui-design.md:57`、`:185`），
-  且暗色 + 视频黑背景是 mpv.net/IINA 调研共识。改它等于把实现改差。
-- **通用设置页**（M4）：v0.2 范围，原型超前。
-- **库卡片网格/缩略图**（M5）：v0.3 范围。
+- **Switching the accent to orange, adding a theme toggle** (V1, V2): conflicts with the prototype but has
+  documented rationale (`ui-design.md:57`, `:185`), and dark + black video background is the mpv.net/IINA
+  research consensus. Changing it would make the implementation worse.
+- **General settings page** (M4): v0.2 scope, prototype ahead.
+- **Library card grid/thumbnails** (M5): v0.3 scope.
 
 ---
 
-## 6. 桌面端 / 移动端分列
+## 6. Desktop / mobile split
 
-**本仓当前只有一套 UI（桌面）。** 移动端两个壳都还没到需要选原型的阶段：
+**This repo currently has exactly one UI (desktop).** Neither mobile shell has reached the stage of needing to pick
+a prototype:
 
-| 平台 | 目录 | 现状 | 遵循哪一版原型 |
+| Platform | Directory | Current state | Which prototype version it follows |
 |---|---|---|---|
-| **桌面** | `src/app/ui/`（C++/SDL2/ImGui） | 唯一有实现的形态 | 规格 `docs/ui-design.md`（C）；视觉语言部分取 v2 的 OSC 语义（prev/next/A-B/CC/Shot 已按 v2 补齐） |
-| **iOS** | `ios/` | **骨架批**：`SoarKit` Swift Package 仅 API 层（播放控制门面 + 状态/事件模型 + `NullEngine` 状态机），App 壳（SwiftUI）**未开始**（`ios/README.md`「当前状态」表）；核心交叉编译未开始 | 无 UI 可对。届时应取 **v2 的三层令牌**（原始/语义/组件）。注意：`ui-design.md` 的「暗色不可切换」是**桌面窗口语境**下的结论（§1.6-7 引 mpv.net），**不适用于 iOS 原生壳**——iOS 有系统 `prefers-color-scheme`，原生壳应跟随系统 |
-| **HarmonyOS** | `harmonyos/` | **骨架批**：`Index.ets` 是 UI 骨架（品牌位 + 状态文案 + 「打开文件」占位），播放内核两条路线（系统 `AVPlayer` vs `soar_core` NDK）**待拍板**；该工程**未经编译验证**（无 DevEco 工具链） | 无 UI 可对。内核路线未定，对齐讨论应等路线定了再说 |
+| **Desktop** | `src/app/ui/` (C++/SDL2/ImGui) | The only form factor with an implementation | Spec `docs/ui-design.md` (C); the visual language partially takes v2's OSC semantics (prev/next/A-B/CC/Shot already filled in per v2) |
+| **iOS** | `ios/` | **Skeleton batch**: the `SoarKit` Swift Package is API-layer only (playback-control facade + state/event model + `NullEngine` state machine); the App shell (SwiftUI) **not started** (`ios/README.md` "current status" table); core cross-compilation not started | No UI to compare against. When the time comes it should take **v2's three-layer tokens** (raw/semantic/component). Note: `ui-design.md`'s "dark not switchable" is a conclusion **in the desktop-window context** (§1.6-7 cites mpv.net) and **does not apply to the iOS native shell** — iOS has the system `prefers-color-scheme`, and the native shell should follow the system |
+| **HarmonyOS** | `harmonyos/` | **Skeleton batch**: `Index.ets` is a UI skeleton (brand slot + status text + an "Open file" placeholder); the playback-core route (system `AVPlayer` vs `soar_core` NDK) **awaits a decision**; the project **has not been compile-verified** (no DevEco toolchain) | No UI to compare against. The core route is undecided; alignment discussion should wait until the route is settled |
 
-**两点必须现在记下：**
+**Two points to record now:**
 
-1. `docs/ui-design.md` 是**桌面专属**规格（§1.5 明确「UI 层必须只依赖 Player 门面」，
-   框架无关），移动端不该照抄其「暗色不可切换」。
-2. 移动壳若走原生 UI，v2 的 CSS 变量**不能直接搬**（无 CSS 变量），需要在各壳落地各自的令牌表。
+1. `docs/ui-design.md` is a **desktop-only** spec (§1.5 explicitly says "the UI layer must depend only on the
+   Player facade", framework-agnostic); mobile should not copy its "dark not switchable" verbatim.
+2. If a mobile shell goes with native UI, v2's CSS variables **cannot be carried over directly** (no CSS
+   variables); each shell needs to land its own token table.
 
 ---
 
-## 7. 原型过时项（建议改原型，而不是实现去迁就）
+## 7. Outdated prototype items (recommend changing the prototype, not bending the implementation)
 
-| 项 | 现状 | 建议 |
+| Item | Current state | Recommendation |
 |---|---|---|
-| **v1 整套原型** | `docs/public/prototypes/*.html`（5 页含 `translate-panel.html`）已被 v2 取代；`redesign/index.html:205` 定稿；`docs/prototypes.md:18` 只链 v2 | 保留但**明确标注已废弃**（或移到 `prototypes/archive/v1/`）。v2 各页的「旧稿对照」链接（`redesign/desktop-main.html:158`）是其唯一残余用途。**已处理（8143168）**：六页（含 `index.html` 总览）docbar 前置「v1 旧稿（已废弃，v2 见 …）」并链到对应 v2 页；**保留不删**（v2 的「旧稿对照」链仍指向它们，移目录会断链） |
-| **文档站截图引用过时** | `docs/.vitepress/theme/Screenshots.vue` 仍加载 **v1** 的 PNG（`prototypes/{desktop-main,translate-panel,settings}.png`），与 `docs/prototypes.md` 链 v2 **自相矛盾** | **这是本轮最实质的文档不一致**：改指 v2 截图（`redesign/*-{light,dark}.png`），并删除 `translate-panel`（v2 已无该页）。**已处理（8143168）**：原型卡改指 `redesign/*-dark.png` 四页（并补此前站内从未出现的 playlist/library 两卡），translate-panel 卡删除；投放合同 `prototypes/README.md` 与 `prototypes.md` 同步 |
-| **翻译面板** | v1 独占，v2 已删，实现无 | 若翻译功能仍在需求内，需在 v2 重出该页；若已放弃，`docs/prototypes.md` 与 todo 不该再提。**已定档（8143168）**：功能在需求内且已落地（字幕菜单 `[translate]` 行，见 §6），v1 页保留作设计稿（页头已标 v0.2+ 规划稿 + v2 未重出）；**v2 重出该页属设计工作，未排期**，文档站与 todo 不再把它当待办 |
-| **v2 的「亮色版」定位** | v2.1 复审（`redesign/index.html:206`）已把亮色版从「恒深」改为「外壳随主题真浅色」，但 `ui-design.md` 仍写暗色唯一 | 若采纳 §5-P2-7 的选项 (a)，需同步在 v2 原型与 `ui-design.md` 里写明「顶栏/亮色均为 v0.2 候选，非 v0.1 基准」。**已处理（2026-10-15 顶栏代决 a 同步）**：`ui-design.md` §2 增「无顶栏」段、§4 亮色版注记 v0.2 候选；`redesign/index.html` 增代决节 |
+| **The entire v1 prototype** | `docs/public/prototypes/*.html` (5 pages including `translate-panel.html`) has been superseded by v2; `redesign/index.html:205` finalized; `docs/prototypes.md:18` links only v2 | Keep but **explicitly mark as deprecated** (or move to `prototypes/archive/v1/`). The "old draft for comparison" links on the v2 pages (`redesign/desktop-main.html:158`) are its only remaining use. **Handled (8143168)**: all six pages (including the `index.html` overview) prepend "v1 old draft (deprecated, see v2 at …)" to the docbar and link to the corresponding v2 page; **kept, not deleted** (v2's "old draft for comparison" links still point at them, and moving the directory would break them) |
+| **Docs-site screenshot references out of date** | `docs/.vitepress/theme/Screenshots.vue` still loads the **v1** PNGs (`prototypes/{desktop-main,translate-panel,settings}.png`), **contradicting** `docs/prototypes.md` linking v2 | **The most substantive documentation inconsistency of this round**: repoint to the v2 screenshots (`redesign/*-{light,dark}.png`) and drop `translate-panel` (v2 no longer has that page). **Handled (8143168)**: the prototype cards now point to the four `redesign/*-dark.png` pages (and add playlist/library cards that had never appeared on the site before), the translate-panel card was deleted; the delivery contract `prototypes/README.md` synced with `prototypes.md` |
+| **Translation panel** | v1-only, deleted in v2, absent from the implementation | If translation is still in scope, the page needs to be redone in v2; if abandoned, `docs/prototypes.md` and the todo should stop mentioning it. **Resolved on record (8143168)**: the feature is in scope and has landed (the subtitle menu `[translate]` row, see §6), and the v1 page is kept as a design draft (its header now marks it as a v0.2+ planning draft + not redone in v2); **redoing the page in v2 is design work and is unscheduled**, and the docs site and todo no longer treat it as pending |
+| **v2's "light version" positioning** | The v2.1 recheck (`redesign/index.html:206`) changed the light version from "always dark" to "a shell that truly goes light with the theme", but `ui-design.md` still says dark-only | If option (a) of §5-P2-7 is adopted, the v2 prototype and `ui-design.md` must both state "top bar/light theme are v0.2 candidates, not the v0.1 baseline" in sync. **Handled (2026-10-15, synced with the top-bar proxy decision a)**: `ui-design.md` §2 gained a "no top bar" paragraph and §4 a light-version note marking it a v0.2 candidate; `redesign/index.html` gained a proxy-decision section |
 
 ---
 
-## 8. 修订与边界
+## 8. Revisions and boundaries
 
-- 2026-10-15 初版（订单：只落本文件，不改实现、不改原型、不改文档站）。
-- 2026-10-15 R1015D 巡检复核修订：撤销「状态徽标漏做」「分辨率 pill 漏做」两条误判
-  （前者已实现于 `drawChips()`，后者 MK_R2A 已代决），漏做 11→7 条，P0 重排。
-- 实施顺序：P0-1（令牌化）→ P1（视觉细节）→ P0-2（OSC 行 1 时间码，需走查坐标重校）；
-  P2-7 顶栏等用户拍板 (a)/(b)/(c)。
-- 2026-10-15 MARKR1 收口 §7 原型过时项：文档站「界面预览」原型卡从 v1 PNG 改指 v2 定稿
-  截图（并补 playlist/library 两卡、删 translate-panel 卡），v1 六页页头标废弃，投放合同
-  `prototypes/README.md` 与 `prototypes.md` 同步（8143168）。§7 的「v2 亮色版定位」仍随
-  §5-P2-7 顶栏拍板（选项 (a) 才需同步口径），未动。
-- 2026-10-15 R1015E 收口改判：V6（按钮形态）改判**有意偏离**——规格按钮词汇是文本/emoji
-  （`ui-design.md:74` §2 IA），唯一图标项明文简化为文案（`:67`），SVG 圆钮从未落进规格，
-  seg chip 形态已由 I2/I5 代决；V7 拆分——V7a reduced-motion **有意偏离**（`ui-design.md:188`
-  明文延后），V7b 焦点环保留开放并移入 P2-8（与顶栏同列用户拍板；2026-10-15 代决 (b)
-  后已落地，见下一行）。
-- 2026-10-15 巡检代决：P2-7 顶栏选 **(a)**，v2 原型主播放窗四帧顶栏移除并写明理由，
-  顶栏/亮色记为 v0.2 候选非 v0.1 基准（§7 行 4 随之闭合）；主播放窗两版 PNG 未重摄
-  （无渲染环境），差异注记于投放合同与 `prototypes.md`。
-- 2026-10-15 巡检代决：P2-8 焦点环选 **(b)**（app 自绘焦点模型，否决 (a) 因
-  `WantCaptureKeyboard` 早退会重排 §3.2 全表合同、否决 (c) 因 `ui-design.md:216` 当前
-  规格就要求焦点可见），并已落地——`ui_state.h` 的 `UiFocus` + `ui_tokens.h` 的
-  `kFocusRingWidth`/`kFocusRingExpand` + `player_window.cpp` 的 `drawFocusRing`/
-  `focusOverlayKey`/`focusMenuKey` 接线；§3.2 合同一字未动（`test_shortcuts` 16/16 绿），
-  `test_ui_state` 44/44 绿，X11 走查播放列表行环与弹层菜单环实测落位。机制口径写入
-  `ui-design.md` §5.2。V7b 从此移出开放项，漏做 7 条全部落地或改判。
+- 2026-10-15 initial version (order: write this file only; no implementation, prototype, or docs-site changes).
+- 2026-10-15 R1015D patrol-round recheck revision: withdrew the two misjudgments "status chip missed" and
+  "resolution pill missed" (the former is implemented in `drawChips()`, the latter already decided by proxy in
+  MK_R2A); missed items went 11→7, P0 reordered.
+- Execution order: P0-1 (tokenization) → P1 (visual details) → P0-2 (OSC row 1 timecodes, requires walkthrough
+  coordinate recalibration); P2-7 top bar awaits the user's (a)/(b)/(c) decision.
+- 2026-10-15 MARKR1 closeout of §7 outdated prototype items: the docs-site "interface preview" prototype cards
+  were repointed from v1 PNGs to the v2 finalized screenshots (adding playlist/library cards and deleting the
+  translate-panel card), the six v1 pages had deprecation marked in their headers, and the delivery contract
+  `prototypes/README.md` was synced with `prototypes.md` (8143168). §7's "v2 light version positioning" still
+  follows the §5-P2-7 top-bar decision (only option (a) requires syncing the wording) and was left untouched.
+- 2026-10-15 R1015E closeout reclassifications: V6 (button form) reclassified as **intentional deviation** —
+  the spec's button vocabulary is text/emoji (`ui-design.md:74` §2 IA), the sole icon item is explicitly
+  simplified to text (`:67`), SVG circular buttons never entered the spec, and the seg chip form was already
+  decided by proxy via I2/I5; V7 split — V7a reduced-motion is an **intentional deviation** (`ui-design.md:188`
+  explicitly defers it), V7b focus ring was kept open and moved into P2-8 (listed with the top bar as a user
+  decision; landed after the 2026-10-15 proxy decision (b), see the next entry).
+- 2026-10-15 patrol-round proxy decision: P2-7 top bar chose **(a)**; the top bar was removed from all four
+  main-player-window frames of the v2 prototype with the rationale written out, and the top bar/light theme were
+  recorded as v0.2 candidates, not the v0.1 baseline (§7 row 4 closed accordingly); the two main-player-window
+  PNGs were not re-shot (no rendering environment), with the difference annotated in the delivery contract and
+  `prototypes.md`.
+- 2026-10-15 patrol-round proxy decision: P2-8 focus ring chose **(b)** (app-drawn focus model; (a) rejected
+  because the `WantCaptureKeyboard` early-exit would rework the entire §3.2 table contract, (c) rejected because
+  `ui-design.md:216` has the current spec already requiring focus visibility), and it landed — `UiFocus` in
+  `ui_state.h` + `kFocusRingWidth`/`kFocusRingExpand` in `ui_tokens.h` + `drawFocusRing`/`focusOverlayKey`/
+  `focusMenuKey` wiring in `player_window.cpp`; the §3.2 contract untouched by a single entry
+  (`test_shortcuts` 16/16 green), `test_ui_state` 44/44 green, and X11 walkthroughs confirmed the playlist-row
+  ring and popup-menu ring land in place. The mechanism wording was written into `ui-design.md` §5.2. V7b is
+  hereby out of the open items; all 7 missed items have landed or been reclassified.

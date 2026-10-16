@@ -18,7 +18,7 @@ Soar 是一个基于 FFmpeg + SDL2 的 C++17 开源媒体播放器：封装一�
 [![ffmpeg](https://img.shields.io/badge/FFmpeg-decode%20%2B%20demux-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
 [![sdl2](https://img.shields.io/badge/SDL2-render%20%2B%20audio-173353)](https://wiki.libsdl.org)
 
-[文档](https://github.com/cuihairu/soar/tree/main/docs) · [构建指南](docs/build.md) · [路线图](docs/mvp.md)
+[文档](https://github.com/cuihairu/soar/tree/main/docs) · [构建指南](docs/build.zh.md) · [路线图](docs/mvp.zh.md)
 
 </div>
 
@@ -26,11 +26,11 @@ Soar 是一个基于 FFmpeg + SDL2 的 C++17 开源媒体播放器：封装一�
 
 我们过去在播放器项目里反复踩同样的坑：播放内核和 UI 纠缠不清，依赖许可证（License）把分发卡死，想在移动端复用时才发现核心绑死在某个平台框架上。Soar 把这三条教训写成了设计约束。
 
-播放 API 与事件模型不依赖任何具体多媒体库，UI 换掉、内核不动。后端可插拔：FFmpeg、系统框架、测试用的假后端实现同一个 `IBackend` 接口。项目本体是 Apache-2.0，依赖选型守住 LGPL/GPL 边界（见 [docs/licensing.md](docs/licensing.md)）。
+播放 API 与事件模型不依赖任何具体多媒体库，UI 换掉、内核不动。后端可插拔：FFmpeg、系统框架、测试用的假后端实现同一个 `IBackend` 接口。项目本体是 Apache-2.0，依赖选型守住 LGPL/GPL 边界（见 [docs/licensing.md](docs/licensing.zh.md)）。
 
 ## 当前状态
 
-v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载，见下文路线图与 [docs/mvp.md](docs/mvp.md)）。桌面端是 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC），配快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）；播放中、暂停中，音频轨与字幕轨都能运行时切换，播放不中断（细节见下文及 docs/mvp.md §6）。v1.0 有三个切片已落地：本地媒体库（监视文件夹、播放历史与续播、`B` 浮层、离线 NFO sidecar 刮削——docs/mvp.md §3）、硬解首接线（`--hwdec=`，任何失败都静默回退软解——docs/mvp.md §3）与 HDR→SDR 首接线（open 路径识别 HDR10/HLG，含 libzimg 的构建逐帧 zscale 转到 SDR，不可用时诚实直通——docs/mvp.md §3、coverage-notes.md §3.26）；真机 GPU 帧路径与真机 HDR 矩阵仍未开始；DLNA 投屏已落地为 UPnP AV 控制点，配窗口浮层与 CLI `--cast=<location|auto>` 开关（自实现 SSDP/SOAP/GENA，零新依赖；构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码——docs/mvp.md §3）；插件体系尚未开始。
+v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载，见下文路线图与 [docs/mvp.md](docs/mvp.zh.md)）。桌面端是 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC），配快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [docs/ui-design.md](docs/ui-design.md)）；播放中、暂停中，音频轨与字幕轨都能运行时切换，播放不中断（细节见下文及 docs/mvp.md §6）。v1.0 有三个切片已落地：本地媒体库（监视文件夹、播放历史与续播、`B` 浮层、离线 NFO sidecar 刮削——docs/mvp.md §3）、硬解首接线（`--hwdec=`，任何失败都静默回退软解——docs/mvp.md §3）与 HDR→SDR 首接线（open 路径识别 HDR10/HLG，含 libzimg 的构建逐帧 zscale 转到 SDR，不可用时诚实直通——docs/mvp.md §3、coverage-notes.md §3.26）；真机 GPU 帧路径与真机 HDR 矩阵仍未开始；DLNA 投屏已落地为 UPnP AV 控制点，配窗口浮层与 CLI `--cast=<location|auto>` 开关（自实现 SSDP/SOAP/GENA，零新依赖；构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码——docs/mvp.md §3）；插件体系尚未开始。
 
 ## 功能特性（当前已实现）
 
@@ -40,7 +40,7 @@ v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/�
 - **媒体库**：监视文件夹（递归扫描、缺失文件剪除；直接打开的条目——URL、不在任何监视文件夹内的文件——永不剪除），按源记录播放历史与续播（重开时位置过 5s 且距结尾至少 5s 才提供续播，播完即清，`--no-resume` 继续记录但永不回跳），`B` 开媒体库浮层（点选带续播播放、经目录选择器的监视模式添加监视文件夹、重新扫描），离线 NFO sidecar 刮削（`<name>.nfo` 同名旁文件的标题/简介填入媒体库行）。历史仅由窗口会话记录——headless 保持无状态——原始 magnet/.torrent URI 不入历史，桥接 URL 会记录（本地端口每会话变化）；
 - **截图与 A-B 循环**：`S` 把最近呈现的帧保存为 `screenshot.png`；`L` 三段循环（定 A → 定 B → 清除，到文件尾也回跳，手动 seek 解除）；
 - **媒体信息**：时长、是否可 Seek、轨道（Track）列表（视频 / 音频 / 字幕，含编码、语言、标题）；
-- **轨道选择**：音频轨运行时切换（播放中/暂停中无感续播）；视频轨切换不支持；字幕轨运行时切换——选中内嵌轨时解码线程在安全点换字幕解码器、cue 从新轨续流（切换点之前的历史 cue 需一次倒退 seek 重扫，无自动重扫），选中外挂轨或关闭时内嵌字幕解码门关闭（细节与边界见 [docs/mvp.md](docs/mvp.md) §6）；
+- **轨道选择**：音频轨运行时切换（播放中/暂停中无感续播）；视频轨切换不支持；字幕轨运行时切换——选中内嵌轨时解码线程在安全点换字幕解码器、cue 从新轨续流（切换点之前的历史 cue 需一次倒退 seek 重扫，无自动重扫），选中外挂轨或关闭时内嵌字幕解码门关闭（细节与边界见 [docs/mvp.md](docs/mvp.zh.md) §6）；
 - **字幕渲染**：内嵌 ASS/SSA 经 [libass](https://github.com/libass/libass) 样式渲染（字体/颜色/定位/特效随脚本，容器附件字体即装即用），外挂 .ass/.ssa 同样式渲染、外挂 SRT/WebVTT 按仓库默认样式走同一画布（无 libass 的构建降级为纯文本），内嵌 SRT/WebVTT 文本字幕实时提取显示；`V` 显隐、`[`/`]` ±0.5s 同步偏移、字幕设置浮层（字号/同步偏移/可见性）；可选的字幕下载（`SOAR_SUBTITLE_ENDPOINT`/`_API_KEY`）与字幕翻译（`SOAR_TRANSLATE_ENDPOINT` 等，OpenAI 兼容端点）服务——零默认网络，未配置即不发起任何请求（见 docs/mvp.md §6）；
 - **事件驱动**：状态变化、进度更新、媒体信息变化、错误四类事件，UI 只需订阅回调；
 - **视频渲染**：后端解码为 YUV420P 帧并导出，应用层用 SDL2 Texture 直接上屏；`--hwdec=` 请求硬解、失败回退软解、hwaccel 帧回传 YUV420P；
@@ -132,7 +132,7 @@ cmake --preset default && cmake --build --preset default   # Debug
 # 或：cmake --preset release && cmake --build --preset release
 ```
 
-可选能力自动探测：找到 FFmpeg（pkg-config）则启用 FFmpeg 后端，找到 SDL2（≥ 2.0.18）则启用窗口渲染与音频输出；都找不到时仍可构建纯核心 + CLI（Null 后端）。窗口上的控制层是 Dear ImGui（`SOAR_ENABLE_IMGUI`，默认 ON，配置阶段浅克隆到构建目录），拉不到就退化成裸视频窗口；`-DSOAR_ENABLE_IMGUI=OFF` 可完全跳过。细节见 [docs/build.md](docs/build.md)。
+可选能力自动探测：找到 FFmpeg（pkg-config）则启用 FFmpeg 后端，找到 SDL2（≥ 2.0.18）则启用窗口渲染与音频输出；都找不到时仍可构建纯核心 + CLI（Null 后端）。窗口上的控制层是 Dear ImGui（`SOAR_ENABLE_IMGUI`，默认 ON，配置阶段浅克隆到构建目录），拉不到就退化成裸视频窗口；`-DSOAR_ENABLE_IMGUI=OFF` 可完全跳过。细节见 [docs/build.md](docs/build.zh.md)。
 
 ## 使用
 
@@ -170,9 +170,15 @@ cmake --preset default && cmake --build --preset default   # Debug
 - **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP 冒烟、字幕体验（字体/大小/同步偏移）——均已落地；
 - **v1.0**：硬解（首接线已落地：`--hwdec=`，失败回退软解）与 HDR（首接线已落地：HDR10/HLG 识别、逐帧 zscale 转到 SDR、不可用时诚实直通——docs/mvp.md §3、coverage-notes.md §3.26）、投屏（DLNA/UPnP）、媒体库与离线 NFO 刮削（已落地；网络刮削与多设备同步待定——docs/mvp.md §3）、插件体系。
 
-完整边界与"明确不做"清单见 [docs/mvp.md](docs/mvp.md)。
+完整边界与"明确不做"清单见 [docs/mvp.md](docs/mvp.zh.md)。
 
 ## 测试
+
+本地与 CI 按改动面三路分流——改一行文档不该全量编译：
+
+1. **文档改动**（`*.md`、`docs/**`、图片）：不编译。主 CI workflow 的 `paths-ignore` 已跳过这些路径。
+2. **代码改动**：只跑改动子集，不全量。`ctest --preset linux-system -R '<改动测试>'`
+3. **全量**（`ctest --preset linux-system --output-on-failure`）：仅以下情形触发——CMakeLists.txt、`.github/**`、Docker/Compose 配置、发布前。
 
 测试基于 CTest 运行：
 
@@ -205,10 +211,10 @@ export $(bash scripts/generate_test_media.sh build-system/testmedia)
 ctest --preset linux-system   # FFmpeg 后端需要系统 FFmpeg 开发库
 ```
 
-环境变量未设置时相关用例自动跳过，因此没有媒体 fixture 的平台（如 macOS/Windows CI）套件依然全绿。行覆盖率与分支覆盖率由 CI 的 coverage job（gcovr，过滤异常处理边与内联噪声）统计，报告输出到该 job 的 summary，并可在构建产物 `coverage-report` 中下载；该 job 同时是回归门禁——覆盖率跌破锁定阈值（`--fail-under-line` / `--fail-under-branch`）时直接失败。统计口径与未覆盖项的如实定性（版本依赖行为、防御性代码、结构性不可达）见 [docs/coverage-notes.md](docs/coverage-notes.md)。
+环境变量未设置时相关用例自动跳过，因此没有媒体 fixture 的平台（如 macOS/Windows CI）套件依然全绿。行覆盖率与分支覆盖率由 CI 的 coverage job（gcovr，过滤异常处理边与内联噪声）统计，报告输出到该 job 的 summary，并可在构建产物 `coverage-report` 中下载；该 job 同时是回归门禁——覆盖率跌破锁定阈值（`--fail-under-line` / `--fail-under-branch`）时直接失败。统计口径与未覆盖项的如实定性（版本依赖行为、防御性代码、结构性不可达）见 [docs/coverage-notes.md](docs/coverage-notes.zh.md)。
 
 ## 许可与合规
 
 - 项目本体以 [Apache-2.0](LICENSE) 分发；
-- FFmpeg 以 LGPL 构建方式动态链接，我们不分发任何 GPL 组件；集成第三方多媒体库的选型原则与 LGPL 合规清单见 [docs/licensing.md](docs/licensing.md)；
+- FFmpeg 以 LGPL 构建方式动态链接，我们不分发任何 GPL 组件；集成第三方多媒体库的选型原则与 LGPL 合规清单见 [docs/licensing.md](docs/licensing.zh.md)；
 - 发行包需附 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 并按其中模板补齐实际捆绑的组件清单。

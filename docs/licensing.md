@@ -1,92 +1,90 @@
-# Apache-2.0 项目中的多媒体依赖选型与边界（非法律意见）
+[English](/licensing) | [中文](/zh/licensing)
 
-本文面向“播放器/播放内核”类项目：你希望项目本体保持 Apache-2.0，同时在不同平台上集成第三方多媒体库。
+# Choosing and bounding multimedia dependencies in an Apache-2.0 project (not legal advice)
 
-> 结论先行：  
-> - **MIT/BSD/Apache/zlib/ISC 等宽松许可证**：通常可直接用。  
-> - **LGPL**：通常可用，但要满足（重链接/替换库/提供许可与源码变更等）义务；移动端和“不可替换库”的分发形态要格外谨慎。  
-> - **GPL**：如果你把 GPL 代码（库/插件）与产品一起分发并形成“一个整体作品”，通常会把分发物拉进 GPL；这与“项目仍是 Apache-2.0”目标往往冲突。  
+This document is written for "player / playback engine" projects: you want the project itself to stay Apache-2.0 while integrating third-party multimedia libraries on different platforms.
 
-## 1. 你想守住的“边界”
+> Conclusion first:
+> - **Permissive licenses (MIT/BSD/Apache/zlib/ISC and similar)**: usually usable as-is.
+> - **LGPL**: usually usable, but only if you meet its obligations (relinking, replacing the library, providing licenses and source of modifications, and so on). Be especially careful about mobile targets and distribution forms where the library cannot be replaced.
+> - **GPL**: if you distribute GPL code (library or plugin) together with your product as "one combined work", the distribution is normally pulled into GPL — which usually conflicts with the goal of keeping the project Apache-2.0.
 
-为了让仓库/核心代码继续以 Apache-2.0 分发，通常需要同时满足：
+## 1. The boundary you are trying to hold
 
-- **不要分发 GPL 依赖**（含：静态/动态链接的 GPL 库、打包在一起的 GPL 插件、把 GPL 代码直接拷进源码树等）。
-- **对 LGPL 依赖按 LGPL 合规**：提供许可证文本与 notices；允许用户替换/重链接库（以及你对 LGPL 组件的修改源码）。
-- **区分“源代码许可”与“编解码专利/商店条款”**：即便许可证兼容，某些编解码器（H.264/HEVC/AAC 等）仍可能涉及专利授权与商店政策。
+To keep the repository / core code distributed under Apache-2.0 you normally need all of the following:
 
-## 2. 常见库的许可与可用性（面向 Apache-2.0 项目）
+- **Do not distribute GPL dependencies** (including statically or dynamically linked GPL libraries, GPL plugins packaged with your build, or GPL code copied straight into the source tree).
+- **Comply with LGPL for LGPL dependencies**: ship the license texts and notices; let users replace or relink the library (including the source of any modifications you made to LGPL components).
+- **Separate "source license" from "codec patents / store terms"**: even where licenses are compatible, some codecs (H.264/HEVC/AAC and similar) may still raise patent-licensing or store-policy questions.
 
-下面是“常见选择”的经验表（以你**实际使用/打包的构建产物**为准；同一项目可能有多种许可证/构建选项）。
+## 2. Licensing and usability of common libraries (for an Apache-2.0 project)
 
-### 解封装/解码/播放内核
+This is an experience-based table of "common choices" — what applies depends on **the build artifacts you actually use or ship**, and a single project may carry several licenses or build options.
 
-- **FFmpeg**：`LGPL-2.1-or-later`（默认）/ 可选 `GPL-2.0-or-later`
-  - 可用性：可用（选择 **LGPL 构建**），避免启用会触发 GPL 的配置与外部库。
-  - 边界：你打包的二进制若包含 GPL 组件，则分发物会受 GPL 约束。
-  - 参考：`https://ffmpeg.org/legal.html`
+### Demuxing / decoding / playback core
 
-- **GStreamer**：核心通常 `LGPL-2.1-or-later`，插件集合许可证混合（LGPL/GPL/专有）
-  - 可用性：可用（挑选 LGPL/许可兼容的插件集合）。
-  - 边界：**不要分发 GPL 插件**（或确认你能接受整体 GPL 约束）。
-  - 参考：`https://gstreamer.freedesktop.org/documentation/additional/design/licensing.html`
+- **FFmpeg**: `LGPL-2.1-or-later` (default) / optionally `GPL-2.0-or-later`
+  - Usability: usable (choose the **LGPL build**); avoid options and external libraries that pull in GPL.
+  - Boundary: if the binary you package contains GPL components, the distribution is subject to GPL.
+  - Reference: `https://ffmpeg.org/legal.html`
 
-- **libVLC / VLC SDK**：通常 `LGPL-2.1-or-later`（但实际打包组件可能混合）
-  - 可用性：一般可用（以 LGPL 组件方式集成）。
-  - 边界：注意你实际随包带的 VLC 模块/插件/二进制的许可证；不要把 GPL 部件打进你的发行物。
-  - 参考：`https://wiki.videolan.org/License/`
+- **GStreamer**: core is usually `LGPL-2.1-or-later`; the plugin set is a license mix (LGPL/GPL/proprietary)
+  - Usability: usable (pick the LGPL / license-compatible plugin set).
+  - Boundary: **do not distribute GPL plugins** (unless you are willing to accept GPL for the whole distribution).
+  - Reference: `https://gstreamer.freedesktop.org/documentation/additional/design/licensing.html`
 
-- **libmpv / mpv**：`GPL-2.0-or-later`
-  - 可用性：若你坚持分发物保持非 GPL（如 Apache-2.0），通常不推荐把它作为随包依赖分发。
-  - 参考：`https://github.com/mpv-player/mpv`
+- **libVLC / VLC SDK**: usually `LGPL-2.1-or-later` (but the components actually packaged may be mixed)
+  - Usability: generally usable (integrate as LGPL components).
+  - Boundary: check the licenses of the VLC modules, plugins and binaries you actually ship; do not fold GPL parts into your release.
+  - Reference: `https://wiki.videolan.org/License/`
 
-### 字幕/渲染/辅助库（通常更好兼容）
+- **libmpv / mpv**: `GPL-2.0-or-later`
+  - Usability: if you insist on a non-GPL distribution (Apache-2.0), shipping it as a bundled dependency is generally not recommended.
+  - Reference: `https://github.com/mpv-player/mpv`
 
-- **SDL2**：`zlib`（宽松）
-  - 可用性：可用。
-  - 参考：`https://github.com/libsdl-org/SDL`
+### Subtitles / rendering / auxiliary libraries (usually better compatibility)
 
-- **Dear ImGui**：`MIT`
-  - 可用性：可用。
-  - 参考：`https://github.com/ocornut/imgui`
+- **SDL2**: `zlib` (permissive)
+  - Usability: usable.
+  - Reference: `https://github.com/libsdl-org/SDL`
 
-- **libass（ASS/SSA 字幕）**：常见为 `ISC`
-  - 可用性：可用。
-  - 参考：`https://github.com/libass/libass`
+- **Dear ImGui**: `MIT`
+  - Usability: usable.
+  - Reference: `https://github.com/ocornut/imgui`
 
-> 提醒：即便某个库本身是宽松许可证，它的“可选依赖/后端插件”仍可能引入 GPL/LGPL/专有条款；合规以最终打包物为准。
+- **libass (ASS/SSA subtitles)**: commonly `ISC`
+  - Usability: usable.
+  - Reference: `https://github.com/libass/libass`
 
-## 3. LGPL 的关键合规点（做播放器常踩坑）
+> Note: even where a library itself is permissively licensed, its "optional dependencies / backend plugins" can still introduce GPL/LGPL/proprietary terms. Compliance is judged on the final packaged artifact.
 
-不同 LGPL 版本与具体情形细节很多，这里给“工程可操作”的检查清单：
+## 3. Key LGPL compliance points (where players often trip)
 
-- **动态链接优先**：尽量把 LGPL 库作为可替换的动态库/共享对象分发。
-- **随包捆绑 LGPL .so/.dylib/.dll 也合规**（本仓库 Linux/macOS/Windows
-  发行包的做法）：从发行版/vcpkg 原样拷贝、不修改、保持可替换——
-  用户删掉 `lib/`（或同目录 DLL）换用自己的库即可，
-  义务与上一条相同。
-- **允许重链接/替换**：用户能在合理条件下替换该 LGPL 库（或对静态链接场景提供可重链接对象文件/脚本）。
-- **提供许可证与 notices**：在发行物中包含 LGPL 文本、版权声明、第三方声明。
-- **提供你对 LGPL 组件的修改**：如果你改了 LGPL 组件本身，通常需要公开这些修改的源码（至少对接收者）。
-- **移动端分发要谨慎**：iOS/某些商店分发形态可能让“用户替换库”在实践中很难满足；这不是“不能用”，但需要在架构与交付方式上提前设计（例如：尽量使用系统媒体框架，或用商业授权/替代库）。
+LGPL versions and specific situations have many details; here is an engineer-actionable checklist:
 
-## 4. 推荐的“边界设计”（保持核心 Apache-2.0）
+- **Prefer dynamic linking**: ship LGPL libraries as replaceable dynamic libraries / shared objects wherever you can.
+- **Bundling LGPL .so/.dylib/.dll with the release is also compliant** (the approach this repository uses for its Linux/macOS/Windows packages): copy from the distribution or vcpkg unchanged, keep it unmodified and replaceable — the user can delete `lib/` (or the co-located DLLs) and substitute their own build. The obligations are the same as the previous bullet.
+- **Allow relinking / replacement**: the user must be able to replace the LGPL library under reasonable conditions (for static-linking scenarios, provide relocatable object files / relinking scripts).
+- **Provide licenses and notices**: include the LGPL text, copyright notices and third-party statements in the release.
+- **Provide your modifications to LGPL components**: if you changed an LGPL component itself, you normally have to publish the source of those modifications (at least to the recipient).
+- **Be careful about mobile distribution**: on iOS and in some store distribution forms "the user replaces the library" is hard to satisfy in practice. That is not "cannot use it", but it needs to be designed for up front in architecture and delivery (for example: prefer the system media frameworks, or use commercially licensed / alternative libraries).
 
-如果你的目标是“核心代码 Apache-2.0，依赖尽量不拖入 GPL”，常见做法是：
+## 4. Recommended boundary design (keep the core Apache-2.0)
 
-- **核心播放抽象层 Apache-2.0**：定义 `core` API（打开媒体、轨道、时钟、渲染帧、字幕、缓冲策略）。
-- **后端适配分层**：
-  - `backend_ffmpeg`（LGPL 构建，动态链接）
-  - `backend_gstreamer`（选择许可兼容插件）
-  - `backend_avfoundation`（iOS/macOS 系统框架）
-  - `backend_media3`（Android 系统/官方库）
-- **插件/可选依赖不随包分发 GPL**：即便运行时“可加载”，只要你把 GPL 插件随安装包一起发出去，仍会触发分发义务。
+If your goal is "core code under Apache-2.0, dependencies that drag in as little GPL as possible", the common pattern is:
 
-## 5. 你可以在仓库里维护的文档/清单
+- **A core playback abstraction layer under Apache-2.0**: define the `core` API (open media, tracks, clock, rendered frames, subtitles, buffering strategy).
+- **A layered backend adapter**:
+  - `backend_ffmpeg` (LGPL build, dynamically linked)
+  - `backend_gstreamer` (choose license-compatible plugins)
+  - `backend_avfoundation` (iOS/macOS system frameworks)
+  - `backend_media3` (Android system / official libraries)
+- **Plugins / optional dependencies must not ship GPL with the package**: even if something is only "loadable at runtime", distributing a GPL plugin together with your installer still triggers distribution obligations.
 
-建议至少维护：
+## 5. Documents and lists worth keeping in the repository
 
-- `THIRD_PARTY_NOTICES.md`：第三方依赖声明（见仓库模板）
-- `docs/licensing.md`（本文）：选型原则与边界
-- `LICENSES/`：按依赖收集许可证文本（可选但强烈推荐）
+Keep at least:
 
+- `THIRD_PARTY_NOTICES.md`: third-party dependency statements (see the repository template)
+- `docs/licensing.md` (this document): selection principles and boundaries
+- `LICENSES/`: collected license texts per dependency (optional but strongly recommended)

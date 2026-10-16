@@ -51,6 +51,11 @@
 
 - [x] deb/rpm/AppImage/setup.exe + 依赖 DLL 闭包 + SHA256 清单进 nightly（ed8b34c、e1990f3）
 
+## docs 双语化（下一轮）
+
+- [x] docs 子目录补双语：`docs/public/prototypes/README.md` 翻为英文裸名 + 中文 `README.zh.md` 配对（2026-10-16）
+- [ ] docs 双语缺口补齐：`mvp` 与 `ui-design` 缺英文裸名版（本轮只接 VitePress locales 路由，不翻译）
+
 ## 挂账
 
 - [x] 挂账拍板：Welcome/DPI/亮色复审关闭，鸿蒙路线留用户拍板（294d3dc）

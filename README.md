@@ -128,18 +128,6 @@ Prerequisites: CMake 3.20+, a C++17 compiler (GCC / Clang / MSVC, any C++17-capa
 ```bash
 export VCPKG_ROOT=/path/to/vcpkg   # Windows PowerShell: $env:VCPKG_ROOT="C:\path\to\vcpkg"
 cmake --preset default && cmake --build --preset default   # Debug
-
-## 本地测试口径
-
-CI 与本地开发按改动面三路分流——改一行文档不该全量编译。
-
-1. **文档改动**（`*.md`、`docs/**`、图片）：不编译。主 CI workflow 的
-   `paths-ignore` 已跳过这些路径。
-2. **代码改动**：只跑改动子集，不全量。
-   - `ctest --preset linux-system -R '<改动测试>'`
-3. **全量**（`ctest --preset linux-system --output-on-failure`）：仅以下情形触发——CMakeLists.txt、
-   `.github/**`、Docker/Compose 配置、发布前。
-
 # or: cmake --preset release && cmake --build --preset release
 ```
 
@@ -184,6 +172,12 @@ Optional capabilities are auto-detected: if FFmpeg is found (pkg-config) the FFm
 For full boundaries and the explicit "not doing" list, see [docs/mvp.md](docs/mvp.md).
 
 ## Testing
+
+Local work is routed by change surface, so a one-line documentation edit does not trigger a full build:
+
+1. **Documentation only** (`*.md`, `docs/**`, images) — no build: the main CI workflow's `paths-ignore` already skips those paths.
+2. **Code only** — run the changed subset, not the whole suite: `ctest --preset linux-system -R '<changed test>'`.
+3. **Full run** (`ctest --preset linux-system --output-on-failure`) — only for CMakeLists.txt, `.github/**`, Docker/Compose configuration, or before a release.
 
 Tests run via CTest:
 
