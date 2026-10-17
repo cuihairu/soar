@@ -1,4 +1,3 @@
-[English](/audit-doc-consistency) | [中文](/zh/audit-doc-consistency)
 
 # 审计-文档一致性（2026-10-13）
 

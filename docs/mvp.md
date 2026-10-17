@@ -1,4 +1,3 @@
-[English](/mvp) | [中文](/zh/mvp)
 
 # MVP capability checklist and boundaries
 

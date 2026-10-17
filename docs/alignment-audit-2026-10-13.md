@@ -1,4 +1,3 @@
-[English](/alignment-audit-2026-10-13) | [中文](/zh/alignment-audit-2026-10-13)
 
 # Prototype alignment acceptance (2026-10-13)
 

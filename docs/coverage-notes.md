@@ -1,4 +1,3 @@
-[English](/coverage-notes) | [中文](/zh/coverage-notes)
 
 # Coverage measurement and uncovered items
 

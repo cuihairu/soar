@@ -1,4 +1,3 @@
-[English](/audit-doc-consistency) | [中文](/zh/audit-doc-consistency)
 
 # Audit — documentation consistency (2026-10-13)
 

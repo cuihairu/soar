@@ -1,4 +1,3 @@
-[English](/licensing) | [中文](/zh/licensing)
 
 # Choosing and bounding multimedia dependencies in an Apache-2.0 project (not legal advice)
 

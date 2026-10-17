@@ -1,4 +1,3 @@
-[English](/ui-design) | [中文](/zh/ui-design)
 
 # UI 设计（v0.1 桌面版）
 

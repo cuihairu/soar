@@ -1,4 +1,3 @@
-[English](/licensing) | [中文](/zh/licensing)
 
 # Apache-2.0 项目中的多媒体依赖选型与边界（非法律意见）
 

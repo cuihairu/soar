@@ -1,4 +1,3 @@
-[English](/mvp) | [中文](/zh/mvp)
 
 # MVP 能力清单（建议）与边界
 

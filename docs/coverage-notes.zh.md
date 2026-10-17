@@ -1,4 +1,3 @@
-[English](/coverage-notes) | [中文](/zh/coverage-notes)
 
 # 覆盖率口径与未覆盖项清单
 

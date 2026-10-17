@@ -1,4 +1,3 @@
-[English](/build) | [中文](/zh/build)
 
 # Build（C++17 + CMake + vcpkg）
 

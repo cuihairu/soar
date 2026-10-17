@@ -1,4 +1,3 @@
-[English](/prototype-alignment-audit) | [中文](/zh/prototype-alignment-audit)
 
 # Prototype Alignment Audit (2026-10-15)
 

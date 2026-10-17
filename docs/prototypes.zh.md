@@ -1,4 +1,3 @@
-[English](/prototypes) | [中文](/zh/prototypes)
 
 # 原型展示
 
