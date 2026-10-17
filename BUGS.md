@@ -172,6 +172,15 @@
   `soarw.exe "%1"` 后的行为已在上面覆盖）、以及 `GetOpenFileNameW` 对话框被
   真实点选（对话框可 UIA 自动化，但新增 Windows-only 用例在本机无 Windows
   环境无法迭代、只能从 CI 日志定位，flake 风险高于收益）。
+  **真机复测进展（2026-10-17 Windows 真机，安装介质=nightly zip 解压直跑）**：
+  Explorer 拉起半已实证——以 `explorer.exe soarw.exe`（Explorer ShellExecute
+  同路径）拉起，进程 cmdline 仅 exe 路径无参数泄漏、无 usage/#32770 对话框、
+  空主窗（SDL_app/「soar」）4s 内立起且存活 ≥9s，截图
+  `evidence/bug3-retest-2026-10-17/explorer-launch-empty-window.jpg`；
+  真文件对话框点选半**本会话未能完成**——自动化会话无法把前台焦点交给
+  SDL 窗口（SetForegroundWindow/点击+AttachThreadInput/PostMessage 三法均
+  无法唤出 GetOpenFileNameW 对话框，foreground 恒不为 soar 窗），属自动化
+  会话注入限制而非产品缺陷，该项仍待真人桌面点选。
   Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）未在真桌面
   环境走查。
 
