@@ -317,18 +317,29 @@ bool fileExists(const std::string& path) {
 
 #ifdef SOAR_WITH_IMGUI
 
-// Theme tokens (docs/ui-design.md §4): one dark palette. Every color and
-// radius the UI draws is named here — the draw code reads tokens, never
-// bare literals. Hex comments are the spec values.
+// Theme tokens (prototypes/redesign/assets/proto.css — the v2 design
+// language the user reviews against). Single signal orange is the only
+// interactive accent; sky-blue is reserved for network/P2P semantics. Every
+// colour and radius the UI draws is named here — the draw code reads tokens,
+// never bare literals. Hex comments are the prototype token values.
 namespace theme {
-constexpr ImVec4 kText{0.910f, 0.918f, 0.941f, 1.0f};             // #E8EAF0
-constexpr ImVec4 kTextDim{0.910f, 0.918f, 0.941f, 0.55f};         // secondary
-constexpr ImVec4 kAccent{0.298f, 0.553f, 1.0f, 1.0f};             // #4C8DFF
-constexpr ImVec4 kInkOnAccent{0.063f, 0.071f, 0.086f, 1.0f};      // #101216
-constexpr ImVec4 kDanger{1.0f, 0.365f, 0.365f, 1.0f};             // #FF5D5D
-constexpr ImVec4 kPanelBg{0.063f, 0.071f, 0.094f, 0.94f};         // over video
+constexpr ImVec4 kText{0.933f, 0.945f, 0.961f, 1.0f};             // #EEF1F5 text-1
+constexpr ImVec4 kTextDim{0.725f, 0.753f, 0.796f, 1.0f};          // #B9C0CB text-2
+constexpr ImVec4 kTextMuted{0.545f, 0.580f, 0.639f, 1.0f};        // #8B94A3 text-3
+// Single accent lock (proto.css --orange-500 + --ink-on-accent): the play /
+// interactive accent. Hover is --accent-hover; the ink on accent buttons is
+// the warm near-black, not the neutral one.
+constexpr ImVec4 kAccent{1.0f, 0.420f, 0.208f, 1.0f};             // #FF6B35 orange-500
+constexpr ImVec4 kAccentHover{1.0f, 0.490f, 0.302f, 1.0f};        // #FF7D4D accent-hover
+constexpr ImVec4 kInkOnAccent{0.110f, 0.051f, 0.016f, 1.0f};      // #1C0D04 ink-on-accent
+constexpr ImVec4 kDanger{1.0f, 0.361f, 0.400f, 1.0f};             // #FF5C66 red-500
+constexpr ImVec4 kOk{0.243f, 0.812f, 0.431f, 1.0f};               // #3ECF6E ok-500
+constexpr ImVec4 kWarn{1.0f, 0.698f, 0.141f, 1.0f};               // #FFB224 warn-500
+// Network / P2P semantic (proto.css --sky-net): the one place sky-blue stays.
+constexpr ImVec4 kNet{0.424f, 0.694f, 1.0f, 1.0f};                // #6CB1FF sky-net
+constexpr ImVec4 kPanelBg{0.043f, 0.047f, 0.059f, 0.88f};         // #0A0B0E oscbg over video
 constexpr ImVec4 kPopupBg{0.10f, 0.11f, 0.15f, 0.98f};
-constexpr ImVec4 kBorder{1.0f, 1.0f, 1.0f, 0.08f};
+constexpr ImVec4 kBorder{1.0f, 1.0f, 1.0f, 0.10f};                // --oline rgba(255,255,255,.10)
 constexpr ImVec4 kFrameBg{1.0f, 1.0f, 1.0f, 0.10f};
 constexpr ImVec4 kFrameBgHovered{1.0f, 1.0f, 1.0f, 0.16f};
 constexpr ImVec4 kFrameBgActive{1.0f, 1.0f, 1.0f, 0.20f};
@@ -2098,8 +2109,8 @@ class PlayerHud {
   // is drawn front-to-back — so the LAST of these three Begin() calls lands at
   // the BACK of the stack. The dim is therefore begun last even though it is
   // the first thing seen; reordering these blocks puts the button under the
-  // dim (verified by pixel probe: a 38%-black rect over #4C8DFF reads
-  // (49,89,161) instead of (76,141,255)).
+  // dim (verified by pixel probe: a 38%-black rect over the accent reads a
+  // dimmed accent, not the full-strength face).
   void drawPauseOverlay() {
     if (player_.state() != PlaybackState::Paused) return;
     const ImGuiIO& io = ImGui::GetIO();
