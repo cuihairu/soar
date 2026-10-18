@@ -379,8 +379,8 @@ inline void applyPalette(bool light) {
     kOk = {0.243f, 0.812f, 0.431f, 1.0f};           // #3ECF6E ok-500
     kWarn = {1.0f, 0.698f, 0.141f, 1.0f};           // #FFB224 warn-500
     kNet = {0.424f, 0.694f, 1.0f, 1.0f};            // #6CB1FF sky-net
-    kWindowBg = {0.039f, 0.043f, 0.055f, 1.0f};     // #0A0B0E surface-0
-    kPanelBg = {0.043f, 0.047f, 0.059f, 0.88f};     // oscbg over video
+    kWindowBg = {0.043f, 0.047f, 0.059f, 1.0f};     // #0B0C0F surface-0
+    kPanelBg = {0.039f, 0.043f, 0.055f, 0.88f};     // #0A0B0E oscbg over video
     kPopupBg = {0.10f, 0.11f, 0.15f, 0.98f};
     kBorder = {1.0f, 1.0f, 1.0f, 0.10f};            // rgba(255,255,255,.10)
     kFrameBg = {1.0f, 1.0f, 1.0f, 0.10f};
@@ -406,7 +406,7 @@ inline void applyPalette(bool light) {
   kWarn = {0.604f, 0.404f, 0.0f, 1.0f};             // --warn-ink #9A6700
   kNet = {0.169f, 0.424f, 0.690f, 1.0f};            // --sky-net-ink #2B6CB0
   kWindowBg = {0.933f, 0.941f, 0.957f, 1.0f};       // #EEF0F4 surface-0
-  kPanelBg = {0.969f, 0.973f, 0.980f, 0.97f};       // #F7F8FA surface-1
+  kPanelBg = {1.0f, 1.0f, 1.0f, 0.94f};             // #FFFFFF oscbg over video
   kPopupBg = {1.0f, 1.0f, 1.0f, 0.98f};             // #FFFFFF surface-2
   kBorder = {0.875f, 0.890f, 0.918f, 1.0f};         // --line #DFE3EA
   kFrameBg = {0.906f, 0.918f, 0.941f, 1.0f};        // --surface-3 #E7EAF0
