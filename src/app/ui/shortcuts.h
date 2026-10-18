@@ -184,7 +184,7 @@ class ShortcutMap {
   std::string bindingNames(ShortcutAction action) const;
 
   static constexpr int kActionCount =
-      static_cast<int>(ShortcutAction::SearchLibrary) + 1;
+      static_cast<int>(ShortcutAction::OpenSettings) + 1;
 
  private:
   std::vector<ShortcutKey> bindings_[kActionCount];
