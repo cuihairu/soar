@@ -184,7 +184,7 @@ const char* trackTypeName(TrackType t) {
 
 // Which overlay page is open; at most one at a time (docs/ui-design.md §2).
 enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist, DirPick, Library,
-                     Cast };
+                     Cast, Settings };
 
 // Letterbox destination: the frame scaled to fit, centered (docs §4 — the
 // video area is always aspect-correct on the theme background).
@@ -883,8 +883,11 @@ class PlayerHud {
             return;
           case ShortcutAction::Escape:
             // Fullscreen → window first; otherwise quit (docs §3.2, which
-            // also keeps the CLI's Escape-exit contract the tests pin).
-            if (st_.fullscreen) {
+            // also keeps the CLI's Escape-exit contract the tests pin). The
+            // Settings panel's "ESC exits fullscreen" switch gates the
+            // leave-fullscreen half: off means Escape quits even in
+            // fullscreen (the switch is the only caller of that state).
+            if (st_.fullscreen && st_.esc_exits_fullscreen) {
               setFullscreen(false);
             } else {
               *quit = true;
@@ -1020,6 +1023,9 @@ class PlayerHud {
             saveThemePref();
             return;
           }
+          case ShortcutAction::OpenSettings:
+            toggleOverlay(Overlay::Settings);  // the settings panel (proto)
+            return;
         }
       }
       case SDL_MOUSEMOTION:
@@ -1204,6 +1210,9 @@ class PlayerHud {
   // own, the jump is the more informative story.
   bool applyResume(const std::string& uri, milliseconds now) {
     if (!cfg_.resume_playback || library_ == nullptr) return false;
+    // The Settings panel's "Remember last media" switch gates the jump: off
+    // means the session opens at the top regardless of a saved position.
+    if (!st_.remember_last_media) return false;
     const LibraryEntry* entry = library_->find(uri);
     if (entry == nullptr) return false;
     const std::int64_t pos = resumePositionMs(*entry);
@@ -2035,6 +2044,54 @@ class PlayerHud {
           if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.location.c_str());
           ImGui::PopID();
         }
+      }
+    }
+    ImGui::End();
+    if (!open) st_.overlay = Overlay::None;
+  }
+
+  // Settings panel (docs/public/prototypes/redesign/settings.html, the「通用」
+  // page — one of the four prototype pages). Each row is a proto `.set`: a
+  // label block (title + description) with a control on the right. The
+  // switches edit live session state (esc_exits_fullscreen / remember_last_
+  // media) rather than being decorative; the theme select drives the same
+  // applyPalette path the y toggle uses.
+  void drawSettingsOverlay() {
+    bool open = true;
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(460, 340), ImGuiCond_Appearing);
+    if (ImGui::Begin("Settings", &open,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+      ImGui::TextUnformatted("General");  // chead h1 通用
+      ImGui::Separator();
+      ImGui::TextDisabled("%s", "Startup & interface");  // sect h2 启动与界面
+
+      // Row: 记住上次媒体 — resume on open. A switch (proto .switch).
+      ImGui::Checkbox("Remember last media", &st_.remember_last_media);
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", "Restore the last file and position on startup");
+      }
+
+      // Row: ESC 退出全屏 — gate the Escape action's leave-fullscreen half.
+      ImGui::Checkbox("ESC exits fullscreen", &st_.esc_exits_fullscreen);
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s",
+                          "Only in fullscreen; in-window ESC closes settings");
+      }
+
+      // Row: 界面语言 — a select. ASCII-only build: the shipped label set is
+      // English (the bitmap font has no CJK), so this reflects the runtime
+      // palette in use and lets the user flip it here too.
+      ImGui::TextUnformatted("Theme:");
+      ImGui::SameLine();
+      const char* theme_items[] = {"Dark", "Light"};
+      int theme_idx = theme::g_light ? 1 : 0;
+      if (ImGui::Combo("##theme", &theme_idx, theme_items, 2)) {
+        theme::applyPalette(theme_idx == 1);
+        applyTheme();
+        saveThemePref();
       }
     }
     ImGui::End();
@@ -2894,6 +2951,7 @@ class PlayerHud {
       case Overlay::DirPick: drawDirPickOverlay(); return;
       case Overlay::Library: drawLibraryOverlay(); return;
       case Overlay::Cast: drawCastOverlay(); return;
+      case Overlay::Settings: drawSettingsOverlay(); return;
     }
   }
 
@@ -3807,6 +3865,11 @@ class PlayerHud {
     // The one-shot caret request the / action leaves behind; the draw
     // consumes it on the frame the box is drawn.
     bool library_search_focus = false;
+    // Settings panel (proto redesign/settings.html「通用」): live toggles the
+    // Settings overlay edits. esc_exits_fullscreen gates the Escape action's
+    // leave-fullscreen half; remember_last_media gates the resume-on-open jump.
+    bool esc_exits_fullscreen = true;
+    bool remember_last_media = true;
   };
 
   static constexpr milliseconds kProgressInterval{5000};

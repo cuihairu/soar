@@ -127,6 +127,7 @@ const char* const kActionNames[] = {
     "recent",           "help",
     "cast",             "quit",
     "search_library",   "toggle_theme",
+    "open_settings",
 };
 
 ShortcutAction actionFromName(const std::string& name) {
@@ -198,6 +199,8 @@ ShortcutMap::ShortcutMap() {
              kKeySlash);
   addDefault(&bindings_[static_cast<int>(ShortcutAction::ToggleTheme)],
              kKeyY);
+  addDefault(&bindings_[static_cast<int>(ShortcutAction::OpenSettings)],
+             kKeyG);
 }
 
 void ShortcutMap::load(const std::string& path) {

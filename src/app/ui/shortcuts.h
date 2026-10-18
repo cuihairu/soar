@@ -140,6 +140,7 @@ enum class ShortcutAction {
   Quit,
   SearchLibrary,      // /: focus the library overlay's search box
   ToggleTheme,        // y: light/dark palette (proto.css [data-theme])
+  OpenSettings,       // g: the settings panel (proto redesign/settings.html)
 };
 
 class ShortcutMap {

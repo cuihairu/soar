@@ -89,7 +89,7 @@ Determination (per the user's instruction "if `docs/ui-design.md` exists, treat 
 
 | Prototype (v2) | Implementation | Match? |
 |---|---|---|
-| Settings panel page (one of the four pages) | **No general settings page**. The `Overlay` enum `:183-184` has only `Subtitle`; the sole overlay is "Subtitle Settings" `:2997` | ❌ missing component (intentionally deferred, `ui-design.md:91`) |
+| Settings panel page (one of the four pages) | **No general settings page**. The `Overlay` enum `:183-184` has only `Subtitle`; the sole overlay is "Subtitle Settings" `:2997` | ✅ aligned (2026-10-17): added a general Settings panel page. New `Overlay::Settings` (`player_window.cpp:187`), new `ShortcutAction::OpenSettings` on free key `g` (`shortcuts.h:143`, `shortcuts.cpp` name `open_settings` + default `kKeyG`, dispatch `player_window.cpp:1023-1025`), and `drawSettingsOverlay()` (`:2049-2096`) rendering the prototype's「通用」page — a `General` header + `Startup & interface` section with proto-`.set` rows. The switches edit live state, not decoration: "Remember last media" gates `applyResume` (`:1212-1214`) and "ESC exits fullscreen" gates the Escape action's leave-fullscreen half (`:886-892`); the theme select drives the same `applyPalette` path as the `y` toggle. Was "missing component (intentionally deferred)". |
 
 ### 2.5 Translation panel `prototypes/translate-panel.html` (v1-only) ↔ none
 
