@@ -129,6 +129,23 @@ v2 dropped this page (no corresponding file under `redesign/`), and the implemen
 > control spacing 8, overlay width cap 480px, OSC bar width cap 920px, 4px base grid — **the implementation
 > matches the spec on every one of these item by item**.
 
+### 3.25 v2 baseline realignment (2026-10-18, 3 fixes)
+
+Re-diffed the implementation against the authoritative prototype
+`docs/public/prototypes/redesign/desktop-main.html` (265 lines) + `assets/proto.css`. Three concrete
+spec drifts found and fixed (each its own commit, build EXIT=0, `soar_ui_tests` 41/41·284 green):
+
+| # | Drift | Prototype | Was | Fix | Hash |
+|---|---|---|---|---|---|
+| R1 | Swapped OSC/window background tokens: the two `ImVec4` values were exchanged, so the SDL clear colour and the OSC face were both wrong by one shade | `.osc` `--oscbg:rgba(10,11,14,.88)` `desktop-main.html:61`; surface-0 `#0b0c0f` `proto.css:47` | `kWindowBg=#0A0B0E` / `kPanelBg=#0b0c0f@.88` (`player_window.cpp:348-349`), light `kPanelBg=#F7F8FA` (surface-1, not oscbg) | `kWindowBg=#0B0C0F` (opaque surface-0) / `kPanelBg=#0A0B0E@.88` (oscbg); light `kPanelBg=#FFF@.94` (`:382-383`, `:409`) | `0c50760` |
+| R2 | OSC geometry (width cap + bottom offset) from the v1 draft | `.osc width:min(97%,1240px); bottom:26px` `desktop-main.html:62-63` | `min(w-24, 920)` / bottom `16px` (`player_window.cpp:2415`, `:2427`) | `min(w*0.97, 1240)` / bottom `26px` (`:2415`, `:2427`) | `e49eca6` |
+| R3 | statechip fill alpha + top offset | `.statechip background:rgba(9,10,12,.72); top:18px` `desktop-main.html:39`, `:37` | `alpha 0.6` / first chip `y=12` (`player_window.cpp:2886`, `:2749`) | `alpha 0.72` / chips `y=18/40/62` (`:2886`, `:2749/2759/2765`) | `e7399b6` |
+
+Still-open on this baseline (unchanged, previously ruled): the resolution pill (L4 — `MediaInfo` has no
+width/height, core interface frozen), the circular-SVG transport button vocabulary (V6 — text/emoji is the
+spec'd button form), and the OSC row-1 seek rail as a custom track (the implementation uses an ImGui
+slider; the rail's played/buffer split and thumb are not drawn as separate primitives).
+
 ### 3.3 Interaction (4 differences + 2 already aligned + 1 equivalent)
 
 | # | Difference | Prototype | Implementation | Nature |
