@@ -83,7 +83,7 @@ Determination (per the user's instruction "if `docs/ui-design.md` exists, treat 
 | Prototype (v2) | Implementation | Match? |
 |---|---|---|
 | Watched-folder rows + source entries + resume-position markers | Overlay `:2725`, list-style | ⚠️ same as above (page vs overlay) |
-| Card grid, thumbnails, source chips | **None** (`redesign/index.html` marks it v0.3) | ❌ missing component (prototype ahead) |
+| Card grid, thumbnails, source chips | **None** (`redesign/index.html` marks it v0.3) | ✅ aligned (2026-10-17): the Library overlay's entries are now a card grid (was a `Selectable` row list). Spec from `redesign/library.html:63-92` + `proto.css:105-112,215-224`: auto-fill ~196px columns / 16px gutter / 16:9 poster / source-format pill / centre play-badge / meta title+row2+sub. Implemented in `drawLibraryEntries` (`player_window.cpp:3381-3540`) — one `InvisibleButton` per card as the hit target, poster is the placeholder thumb (`kThumbBg`/`kThumbGlyph`, `player_window.cpp:432-434`), source chip = uppercased extension (`fileFormatLabel`, `:1261`), sub line = resume point or parent folder (`parentFolderLabel`, `:1272`); new palette tokens `kSurface2`/`kLineStrong` (`:361-366`, both `[data-theme]` branches). V7b focus index/`drawFocusRing`/tooltip preserved. |
 
 ### 2.4 Settings `redesign/settings.html` ↔ none
 

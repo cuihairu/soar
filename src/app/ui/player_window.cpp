@@ -356,6 +356,11 @@ ImVec4 kButton{1.0f, 1.0f, 1.0f, 0.10f};
 ImVec4 kButtonHovered{1.0f, 1.0f, 1.0f, 0.18f};
 ImVec4 kHeader{1.0f, 1.0f, 1.0f, 0.08f};
 ImVec4 kHeaderHovered{1.0f, 1.0f, 1.0f, 0.14f};
+// Card surfaces (proto.css --surface-2 card bg + --line-strong hover edge):
+// the library grid's tiles sit on surface-2 and light their border to
+// line-strong on hover. surface-2 is opaque (it fully covers the panel).
+ImVec4 kSurface2{0.086f, 0.098f, 0.125f, 1.0f};         // #161920 surface-2 (dark)
+ImVec4 kLineStrong{0.212f, 0.243f, 0.294f, 1.0f};       // #363E4B line-strong (dark)
 
 // Which palette is loaded. false = dark (the default the app ships with).
 inline bool g_light = false;
@@ -385,6 +390,8 @@ inline void applyPalette(bool light) {
     kButtonHovered = {1.0f, 1.0f, 1.0f, 0.18f};
     kHeader = {1.0f, 1.0f, 1.0f, 0.08f};
     kHeaderHovered = {1.0f, 1.0f, 1.0f, 0.14f};
+    kSurface2 = {0.086f, 0.098f, 0.125f, 1.0f};   // #161920 surface-2
+    kLineStrong = {0.212f, 0.243f, 0.294f, 1.0f}; // #363E4B line-strong
     return;
   }
   // :root[data-theme="light"] — the light palette. Accent + ink-on-accent
@@ -409,6 +416,8 @@ inline void applyPalette(bool light) {
   kButtonHovered = {0.831f, 0.855f, 0.898f, 1.0f};  // --line-strong #C3CAD5
   kHeader = {0.906f, 0.918f, 0.941f, 1.0f};         // --surface-3 #E7EAF0
   kHeaderHovered = {0.831f, 0.855f, 0.898f, 1.0f};  // --line-strong #C3CAD5
+  kSurface2 = {1.0f, 1.0f, 1.0f, 1.0f};             // --surface-2 #FFFFFF
+  kLineStrong = {0.765f, 0.792f, 0.835f, 1.0f};     // --line-strong #C3CAD5
 }
 // Radii live in ui_tokens.h (no ImGui dependency, so the suite can pin
 // them): the redesign v2 system is panel 10 / control 7 / badge pill.
@@ -417,6 +426,12 @@ using soar::app::kControlRounding;
 using soar::app::kPillRounding;
 using soar::app::kUiFontSize;
 }  // namespace theme
+
+// Poster placeholder (proto.css .thumb / .ph-glyph :215-224). This is the
+// CONTENT layer, which stays deep in both themes — so it is a pair of fixed
+// literals, deliberately NOT theme tokens. #14171e ground, #3a4250 glyph.
+static const ImVec4 kThumbBg{0.078f, 0.090f, 0.118f, 1.0f};    // #14171e
+static const ImVec4 kThumbGlyph{0.227f, 0.259f, 0.314f, 1.0f}; // #3a4250
 
 void applyTheme() {
   ImGuiStyle& st = ImGui::GetStyle();
@@ -1240,6 +1255,26 @@ class PlayerHud {
   std::string displayName(const std::string& uri) const {
     return (!source_label_.empty() && uri == current_uri_) ? source_label_
                                                            : baseName(uri);
+  }
+
+  // The card grid's source chip: the path's extension uppercased (MKV, MP4,
+  // WEBM...), or "" for a path with no usable extension (a bare host URL).
+  static std::string fileFormatLabel(const std::string& uri) {
+    const std::string name = baseName(uri);
+    const std::size_t dot = name.find_last_of('.');
+    if (dot == std::string::npos || dot + 1 >= name.size()) return "";
+    std::string ext = name.substr(dot + 1);
+    for (char& c : ext) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return ext;
+  }
+
+  // The card grid's sub line when nothing is resumable: the entry's parent
+  // folder leaf (the watched root it came from), or "" if it has no parent.
+  static std::string parentFolderLabel(const std::string& uri) {
+    const std::string name = baseName(uri);
+    const std::size_t slash = name.find_last_of("/\\");
+    if (slash == std::string::npos || slash == 0) return "";
+    return name.substr(0, slash);
   }
 
  private:
@@ -3363,41 +3398,135 @@ class PlayerHud {
         ImGui::TextDisabled("%s", "No media files found.");
       }
     }
-    const float x_w =
-        ImGui::CalcTextSize("x").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-    int focus_i = 0;  // V7b: the focus face's index over `shown`
+    // Card grid (docs/public/prototypes/redesign/library.html .grid/.card
+    // :63-92, the v0.3 redesign set). Auto-fill columns of ~196px cards, a
+    // 16px gutter, each card a 16:9 poster over a meta block. The poster is
+    // the placeholder thumb (kThumbBg/kThumbGlyph — the content layer stays
+    // deep in both themes) with a source-format pill top-left and a centre
+    // play badge on hover. The whole card is one hit target (open), with the
+    // remove affordance as a small x in the poster's top-right corner.
+    const float kGap = 16.0f;
+    const float kMinCardW = 196.0f;
+    const float pad_x = 12.0f, pad_t = 10.0f, pad_b = 12.0f;
+    const float line_h = ImGui::GetTextLineHeight();
+    const float meta_h = pad_t + line_h + 3.0f + line_h + 4.0f + line_h + pad_b;
+    float avail = ImGui::GetContentRegionAvail().x;
+    int cols = static_cast<int>((avail + kGap) / (kMinCardW + kGap));
+    if (cols < 1) cols = 1;
+    const float card_w = (avail - kGap * static_cast<float>(cols - 1)) /
+                         static_cast<float>(cols);
+    const float poster_h = card_w * 9.0f / 16.0f;  // 16:9 aspect
+    const float card_h = poster_h + meta_h;
+    const ImVec2 start = ImGui::GetCursorPos();
+    int focus_i = 0;  // V7b: the focus face's index over `shown` (row-major)
+    int idx = 0;
     for (const LibraryEntry* ep : shown) {
       const LibraryEntry& e = *ep;
-      // The row's right edge, read at the row start (the cursor sits at
-      // the content region's left edge here, so the avail width is the
-      // whole row). SameLine takes a window-relative offset, so the
-      // button's target is that edge minus the button's own width.
-      const float row_left = ImGui::GetCursorPosX();
-      const float x_pos = ImGui::GetContentRegionAvail().x - x_w;
+      const int col = idx % cols;
+      const int row = idx / cols;
+      ImGui::SetCursorPos(ImVec2(start.x + col * (card_w + kGap),
+                                 start.y + row * (card_h + kGap)));
       ImGui::PushID(e.path.c_str());
-      // The NFO sidecar title wins the row when a scan picked one up
-      // (docs/mvp.md §3 offline scrape); the file name is the
-      // fallback. Sources outside every watched folder have no scrape.
-      const NfoInfo* nfo = library_->nfoFor(e.path);
-      std::string label =
-          (nfo != nullptr && !nfo->title.empty()) ? nfo->title
-                                                  : displayName(e.path);
-      const std::int64_t resume = resumePositionMs(e);
-      if (resume > 0) {
-        label += "  (at " + formatClock(std::chrono::milliseconds(resume)) + ")";
-      }
+      // One hit target spanning the card: click/Enter opens, hover drives the
+      // badge + tooltip, and the focus ring wraps the card rect.
+      ImGui::InvisibleButton("##card", ImVec2(card_w, card_h));
+      const bool clicked = ImGui::IsItemClicked();
+      const bool hovered = ImGui::IsItemHovered();
       const bool enter =
           ui_focus_.takesActivation(UiFocus::Face::LibraryRows, focus_i);
-      if (ImGui::Selectable(label.c_str(), e.path == current_uri_,
-                            ImGuiSelectableFlags_AllowOverlap) ||
-          enter) {
-        openSource(e.path);
-        st_.overlay = Overlay::None;
+      const ImVec2 rmin = ImGui::GetItemRectMin();
+      const ImVec2 rmax = ImGui::GetItemRectMax();
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const ImU32 u_line = ImGui::ColorConvertFloat4ToU32(theme::kBorder);
+      const ImU32 u_edge = ImGui::ColorConvertFloat4ToU32(theme::kLineStrong);
+      const ImU32 u_card = ImGui::ColorConvertFloat4ToU32(theme::kSurface2);
+      const ImU32 u_text = ImGui::ColorConvertFloat4ToU32(theme::kText);
+      const ImU32 u_text3 = ImGui::ColorConvertFloat4ToU32(theme::kTextMuted);
+      const ImU32 u_net = ImGui::ColorConvertFloat4ToU32(theme::kNet);
+      const ImU32 u_accent = ImGui::ColorConvertFloat4ToU32(theme::kAccent);
+      const ImU32 u_ink = ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent);
+      // Card frame: surface-2 fill, 1px border (line → line-strong on hover),
+      // panel radius. (proto.css .card :69-74)
+      const float rad = static_cast<float>(theme::kPanelRounding);
+      dl->AddRectFilled(rmin, rmax, u_card, rad);
+      dl->AddRect(rmin, rmax, hovered ? u_edge : u_line, rad, 0, 1.0f);
+      // Poster: the 16:9 placeholder thumb + a centred media glyph
+      // (proto.css .thumb/.ph-glyph :215-224; the glyph mirrors the
+      // prototype's rounded-rect-with-play-triangle SVG).
+      const ImVec2 pmin(rmin.x + 1.0f, rmin.y + 1.0f);
+      const ImVec2 pmax(rmax.x - 1.0f, rmin.y + poster_h);
+      dl->AddRectFilled(pmin, pmax, ImGui::ColorConvertFloat4ToU32(kThumbBg),
+                        rad, ImDrawFlags_RoundCornersTop);
+      const ImVec2 gc((pmin.x + pmax.x) * 0.5f, (pmin.y + pmax.y) * 0.5f);
+      const ImU32 u_glyph = ImGui::ColorConvertFloat4ToU32(kThumbGlyph);
+      dl->AddRect(ImVec2(gc.x - 13.0f, gc.y - 9.0f),
+                  ImVec2(gc.x + 13.0f, gc.y + 9.0f), u_glyph, 2.5f, 0, 1.4f);
+      dl->AddTriangleFilled(ImVec2(gc.x - 3.0f, gc.y - 4.0f),
+                            ImVec2(gc.x - 3.0f, gc.y + 4.0f),
+                            ImVec2(gc.x + 5.0f, gc.y), u_glyph);
+      // Source-format pill, top-left (proto.css .card .poster .kind :76 —
+      // a .pill.net: net-soft ground, net ink). The format is the card's
+      // source chip.
+      const std::string fmt = fileFormatLabel(e.path);
+      if (!fmt.empty()) {
+        const float pill_h = 18.0f;
+        const ImVec2 tsize = ImGui::CalcTextSize(fmt.c_str());
+        const ImVec2 ppmin(pmin.x + 8.0f, pmin.y + 8.0f);
+        const ImVec2 ppmax(ppmin.x + tsize.x + 12.0f, ppmin.y + pill_h);
+        dl->AddRectFilled(ppmin, ppmax, IM_COL32((u_net & 0xFF),
+                                                 ((u_net >> 8) & 0xFF),
+                                                 ((u_net >> 16) & 0xFF), 31),
+                          pill_h * 0.5f);
+        dl->AddText(ImVec2(ppmin.x + 6.0f, ppmin.y + (pill_h - tsize.y) * 0.5f),
+                    u_net, fmt.c_str());
+      }
+      // Remove affordance, top-right of the poster: a small x that reads as
+      // part of the poster chrome (click zones are resolved below).
+      dl->AddText(ImVec2(pmax.x - 18.0f, pmin.y + 6.0f), u_text3, "x");
+      // Centre play badge on hover (proto.css .card .play-badge :86-92).
+      if (hovered) {
+        const ImVec2 bc(gc.x, gc.y);
+        dl->AddCircleFilled(bc, 20.0f, u_accent, 48);
+        dl->AddTriangleFilled(ImVec2(bc.x - 4.0f, bc.y - 6.0f),
+                              ImVec2(bc.x - 4.0f, bc.y + 6.0f),
+                              ImVec2(bc.x + 7.0f, bc.y), u_ink);
+      }
+      // Meta: title (ellipsis via clip rect), row2 (format + duration),
+      // sub line (resume/source) — proto.css .card .meta :77-84.
+      const NfoInfo* nfo = library_->nfoFor(e.path);
+      const std::string title =
+          (nfo != nullptr && !nfo->title.empty()) ? nfo->title
+                                                  : displayName(e.path);
+      const ImVec2 tpos(rmin.x + pad_x, pmax.y + pad_t);
+      const ImU32 clip_r = 0;
+      (void)clip_r;
+      dl->PushClipRect(ImVec2(tpos.x, tpos.y),
+                       ImVec2(rmax.x - pad_x, tpos.y + line_h), true);
+      dl->AddText(tpos, u_text, title.c_str());
+      dl->PopClipRect();
+      const float row2_y = tpos.y + line_h + 3.0f;
+      dl->AddText(ImVec2(tpos.x, row2_y), u_text3, fmt.c_str());
+      if (e.duration_ms > 0) {
+        const std::string dur =
+            formatClock(std::chrono::milliseconds(e.duration_ms));
+        const ImVec2 dsz = ImGui::CalcTextSize(dur.c_str());
+        dl->AddText(ImVec2(rmax.x - pad_x - dsz.x, row2_y), u_text3,
+                    dur.c_str());
+      }
+      const std::int64_t resume = resumePositionMs(e);
+      std::string sub;
+      if (resume > 0) {
+        sub = "at " + formatClock(std::chrono::milliseconds(resume));
+      } else {
+        sub = parentFolderLabel(e.path);
+      }
+      if (!sub.empty()) {
+        dl->AddText(ImVec2(tpos.x, row2_y + line_h + 4.0f), u_net, sub.c_str());
       }
       if (ui_focus_.holds(UiFocus::Face::LibraryRows, focus_i)) {
         drawFocusRing();
       }
-      if (ImGui::IsItemHovered()) {
+      if (hovered) {
         std::string tip = e.path;
         if (e.duration_ms > 0) {
           tip += "\nduration " +
@@ -3411,23 +3540,26 @@ class PlayerHud {
         }
         ImGui::SetTooltip("%s", tip.c_str());
       }
-      if (e.duration_ms > 0) {
-        ImGui::SameLine();
-        ImGui::TextDisabled(
-            "%s", formatClock(std::chrono::milliseconds(e.duration_ms)).c_str());
-      }
-      // A label long enough to crowd the button wins the max() — the
-      // button slides right of the text instead of being drawn on top.
-      const float cursor_off = ImGui::GetCursorPosX() - row_left;
-      ImGui::SameLine(
-          std::max(x_pos, cursor_off + ImGui::GetStyle().ItemSpacing.x));
-      if (ImGui::SmallButton("x")) {
-        library_->removeEntry(e.path);
-        library_->save();
+      // Click zones: the poster's top-right x removes, anywhere else opens.
+      if ((clicked || enter)) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const bool in_x = mouse.x >= pmax.x - 22.0f && mouse.y <= pmin.y + 22.0f;
+        if (clicked && in_x) {
+          library_->removeEntry(e.path);
+          library_->save();
+        } else {
+          openSource(e.path);
+          st_.overlay = Overlay::None;
+        }
       }
       ImGui::PopID();
       ++focus_i;
+      ++idx;
     }
+    // Reserve the grid's full height so the child scrolls past the last row.
+    const int total_rows = (idx + cols - 1) / cols;
+    ImGui::SetCursorPos(
+        ImVec2(start.x, start.y + total_rows * (card_h + kGap)));
     ImGui::EndChild();
   }
 
