@@ -2412,7 +2412,10 @@ class PlayerHud {
     const ImGuiIO& io = ImGui::GetIO();
     const float w = io.DisplaySize.x;
     const float h = io.DisplaySize.y;
-    const float bar_w = std::min(w - 24.0f, 920.0f);
+    // OSC geometry per redesign/desktop-main.html:62-63 (.osc): width
+    // min(97%, 1240px), bottom 26px. The old 920px/16px came from the v1
+    // draft; the v2 spec is wider and sits a touch higher off the edge.
+    const float bar_w = std::min(w * 0.97f, 1240.0f);
     const float bar_h = 80.0f;  // seek row + button row
 
     const MediaInfo info = player_.mediaInfo();
@@ -2421,7 +2424,7 @@ class PlayerHud {
     const double shown = st_.seek_dragging ? st_.seek_scrub : pos;
 
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, st_.hud_alpha);
-    ImGui::SetNextWindowPos(ImVec2((w - bar_w) * 0.5f, h - bar_h - 16.0f),
+    ImGui::SetNextWindowPos(ImVec2((w - bar_w) * 0.5f, h - bar_h - 26.0f),
                             ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(bar_w, bar_h), ImGuiCond_Always);
     if (ImGui::Begin("##osc", nullptr,
