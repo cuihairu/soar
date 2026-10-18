@@ -2289,8 +2289,38 @@ class PlayerHud {
 
       // Row 2: transport, volume, rate, tracks, overlays, tools.
       const bool playing = player_.state() == PlaybackState::Playing;
-      if (ImGui::Button(playing ? "Pause" : "Play", ImVec2(54, 0))) {
+      // Play/pause as the prototype's .tplay: a 38px circular accent button
+      // with an ink glyph (redesign/desktop-main.html:95-99). The bitmap font
+      // carries no triangle/pause glyph, so the face + glyph are drawn on the
+      // draw list the same way drawPauseOverlay does.
+      if (ImGui::InvisibleButton("##playpause", ImVec2(38.0f, 38.0f))) {
         togglePlayPause();
+      }
+      {
+        const bool phover = ImGui::IsItemHovered();
+        const bool ppress = ImGui::IsItemActive();
+        ImVec4 face = theme::kAccent;
+        face.x += ppress ? 0.10f : (phover ? 0.06f : 0.0f);
+        face.y += ppress ? 0.10f : (phover ? 0.06f : 0.0f);
+        face.z += ppress ? 0.10f : (phover ? 0.06f : 0.0f);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 bmin = ImGui::GetItemRectMin();
+        const ImVec2 center(bmin.x + 19.0f, bmin.y + 19.0f);
+        const ImU32 faceU32 = ImGui::ColorConvertFloat4ToU32(face);
+        const ImU32 inkU32 = ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent);
+        dl->AddCircleFilled(center, 19.0f, faceU32, 48);
+        if (playing) {
+          // Pause: two vertical ink bars (prototype's pause glyph).
+          dl->AddRectFilled(ImVec2(center.x - 5.0f, center.y - 7.0f),
+                            ImVec2(center.x - 1.5f, center.y + 7.0f), inkU32, 1.0f);
+          dl->AddRectFilled(ImVec2(center.x + 1.5f, center.y - 7.0f),
+                            ImVec2(center.x + 5.0f, center.y + 7.0f), inkU32, 1.0f);
+        } else {
+          // Play: ink triangle.
+          dl->AddTriangleFilled(ImVec2(center.x - 4.0f, center.y - 6.5f),
+                                ImVec2(center.x - 4.0f, center.y + 6.5f),
+                                ImVec2(center.x + 7.0f, center.y), inkU32);
+        }
       }
       ImGui::SameLine();
       if (ImGui::Button("Stop", ImVec2(46, 0))) player_.stop();
