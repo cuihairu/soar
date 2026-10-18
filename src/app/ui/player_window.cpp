@@ -2749,7 +2749,7 @@ class PlayerHud {
     // state name — one indicator, not two.) All fade with the theme,
     // never block input.
     if (cfg_.buffering && cfg_.buffering->load(std::memory_order_relaxed)) {
-      chip("##buffering", "Buffering...", 12.0f);
+      chip("##buffering", "Buffering...", 18.0f);
     }
     const std::uint64_t total =
         cfg_.download_total ? cfg_.download_total->load(std::memory_order_relaxed) : 0;
@@ -2759,13 +2759,13 @@ class PlayerHud {
       char text[32];
       std::snprintf(text, sizeof(text), "Downloading %llu%%",
                     static_cast<unsigned long long>(have * 100 / total));
-      chip("##download", text, 34.0f);
+      chip("##download", text, 40.0f);
     }
     // Cast chip while a DLNA session is live (docs/mvp.md §3): the TV
     // plays even when this window is minimized, so the state stays visible.
     if (cast_active_ &&
         cast_active_->phase() == soar::cast::CastSession::Phase::Casting) {
-      chip("##cast", "Casting", 56.0f);
+      chip("##cast", "Casting", 62.0f);
     }
   }
 
@@ -2886,7 +2886,7 @@ class PlayerHud {
                          ImGuiWindowFlags_NoBackground |
                          ImGuiWindowFlags_AlwaysAutoResize)) {
       ImVec4 bg = theme::kPanelBg;
-      bg.w = 0.6f;  // the alpha SetNextWindowBgAlpha used to carry
+      bg.w = 0.72f;  // .statechip bg rgba(9,10,12,.72) (desktop-main.html:39)
       ImDrawList* dl = ImGui::GetWindowDrawList();
       const ImVec2 p0 = ImGui::GetWindowPos();
       const ImVec2 p1(p0.x + ImGui::GetWindowWidth(),
