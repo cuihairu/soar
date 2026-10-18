@@ -323,30 +323,93 @@ bool fileExists(const std::string& path) {
 // colour and radius the UI draws is named here — the draw code reads tokens,
 // never bare literals. Hex comments are the prototype token values.
 namespace theme {
-constexpr ImVec4 kText{0.933f, 0.945f, 0.961f, 1.0f};             // #EEF1F5 text-1
-constexpr ImVec4 kTextDim{0.725f, 0.753f, 0.796f, 1.0f};          // #B9C0CB text-2
-constexpr ImVec4 kTextMuted{0.545f, 0.580f, 0.639f, 1.0f};        // #8B94A3 text-3
+// Palette tokens. These are runtime-mutable so the light/dark toggle
+// (proto.css :root[data-theme]) can swap them; the draw code reads token
+// names, never literals, so switching is a single applyPalette() call.
+// Defaults below are the DARK palette; applyPalette(false) reloads them.
+ImVec4 kText{0.933f, 0.945f, 0.961f, 1.0f};             // #EEF1F5 text-1
+ImVec4 kTextDim{0.725f, 0.753f, 0.796f, 1.0f};          // #B9C0CB text-2
+ImVec4 kTextMuted{0.545f, 0.580f, 0.639f, 1.0f};        // #8B94A3 text-3
 // Single accent lock (proto.css --orange-500 + --ink-on-accent): the play /
 // interactive accent. Hover is --accent-hover; the ink on accent buttons is
-// the warm near-black, not the neutral one.
-constexpr ImVec4 kAccent{1.0f, 0.420f, 0.208f, 1.0f};             // #FF6B35 orange-500
-constexpr ImVec4 kAccentHover{1.0f, 0.490f, 0.302f, 1.0f};        // #FF7D4D accent-hover
-constexpr ImVec4 kInkOnAccent{0.110f, 0.051f, 0.016f, 1.0f};      // #1C0D04 ink-on-accent
-constexpr ImVec4 kDanger{1.0f, 0.361f, 0.400f, 1.0f};             // #FF5C66 red-500
-constexpr ImVec4 kOk{0.243f, 0.812f, 0.431f, 1.0f};               // #3ECF6E ok-500
-constexpr ImVec4 kWarn{1.0f, 0.698f, 0.141f, 1.0f};               // #FFB224 warn-500
+// the warm near-black, not the neutral one. Accent + its ink are identical in
+// both themes (the orange is the same orange on light and dark).
+ImVec4 kAccent{1.0f, 0.420f, 0.208f, 1.0f};             // #FF6B35 orange-500
+ImVec4 kAccentHover{1.0f, 0.490f, 0.302f, 1.0f};        // #FF7D4D accent-hover
+ImVec4 kInkOnAccent{0.110f, 0.051f, 0.016f, 1.0f};      // #1C0D04 ink-on-accent
+ImVec4 kDanger{1.0f, 0.361f, 0.400f, 1.0f};             // #FF5C66 red-500
+ImVec4 kOk{0.243f, 0.812f, 0.431f, 1.0f};               // #3ECF6E ok-500
+ImVec4 kWarn{1.0f, 0.698f, 0.141f, 1.0f};               // #FFB224 warn-500
 // Network / P2P semantic (proto.css --sky-net): the one place sky-blue stays.
-constexpr ImVec4 kNet{0.424f, 0.694f, 1.0f, 1.0f};                // #6CB1FF sky-net
-constexpr ImVec4 kPanelBg{0.043f, 0.047f, 0.059f, 0.88f};         // #0A0B0E oscbg over video
-constexpr ImVec4 kPopupBg{0.10f, 0.11f, 0.15f, 0.98f};
-constexpr ImVec4 kBorder{1.0f, 1.0f, 1.0f, 0.10f};                // --oline rgba(255,255,255,.10)
-constexpr ImVec4 kFrameBg{1.0f, 1.0f, 1.0f, 0.10f};
-constexpr ImVec4 kFrameBgHovered{1.0f, 1.0f, 1.0f, 0.16f};
-constexpr ImVec4 kFrameBgActive{1.0f, 1.0f, 1.0f, 0.20f};
-constexpr ImVec4 kButton{1.0f, 1.0f, 1.0f, 0.10f};
-constexpr ImVec4 kButtonHovered{1.0f, 1.0f, 1.0f, 0.18f};
-constexpr ImVec4 kHeader{1.0f, 1.0f, 1.0f, 0.08f};
-constexpr ImVec4 kHeaderHovered{1.0f, 1.0f, 1.0f, 0.14f};
+ImVec4 kNet{0.424f, 0.694f, 1.0f, 1.0f};                // #6CB1FF sky-net
+// The opaque page background behind the video (theme::kPanelBg is the
+// translucent OSC face over the video; this is the SDL clear colour, i.e.
+// surface-0). Dark #0A0B0E, light #EEF0F4.
+ImVec4 kWindowBg{0.039f, 0.043f, 0.055f, 1.0f};         // #0A0B0E surface-0
+ImVec4 kPanelBg{0.043f, 0.047f, 0.059f, 0.88f};         // #0A0B0E oscbg over video
+ImVec4 kPopupBg{0.10f, 0.11f, 0.15f, 0.98f};
+ImVec4 kBorder{1.0f, 1.0f, 1.0f, 0.10f};                // --oline rgba(255,255,255,.10)
+ImVec4 kFrameBg{1.0f, 1.0f, 1.0f, 0.10f};
+ImVec4 kFrameBgHovered{1.0f, 1.0f, 1.0f, 0.16f};
+ImVec4 kFrameBgActive{1.0f, 1.0f, 1.0f, 0.20f};
+ImVec4 kButton{1.0f, 1.0f, 1.0f, 0.10f};
+ImVec4 kButtonHovered{1.0f, 1.0f, 1.0f, 0.18f};
+ImVec4 kHeader{1.0f, 1.0f, 1.0f, 0.08f};
+ImVec4 kHeaderHovered{1.0f, 1.0f, 1.0f, 0.14f};
+
+// Which palette is loaded. false = dark (the default the app ships with).
+inline bool g_light = false;
+
+// Load one of the two proto.css palettes into the tokens above. Callers then
+// re-run applyTheme() (ImGui style) and refresh the SDL clear colour. Values
+// are the prototype's CSS custom properties for each [data-theme] block.
+inline void applyPalette(bool light) {
+  g_light = light;
+  if (!light) {
+    // :root (dark) — the palette the tokens above already default to.
+    kText = {0.933f, 0.945f, 0.961f, 1.0f};         // #EEF1F5 text-1
+    kTextDim = {0.725f, 0.753f, 0.796f, 1.0f};      // #B9C0CB text-2
+    kTextMuted = {0.545f, 0.580f, 0.639f, 1.0f};    // #8B94A3 text-3
+    kDanger = {1.0f, 0.361f, 0.400f, 1.0f};         // #FF5C66 red-500
+    kOk = {0.243f, 0.812f, 0.431f, 1.0f};           // #3ECF6E ok-500
+    kWarn = {1.0f, 0.698f, 0.141f, 1.0f};           // #FFB224 warn-500
+    kNet = {0.424f, 0.694f, 1.0f, 1.0f};            // #6CB1FF sky-net
+    kWindowBg = {0.039f, 0.043f, 0.055f, 1.0f};     // #0A0B0E surface-0
+    kPanelBg = {0.043f, 0.047f, 0.059f, 0.88f};     // oscbg over video
+    kPopupBg = {0.10f, 0.11f, 0.15f, 0.98f};
+    kBorder = {1.0f, 1.0f, 1.0f, 0.10f};            // rgba(255,255,255,.10)
+    kFrameBg = {1.0f, 1.0f, 1.0f, 0.10f};
+    kFrameBgHovered = {1.0f, 1.0f, 1.0f, 0.16f};
+    kFrameBgActive = {1.0f, 1.0f, 1.0f, 0.20f};
+    kButton = {1.0f, 1.0f, 1.0f, 0.10f};
+    kButtonHovered = {1.0f, 1.0f, 1.0f, 0.18f};
+    kHeader = {1.0f, 1.0f, 1.0f, 0.08f};
+    kHeaderHovered = {1.0f, 1.0f, 1.0f, 0.14f};
+    return;
+  }
+  // :root[data-theme="light"] — the light palette. Accent + ink-on-accent
+  // stay the same orange/near-black; the semantic inks switch to their
+  // "-ink" variants (readable on a light ground) and every surface flips to
+  // the light ladder (#eef0f4 / #f7f8fa / #ffffff) with dark-alpha controls.
+  kText = {0.090f, 0.102f, 0.122f, 1.0f};           // #171A1F text-1
+  kTextDim = {0.271f, 0.306f, 0.361f, 1.0f};        // #454E5C text-2
+  kTextMuted = {0.384f, 0.424f, 0.490f, 1.0f};      // #626C7D text-3
+  kDanger = {0.788f, 0.208f, 0.251f, 1.0f};         // --red-ink #C93540
+  kOk = {0.118f, 0.557f, 0.306f, 1.0f};             // --ok-ink #1E8E4E
+  kWarn = {0.604f, 0.404f, 0.0f, 1.0f};             // --warn-ink #9A6700
+  kNet = {0.169f, 0.424f, 0.690f, 1.0f};            // --sky-net-ink #2B6CB0
+  kWindowBg = {0.933f, 0.941f, 0.957f, 1.0f};       // #EEF0F4 surface-0
+  kPanelBg = {0.969f, 0.973f, 0.980f, 0.97f};       // #F7F8FA surface-1
+  kPopupBg = {1.0f, 1.0f, 1.0f, 0.98f};             // #FFFFFF surface-2
+  kBorder = {0.875f, 0.890f, 0.918f, 1.0f};         // --line #DFE3EA
+  kFrameBg = {0.906f, 0.918f, 0.941f, 1.0f};        // --surface-3 #E7EAF0
+  kFrameBgHovered = {0.831f, 0.855f, 0.898f, 1.0f}; // --line-strong #C3CAD5
+  kFrameBgActive = {0.765f, 0.792f, 0.847f, 1.0f};  // a shade darker
+  kButton = {0.906f, 0.918f, 0.941f, 1.0f};         // --surface-3 #E7EAF0
+  kButtonHovered = {0.831f, 0.855f, 0.898f, 1.0f};  // --line-strong #C3CAD5
+  kHeader = {0.906f, 0.918f, 0.941f, 1.0f};         // --surface-3 #E7EAF0
+  kHeaderHovered = {0.831f, 0.855f, 0.898f, 1.0f};  // --line-strong #C3CAD5
+}
 // Radii live in ui_tokens.h (no ImGui dependency, so the suite can pin
 // them): the redesign v2 system is panel 10 / control 7 / badge pill.
 using soar::app::kPanelRounding;
@@ -390,6 +453,43 @@ void applyTheme() {
   c[ImGuiCol_CheckMark] = kAccent;
   c[ImGuiCol_Separator] = theme::kBorder;
   c[ImGuiCol_TextSelectedBg] = kAccent;
+}
+
+// <state>/soar/theme.txt — one line, "light" or "dark". Same XDG ladder the
+// recent/library/shortcut stores use; absent or unrecognised means dark (the
+// default the app ships with).
+std::string themePrefPath() {
+  const char* dir = nullptr;
+#ifdef _WIN32
+  dir = std::getenv("APPDATA");
+  if (dir && *dir) return std::string(dir) + "\\soar\\theme.txt";
+  return "soar-theme.txt";
+#else
+  dir = std::getenv("XDG_STATE_HOME");
+  if (dir && *dir) return std::string(dir) + "/soar/theme.txt";
+  const char* home = std::getenv("HOME");
+  if (home && *home) return std::string(home) + "/.local/state/soar/theme.txt";
+  return "soar-theme.txt";
+#endif
+}
+
+// Load the saved palette before the first applyTheme(). Called once at init.
+void loadThemePref() {
+  std::ifstream in(themePrefPath());
+  std::string word;
+  if (in >> word) theme::applyPalette(word == "light");
+}
+
+// Persist the current palette (called after a ToggleTheme).
+void saveThemePref() {
+  const std::string path = themePrefPath();
+  // Best-effort: mirror the parent dir the other stores create before write.
+  std::error_code ec;
+  std::filesystem::path p(path);
+  if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+  std::ofstream out(path, std::ios::trunc);
+  if (!out) return;
+  out << (theme::g_light ? "light" : "dark") << "\n";
 }
 
 // Best-effort system UI font: the ImGui embedded font is ASCII-only bitmap,
@@ -896,6 +996,15 @@ class PlayerHud {
           case ShortcutAction::Help:
             toggleOverlay(Overlay::Help);
             return;
+          case ShortcutAction::ToggleTheme: {
+            // Light/dark palette (proto.css [data-theme]). Swap the palette
+            // tokens, re-apply the ImGui style, and refresh the SDL clear
+            // colour; the choice persists to <state>/soar/theme.txt.
+            theme::applyPalette(!theme::g_light);
+            applyTheme();
+            saveThemePref();
+            return;
+          }
         }
       }
       case SDL_MOUSEMOTION:
@@ -3752,6 +3861,7 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
   // per frame, the overlays are transient), so ImGui's ini would only
   // litter the user's working directory with a file nobody reads.
   ImGui::GetIO().IniFilename = nullptr;
+  loadThemePref();  // restore the saved light/dark palette before styling
   applyTheme();
   loadOverlayFont();
   ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
@@ -3783,7 +3893,10 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
       hud.drawUi(nowMs(), video_active);
       ImGui::Render();
 
-      SDL_SetRenderDrawColor(renderer, 10, 11, 14, 255);  // theme background
+      SDL_SetRenderDrawColor(renderer,
+                             (Uint8)(theme::kWindowBg.x * 255.0f),
+                             (Uint8)(theme::kWindowBg.y * 255.0f),
+                             (Uint8)(theme::kWindowBg.z * 255.0f), 255);
       SDL_RenderClear(renderer);
 #ifdef SOAR_WITH_FFMPEG
       // Canvas subtitles obey the same sync offset and V-toggle the

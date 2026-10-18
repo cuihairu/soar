@@ -139,6 +139,7 @@ enum class ShortcutAction {
   Cast,               // t: the DLNA cast overlay (docs/mvp.md §3)
   Quit,
   SearchLibrary,      // /: focus the library overlay's search box
+  ToggleTheme,        // y: light/dark palette (proto.css [data-theme])
 };
 
 class ShortcutMap {
