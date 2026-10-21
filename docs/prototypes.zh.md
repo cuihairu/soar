@@ -3,7 +3,7 @@
 
 > 桌面播放器 v2 重设计稿：主播放窗 / 播放列表 / 设置面板 / 媒体库四页，亮暗双主题。
 > 以下是**设计稿**（HTML/CSS 原型，`docs/public/prototypes/` 下的静态页），不是产品代码；
-> 实现落点见 [UI 设计](/zh/ui-design)。品牌位为中性占位（纯色橙块 + S 字），非正式 logo。
+> 实现落点见 UI 设计。品牌位为中性占位（纯色橙块 + S 字），非正式 logo。
 
 ## 在线预览
 
@@ -11,12 +11,12 @@
 
 | 页面 | 交互原型 | 暗色截图 | 亮色截图 |
 | --- | --- | --- | --- |
-| 主播放窗 | [打开](/prototypes/redesign/desktop-main.html) | [暗](/prototypes/redesign/desktop-main-dark.png) | [亮](/prototypes/redesign/desktop-main-light.png) |
-| 播放列表 | [打开](/prototypes/redesign/playlist.html) | [暗](/prototypes/redesign/playlist-dark.png) | [亮](/prototypes/redesign/playlist-light.png) |
-| 设置面板 | [打开](/prototypes/redesign/settings.html) | [暗](/prototypes/redesign/settings-dark.png) | [亮](/prototypes/redesign/settings-light.png) |
-| 媒体库 | [打开](/prototypes/redesign/library.html) | [暗](/prototypes/redesign/library-dark.png) | [亮](/prototypes/redesign/library-light.png) |
+| 主播放窗 | 打开 | 暗 | 亮 |
+| 播放列表 | 打开 | 暗 | 亮 |
+| 设置面板 | 打开 | 暗 | 亮 |
+| 媒体库 | 打开 | 暗 | 亮 |
 
-完整说明（旧稿丑点清单、逐页改动理由）见 [重设计总览](/prototypes/redesign/index.html)。
+完整说明（旧稿丑点清单、逐页改动理由）见 重设计总览。
 
 ## 关键帧
 
@@ -27,7 +27,7 @@
 外壳（状态徽标 / 控制栏 / 注解浮层 / 进度槽）随主题用浅色；视频画布与其上的字幕属内容层，两主题恒黑。
 
 > ⚠️ 主播放窗两版截图摄于 2026-10-07 定稿帧，**含顶栏**；2026-10-15 巡检代决已把顶栏
-> 移除出 v2 稿（无顶栏为 v0.1 基准，见 [UI 设计](/zh/ui-design) §2），本仓无浏览器渲染
+> 移除出 v2 稿（无顶栏为 v0.1 基准，见 UI 设计 §2），本仓无浏览器渲染
 > 环境故未重摄，截图与现行原型页存在此一处已知差异（重摄前保留）。
 
 ### 主播放窗（暗色）
@@ -62,7 +62,7 @@
 
 ## 对齐验收（2026-10-13）
 
-逐屏三档结论与截图证据见[对齐验收报告](/zh/alignment-audit-2026-10-13)：
+逐屏三档结论与截图证据见对齐验收报告：
 有差异 3 屏（主播放窗 / 播放列表 / 媒体库），未实现 2 屏（设置面板、翻译浮层，
 ui-design §2 定 v0.1 无设置页）。实现差异 7 项已登记 todo「原型对齐验收批」；
 原型页里程碑标注已落地（2026-10-14，巡检）：`redesign/index.html` 增「原型超前项
@@ -83,12 +83,12 @@ v0.2+、媒体库缩略图·卡片网格·来源徽标 v0.3），`prototypes/tra
 - **v1 原型集页头标废弃**：`prototypes/` 下六页（含 `index.html` 总览）的 docbar
   前置「v1 旧稿（已废弃，v2 见 …）」并链到对应 v2 页；v1 页保留不删——v2 各页的
   「旧稿对照」链仍指向它们。translate-panel 页注明 v2 未重出该页。
-- 移动端卡（`mobile.png`）维持占位：移动壳尚无 UI 可对（见[对齐审计](/zh/prototype-alignment-audit) §6 平台分列），无 v2 稿可指。
+- 移动端卡（`mobile.png`）维持占位：移动壳尚无 UI 可对（见对齐审计 §6 平台分列），无 v2 稿可指。
 
 ## 顶栏移除（2026-10-15 巡检代决 a）
 
 对齐审计 §5-P2-7 的三项由用户代决选 **(a) 保持无顶栏**：v2 原型主播放窗四帧的顶栏
 （品牌位 + 居中片名 + I/R/H/F 工具钮）全部移除，理由沿用审计推荐——入口走 OSC + 快捷键
 （I/R/H/F 均在 §3.2 合同）、片名走 OS 窗口标题，加顶栏引入常驻 chrome 面积与 §1.6-1
-调研结论冲突。**顶栏与亮色版同属 v0.2 候选，非 v0.1 基准**（[UI 设计](/zh/ui-design) §2/§4
+调研结论冲突。**顶栏与亮色版同属 v0.2 候选，非 v0.1 基准**（UI 设计 §2/§4
 同步）。主播放窗两版截图为移除前定稿帧，未重摄（无渲染环境），已知差异见上文。

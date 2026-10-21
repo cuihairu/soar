@@ -11,12 +11,12 @@ Every page accepts a `?theme=light|dark` parameter or an in-page button to switc
 
 | Page | Interactive prototype | Dark screenshot | Light screenshot |
 | --- | --- | --- | --- |
-| Main player window | [Open](/prototypes/redesign/desktop-main.html) | [Dark](/prototypes/redesign/desktop-main-dark.png) | [Light](/prototypes/redesign/desktop-main-light.png) |
-| Playlist | [Open](/prototypes/redesign/playlist.html) | [Dark](/prototypes/redesign/playlist-dark.png) | [Light](/prototypes/redesign/playlist-light.png) |
-| Settings panel | [Open](/prototypes/redesign/settings.html) | [Dark](/prototypes/redesign/settings-dark.png) | [Light](/prototypes/redesign/settings-light.png) |
-| Media library | [Open](/prototypes/redesign/library.html) | [Dark](/prototypes/redesign/library-dark.png) | [Light](/prototypes/redesign/library-light.png) |
+| Main player window | Open | Dark | Light |
+| Playlist | Open | Dark | Light |
+| Settings panel | Open | Dark | Light |
+| Media library | Open | Dark | Light |
 
-Full rationale (the list of what was wrong with the older draft, and per-page reasons for each change) in the [redesign overview](/prototypes/redesign/index.html).
+Full rationale (the list of what was wrong with the older draft, and per-page reasons for each change) in the redesign overview.
 
 ## Key frames
 

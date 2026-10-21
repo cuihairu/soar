@@ -46,7 +46,7 @@
 - 启动语义（BUGS.md #3，与 #2 并案）：GUI 前端 `soarw.exe` 与 `--gui` 无源启动 = 空主界面（「Open a file」海报），不报 usage；控制台 `soar.exe` 无源仍 usage 退出 2；`--help/-h` 打用法退出 0。默认后端无显式 `--backend=` 时取 FFmpeg（编译包含时；原默认 null 对任意 URI 假播黑屏，窗口会话打开的文件会静默黑屏）。文件关联：Windows 安装器注册 18 扩展「打开方式 → Soar」候选（OpenWithProgids，不抢默认，卸载无痕），Linux `.desktop` `Exec=soar --gui` + MimeType
 - 状态提示：暂停/缓冲指示、OSD Toast、媒体信息浮层
 
-设计与技术选型（SDL2 自绘 / ImGui / Qt / Web 壳的对比与取舍）见 [UI 设计](/zh/ui-design)。
+设计与技术选型（SDL2 自绘 / ImGui / Qt / Web 壳的对比与取舍）见 UI 设计。
 
 ## 2. v0.2（已全部落地）
 

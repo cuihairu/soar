@@ -256,7 +256,7 @@ CMake: `SOAR_ENABLE_IMGUI` (ON by default) takes ImGui v1.91.9b (including the `
 - [x] Xvfb integration cases driving every function from the keyboard + green ui_state pure-logic unit tests
 - [x] The coverage gate does not regress (new code is measured under the existing convention, and the gate rises with the water level)
 
-Coverage details are in [docs/coverage-notes.md](/zh/coverage-notes) §3.6: the unreachable items in `player_window.cpp` are defensive branches that require an injected failure to reach, plus the font candidate paths — not untested interactions.
+Coverage details are in docs/coverage-notes.md §3.6: the unreachable items in `player_window.cpp` are defensive branches that require an injected failure to reach, plus the font candidate paths — not untested interactions.
 
 ## 7. Later boundaries (against scope creep)
 

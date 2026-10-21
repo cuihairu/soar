@@ -2,7 +2,7 @@
 # Coverage measurement and uncovered items
 
 > **This document has no English translation.** It exists only in the Chinese edition:
-> [coverage-notes](/zh/coverage-notes).
+> coverage-notes.
 
 That is a deliberate choice, not an omission. This page is a living measurement log rather than a
 frozen reference: about 460 lines of per-batch coverage readings, gate-recalibration arithmetic, and
