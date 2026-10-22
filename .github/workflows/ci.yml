@@ -33,7 +33,7 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       # Linux builds against system packages (apt) instead of vcpkg:
       # the vcpkg SDL2 dependency chain (libxcrypt etc.) is slow and
@@ -73,7 +73,7 @@ jobs:
       # dependencies with MSVC (mixed toolchains fail to link).
       - name: Setup MSVC (Windows)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@v1.13.0
 
       - name: Clone vcpkg
         if: runner.os != 'Linux'
@@ -281,7 +281,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install system packages
         run: |
@@ -331,7 +331,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install system packages
         run: |
@@ -368,7 +368,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install system packages
         run: |
@@ -412,7 +412,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install system packages
         run: |
@@ -504,7 +504,7 @@ jobs:
           cat gcovr-summary.txt coverage.txt >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage-report
           path: |

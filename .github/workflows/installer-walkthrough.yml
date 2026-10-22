@@ -247,7 +247,7 @@ jobs:
 
       - name: Upload walkthrough screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: walkthrough-screenshots
           path: shots/

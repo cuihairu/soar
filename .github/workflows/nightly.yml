@@ -51,7 +51,7 @@ jobs:
             name: windows-x64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       # Linux builds against system packages (apt) instead of vcpkg,
       # exactly like ci.yml: system FFmpeg dev headers let us compile the
@@ -89,7 +89,7 @@ jobs:
       # dependencies with MSVC (mixed toolchains fail to link).
       - name: Setup MSVC (Windows)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@v1.13.0
 
       - name: Clone vcpkg
         if: runner.os != 'Linux'
@@ -596,7 +596,7 @@ jobs:
           echo "deb/rpm/AppImage walk passed (${{ matrix.name }})"
 
       - name: Upload platform package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: pkg-${{ matrix.name }}
           # deb/rpm 仅 Linux 腿、setup.exe 仅 Windows 腿产出——同一
@@ -634,7 +634,7 @@ jobs:
             name: linux-arm64
     steps:
       - name: Download platform package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.2
         with:
           name: pkg-${{ matrix.name }}
           path: .
@@ -690,10 +690,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Download platform packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.2
         with:
           pattern: pkg-*
           merge-multiple: true
@@ -807,7 +807,7 @@ jobs:
           echo "bj_time=${BJ_TIME}" >> "$GITHUB_ENV"
 
       - name: Upload daily-build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: daily-build
           path: ${{ env.daily_zip }}
