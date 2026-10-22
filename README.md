@@ -10,14 +10,16 @@
 
 Soar is an open-source C++17 media player built on FFmpeg + SDL2: it wraps a core playback abstraction plus a desktop UI, delegates demuxing and decoding to FFmpeg, and treats "playing every format you can think of" as a long-term goal.
 
-<p align="center">[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/soar/releases)</p>
-[![ci](https://github.com/cuihairu/soar/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/soar/actions/workflows/ci.yml)
-[![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/17)
-[![license](https://img.shields.io/github/license/cuihairu/soar)](LICENSE)
-[![platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/cuihairu/soar/actions/workflows/ci.yml)
-[![cmake](https://img.shields.io/badge/CMake-3.20%2B-064F8C?logo=cmake&logoColor=white)](https://cmake.org)
-[![ffmpeg](https://img.shields.io/badge/FFmpeg-decode%20%2B%20demux-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org)
-[![sdl2](https://img.shields.io/badge/SDL2-render%20%2B%20audio-173353)](https://wiki.libsdl.org)
+<p align="center">
+<a href="https://github.com/cuihairu/soar/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a>
+</p>
+<a href="https://github.com/cuihairu/soar/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/cuihairu/soar/actions/workflows/ci.yml/badge.svg"></a>
+<a href="https://en.cppreference.com/w/cpp/17"><img alt="C++" src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white"></a>
+<a href="LICENSE"><img alt="license" src="https://img.shields.io/github/license/cuihairu/soar"></a>
+<a href="https://github.com/cuihairu/soar/actions/workflows/ci.yml"><img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue"></a>
+<a href="https://cmake.org"><img alt="cmake" src="https://img.shields.io/badge/CMake-3.20%2B-064F8C?logo=cmake&logoColor=white"></a>
+<a href="https://ffmpeg.org"><img alt="ffmpeg" src="https://img.shields.io/badge/FFmpeg-decode%20%2B%20demux-007808?logo=ffmpeg&logoColor=white"></a>
+<a href="https://wiki.libsdl.org"><img alt="sdl2" src="https://img.shields.io/badge/SDL2-render%20%2B%20audio-173353"></a>
 
 [Docs](https://github.com/cuihairu/soar/tree/main/docs) · [Build guide](docs/build.md) · [Roadmap](docs/mvp.md)
 
