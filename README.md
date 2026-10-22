@@ -10,7 +10,7 @@
 
 Soar is an open-source C++17 media player built on FFmpeg + SDL2: it wraps a core playback abstraction plus a desktop UI, delegates demuxing and decoding to FFmpeg, and treats "playing every format you can think of" as a long-term goal.
 
-[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/soar/releases)
+<p align="center">[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/soar/releases)</p>
 [![ci](https://github.com/cuihairu/soar/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/soar/actions/workflows/ci.yml)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/17)
 [![license](https://img.shields.io/github/license/cuihairu/soar)](LICENSE)
