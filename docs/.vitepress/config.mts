@@ -1,8 +1,7 @@
 import { defineConfig } from 'vitepress'
 
-// English pages use bare filenames at the site root. Chinese pages already
-// use the repository's .zh.md naming convention, so locale rewrites expose
-// them under /zh without moving the source files.
+// English pages live at the site root (X.md); Chinese pages live in the
+// zh/ directory (zh/X.md) so VitePress official locales serve them at /zh.
 export default defineConfig({
   base: '/soar/',
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/soar/logo.svg' }]],
@@ -90,18 +89,5 @@ export default defineConfig({
         }
       }
     }
-  },
-  rewrites: {
-    'index.md': 'index.md',
-    'index.zh.md': 'zh/index.md',
-    'alignment-audit-2026-10-13.zh.md': 'zh/alignment-audit-2026-10-13.md',
-    'audit-doc-consistency.zh.md': 'zh/audit-doc-consistency.md',
-    'build.zh.md': 'zh/build.md',
-    'coverage-notes.zh.md': 'zh/coverage-notes.md',
-    'licensing.zh.md': 'zh/licensing.md',
-    'mvp.zh.md': 'zh/mvp.md',
-    'prototype-alignment-audit.zh.md': 'zh/prototype-alignment-audit.md',
-    'prototypes.zh.md': 'zh/prototypes.md',
-    'ui-design.zh.md': 'zh/ui-design.md'
   }
 })

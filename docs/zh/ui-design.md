@@ -249,7 +249,7 @@ CMake：`SOAR_ENABLE_IMGUI`（默认 ON）取 ImGui v1.91.9b（含 `imgui_impl_s
 - [x] 键盘驱动全部功能的 Xvfb 集成用例 + ui_state 纯逻辑单测全绿
 - [x] 覆盖率门禁不回退（新代码按既有口径统计，门禁随水位上抬）
 
-覆盖口径见 [docs/coverage-notes.md](coverage-notes.md) §3.6：`player_window.cpp` 里的不可达项是"必须注入失败才能到达"的防御分支与字体候选路径，不是漏测的交互。
+覆盖口径见 [docs/coverage-notes.md](../coverage-notes.md) §3.6：`player_window.cpp` 里的不可达项是"必须注入失败才能到达"的防御分支与字体候选路径，不是漏测的交互。
 
 ## 7. 后续边界（防扩散）
 
