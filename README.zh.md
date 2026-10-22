@@ -12,7 +12,6 @@ Soar 是一个基于 FFmpeg + SDL2 的 C++17 开源媒体播放器：封装一�
 
 <p align="center">
 <a href="https://github.com/cuihairu/soar/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a>
-</p>
 <a href="https://github.com/cuihairu/soar/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/cuihairu/soar/actions/workflows/ci.yml/badge.svg"></a>
 <a href="https://en.cppreference.com/w/cpp/17"><img alt="C++" src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white"></a>
 <a href="LICENSE"><img alt="license" src="https://img.shields.io/github/license/cuihairu/soar"></a>
@@ -20,6 +19,7 @@ Soar 是一个基于 FFmpeg + SDL2 的 C++17 开源媒体播放器：封装一�
 <a href="https://cmake.org"><img alt="cmake" src="https://img.shields.io/badge/CMake-3.20%2B-064F8C?logo=cmake&logoColor=white"></a>
 <a href="https://ffmpeg.org"><img alt="ffmpeg" src="https://img.shields.io/badge/FFmpeg-decode%20%2B%20demux-007808?logo=ffmpeg&logoColor=white"></a>
 <a href="https://wiki.libsdl.org"><img alt="sdl2" src="https://img.shields.io/badge/SDL2-render%20%2B%20audio-173353"></a>
+</p>
 
 [文档](https://github.com/cuihairu/soar/tree/main/docs) · [构建指南](docs/build.zh.md) · [路线图](docs/mvp.zh.md)
 
