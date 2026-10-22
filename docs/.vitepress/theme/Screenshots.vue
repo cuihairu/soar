@@ -1,7 +1,7 @@
 <script setup>
 // 界面预览走马灯：应用真实截图（docs/public/screenshots/，Xvfb 下对
 // 运行中的窗口截取）+ 原型图轨道（docs/public/prototypes/，设计稿）。
-// 分组（播放/字幕翻译/设置/移动端）走顶部 tab，组内轮播：自动播放
+// 分组（播放/字幕翻译/设置）走顶部 tab，组内轮播：自动播放
 // 4.5s、箭头、圆点，悬停暂停离开续播；图片统一 16:9 装框（边框用主题
 // 变量），亮暗双主题下都清晰。
 //
@@ -101,17 +101,6 @@ const groups = [
         'redesign/settings-dark.png',
         '设置面板原型稿（v2 定稿）',
         '设置面板（v2 原型）—— v0.2 规划稿；v0.1 无设置页（ui-design §2）',
-      ),
-    ],
-  },
-  {
-    key: 'mobile',
-    label: '移动端',
-    items: [
-      proto(
-        'mobile.png',
-        '移动端原型稿',
-        '移动端（原型）—— 设计稿待供图，放入 docs/public/prototypes/mobile.png 后本卡自动换成真图',
       ),
     ],
   },
