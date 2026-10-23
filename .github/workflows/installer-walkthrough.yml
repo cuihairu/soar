@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   walkthrough:
-    runs-on: windows-latest
+    runs-on: ${{ vars.CI_RUNNER || 'windows-latest' }}
     timeout-minutes: 15
     steps:
       - name: Fetch nightly installer

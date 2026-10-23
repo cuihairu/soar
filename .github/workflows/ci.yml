@@ -277,7 +277,7 @@ jobs:
     # (decode_mutex_ discipline around format_ctx_/decode threads) with a
     # real media file. Any detected data race fails the run.
     name: tsan (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
 
     steps:
@@ -327,7 +327,7 @@ jobs:
     # runPlayerWindow (and the "no ImGui" build of the whole app) stays
     # exercised instead of rotting behind an untested configuration.
     name: no-imgui fallback (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
 
     steps:
@@ -364,7 +364,7 @@ jobs:
     # 35853996679) that the TSan data-race view cannot localize. Leak
     # detection stays off to avoid third-party (FFmpeg/SDL) noise.
     name: asan (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
 
     steps:
@@ -408,7 +408,7 @@ jobs:
     # The FFmpeg backend only compiles where the libav* dev headers exist,
     # so this Linux job is the one place its coverage numbers are visible.
     name: coverage (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
 
     steps:
