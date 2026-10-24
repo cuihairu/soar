@@ -45,6 +45,10 @@ class CastSession {
     // one M-SEARCH burst for `discover_ms` and the first reply wins.
     std::string renderer_location;
     int discover_ms = 3000;
+    // Multicast interface of the discovery burst, a dotted quad (--cast-iface).
+    // Empty = the system's multicast route, which on a machine with two LAN
+    // faces (a VPN beside the house LAN) is often the wrong one.
+    std::string multicast_iface;
     std::string title;  // dc:title of the DIDL metadata ("")
     // Sender-side transcoding (needs the FFmpeg backend): demux the bridge
     // source, re-encode to H.264/AAC MPEG-TS, serve it over the session's

@@ -3039,6 +3039,11 @@ TEST_CASE("headless --cast=auto discovers the mock renderer over ssdp") {
     std::filesystem::remove_all(tmp);
     return;
   }
+  // Deliberately no --cast-iface here: the fixture joins the group on the
+  // default route ("0.0.0.0", the real LAN shape), so a burst pinned to
+  // loopback is exactly the interface mismatch the flag exists to fix. The
+  // pinned-burst semantics are the component tests' premise (both ends on
+  // loopback there); this side pins the flag's parse surface only.
   const auto run = runCli({"--headless",
                            std::string("--torrent-store=") + tmp + "/store",
                            "--torrent-peer=127.0.0.1:" + std::to_string(port),
@@ -3885,6 +3890,35 @@ TEST_CASE("--cast without a torrent source is rejected before anything opens") {
                            "definitely-not-a-torrent.mkv"});
   CHECK(run.exit_code == 2);
   CHECK(run.output.find("--cast needs a torrent source") != std::string::npos);
+}
+
+TEST_CASE("--cast-iface parses like the other value flags") {
+  // An empty value is the standard exit-2 shape (the same arm --cast= with
+  // no value takes), and it is reached during the parse — no fixture, and
+  // never through the unknown-option arm.
+  const auto run = runCli({"--headless", "--cast-iface="});
+  CHECK(run.exit_code == 2);
+  CHECK(run.output.find("--cast-iface needs a dotted-quad address") !=
+        std::string::npos);
+  CHECK(run.output.find("Unknown option") == std::string::npos);
+  // A well-formed flag never trips that arm either; with no source the
+  // usual usage exit still wins.
+  const auto ok = runCli({"--headless", "--cast-iface=127.0.0.1"});
+  CHECK(ok.exit_code == 2);
+  CHECK(ok.output.find("Unknown option") == std::string::npos);
+}
+
+TEST_CASE("--open-dialog parses and stays out of the headless flow") {
+  // A window-only flag: in headless it changes nothing about the run, so
+  // the null-backend sample still completes (and the flag never trips the
+  // unknown-option arm). Help documents both new flags.
+  const auto run = runCli({"--headless", "--open-dialog", "--backend=null",
+                           "asset://sample"});
+  CHECK(run.exit_code == 0);
+  CHECK(run.output.find("Unknown option") == std::string::npos);
+  const auto help = runCli({"--help"});
+  CHECK(help.output.find("--open-dialog") != std::string::npos);
+  CHECK(help.output.find("--cast-iface=") != std::string::npos);
 }
 
 TEST_CASE("headless run over the null backend succeeds") {

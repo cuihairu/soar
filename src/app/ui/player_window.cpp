@@ -626,6 +626,8 @@ class PlayerHud {
         torrent_(cfg.torrent), torrent_pending_(cfg.torrent != nullptr),
         cast_location_(cfg.cast_location),
         cast_transcode_(cfg.cast_transcode),
+        cast_iface_(cfg.cast_iface),
+        open_dialog_on_start_(cfg.open_dialog_on_start),
         recent_dirs_(defaultRecentDirsPath(), 8),
         library_(cfg.library),
         subtitle_fonts_(loadSubtitleFonts()) {
@@ -1156,6 +1158,12 @@ class PlayerHud {
   void drawUi(milliseconds now, bool video_active) {
     handlePendingTorrent(now);
     handleCastTick(now);
+    // The one-shot --open-dialog request: cleared before the call so a
+    // modal stay inside the picker cannot re-summon it on the next frame.
+    if (open_dialog_on_start_) {
+      open_dialog_on_start_ = false;
+      openFilePicker();
+    }
     const ImGuiIO& io = ImGui::GetIO();
     // A minimized window reports a zero-sized drawable, and every OSC
     // dimension below is derived from it (bar_w would go negative). Skip
@@ -1866,7 +1874,9 @@ class PlayerHud {
     cast_discover_thread_ = std::thread([this] {
       std::vector<soar::cast::DiscoveredRenderer> found;
       std::string err;
-      soar::cast::discoverRenderers(3000, &found, &err, nullptr);
+      soar::cast::discoverRenderers(
+          3000, &found, &err,
+          cast_iface_.empty() ? nullptr : cast_iface_.c_str());
       std::lock_guard<std::mutex> lock(cast_mu_);
       cast_found_ = std::move(found);
       cast_searching_.store(false, std::memory_order_release);
@@ -3898,6 +3908,8 @@ class PlayerHud {
   bool cast_transcode_ = false;  // the cast overlay's transcode switch
   bool cast_auto_done_ = false;
   bool cast_discover_started_ = false;
+  std::string cast_iface_;
+  bool open_dialog_on_start_ = false;
   std::unique_ptr<soar::cast::CastSession> cast_active_;
   std::mutex cast_mu_;
   std::vector<soar::cast::DiscoveredRenderer> cast_found_;

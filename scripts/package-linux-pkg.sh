@@ -63,20 +63,17 @@ for s in 16 32 48 64 128 256; do
   install -Dm644 "$ICON_SRC/soar-$s.png" \
     "$PAYLOAD/usr/share/icons/hicolor/${s}x${s}/apps/soar.png"
 done
-cat > "$PAYLOAD/usr/share/applications/soar.desktop" <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=Soar
-Comment=媒体播放器（nightly，运行库随包自包含）
-GenericName=Media Player
-Exec=soar --gui
-Icon=soar
-Terminal=false
-Categories=AudioVideo;Video;Player;
-MimeType=video/*;audio/*;application/x-bittorrent;x-scheme-handler/magnet;
-StartupWMClass=soar
-StartupNotify=true
-EOF
+# .desktop 单一来源（packaging/linux/soar.desktop.in）：deb/rpm 与 AppImage
+# 共用同一份，MimeType 声明面不再两处漂移。
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[ -f "$ROOT/packaging/linux/soar.desktop.in" ] || {
+  echo "错误：缺少 packaging/linux/soar.desktop.in" >&2; exit 2; }
+install -Dm644 "$ROOT/packaging/linux/soar.desktop.in" \
+  "$PAYLOAD/usr/share/applications/soar.desktop"
+# 校验：desktop-file-validate 在场即跑（desktop-file-utils，apt 常见）
+if command -v desktop-file-validate >/dev/null 2>&1; then
+  desktop-file-validate "$PAYLOAD/usr/share/applications/soar.desktop"
+fi
 
 ASSET="soar-linux-$ARCH"
 

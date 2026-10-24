@@ -62,6 +62,10 @@ static void print_usage(const char* argv0) {
   fmt::print("  --shortcuts=  Keybinding config file (default in the state dir:\n");
   fmt::print("                soar/shortcuts.txt next to recent.txt)\n");
   fmt::print("  --no-shortcuts Ignore keyboard shortcuts (window only)\n");
+  fmt::print("  --open-dialog  Open the file dialog straight after the window\n");
+  fmt::print("                comes up, with no media source opened (window\n");
+  fmt::print("                only): the same picker as the O key, summoned\n");
+  fmt::print("                without needing the foreground focus\n");
   fmt::print("  --hwdec=     Hardware video decode: none (default), auto, or a\n");
   fmt::print("                device (vaapi, vdpau, d3d11, dxva2, videotoolbox,\n");
   fmt::print("                cuda, nvdec); falls back to software when unavailable\n");
@@ -76,6 +80,9 @@ static void print_usage(const char* argv0) {
   fmt::print("  --cast-transcode  Transcode the source to H.264/AAC MPEG-TS while\n");
   fmt::print("                    casting, for renderers that cannot decode the\n");
   fmt::print("                    original (needs the FFmpeg backend; Seek is off)\n");
+  fmt::print("  --cast-iface=  Send the SSDP discovery burst from this interface\n");
+  fmt::print("                    (a dotted quad), when the system's multicast\n");
+  fmt::print("                    route picks the wrong LAN face\n");
   fmt::print("Sources: local paths, http(s)://, .torrent files and magnet: URIs\n");
   fmt::print("(served over a local-http bridge, docs/mvp.md §5 P4).\n");
 #ifdef SOAR_WITH_FFMPEG
@@ -171,6 +178,8 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   bool torrent_list = false;
   std::string cast_arg;  // --cast=<location|auto> (docs/mvp.md §3)
   bool cast_transcode = false;  // --cast-transcode: sender-side H.264/AAC TS
+  std::string cast_iface;  // --cast-iface=: multicast iface of the discovery burst
+  bool open_dialog = false;  // --open-dialog: summon the file picker on start
   bool resume_playback = true;  // --no-resume clears it (window sessions only)
   std::string shortcuts_path;   // --shortcuts= (empty = the state-dir file)
   bool shortcuts_enabled = true;  // --no-shortcuts clears it (window only)
@@ -230,6 +239,18 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
       }
     } else if (arg == "--cast-transcode") {
       cast_transcode = true;
+    } else if (arg.rfind("--cast-iface=", 0) == 0) {
+      cast_iface = arg.substr(13);  // after "--cast-iface="
+      if (cast_iface.empty()) {
+        fmt::print(stderr, "--cast-iface needs a dotted-quad address\n");
+        print_usage(argv[0]);
+        return 2;
+      }
+    } else if (arg == "--open-dialog") {
+      // Window only: summon the file picker after the first frame instead of
+      // through the O key. The shortcut path needs the foreground focus an
+      // automation session cannot grant (BUGS.md #3); this one does not.
+      open_dialog = true;
     } else if (arg == "--no-resume") {
       resume_playback = false;
     } else if (arg == "--no-shortcuts") {
@@ -528,6 +549,7 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
       soar::cast::CastSession::Params cp;
       cp.bridge = &torrent_stream;
       cp.renderer_location = cast_arg == "auto" ? "" : cast_arg;
+      cp.multicast_iface = cast_iface;
       cp.title = torrent_stream.fileName();
       cp.transcode = cast_transcode;
       if (!cast_session.start(cp)) {
@@ -597,6 +619,8 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   // once the source is serving and offers the picking overlay on t.
   ui_cfg.cast_location = cast_arg;
   ui_cfg.cast_transcode = cast_transcode;
+  ui_cfg.cast_iface = cast_iface;
+  ui_cfg.open_dialog_on_start = open_dialog;
 #  ifdef SOAR_WITH_FFMPEG
   ui_cfg.ffmpeg = ffmpeg_backend;
 #  endif

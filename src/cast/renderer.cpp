@@ -35,6 +35,17 @@ constexpr int kConnectTimeoutMs = 4000;
 constexpr int kIoTimeoutSec = 8;
 constexpr int kSsdpGroupPort = 1900;
 constexpr const char kSsdpGroup[] = "239.255.255.250";
+// The OS default multicast TTL is 1, which dies at the first router. A
+// receiver often sits on another segment than the control point (a guest
+// VLAN, a bridged subnet, a router between the APs), so the search is sent
+// with TTL 2 — one hop, the value the UPnP stacks use for home nets.
+constexpr int kSsdpMulticastTtl = 2;
+// The M-SEARCH bursts of one discovery window, kSsdpBurstGap apart. A
+// receiver answers whichever burst it heard; flaky stacks ignore the first
+// (or it arrives before they are ready to answer), so the third one keeps
+// an answerer inside the window without stretching the deadline.
+constexpr int kSearchBursts = 3;
+constexpr int kSsdpBurstGapMs = 300;
 
 #ifdef _WIN32
 using socklen_t = int;
@@ -295,6 +306,11 @@ int discoverRenderers(int timeout_ms, std::vector<DiscoveredRenderer>* out,
     ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
   }
 #endif
+  // TTL before anything else: a burst at the default TTL 1 would never
+  // leave the first router on a multi-segment home network.
+  const unsigned char ttl = static_cast<unsigned char>(kSsdpMulticastTtl);
+  ::setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL,
+               reinterpret_cast<const char*>(&ttl), sizeof(ttl));
   sockaddr_in local{};
   local.sin_family = AF_INET;
   local.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -328,16 +344,17 @@ int discoverRenderers(int timeout_ms, std::vector<DiscoveredRenderer>* out,
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeout_ms);
   auto last_send = std::chrono::steady_clock::now() - std::chrono::seconds(1);
-  bool resent = false;
+  int bursts = 0;
   std::vector<DiscoveredRenderer> found;
-  // Two bursts 300ms apart: some stacks answer unreliably to one packet.
   for (;;) {
     const auto now = std::chrono::steady_clock::now();
     if (now >= deadline) break;
-    if (!resent && now - last_send >= std::chrono::milliseconds(300)) {
+    if (bursts < kSearchBursts &&
+        now - last_send >= std::chrono::milliseconds(kSsdpBurstGapMs)) {
       ::sendto(fd, search.data(), static_cast<int>(search.size()), 0,
                reinterpret_cast<const sockaddr*>(&group), sizeof(group));
-      resent = true;
+      last_send = now;
+      ++bursts;
     }
     const int remaining = static_cast<int>(
         std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());

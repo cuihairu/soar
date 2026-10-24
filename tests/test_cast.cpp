@@ -137,6 +137,44 @@ TEST_CASE("search replies parse and announcements are refused") {
   CHECK_FALSE(cast::parseSearchResponse("not http at all\r\n\r\n", &r));
 }
 
+// The vendor forms of the ST echo (应答形态, the axis the real-device
+// matrix lists): some receivers answer a service-target search with the
+// uuid, the rootdevice wildcard, or the device type instead. All four are
+// usable replies — the device-description fetch sorts out whether the
+// device has an AVTransport service. HTTP/1.0 status lines, a body after
+// the blank line, and repeated header lines come from the same matrix.
+TEST_CASE("search replies parse across the vendor search-target forms") {
+  cast::SearchResponse r;
+  const char* targets[] = {
+      "urn:schemas-upnp-org:service:AVTransport:1",
+      "uuid:soar-test-renderer",
+      "upnp:rootdevice",
+      "urn:schemas-upnp-org:device:MediaRenderer:1",
+  };
+  for (const char* st : targets) {
+    CAPTURE(st);
+    const std::string raw =
+        std::string("HTTP/1.0 200 OK\r\n") + "LOCATION: http://192.168.1.20:8200/desc\r\n" +
+        "ST: " + st + "\r\nUSN: uuid:abc::" + st + "\r\n\r\n";
+    REQUIRE(cast::parseSearchResponse(raw, &r));
+    CHECK(r.st == st);
+    CHECK(r.location == "http://192.168.1.20:8200/desc");
+  }
+  // Junk after the blank line (a stack that adds a body) never overrides
+  // the header values, and repeated lines keep their first occurrence.
+  CHECK(cast::parseSearchResponse(
+      "HTTP/1.1 200 OK\r\nST: st\r\nUSN: u\r\nLOCATION: http://h/desc\r\n\r\n"
+      "ST: evil\r\nLOCATION: http://evil/desc\r\n",
+      &r));
+  CHECK(r.st == "st");
+  CHECK(r.location == "http://h/desc");
+  CHECK(cast::parseSearchResponse(
+      "HTTP/1.1 200 OK\r\nLOCATION: http://first/desc\r\nLOCATION: "
+      "http://second/desc\r\nST: st\r\nUSN: u\r\n\r\n",
+      &r));
+  CHECK(r.location == "http://first/desc");
+}
+
 TEST_CASE("field lookup is case-insensitive and trims like the wire forms") {
   const std::string head =
       "HTTP/1.1 500 Internal Server Error\r\nServer: Test/1\r\nCONTENT-LENGTH: 41\r\n\r\n";
@@ -717,6 +755,13 @@ struct FakeState {
   bool bad_control = false;     // controlURL scheme the control point rejects
   bool refuse_subscribe = false;  // SUBSCRIBE answers 412
   bool short_event_lease = false; // SUBSCRIBE grants Second-5, forcing renewal
+  // The M-SEARCH answer's vendor shape (read by the UDP thread only):
+  // delay in ms, bare LF endings, the echoed ST form (0..3), no
+  // CACHE-CONTROL/SERVER lines.
+  int ssdp_delay_ms = 0;
+  bool ssdp_lf = false;
+  int ssdp_st_form = 0;
+  bool ssdp_bare = false;
   std::string description;
 
   std::mutex mu;
@@ -1115,6 +1160,22 @@ class FakeRenderer {
     bool short_event_lease = false;
     int go_deaf_after = 0;
     bool join_group = false;  // answer loopback M-SEARCH bursts
+    // The vendor shape of the M-SEARCH answer (the forms the real-device
+    // matrix lists under 应答形态/MX 延迟): `ssdp_delay_ms` holds the
+    // answer back after each burst (the spec lets a receiver wander up to
+    // its MX seconds), `ssdp_lf` answers with bare LF line endings,
+    // `ssdp_st_form` picks the search target echoed back (0 = the service
+    // target as asked, 1 = a uuid:: form, 2 = the rootdevice wildcard,
+    // 3 = the device type), and `ssdp_bare` drops the CACHE-CONTROL and
+    // SERVER lines some stacks omit.
+    int ssdp_delay_ms = 0;
+    bool ssdp_lf = false;
+    int ssdp_st_form = 0;
+    bool ssdp_bare = false;
+    // The loopback address the description endpoint binds (and LOCATION
+    // advertises). 127.0.0.2 proxies "the reply and the description do
+    // not share an address" — the cross-address form of the matrix.
+    std::string loopback_host = "127.0.0.1";
   };
 
   explicit FakeRenderer(Config config) {
@@ -1137,6 +1198,10 @@ class FakeRenderer {
     state_->refuse_subscribe = config.refuse_subscribe;
     state_->short_event_lease = config.short_event_lease;
     state_->go_deaf_after = config.go_deaf_after;
+    state_->ssdp_delay_ms = config.ssdp_delay_ms;
+    state_->ssdp_lf = config.ssdp_lf;
+    state_->ssdp_st_form = config.ssdp_st_form;
+    state_->ssdp_bare = config.ssdp_bare;
 
     const char* av_service =
         "<service>"
@@ -1179,7 +1244,8 @@ class FakeRenderer {
     ::setsockopt(lfd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE(::inet_pton(AF_INET, config.loopback_host.c_str(),
+                        &addr.sin_addr) == 1);
     addr.sin_port = 0;
     REQUIRE(::bind(lfd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
     REQUIRE(::listen(lfd_, 8) == 0);
@@ -1188,6 +1254,7 @@ class FakeRenderer {
     ::getsockname(lfd_, reinterpret_cast<sockaddr*>(&bound), &blen);
     port_ = ntohs(bound.sin_port);
     running_ = true;
+    loopback_host_ = config.loopback_host;
     accept_thread_ = std::thread([this] { acceptLoop(); });
 
     if (config.join_group) {
@@ -1231,7 +1298,7 @@ class FakeRenderer {
   }
 
   std::string location() const {
-    return "http://127.0.0.1:" + std::to_string(port_) + "/desc.xml";
+    return "http://" + loopback_host_ + ":" + std::to_string(port_) + "/desc.xml";
   }
 
   std::string lastUri() {
@@ -1367,14 +1434,27 @@ class FakeRenderer {
                                    reinterpret_cast<sockaddr*>(&from), &flen);
       if (r <= 0) break;
       if (std::strstr(buf, "M-SEARCH") == nullptr) continue;
-      const std::string reply =
-          "HTTP/1.1 200 OK\r\n"
-          "CACHE-CONTROL: max-age=1800\r\n"
-          "LOCATION: " + location() + "\r\n"
-          "SERVER: soar-fake/1 UPnP/1.0\r\n"
-          "ST: urn:schemas-upnp-org:service:AVTransport:1\r\n"
-          "USN: uuid:soar-test-renderer::urn:schemas-upnp-org:service:AVTransport:1\r\n"
-          "\r\n";
+      // The answer leaves inside its MX: the spec lets a receiver wander up
+      // to MX seconds after the burst it answers.
+      if (state_->ssdp_delay_ms > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(state_->ssdp_delay_ms));
+      }
+      const char* eol = state_->ssdp_lf ? "\n" : "\r\n";
+      const char* st = "urn:schemas-upnp-org:service:AVTransport:1";
+      switch (state_->ssdp_st_form) {
+        case 1: st = "uuid:soar-test-renderer"; break;
+        case 2: st = "upnp:rootdevice"; break;
+        case 3: st = "urn:schemas-upnp-org:device:MediaRenderer:1"; break;
+        default: break;
+      }
+      std::string reply = std::string("HTTP/1.1 200 OK") + eol;
+      if (!state_->ssdp_bare) reply += std::string("CACHE-CONTROL: max-age=1800") + eol;
+      reply += "LOCATION: " + location() + eol;
+      if (!state_->ssdp_bare)
+        reply += std::string("SERVER: soar-fake/1 UPnP/1.0") + eol;
+      reply += std::string("ST: ") + st + eol;
+      reply += std::string("USN: uuid:soar-test-renderer::") + st + eol;
+      reply += eol;
       ::sendto(udp_fd_, reply.data(), static_cast<int>(reply.size()), 0,
                reinterpret_cast<const sockaddr*>(&from), flen);
     }
@@ -1390,6 +1470,7 @@ class FakeRenderer {
 
   std::shared_ptr<FakeState> state_;
   int lfd_ = -1;
+  std::string loopback_host_ = "127.0.0.1";
   int udp_fd_ = -1;
   int port_ = 0;
   std::atomic<bool> running_{false};
@@ -1464,6 +1545,70 @@ TEST_CASE("discovery hears a loopback renderer and reads its description") {
   // The timeout path: nobody new answers a second, deduplicated burst.
   std::vector<cast::DiscoveredRenderer> again;
   CHECK(cast::discoverRenderers(200, &again, &err, "127.0.0.1") >= 0);
+}
+
+// One discovery window per vendor shape of the M-SEARCH answer (the
+// 应答形态/MX 延迟 axes of the real-device matrix): a late answer inside
+// its MX, bare-LF line endings, the uuid / rootdevice / device-type search
+// targets some stacks echo back instead of the asked service target, and
+// the header lines some stacks omit. Each window is short because the
+// fixture answers the first burst.
+TEST_CASE("discovery reads the vendor shapes of an M-SEARCH answer") {
+  struct Shape {
+    const char* name;
+    int delay_ms;
+    bool lf;
+    int st_form;
+    bool bare;
+  };
+  const Shape shapes[] = {
+      {"late answer inside its mx", 500, false, 0, false},
+      {"bare lf line endings", 0, true, 0, false},
+      {"uuid search target", 0, false, 1, false},
+      {"rootdevice search target", 0, false, 2, false},
+      {"device-type search target", 0, false, 3, false},
+      {"header lines some stacks omit", 0, false, 0, true},
+  };
+  for (const Shape& shape : shapes) {
+    CAPTURE(shape.name);
+    FakeRenderer::Config config;
+    config.join_group = true;
+    config.ssdp_delay_ms = shape.delay_ms;
+    config.ssdp_lf = shape.lf;
+    config.ssdp_st_form = shape.st_form;
+    config.ssdp_bare = shape.bare;
+    FakeRenderer renderer(config);
+    std::vector<cast::DiscoveredRenderer> found;
+    std::string err;
+    const int n = cast::discoverRenderers(1500, &found, &err, "127.0.0.1");
+    REQUIRE(n > 0);
+    CHECK(std::any_of(found.begin(), found.end(), [&](const auto& d) {
+      return d.location == renderer.location();
+    }));
+  }
+}
+
+// A receiver that answers from one address and advertises another: the
+// control point follows the LOCATION host, and a host that is merely
+// another local address (127.0.0.2 beside 127.0.0.1) must still resolve.
+// Proxies the cross-address form of the 组播路由/跨子网 matrix — the
+// routed-leg half (multicast TTL past a router) needs a real segment.
+TEST_CASE("discovery follows a description hosted off 127.0.0.1") {
+  FakeRenderer::Config config;
+  config.join_group = true;
+  config.loopback_host = "127.0.0.2";
+  FakeRenderer renderer(config);
+  std::vector<cast::DiscoveredRenderer> found;
+  std::string err;
+  const int n = cast::discoverRenderers(1500, &found, &err, "127.0.0.1");
+  REQUIRE(n > 0);
+  CHECK(std::any_of(found.begin(), found.end(), [&](const auto& d) {
+    return d.location == renderer.location();
+  }));
+  // The friendly name rode along through the 127.0.0.2 description fetch.
+  CHECK(std::any_of(found.begin(), found.end(), [](const cast::DiscoveredRenderer& d) {
+    return d.friendly_name == "Soar Test Renderer";
+  }));
 }
 #endif  // !defined(__APPLE__)
 

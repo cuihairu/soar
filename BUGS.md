@@ -181,8 +181,19 @@
   SDL 窗口（SetForegroundWindow/点击+AttachThreadInput/PostMessage 三法均
   无法唤出 GetOpenFileNameW 对话框，foreground 恒不为 soar 窗），属自动化
   会话注入限制而非产品缺陷，该项仍待真人桌面点选。
+  **唤起半已解封锁（2026-10-24）**：`--open-dialog` 落地——进程自己首帧后
+  唤起 GetOpenFileNameW，不经过键盘快捷键，也就不再需要前台焦点注入。
+  剩余两步与两分钟复测配方：① `soarw.exe --open-dialog` 起进程（无源空窗
+  +对话框）；② 在对话框里选任一媒体文件点「打开」（真人点选，或 UIA 驱
+  动——文件名编辑框 ValuePattern 置路径 + 「打开」钮 InvokePattern，均不
+  需前台）；③ 断言播放开始（窗口标题变媒体名/画面出现/`--backend=null`
+  时 CLI 事件流出 media-info）。对话框本体是否在非前台会话里立起、点选后
+  openSource 是否吃进路径，是仅剩的两处待观测点（本地无 Windows，无从
+  自证）。
   Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）未在真桌面
-  环境走查。
+  环境走查；`.desktop` 已收敛单一来源 `packaging/linux/soar.desktop.in`
+  （deb/rpm 与 AppImage 两脚本原本各写一份 heredoc，会漂移），打包时
+  `desktop-file-validate` 在场即跑。
 
 ## 4. CLI 播放自然结束后进程偶发不退出（收尾段两处无界等待已修 c416163；挂点栈已取 38803623890：backend stop() 的 thread join，解码线程退出链已逐点审计 R1021）
 

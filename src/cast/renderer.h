@@ -24,13 +24,15 @@ struct DiscoveredRenderer {
   std::string usn;            // unique service name (the dedup key)
 };
 
-// Sends one M-SEARCH burst for AVTransport renderers and collects unicast
-// replies for `timeout_ms`. Deduplicates by USN and best-effort loads each
-// device description for the friendly name (a description that fails to
-// load leaves the name empty but the entry usable). `multicast_if` selects
-// the outgoing interface as a dotted quad — nullptr means the system's
-// multicast route (product), "127.0.0.1" keeps the exchange on loopback
-// (the in-process renderer tests). Returns the number of unique renderers.
+// Sends M-SEARCH bursts for AVTransport renderers (three, 300 ms apart)
+// and collects unicast replies for `timeout_ms`. The bursts ride TTL 2 so
+// they cross the one router hop a receiver usually sits behind. Deduplicates
+// by USN and best-effort loads each device description for the friendly name
+// (a description that fails to load leaves the name empty but the entry
+// usable). `multicast_if` selects the outgoing interface as a dotted quad —
+// nullptr means the system's multicast route (product), "127.0.0.1" keeps the
+// exchange on loopback (the in-process renderer tests). Returns the number of
+// unique renderers.
 int discoverRenderers(int timeout_ms, std::vector<DiscoveredRenderer>* out,
                       std::string* err, const char* multicast_if = nullptr);
 

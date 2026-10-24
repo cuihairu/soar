@@ -70,6 +70,17 @@ struct WindowUiConfig {
   // --cast-transcode: sender-side transcoding for the session the window
   // starts (the overlay's switch feeds the same flag for manual casts).
   bool cast_transcode = false;
+  // --cast-iface: the multicast interface of the overlay's discovery burst,
+  // as a dotted quad. Empty = the system's multicast route, which on a
+  // machine with two LAN faces (a VPN beside the house LAN) is often the
+  // wrong one.
+  std::string cast_iface;
+  // --open-dialog: summon the open-file dialog straight after the first
+  // frame, with no media source opened. Keeps the dialog summon off the
+  // keyboard shortcut, which needs the foreground focus that an automation
+  // session cannot grant (BUGS.md #3). Without a file dialog in the build
+  // the request degrades to the toast the O key already gives.
+  bool open_dialog_on_start = false;
   // Video frames come from the FFmpeg backend (null when it is not in use).
   soar::FFmpegBackend* ffmpeg = nullptr;
   // Set by the Player event callback (backend thread) on

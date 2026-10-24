@@ -244,7 +244,29 @@ jobs:
             }
             Write-Host "degraded to the documented clean SDL failure path (renderer-less runner)"
           }
-          Write-Host "smoke passed: GUI twin verified (PE subsystem, version, empty start, windowed alive)"
+          # --open-dialog（BUGS.md #3 的唤起半）：进程自己在首帧后弹
+          # GetOpenFileNameW，不经过键盘快捷键，因此不依赖自动化会话给不了的
+          # 前台焦点。无人应答的模态框会让进程停在 8s 之后——存活即断言；
+          # 退出（含 exit 2 的 usage 回归）判红，exit 1 + SDL_ 的渲染器缺失
+          # 干净降级与上面两条同款豁免。
+          $do = Join-Path $env:RUNNER_TEMP 'soarw-opendlg-out.txt'
+          $de = Join-Path $env:RUNNER_TEMP 'soarw-opendlg-err.txt'
+          $p = Start-Process .\stage-verify\soarw.exe -ArgumentList '--open-dialog' -PassThru `
+            -RedirectStandardOutput $do -RedirectStandardError $de
+          Start-Sleep -Seconds 8
+          if (-not $p.HasExited) {
+            Write-Host "soarw --open-dialog still alive after 8s - OK (BUGS.md #3 summon half)"
+            $p.Kill()
+          } else {
+            $err = Get-Content $de -Raw
+            Write-Host "soarw --open-dialog exited early (code $($p.ExitCode)): $err"
+            if ($p.ExitCode -ne 1 -or $err -notmatch 'SDL_') {
+              Write-Host "::error::soarw --open-dialog neither stayed up (dialog open) nor failed cleanly at an SDL step"
+              exit 1
+            }
+            Write-Host "degraded to the documented clean SDL failure path (renderer-less runner)"
+          }
+          Write-Host "smoke passed: GUI twin verified (PE subsystem, version, empty start, windowed alive, open dialog)"
           exit 0
 
       # 防回归（macOS 面与 Windows 对称）：SDL2 与 vcpkg 管理的依赖

@@ -63,7 +63,9 @@ bool CastSession::start(const Params& params) {
   std::string location = params.renderer_location;
   if (location.empty()) {
     std::vector<DiscoveredRenderer> found;
-    const int n = discoverRenderers(params.discover_ms, &found, &err);
+    const int n = discoverRenderers(
+        params.discover_ms, &found, &err,
+        params.multicast_iface.empty() ? nullptr : params.multicast_iface.c_str());
     if (n < 0) {
       failWith(err);
       return false;
