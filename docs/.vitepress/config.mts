@@ -17,6 +17,7 @@ export default defineConfig({
         siteTitle: 'Soar',
         nav: [
           { text: 'Guide', link: '/build', activeMatch: '^/(build|mvp|licensing)/' },
+          { text: 'Architecture', link: '/architecture', activeMatch: '^/architecture/' },
           { text: 'Prototypes', link: '/prototypes', activeMatch: '^/prototypes/' },
           { text: 'Development', link: '/coverage-notes', activeMatch: '^/coverage-notes/' }
         ],
@@ -27,6 +28,7 @@ export default defineConfig({
               items: [
                 { text: 'Build', link: '/build' },
                 { text: 'Scope and roadmap', link: '/mvp' },
+                { text: 'Architecture overview', link: '/architecture' },
                 { text: 'Prototypes', link: '/prototypes' }
               ]
             },
@@ -58,6 +60,7 @@ export default defineConfig({
         siteTitle: 'Soar',
         nav: [
           { text: '指南', link: '/zh/build', activeMatch: '^/zh/(build|mvp|licensing)/' },
+          { text: '架构', link: '/zh/architecture', activeMatch: '^/zh/architecture/' },
           { text: '原型', link: '/zh/prototypes', activeMatch: '^/zh/prototypes/' },
           { text: '开发', link: '/zh/coverage-notes', activeMatch: '^/zh/coverage-notes/' }
         ],
@@ -68,6 +71,7 @@ export default defineConfig({
               items: [
                 { text: '构建', link: '/zh/build' },
                 { text: '项目边界与路线图', link: '/zh/mvp' },
+                { text: '架构总览', link: '/zh/architecture' },
                 { text: '原型展示', link: '/zh/prototypes' }
               ]
             },

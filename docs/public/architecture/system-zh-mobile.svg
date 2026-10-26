@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1440" viewBox="0 0 480 1440" role="img" aria-labelledby="title desc" lang="zh-CN">
+<title id="title">Soar 播放进程与网络对等端</title><desc id="desc">实线表示媒体、控制与结果流；虚线表示发现、订阅与注册。单一操作系统进程承载界面、播放核心与投屏控制点；接收端与媒体源位于进程之外。</desc>
+<defs>
+ <marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#245bb2" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+ <marker id="teal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#147565" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+ <style>text{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b45}.sub{fill:#4c5d73}.blue{fill:#245bb2}.teal{fill:#147565}</style>
+</defs><rect width="480" height="1440" fill="#fff"/>
+<text x="24" y="37" font-size="24" font-weight="600" text-anchor="start">播放进程拓扑</text>
+<text x="24" y="67" font-size="18" font-weight="400" text-anchor="start" class="sub">单一进程 · 平台无关核心</text>
+<text x="24" y="92" font-size="18" font-weight="400" text-anchor="start" class="sub">投屏:DLNA 控制点,接收端拉流</text>
+<text x="30" y="124" font-size="18" font-weight="600" text-anchor="start" class="teal">soar 进程</text>
+<g data-node="soarAppMain">
+<rect x="30" y="140" width="420" height="76" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="171" font-size="23" font-weight="600" text-anchor="start">soarAppMain</text>
+<text x="48" y="198" font-size="18" font-weight="400" text-anchor="start" class="sub">控制台 + Windows GUI 入口 · 参数 · 后端</text>
+</g>
+<g data-node="player_window">
+<rect x="30" y="234" width="420" height="76" rx="10" fill="#f0f5fe" stroke="#9bb5dc" stroke-width="1.3"/>
+<text x="48" y="265" font-size="23" font-weight="600" text-anchor="start">player_window</text>
+<text x="48" y="292" font-size="18" font-weight="400" text-anchor="start" class="sub">SDL2 + ImGui 宿主 · OSC · 送显路径</text>
+</g>
+<g data-node="ui_state">
+<rect x="30" y="328" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="359" font-size="21" font-weight="600" text-anchor="start">ui_state</text>
+<text x="48" y="386" font-size="18" font-weight="400" text-anchor="start" class="sub">OSC 自动隐藏</text>
+<text x="48" y="407" font-size="18" font-weight="400" text-anchor="start" class="sub">最近 · 按键</text>
+</g>
+<g data-node="library">
+<rect x="260" y="328" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="278" y="359" font-size="21" font-weight="600" text-anchor="start">library</text>
+<text x="278" y="386" font-size="18" font-weight="400" text-anchor="start" class="sub">监视目录</text>
+<text x="278" y="407" font-size="18" font-weight="400" text-anchor="start" class="sub">续播 · 存储</text>
+</g>
+<g data-node="Player">
+<rect x="30" y="450" width="190" height="104" rx="10" fill="#f0f5fe" stroke="#9bb5dc" stroke-width="1.3"/>
+<text x="48" y="481" font-size="21" font-weight="600" text-anchor="start">Player</text>
+<text x="48" y="508" font-size="18" font-weight="400" text-anchor="start" class="sub">门面 · 事件</text>
+<text x="48" y="529" font-size="18" font-weight="400" text-anchor="start" class="sub">无线程</text>
+</g>
+<g data-node="IBackend">
+<rect x="260" y="450" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="278" y="481" font-size="21" font-weight="600" text-anchor="start">IBackend</text>
+<text x="278" y="508" font-size="18" font-weight="400" text-anchor="start" class="sub">抽象契约</text>
+<text x="278" y="529" font-size="18" font-weight="400" text-anchor="start" class="sub">轨道 · 设备</text>
+</g>
+<g data-node="FFmpegBackend">
+<rect x="30" y="572" width="420" height="76" rx="10" fill="#f0f5fe" stroke="#9bb5dc" stroke-width="1.3"/>
+<text x="48" y="603" font-size="23" font-weight="600" text-anchor="start">FFmpegBackend</text>
+<text x="48" y="630" font-size="18" font-weight="400" text-anchor="start" class="sub">解码线程 · 硬解 · HDR→SDR · 截图</text>
+</g>
+<g data-node="Subtitles">
+<rect x="30" y="672" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="703" font-size="21" font-weight="600" text-anchor="start">Subtitles + Ass</text>
+<text x="48" y="730" font-size="18" font-weight="400" text-anchor="start" class="sub">本地 · 目录</text>
+<text x="48" y="751" font-size="18" font-weight="400" text-anchor="start" class="sub">解析 · 翻译</text>
+</g>
+<g data-node="NullBackend">
+<rect x="260" y="672" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="278" y="703" font-size="21" font-weight="600" text-anchor="start">NullBackend</text>
+<text x="278" y="730" font-size="18" font-weight="400" text-anchor="start" class="sub">测试替身</text>
+<text x="278" y="751" font-size="18" font-weight="400" text-anchor="start" class="sub">无 FFmpeg</text>
+</g>
+<g data-node="HttpCache">
+<rect x="30" y="794" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="825" font-size="21" font-weight="600" text-anchor="start">HttpCache</text>
+<text x="48" y="852" font-size="18" font-weight="400" text-anchor="start" class="sub">自定义 AVIO</text>
+<text x="48" y="873" font-size="18" font-weight="400" text-anchor="start" class="sub">仅 http://</text>
+</g>
+<g data-node="TorrentStream">
+<rect x="260" y="794" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="278" y="825" font-size="21" font-weight="600" text-anchor="start">TorrentStream</text>
+<text x="278" y="852" font-size="18" font-weight="400" text-anchor="start" class="sub">libtorrent 内核</text>
+<text x="278" y="873" font-size="18" font-weight="400" text-anchor="start" class="sub">桥接 → URL</text>
+</g>
+<g data-node="CastSession">
+<rect x="30" y="922" width="420" height="76" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="953" font-size="23" font-weight="600" text-anchor="start">CastSession</text>
+<text x="48" y="980" font-size="18" font-weight="400" text-anchor="start" class="sub">DLNA 控制点 · SSDP · SOAP · GENA</text>
+</g>
+<text x="30" y="1028" font-size="18" font-weight="600" text-anchor="start">外部对等端与本地存储</text>
+<g data-node="MediaRenderer">
+<rect x="30" y="1044" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="1075" font-size="21" font-weight="600" text-anchor="start">MediaRenderer</text>
+<text x="48" y="1102" font-size="18" font-weight="400" text-anchor="start" class="sub">DLNA AVTransport</text>
+<text x="48" y="1123" font-size="18" font-weight="400" text-anchor="start" class="sub">拉取 MPEG-TS</text>
+</g>
+<g data-node="HTTP hosts / swarm">
+<rect x="260" y="1044" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="278" y="1075" font-size="21" font-weight="600" text-anchor="start">HTTP / 种子群</text>
+<text x="278" y="1102" font-size="18" font-weight="400" text-anchor="start" class="sub">字节范围媒体</text>
+<text x="278" y="1123" font-size="18" font-weight="400" text-anchor="start" class="sub">Torrent 节点</text>
+</g>
+<g data-node="Optional endpoints">
+<rect x="30" y="1166" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="1197" font-size="21" font-weight="600" text-anchor="start">可选端点</text>
+<text x="48" y="1224" font-size="18" font-weight="400" text-anchor="start" class="sub">字幕目录</text>
+<text x="48" y="1245" font-size="18" font-weight="400" text-anchor="start" class="sub">TMDB · 翻译</text>
+</g>
+<path d="M260 1188 A95 13 0 0 1 450 1188 V1248 A95 13 0 0 1 260 1248 Z" fill="#f5f7fa" stroke="#ced8e5" stroke-width="1.3"/>
+<ellipse cx="355" cy="1188" rx="95" ry="13" fill="#eef2f7" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="355" y="1222" font-size="20" font-weight="600" text-anchor="middle">本地磁盘</text>
+<text x="355" y="1244" font-size="16" font-weight="400" text-anchor="middle" class="sub">媒体 · 缓存 · 存储</text>
+<path d="M240 216 L240 234" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M240 310 L240 328" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M30 272 L16 272 L16 502 L30 502" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M220 502 L260 502" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M355 554 L355 572" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M450 524 L464 524 L464 724 L450 724" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M240 648 L240 660 L125 660 L125 672" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="78" y="649" width="94" height="23" rx="3" fill="#fff" stroke="none" stroke-width="1.3"/>
+<text x="125" y="665" font-size="14" font-weight="500" text-anchor="middle" class="blue">喂入 + 渲染</text>
+<path d="M30 600 L16 600 L16 846 L30 846" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M355 898 L355 922" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="318" y="899" width="74" height="23" rx="3" fill="#fff" stroke="none" stroke-width="1.3"/>
+<text x="355" y="915" font-size="14" font-weight="500" text-anchor="middle" class="blue">桥接 URL</text>
+<path d="M125 998 L125 1044" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="75" y="1009" width="100" height="23" rx="3" fill="#fff" stroke="none" stroke-width="1.3"/>
+<text x="125" y="1025" font-size="14" font-weight="500" text-anchor="middle" class="blue">SetURI · Play</text>
+<path d="M205 1044 L205 998" fill="none" stroke="#147565" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" stroke-dasharray="7 6"/>
+<rect x="181" y="1030" width="48" height="23" rx="3" fill="#fff" stroke="none" stroke-width="1.3"/>
+<text x="205" y="1046" font-size="14" font-weight="500" text-anchor="middle" class="teal">NOTIFY</text>
+<path d="M450 846 L464 846 L464 1096 L450 1096" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<text x="30" y="1306" font-size="18" font-weight="400" text-anchor="start" class="sub">实线:媒体 / 控制</text>
+<text x="30" y="1332" font-size="18" font-weight="400" text-anchor="start" class="sub">虚线:发现 / 通知</text>
+<text x="30" y="1358" font-size="18" font-weight="400" text-anchor="start" class="sub">字幕与库使用可选端点</text>
+<g data-node="dependencies">
+<rect x="30" y="1380" width="420" height="54" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="1406" font-size="19" font-weight="600" text-anchor="start">依赖</text>
+<text x="48" y="1428" font-size="14" font-weight="400" text-anchor="start" class="sub">第三方:FFmpeg · SDL2 · ImGui · libass · libtorrent</text>
+</g>
+</svg>

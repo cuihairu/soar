@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1440" viewBox="0 0 480 1440" role="img" aria-labelledby="title desc" lang="en">
+<title id="title">Soar playback process and network peers</title><desc id="desc">Solid lines carry media, control and results; dashed lines carry discovery, subscription and registration. One OS process hosts the UI, the playback core and the cast control point; receivers and media hosts sit outside it.</desc>
+<defs>
+ <marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#245bb2" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+ <marker id="teal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#147565" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+ <style>text{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b45}.sub{fill:#4c5d73}.blue{fill:#245bb2}.teal{fill:#147565}</style>
+</defs><rect width="480" height="1440" fill="#fff"/>
+<text x="24" y="37" font-size="24" font-weight="600" text-anchor="start">Playback process topology</text>
+<text x="24" y="67" font-size="18" font-weight="400" text-anchor="start" class="sub">One process over a platform-independent core</text>
+<text x="24" y="92" font-size="18" font-weight="400" text-anchor="start" class="sub">Casting: DLNA control point, receiver pulls</text>
+<text x="30" y="124" font-size="18" font-weight="600" text-anchor="start" class="teal">The soar process</text>
+<g data-node="soarAppMain">
+<rect x="30" y="140" width="420" height="76" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="171" font-size="23" font-weight="600" text-anchor="start">soarAppMain</text>
+<text x="48" y="198" font-size="18" font-weight="400" text-anchor="start" class="sub">Console + Windows GUI entry · flags · backend choice</text>
+</g>
+<g data-node="player_window">
+<rect x="30" y="234" width="420" height="76" rx="10" fill="#f0f5fe" stroke="#9bb5dc" stroke-width="1.3"/>
+<text x="48" y="265" font-size="23" font-weight="600" text-anchor="start">player_window</text>
+<text x="48" y="292" font-size="18" font-weight="400" text-anchor="start" class="sub">SDL2 + ImGui host · OSC · present path</text>
+</g>
+<g data-node="ui_state">
+<rect x="30" y="328" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="359" font-size="21" font-weight="600" text-anchor="start">ui_state</text>
+<text x="48" y="386" font-size="18" font-weight="400" text-anchor="start" class="sub">OSC auto-hide</text>
+<text x="48" y="407" font-size="18" font-weight="400" text-anchor="start" class="sub">recent · keys</text>
+</g>
+<g data-node="library">
+<rect x="260" y="328" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="278" y="359" font-size="21" font-weight="600" text-anchor="start">library</text>
+<text x="278" y="386" font-size="18" font-weight="400" text-anchor="start" class="sub">Watched folders</text>
+<text x="278" y="407" font-size="18" font-weight="400" text-anchor="start" class="sub">resume · store</text>
+</g>
+<g data-node="Player">
+<rect x="30" y="450" width="190" height="104" rx="10" fill="#f0f5fe" stroke="#9bb5dc" stroke-width="1.3"/>
+<text x="48" y="481" font-size="21" font-weight="600" text-anchor="start">Player</text>
+<text x="48" y="508" font-size="18" font-weight="400" text-anchor="start" class="sub">Facade · events</text>
+<text x="48" y="529" font-size="18" font-weight="400" text-anchor="start" class="sub">No threads</text>
+</g>
+<g data-node="IBackend">
+<rect x="260" y="450" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="278" y="481" font-size="21" font-weight="600" text-anchor="start">IBackend</text>
+<text x="278" y="508" font-size="18" font-weight="400" text-anchor="start" class="sub">Abstract contract</text>
+<text x="278" y="529" font-size="18" font-weight="400" text-anchor="start" class="sub">tracks · devices</text>
+</g>
+<g data-node="FFmpegBackend">
+<rect x="30" y="572" width="420" height="76" rx="10" fill="#f0f5fe" stroke="#9bb5dc" stroke-width="1.3"/>
+<text x="48" y="603" font-size="23" font-weight="600" text-anchor="start">FFmpegBackend</text>
+<text x="48" y="630" font-size="18" font-weight="400" text-anchor="start" class="sub">Decode thread · hwdec · HDR→SDR · screenshots</text>
+</g>
+<g data-node="Subtitles">
+<rect x="30" y="672" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="703" font-size="21" font-weight="600" text-anchor="start">Subtitles + Ass</text>
+<text x="48" y="730" font-size="18" font-weight="400" text-anchor="start" class="sub">Sidecar · catalog</text>
+<text x="48" y="751" font-size="18" font-weight="400" text-anchor="start" class="sub">parse · translate</text>
+</g>
+<g data-node="NullBackend">
+<rect x="260" y="672" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="278" y="703" font-size="21" font-weight="600" text-anchor="start">NullBackend</text>
+<text x="278" y="730" font-size="18" font-weight="400" text-anchor="start" class="sub">Test double</text>
+<text x="278" y="751" font-size="18" font-weight="400" text-anchor="start" class="sub">No-FFmpeg build</text>
+</g>
+<g data-node="HttpCache">
+<rect x="30" y="794" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="825" font-size="21" font-weight="600" text-anchor="start">HttpCache</text>
+<text x="48" y="852" font-size="18" font-weight="400" text-anchor="start" class="sub">Custom AVIO</text>
+<text x="48" y="873" font-size="18" font-weight="400" text-anchor="start" class="sub">http:// only</text>
+</g>
+<g data-node="TorrentStream">
+<rect x="260" y="794" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="278" y="825" font-size="21" font-weight="600" text-anchor="start">TorrentStream</text>
+<text x="278" y="852" font-size="18" font-weight="400" text-anchor="start" class="sub">libtorrent kernel</text>
+<text x="278" y="873" font-size="18" font-weight="400" text-anchor="start" class="sub">Bridge → URL</text>
+</g>
+<g data-node="CastSession">
+<rect x="30" y="922" width="420" height="76" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="953" font-size="23" font-weight="600" text-anchor="start">CastSession</text>
+<text x="48" y="980" font-size="18" font-weight="400" text-anchor="start" class="sub">DLNA control point · SSDP · SOAP · GENA</text>
+</g>
+<text x="30" y="1028" font-size="18" font-weight="600" text-anchor="start">External peers and storage</text>
+<g data-node="MediaRenderer">
+<rect x="30" y="1044" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="1075" font-size="21" font-weight="600" text-anchor="start">MediaRenderer</text>
+<text x="48" y="1102" font-size="18" font-weight="400" text-anchor="start" class="sub">DLNA AVTransport</text>
+<text x="48" y="1123" font-size="18" font-weight="400" text-anchor="start" class="sub">Pulls MPEG-TS</text>
+</g>
+<g data-node="HTTP hosts / swarm">
+<rect x="260" y="1044" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="278" y="1075" font-size="21" font-weight="600" text-anchor="start">HTTP / swarm</text>
+<text x="278" y="1102" font-size="18" font-weight="400" text-anchor="start" class="sub">Byte-range media</text>
+<text x="278" y="1123" font-size="18" font-weight="400" text-anchor="start" class="sub">Torrent peers</text>
+</g>
+<g data-node="Optional endpoints">
+<rect x="30" y="1166" width="190" height="104" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="1197" font-size="21" font-weight="600" text-anchor="start">Optional APIs</text>
+<text x="48" y="1224" font-size="18" font-weight="400" text-anchor="start" class="sub">Subtitle catalog</text>
+<text x="48" y="1245" font-size="18" font-weight="400" text-anchor="start" class="sub">TMDB · translate</text>
+</g>
+<path d="M260 1188 A95 13 0 0 1 450 1188 V1248 A95 13 0 0 1 260 1248 Z" fill="#f5f7fa" stroke="#ced8e5" stroke-width="1.3"/>
+<ellipse cx="355" cy="1188" rx="95" ry="13" fill="#eef2f7" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="355" y="1222" font-size="20" font-weight="600" text-anchor="middle">Local disk</text>
+<text x="355" y="1244" font-size="16" font-weight="400" text-anchor="middle" class="sub">Media · cache · store</text>
+<path d="M240 216 L240 234" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M240 310 L240 328" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M30 272 L16 272 L16 502 L30 502" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M220 502 L260 502" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M355 554 L355 572" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M450 524 L464 524 L464 724 L450 724" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M240 648 L240 660 L125 660 L125 672" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="78" y="649" width="94" height="23" rx="3" fill="#fff" stroke="none" stroke-width="1.3"/>
+<text x="125" y="665" font-size="14" font-weight="500" text-anchor="middle" class="blue">feed + render</text>
+<path d="M30 600 L16 600 L16 846 L30 846" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M355 898 L355 922" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="318" y="899" width="74" height="23" rx="3" fill="#fff" stroke="none" stroke-width="1.3"/>
+<text x="355" y="915" font-size="14" font-weight="500" text-anchor="middle" class="blue">bridge URL</text>
+<path d="M125 998 L125 1044" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="75" y="1009" width="100" height="23" rx="3" fill="#fff" stroke="none" stroke-width="1.3"/>
+<text x="125" y="1025" font-size="14" font-weight="500" text-anchor="middle" class="blue">SetURI · Play</text>
+<path d="M205 1044 L205 998" fill="none" stroke="#147565" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" stroke-dasharray="7 6"/>
+<rect x="181" y="1030" width="48" height="23" rx="3" fill="#fff" stroke="none" stroke-width="1.3"/>
+<text x="205" y="1046" font-size="14" font-weight="500" text-anchor="middle" class="teal">NOTIFY</text>
+<path d="M450 846 L464 846 L464 1096 L450 1096" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<text x="30" y="1306" font-size="18" font-weight="400" text-anchor="start" class="sub">Solid: media / control</text>
+<text x="30" y="1332" font-size="18" font-weight="400" text-anchor="start" class="sub">Dashed: discovery / notify</text>
+<text x="30" y="1358" font-size="18" font-weight="400" text-anchor="start" class="sub">Subtitles and library use the optional APIs</text>
+<g data-node="dependencies">
+<rect x="30" y="1380" width="420" height="54" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="1406" font-size="19" font-weight="600" text-anchor="start">dependencies</text>
+<text x="48" y="1428" font-size="14" font-weight="400" text-anchor="start" class="sub">Third-party: FFmpeg · SDL2 · ImGui · libass · libtorrent</text>
+</g>
+</svg>

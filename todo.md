@@ -56,6 +56,10 @@
 - [x] docs 子目录补双语：`docs/public/prototypes/README.md` 翻为英文裸名 + 中文 `README.zh.md` 配对（2026-10-16）
 - [x] docs 双语缺口补齐：`mvp` 与 `ui-design` 补英文裸名版（`docs/mvp.md`、`docs/ui-design.md`，与中文稿逐项结构对齐——标题/表格行/代码块计数相同：mvp 13/13·7/7·0/0，ui-design 24/24·35/35·8/8；中文稿 `mvp.zh.md`/`ui-design.zh.md` 补语言切换器（行号 +2，审计注记口径已覆盖）；英文侧 `docs/prototypes.md` 的 UI 规格链接改指 `/ui-design`；docs-only → `npm run docs:build` 4.87s 绿，`mvp`/`ui-design` 与 `/zh/` 两页均出产物）
 
+## 架构总览图
+
+- [x] 舰队统一规范架构总览图（2026-10-27）：`docs/public/architecture/` 四份 SVG（`system-en.svg`/`system-zh.svg` 1280x840 横版、`system-en-mobile.svg`/`system-zh-mobile.svg` 480x1440 竖排改版而非等比缩小），实线=媒体/控制/结果流、虚线=发现与订阅（SSDP 发现、GENA NOTIFY），图例落在图内右下角，3-4 色系无阴影；新增 `docs/architecture.md` 与 `docs/zh/architecture.md`，各以 `<picture>` + `max-width: 640px` 的 `<source>` 引对应语言 SVG，`config.mts` 双 locale nav+sidebar 注册；图按源码绘制（进程/核心/媒体服务/P2P 桥/投屏控制点/外部对等端/本地磁盘），并在页面尾部如实指出 3 处文档与代码不符 + 2 处过期注释。验收：4 份 `xml.etree.ElementTree` 解析通过、EN 零 CJK/ZH 含 CJK、移动端 aspect 0.333（桌面 1.524，非缩放）、两页 `picture` 块与 `/soar/architecture/*.svg` 产物齐、`npm run docs:build` 4.59s 绿
+
 ## 挂账
 
 - [x] 挂账拍板：Welcome/DPI/亮色复审关闭，鸿蒙路线留用户拍板（294d3dc）
