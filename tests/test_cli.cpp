@@ -7564,6 +7564,21 @@ TEST_CASE("a launcher file URI opens through its decoded path") {
   CHECK(help.output.find("file://") != std::string::npos);
 }
 
+TEST_CASE("a launcher file URI decodes through the gui entry the desktop uses") {
+  // The desktop Exec is `soar --gui %U`: the GUI entry must run the same
+  // first-positional decode as the headless one, or a desktop "open with"
+  // would hand the backend the raw URI. The fail-open marker refuses the
+  // open before any window exists, so the run needs no display.
+  const auto run = runCli({"--gui", "--backend=null",
+                           "file:///tmp/soar%20uri/fail-open.mp4"});
+  CHECK(run.exit_code == 1);
+  CHECK(run.output.find("Failed to open source: /tmp/soar uri/fail-open.mp4") !=
+        std::string::npos);
+  CHECK(run.output.find("simulated open failure for '/tmp/soar uri/fail-open.mp4'") !=
+        std::string::npos);
+  CHECK(run.output.find("file:///") == std::string::npos);
+}
+
 TEST_CASE("a launcher file URI keeps the torrent probe on the decoded name") {
   // A .torrent selected from a file manager is a file:// URI too; the
   // suffix test must see the decoded name or the source would reach the
