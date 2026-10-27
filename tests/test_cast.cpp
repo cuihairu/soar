@@ -634,6 +634,19 @@ TEST_CASE("tag extraction refuses the shapes it cannot read instead of guessing"
   CHECK(cast::tagText("<a>value</a >", "a") == "value");
   // Space, tab, CR and LF all count as padding to trim.
   CHECK(cast::tagText("<a>\n\t value \r\n</a>", "a") == "value");
+  // Attribute edges: the scan gives up on anything it cannot read and
+  // keeps the value of anything it can.
+  CHECK(cast::tagAttr("<a b='1'", "a", "b").empty());  // no bracket
+  CHECK(cast::tagAttr("<a>", "a", "b").empty());  // head ends at the name
+  CHECK(cast::tagAttr("<a b junk='1'>", "a", "b").empty());  // bare word
+  CHECK(cast::tagAttr("<a b='1' junk>", "a", "zzz").empty());  // no more names
+  CHECK(cast::tagAttr("<a b=>", "a", "b").empty());  // no value
+  CHECK(cast::tagAttr("<a b=1>", "a", "b").empty());  // unquoted
+  CHECK(cast::tagAttr("<a b='1>", "a", "b").empty());  // unterminated
+  CHECK(cast::tagAttr("<a b= '2'>", "a", "b") == "2");  // space after =
+  CHECK(cast::tagAttr("<a b='3'>", "a", "b") == "3");  // single quotes
+  CHECK(cast::tagAttr("<a x='1' b='2'>", "a", "b") == "2");  // second name
+
   // An opening tag with no closing partner breaks the scan.
   CHECK(cast::tagTexts("<service >x", "service").empty());
 }
@@ -699,6 +712,23 @@ TEST_CASE("device parsing refuses the bodies it cannot use") {
   // An authority without a host is refused, and so is port 0.
   CHECK_FALSE(cast::splitUrl("http://:8080/x", &parts));
   CHECK_FALSE(cast::splitUrl("http://tv:0/x", &parts));
+  // A service list with no device element at all is still a description.
+  CHECK(cast::parseDeviceDescription("<service></service>", &dev));
+  CHECK(dev.services.empty());
+  // A service type shorter than the AVTransport prefix cannot be one.
+  cast::DeviceDesc shorty;
+  cast::ServiceDesc not_it;
+  not_it.service_type = "urn:x";
+  not_it.control_url = "/ctrl";
+  shorty.services.push_back(not_it);
+  std::string resolved;
+  CHECK_FALSE(cast::avTransportControlUrl(shorty, "http://tv/base/d.xml", &resolved));
+  // An absolute-path reference hangs off the origin, not the document.
+  CHECK(cast::resolveUrl("http://tv/base/d.xml", "/ctrl") ==
+        "http://tv/ctrl");
+  // A base with no path at all still roots the reference at its origin.
+  CHECK(cast::resolveUrl("http://tv.local", "ctrl").rfind("http://tv.local", 0) == 0);
+
   // No origin: the reference has nowhere to resolve from.
   CHECK(cast::resolveUrl("://no-scheme", "ctrl").empty());
 }
@@ -2989,6 +3019,11 @@ TEST_CASE("the transcode URL routes toward the renderer host") {
   REQUIRE(ts.start(castFixture("cast_h264_aac.mp4"), &err));
   const std::string url = ts.urlFor("127.0.0.1");
   CHECK(url.rfind("http://127.0.0.1:", 0) == 0);
+  // A host name rather than a dotted quad takes the resolver arm of
+  // the peer lookup: getaddrinfo instead of inet_pton, same local face.
+  CHECK(ts.urlFor("localhost").rfind("http://127.0.0.1:", 0) == 0);
+  // And a peer that names nothing has no route to find.
+  CHECK(ts.urlFor("").empty());
 
   ts.stop();
   CHECK(ts.urlFor("127.0.0.1").empty());  // stopped: the endpoint is gone

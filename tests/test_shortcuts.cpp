@@ -378,6 +378,9 @@ TEST_CASE("key name round-trips through parseShortcutKey") {
   CHECK(parseShortcutKey("0-9", &key, &range_end));
   CHECK(key == plain(digit('0')));
   CHECK(range_end == digit('9'));
+  // A bare digit binds on its own - the percent-seek keys, singly.
+  CHECK(parseShortcutKey("5", &key));
+  CHECK(key == plain(digit('5')));
   CHECK_FALSE(parseShortcutKey("", &key));
   CHECK_FALSE(parseShortcutKey("shift+", &key));
   CHECK_FALSE(parseShortcutKey("f13", &key));
