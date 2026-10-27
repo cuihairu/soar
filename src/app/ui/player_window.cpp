@@ -23,6 +23,7 @@
 #include "ui/shortcuts.h"
 #include "ui_tokens.h"
 #include "ui_state.h"
+#include "uri_decode.h"
 
 #include <fmt/format.h>
 
@@ -1097,8 +1098,12 @@ class PlayerHud {
       }
       case SDL_DROPFILE: {
         // Drag-and-drop open (docs §2): backends take plain paths as-is.
+        // Drop payloads come from the source's text/uri-list, so the same
+        // decode the CLI positional gets applies here too (a space in the
+        // name arrives percent-encoded).
         std::string uri(e.drop.file ? e.drop.file : "");
         if (e.drop.file) SDL_free(e.drop.file);
+        uri = soar::app::decodeSourceUri(uri);
         if (!uri.empty()) openSource(uri);
         return;
       }

@@ -64,7 +64,9 @@ for s in 16 32 48 64 128 256; do
     "$PAYLOAD/usr/share/icons/hicolor/${s}x${s}/apps/soar.png"
 done
 # .desktop 单一来源（packaging/linux/soar.desktop.in）：deb/rpm 与 AppImage
-# 共用同一份，MimeType 声明面不再两处漂移。
+# 共用同一份，MimeType 声明面不再两处漂移。Exec 的 %U 是 MimeType 关联真正生效的
+# 前提（桌面环境按位置参数把 file:// 与 magnet: URI 传进来），soar 侧由
+# src/app/uri_decode.cpp 把 file:// 还原成路径；漏了 %U，"用 Soar 打开"只会空窗。
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ -f "$ROOT/packaging/linux/soar.desktop.in" ] || {
   echo "错误：缺少 packaging/linux/soar.desktop.in" >&2; exit 2; }

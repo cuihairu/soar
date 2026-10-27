@@ -191,12 +191,15 @@ endif()
 # contract: directory listing/grouping for open-folder + the playlist tree.
 # shortcuts.cpp is the keybinding half (docs/ui-design.md §3.2): its keycode
 # table mirrors SDL's values and player_window.cpp static_asserts the
-# equality, so the pure-logic library never needs SDL headers.
+# equality, so the pure-logic library never needs SDL headers. uri_decode.cpp
+# is the launcher-intake half: a desktop "open with" and a drag-and-drop
+# deliver file:// URIs that the core and the UI read as plain paths.
 add_library(soar_app_ui STATIC
   src/app/ui/ui_state.cpp
   src/app/ui/dir_scan.cpp
   src/app/ui/library.cpp
   src/app/ui/shortcuts.cpp
+  src/app/uri_decode.cpp
 )
 target_compile_features(soar_app_ui PUBLIC cxx_std_17)
 target_include_directories(soar_app_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/app)

@@ -1,6 +1,7 @@
 #include "app_main.h"
 #include "soar/core/player.h"
 #include "startup_report.h"
+#include "uri_decode.h"
 
 // fmt/format.h (not core.h): fmt::print lives here across the fmt 9.x
 // (system packages) and 11.x (vcpkg) range we build against.
@@ -83,8 +84,9 @@ static void print_usage(const char* argv0) {
   fmt::print("  --cast-iface=  Send the SSDP discovery burst from this interface\n");
   fmt::print("                    (a dotted quad), when the system's multicast\n");
   fmt::print("                    route picks the wrong LAN face\n");
-  fmt::print("Sources: local paths, http(s)://, .torrent files and magnet: URIs\n");
-  fmt::print("(served over a local-http bridge, docs/mvp.md §5 P4).\n");
+  fmt::print("Sources: local paths (a launcher's file:// URI counts), http(s)://,\n");
+  fmt::print(".torrent files and magnet: URIs (served over a local-http bridge,\n");
+  fmt::print("docs/mvp.md §5 P4).\n");
 #ifdef SOAR_WITH_FFMPEG
   fmt::print("\nFFmpeg backend is available.\n");
 #else
@@ -342,9 +344,11 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   // bridge's HTTP connection) is torn down first.
   soar::p2p::TorrentStream torrent_stream;
   // Empty until a positional arrives (a --gui start has none); the torrent
-  // probe and the upfront open below both guard on uri_index.
+  // probe and the upfront open below both guard on uri_index. Decoded
+  // before the probe: a launcher's file:///tmp/a.torrent is a torrent, and
+  // the probe must test the decoded extension, not the encoded URI.
   std::string uri;
-  if (uri_index >= 0) uri = argv[uri_index];
+  if (uri_index >= 0) uri = soar::app::decodeSourceUri(argv[uri_index]);
   // True when the stream was started with startAsync() for the window (the
   // bridge is opened by the window's pending-torrent poll, not here).
   bool torrent_async = false;
@@ -590,8 +594,10 @@ int soarAppMain(int argc, char** argv, bool gui_entry) {
   // index is floored at 1 so a --gui launch (uri_index == -1) never
   // walks argv[0].
   for (int i = std::max(uri_index + 1, 1); i < argc; ++i) {
-    std::string extra(argv[i]);
-    if (!extra.empty() && extra[0] != '-') ui_cfg.queued_uris.push_back(extra);
+    std::string extra = soar::app::decodeSourceUri(argv[i]);
+    if (!extra.empty() && extra[0] != '-') {
+      ui_cfg.queued_uris.emplace_back(std::move(extra));
+    }
   }
   ui_cfg.backend_label = backend_type;
   ui_cfg.cache_dir = cache_dir;

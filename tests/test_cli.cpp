@@ -7341,3 +7341,42 @@ TEST_CASE("headless FFmpeg run with --cache-dir leaves a meta/data cache pair") 
   REQUIRE(std::system(("rm -rf '" + dir + "'").c_str()) == 0);
 #endif
 }
+
+// ---- Launcher intake (the packaged .desktop entry's %U field code) ----
+//
+// MimeType=video/*;audio/*;application/x-bittorrent;x-scheme-handler/magnet is
+// inert unless Exec carries a field code, so a desktop "open with" hands the
+// app the opened URI as positional arguments: file:///... for a file, the raw
+// magnet: URI for the scheme handler. The intake decodes file:// before the
+// torrent probe and before the queue, so names survive with their spaces
+// instead of arriving percent-encoded (and instead of failing to open at all).
+
+TEST_CASE("a launcher file URI opens through its decoded path") {
+  // %20 rather than a literal space: that is the shape a launcher actually
+  // passes, and runCli's argv tokens are space-free by contract. The
+  // fail-open marker makes the null backend refuse the open, and both the
+  // backend's error and the CLI's failure line name the source they were
+  // handed — the decoded path, never the URI form.
+  const auto run = runCli({"--headless", "--backend=null",
+                           "file:///tmp/soar%20uri/fail-open.mp4"});
+  CHECK(run.exit_code == 1);
+  CHECK(run.output.find("Failed to open source: /tmp/soar uri/fail-open.mp4") !=
+        std::string::npos);
+  CHECK(run.output.find("simulated open failure for '/tmp/soar uri/fail-open.mp4'") !=
+        std::string::npos);
+  CHECK(run.output.find("file:///") == std::string::npos);
+
+  const auto help = runCli({"--help"});
+  CHECK(help.output.find("file://") != std::string::npos);
+}
+
+TEST_CASE("a launcher file URI keeps the torrent probe on the decoded name") {
+  // A .torrent selected from a file manager is a file:// URI too; the
+  // suffix test must see the decoded name or the source would reach the
+  // decoder as an unopenable URI. It still fails fast, naming that path.
+  const auto run = runCli({"--headless",
+                           "file:///nonexistent/soar%20decode.torrent"});
+  CHECK(run.exit_code == 1);
+  CHECK(run.output.find("torrent: cannot parse /nonexistent/soar decode.torrent") !=
+        std::string::npos);
+}

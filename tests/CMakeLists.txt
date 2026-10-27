@@ -191,6 +191,20 @@ target_link_libraries(soar_shortcut_tests PRIVATE soar_app_ui doctest::doctest)
 
 add_test(NAME soar_shortcut_tests COMMAND soar_shortcut_tests)
 
+# Launcher-intake helper tests (src/app/uri_decode.*): a desktop "open with"
+# or a drag-and-drop hands the app file:// URIs, which the core and the UI
+# read as plain paths. Percent-escapes are undone, a non-local authority is
+# left alone, every other scheme passes through. Pure std::string — no
+# display, no media, no filesystem.
+add_executable(soar_uri_tests
+  test_uri.cpp
+)
+
+target_compile_features(soar_uri_tests PRIVATE cxx_std_17)
+target_link_libraries(soar_uri_tests PRIVATE soar_app_ui doctest::doctest)
+
+add_test(NAME soar_uri_tests COMMAND soar_uri_tests)
+
 # CLI integration tests run the real soar executable as a subprocess and
 # check exit codes / stderr reports for the headless and error paths.
 # They need the app target, so they only exist when the app is built;
@@ -240,7 +254,8 @@ if(TARGET soar)
 # 10-minute mark instead, so one wedged case costs minutes, not the job.
 set_tests_properties(soar_core_tests soar_backend_tests soar_ui_tests
   soar_dir_scan_tests soar_library_tests soar_shortcut_tests
-  soar_subtitle_tests soar_metadata_tests soar_ass_tests PROPERTIES TIMEOUT 600)
+  soar_uri_tests soar_subtitle_tests soar_metadata_tests soar_ass_tests
+  PROPERTIES TIMEOUT 600)
 # soar_cli_tests needs its own, bigger budget. Under coverage
 # instrumentation (--coverage -O0 -g) the scripted window cases crawl: the
 # subtitle-settings tour alone takes ~10 min on a quiet CI runner (noted in
