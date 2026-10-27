@@ -323,6 +323,33 @@ if mode == "empty":
         time.sleep(0.2)
     sys.exit(5)
 
+if mode == "theme":
+    # Palette persistence (proto.css data-theme): the run starts from a
+    # saved palette, the y key flips it, and the new choice must land in
+    # the state file the next launch reads. g opens the settings panel
+    # - the other entry to the same palette - and closes it again so
+    # Escape is still the app quit key and nothing else.
+    time.sleep(3.5)
+    if not focus():
+        sys.exit(4)
+    if not key(d.keysym_to_keycode(0x79)):  # y key
+        sys.exit(4)
+    time.sleep(0.6)
+    if not focus() or not key(d.keysym_to_keycode(0x67)):  # g: settings
+        sys.exit(4)
+    time.sleep(0.6)
+    if not focus() or not key(d.keysym_to_keycode(0x67)):  # g: close again
+        sys.exit(4)
+    time.sleep(0.4)
+    if not focus() or not key(d.keysym_to_keycode(0xFF1B)):  # Escape
+        sys.exit(4)
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if find_window() is None:
+            sys.exit(0)  # the window died: the CLI exited
+        time.sleep(0.2)
+    sys.exit(5)
+
 if mode == "rebind":
     # Key-rebinding end to end: the original key (argv[4], hex keysym)
     # must not close the window, the rebound key (argv[5]) must. Same
@@ -3926,6 +3953,70 @@ TEST_CASE("--cast-iface parses like the other value flags") {
   CHECK(ok.output.find("Unknown option") == std::string::npos);
 }
 
+TEST_CASE("--cast with no value is refused before anything opens") {
+  // The empty value is a parse-time refusal of its own: it must never
+  // reach the "needs a torrent source" guard (the other arm of the same
+  // flag), and it prints the full usage like every other usage exit.
+  const auto run = runCli({"--headless", "--cast="});
+  CHECK(run.exit_code == 2);
+  CHECK(run.output.find("--cast needs a location or auto") != std::string::npos);
+  CHECK(run.output.find("Usage:") != std::string::npos);
+  // --cast=auto with no source at all is the plain usage exit: the flag
+  // parses, then nothing is there to cast.
+  const auto auto_run = runCli({"--headless", "--cast=auto"});
+  CHECK(auto_run.exit_code == 2);
+  CHECK(auto_run.output.find("Unknown option") == std::string::npos);
+  CHECK(auto_run.output.find("Usage:") != std::string::npos);
+}
+
+TEST_CASE("--no-shortcuts and --shortcuts= parse on every front end") {
+  // Window-only switches by contract, but the parser accepts them
+  // anywhere - a launcher or a config wrapper can put them in front of a
+  // headless run - and the help text documents both.
+  const auto off = runCli({"--headless", "--no-shortcuts", "--backend=null",
+                           "asset://sample"});
+  CHECK(off.exit_code == 0);
+  CHECK(off.output.find("Unknown option") == std::string::npos);
+  const auto with_path =
+      runCli({"--headless", "--shortcuts=/nonexistent/soar-shortcuts-none.txt",
+              "--backend=null", "asset://sample"});
+  CHECK(with_path.exit_code == 0);
+  CHECK(with_path.output.find("Unknown option") == std::string::npos);
+  const auto help = runCli({"--no-shortcuts", "--help"});
+  CHECK(help.exit_code == 0);
+  CHECK(help.output.find("--shortcuts=") != std::string::npos);
+  CHECK(help.output.find("--no-shortcuts") != std::string::npos);
+}
+
+TEST_CASE("the SIGABRT probe dumps the stuck thread's backtrace") {
+#if defined(__linux__) && defined(SOAR_WITH_FFMPEG)
+  // BUGS.md #4: the watchdog kills a hung child with `timeout -s ABRT`,
+  // and with SOAR_HANG_DUMP set the handler writes that thread's
+  // backtrace before dying the default way. A named pipe with no writer
+  // is a hang the decoder cannot escape: avformat_open_input blocks in
+  // open(), so the process is still there when the watchdog fires.
+  std::error_code ec;
+  const std::string path =
+      (std::filesystem::temp_directory_path(ec) /
+       ("soar_hang_probe_" + std::to_string(::getpid()) + ".mkv"))
+          .string();
+  ::unlink(path.c_str());  // a stale pipe from a killed run opens fine
+  REQUIRE(::mkfifo(path.c_str(), 0600) == 0);
+
+  ::setenv("SOAR_HANG_DUMP", "1", 1);
+  const auto run = runCli({"--headless", "--backend=ffmpeg", path}, 1);
+  ::unsetenv("SOAR_HANG_DUMP");
+  std::filesystem::remove(path, ec);
+
+  CHECK(run.exit_code == 124);  // timeout(1) reports its own timeout
+  CHECK(run.output.find("=== SOAR HANG DUMP (SIGABRT) backtrace, tid=") !=
+        std::string::npos);
+  CHECK(run.output.find("=== end SOAR HANG DUMP ===") != std::string::npos);
+#else
+  MESSAGE("the hang-dump probe is Linux-only, FFmpeg builds only; skipping");
+#endif
+}
+
 TEST_CASE("--open-dialog parses and stays out of the headless flow") {
   // A window-only flag: in headless it changes nothing about the run, so
   // the null-backend sample still completes (and the flag never trips the
@@ -4879,6 +4970,109 @@ TEST_CASE("windowed --gui run with no source opens the empty player") {
   CHECK(run.exit_code == 0);
   CHECK(run.output.find("Usage:") == std::string::npos);
   CHECK(run.output.find("No media source given") == std::string::npos);
+#endif
+}
+
+TEST_CASE("the window restores the saved palette and flips it from the y key") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  MESSAGE("app built without the ImGui overlay; skipping the palette test");
+  return;
+#endif
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the palette test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the palette test");
+    return;
+  }
+
+  // The saved palette is one word in <state>/soar/theme.txt: a private
+  // XDG_STATE_HOME keeps this run's file out of the developer's own
+  // settings and gives the assertion something real to read afterwards.
+  std::error_code ec;
+  const std::string state_home =
+      (std::filesystem::temp_directory_path(ec) /
+       ("soar_theme_" + std::to_string(::getpid())))
+          .string();
+  std::filesystem::create_directories(state_home + "/soar", ec);
+  {
+    std::ofstream pref(state_home + "/soar/theme.txt",
+                       std::ios::binary | std::ios::trunc);
+    pref << "dark";
+  }
+  const std::string theme_file = state_home + "/soar/theme.txt";
+
+  // Same private-display scheme as the Escape case; cases run serially.
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "640x480x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the palette test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    std::filesystem::remove_all(state_home, ec);
+    return;
+  }
+
+  // The injector flips the theme, opens and closes the settings panel
+  // (the other entry to the same palette), and quits through Escape.
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "theme", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const ScopedEnv state_env("XDG_STATE_HOME", state_home.c_str());
+  const auto run = runCli({"--gui"});
+
+  std::printf("x11 palette test: cli exit=%d, output:\n%s\n", run.exit_code,
+              run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    // Same environment gap as the Escape test: a skip, not a failure.
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(state_home, ec);
+    return;
+  }
+  CHECK(run.exit_code == 0);
+
+  // The window started from the saved "dark" word and the y key flipped
+  // it: the file the next launch reads must now say "light".
+  std::ifstream pref(theme_file, std::ios::binary);
+  std::string saved;
+  std::getline(pref, saved);
+  CHECK(saved == "light");
+  std::filesystem::remove_all(state_home, ec);
 #endif
 }
 

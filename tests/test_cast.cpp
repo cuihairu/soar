@@ -602,6 +602,188 @@ TEST_CASE("HTTP status extraction") {
   CHECK(cast::httpStatus("HTTP/") == 0);
 }
 
+// The edge shapes the pure parsers refuse or degrade. Every case pins an
+// input the wire, a renderer or a launcher can actually produce.
+
+TEST_CASE("tag extraction refuses the shapes it cannot read instead of guessing") {
+  // Self-closing tags carry no text: tagText returns nothing, and
+  // tagTexts still counts the service — the device parser then keeps the
+  // count and drops the empty type.
+  CHECK(cast::tagText("<service/>", "service").empty());
+  CHECK(cast::tagText("<service />", "service").empty());
+  // The spaced spelling is the one that opens: the tag-name boundary
+  // rules accept only '>' or whitespace after the name, so "<service/>"
+  // is never an opening tag at all (the count below pins that).
+  const std::vector<std::string> hollow =
+      cast::tagTexts("<r><service /><service></service></r>", "service");
+  REQUIRE(hollow.size() == 2);
+  CHECK(hollow[0].empty());
+  CHECK(hollow[1].empty());
+  CHECK(cast::tagTexts("<r><service/><service></service></r>", "service")
+            .size() == 1);
+  // The opening tag never reaches its '>' — no element to read...
+  CHECK(cast::tagText("<friendlyName value", "friendlyName").empty());
+  CHECK(cast::tagText("<service ", "service").empty());
+  // ...and neither does the closing tag run off the end of the buffer.
+  CHECK(cast::tagText("<a>text</", "a").empty());
+  CHECK(cast::tagText("<a>text</a", "a").empty());
+  // An inner tag is not the close: the scan walks past <b> to </a>.
+  CHECK(cast::tagText("<a>before<b>in</b>after</a>", "a") ==
+        "before<b>in</b>after");
+  // Whitespace between the name and '>' still ends the closing tag.
+  CHECK(cast::tagText("<a>value</a >", "a") == "value");
+  // Space, tab, CR and LF all count as padding to trim.
+  CHECK(cast::tagText("<a>\n\t value \r\n</a>", "a") == "value");
+  // An opening tag with no closing partner breaks the scan.
+  CHECK(cast::tagTexts("<service >x", "service").empty());
+}
+
+TEST_CASE("entity decoding covers the reference forms it must refuse") {
+  // A malformed numeric reference collapses to the bare '&': no digits
+  // after the '#', or digits that are not digits at all.
+  CHECK(cast::xmlDecode("&#;") == "&");
+  CHECK(cast::xmlDecode("&#x;") == "&");
+  CHECK(cast::xmlDecode("&#xZZ;") == "&");
+  CHECK(cast::xmlDecode("&#23a;") == "&");
+  // A non-numeric escape is kept whole instead.
+  CHECK(cast::xmlDecode("&foo;") == "&foo;");
+  // Upper-case X is as legal as lower-case.
+  CHECK(cast::xmlDecode("&#X41;") == "A");
+  // A multi-byte code point keeps its low byte: 0x4E2D & 0xFF is '-'.
+  CHECK(cast::xmlDecode("&#x4E2D;") == "-");
+  CHECK(cast::xmlDecode("&#233;") == "\xE9");
+  // A bare '&' with no ';' at all is a literal ampersand.
+  CHECK(cast::xmlDecode("a & b") == "a & b");
+  // An empty entity name is not a name.
+  CHECK(cast::xmlDecode("x&;y") == "x&;y");
+}
+
+TEST_CASE("header fields read the whitespace forms the wire allows") {
+  // A tab after the colon is as valid as a space...
+  CHECK(cast::fieldValue("HTTP/1.1 200 OK\r\nServer:\tTest/1\r\n", "server") ==
+        "Test/1");
+  // ...and spaces before the colon belong to the name, not to the field.
+  CHECK(cast::fieldValue("HTTP/1.1 200 OK\r\nServer : 41\r\n", "server") ==
+        "41");
+  // A colon with no name in front of it names nothing.
+  CHECK(cast::fieldValue("HTTP/1.1 200 OK\r\n: 41\r\n", "server").empty());
+  // No trailing line break: the last line still parses.
+  CHECK(cast::fieldValue("Content-Length: 41", "content-length") == "41");
+}
+
+TEST_CASE("HTTP status lines refuse what they cannot read") {
+  // The scheme token with no space before the code...
+  CHECK(cast::httpStatus("HTTP/1.123456\r\n") == 0);
+  // ...a status line whose token is not HTTP at all...
+  CHECK(cast::httpStatus("XXXXX/1.1 200 OK\r\n") == 0);
+  // ...while trailing blanks after the reason phrase still parse.
+  CHECK(cast::httpStatus("HTTP/1.1 200\t\r\n") == 200);
+}
+
+TEST_CASE("device parsing refuses the bodies it cannot use") {
+  cast::DeviceDesc dev;
+  CHECK_FALSE(cast::parseDeviceDescription("<root/>", nullptr));
+  // Markers cut short name neither a device nor a service list.
+  CHECK_FALSE(cast::parseDeviceDescription("<devic", &dev));
+  CHECK_FALSE(cast::parseDeviceDescription("<servic", &dev));
+  // A service block without a serviceType is dropped, not kept empty.
+  CHECK(cast::parseDeviceDescription(
+      "<root><device><service><serviceId>id</serviceId></service></device></root>",
+      &dev));
+  CHECK(dev.services.empty());
+  // Null output pointers are refused by every accessor.
+  CHECK_FALSE(cast::avTransportControlUrl(dev, "http://h/d", nullptr));
+  CHECK_FALSE(cast::avTransportEventUrl(dev, "http://h/d", nullptr));
+  cast::UrlParts parts;
+  CHECK_FALSE(cast::splitUrl("http://tv/ctrl", nullptr));
+  // An authority without a host is refused, and so is port 0.
+  CHECK_FALSE(cast::splitUrl("http://:8080/x", &parts));
+  CHECK_FALSE(cast::splitUrl("http://tv:0/x", &parts));
+  // No origin: the reference has nowhere to resolve from.
+  CHECK(cast::resolveUrl("://no-scheme", "ctrl").empty());
+}
+
+TEST_CASE("event subscription requests clamp timeouts and degrade a URL they cannot split") {
+  const std::string url = "http://192.168.1.20:8200/AVTransport/evt";
+  // Clamped at both ends: a renderer may ask for anything.
+  CHECK(cast::subscribeRequest(url, "http://cb/1", 10)
+            .find("TIMEOUT: Second-300\r\n") != std::string::npos);
+  CHECK(cast::subscribeRequest(url, "http://cb/1", 9999999)
+            .find("TIMEOUT: Second-86400\r\n") != std::string::npos);
+  CHECK(cast::renewRequest(url, "uuid:sid", 0)
+            .find("TIMEOUT: Second-300\r\n") != std::string::npos);
+  CHECK(cast::renewRequest(url, "uuid:sid", 9999999)
+            .find("TIMEOUT: Second-86400\r\n") != std::string::npos);
+  // An event URL the splitter refuses falls back to the loopback defaults.
+  const std::string odd = cast::unsubscribeRequest("not-an-event-url", "uuid:sid");
+  CHECK(odd.find("UNSUBSCRIBE / HTTP/1.1\r\n") != std::string::npos);
+  CHECK(odd.find("HOST: localhost\r\n") != std::string::npos);
+  // A URL with an origin but no path keeps the "/" default.
+  CHECK(cast::subscribeRequest("http://tv.local", "http://cb/1", 300)
+            .find("SUBSCRIBE / HTTP/1.1\r\n") != std::string::npos);
+}
+
+TEST_CASE("subscription replies parse only the shapes a renderer sends") {
+  cast::Subscription sub;
+  CHECK_FALSE(cast::parseSubscribeReply("HTTP/1.1 200 OK\r\nSID: s\r\n\r\n", nullptr));
+  CHECK_FALSE(cast::parseSubscribeReply("HTTP/1.1 503 busy\r\n\r\n", &sub));
+  CHECK_FALSE(cast::parseSubscribeReply("HTTP/1.1 200 OK\r\nTIMEOUT: Second-300\r\n\r\n",
+                                        &sub));
+  REQUIRE(cast::parseSubscribeReply(
+      "HTTP/1.1 200 OK\r\nSID: uuid:1\r\nTIMEOUT: Second-300\r\n\r\n", &sub));
+  CHECK(sub.timeout_secs == 300);
+  // The spec's no-expiry spellings read as 0, whatever the casing.
+  REQUIRE(cast::parseSubscribeReply(
+      "HTTP/1.1 200 OK\r\nSID: uuid:2\r\nTIMEOUT: Second-Infinite\r\n\r\n", &sub));
+  CHECK(sub.timeout_secs == 0);
+  REQUIRE(cast::parseSubscribeReply(
+      "HTTP/1.1 200 OK\r\nSID: uuid:3\r\nTIMEOUT: infinite\r\n\r\n", &sub));
+  CHECK(sub.timeout_secs == 0);
+  // A TIMEOUT with no dash at all is not a number to guess at.
+  REQUIRE(cast::parseSubscribeReply(
+      "HTTP/1.1 200 OK\r\nSID: uuid:4\r\nTIMEOUT: 300\r\n\r\n", &sub));
+  CHECK(sub.timeout_secs == 0);
+}
+
+TEST_CASE("SOAP envelopes take the degenerate control URLs and clocks") {
+  // A control URL with an origin but no path: the request line defaults
+  // to "/" while HOST keeps carrying the origin.
+  const std::string bare = cast::play("http://tv.local");
+  CHECK(bare.find("POST / HTTP/1.1\r\n") != std::string::npos);
+  CHECK(bare.find("HOST: tv.local:80\r\n") != std::string::npos);
+  // protocolInfo is optional: with it the <res> carries the attribute...
+  const std::string with = cast::setAvTransportUri(
+      "http://h/ctrl", "http://src/a.mkv", "Title", "http-get:*:video/mp4:*");
+  // The DIDL-Lite block rides inside CurrentURIMetaData as escaped text:
+  // the wire form of the <res> tag is the escaped spelling of it.
+  CHECK(with.find("&lt;res protocolInfo=&quot;http-get:*:video/mp4:*&quot;&gt;") !=
+        std::string::npos);
+  // ...and without it the element is bare.
+  const std::string without =
+      cast::setAvTransportUri("http://h/ctrl", "http://src/a.mkv", "Title");
+  CHECK(without.find("&lt;res&gt;http://src/a.mkv&lt;/res&gt;") !=
+        std::string::npos);
+  // Position reports parse (and a null out pointer is refused).
+  cast::PositionInfo info;
+  CHECK_FALSE(cast::parsePositionInfo("<Track>0</Track>", nullptr));
+  REQUIRE(cast::parsePositionInfo(
+      "<Track>7</Track><TrackDuration>0:01:00</TrackDuration><RelTime>0:00:30</RelTime>",
+      &info));
+  CHECK(info.track == 7);
+  CHECK(info.duration == "0:01:00");
+  CHECK(info.rel_time == "0:00:30");
+  // Non-numeric clock fields read as unknown, never as zero.
+  CHECK(cast::parseClockMs("x:01:00") == -1);
+  CHECK(cast::parseClockMs("00:x:00") == -1);
+  CHECK(cast::parseClockMs("00:01:x") == -1);
+  CHECK(cast::parseClockMs("00::00") == -1);
+  CHECK(cast::parseClockMs("") == -1);
+}
+
+TEST_CASE("an SSDP reply with no output slot is refused") {
+  CHECK_FALSE(cast::parseSearchResponse("HTTP/1.1 200 OK\r\n\r\n", nullptr));
+}
+
 #ifdef _WIN32
 
 TEST_CASE("cast smoke cases are POSIX-only") {

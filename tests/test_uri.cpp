@@ -72,6 +72,35 @@ TEST_CASE("non-file sources pass through unchanged") {
   CHECK(decodeSourceUri("").empty());
 }
 
+TEST_CASE("launcher URIs parse every authority a file manager can send") {
+  // The scheme and the host are matched without case: FILE://LOCALHOST
+  // is the same local path as file://localhost.
+  CHECK(decodeSourceUri("FILE://LOCALHOST/tmp/a.mkv") == "/tmp/a.mkv");
+  CHECK(decodeSourceUri("File://LocalHost/a.mkv") == "/a.mkv");
+  // Hex digits decode in either case too.
+  CHECK(decodeSourceUri("file:///tmp/%e4%bd%a0.mkv") ==
+        "/tmp/\xE4\xBD\xA0.mkv");
+  CHECK(decodeSourceUri("file:///tmp/%7e/clip.mkv") == "/tmp/~/clip.mkv");
+  // One hex digit, or one that is not a hex digit: not an escape, so the
+  // three bytes stay put (the path must not shift left by two characters).
+  CHECK(decodeSourceUri("file:///tmp/1%2Z.mkv") == "/tmp/1%2Z.mkv");
+  CHECK(decodeSourceUri("file:///tmp/a%9") == "/tmp/a%9");
+  // A local authority with no path at all yields nothing to open...
+  CHECK(decodeSourceUri("file://localhost").empty());
+  CHECK(decodeSourceUri("file://").empty());
+  // ...while a remote one is handed back byte for byte.
+  CHECK(decodeSourceUri("file://192.168.1.5/share/a.mkv") ==
+        "file://192.168.1.5/share/a.mkv");
+  CHECK(decodeSourceUri("file://192.168.1.5") == "file://192.168.1.5");
+  // Spaces and non-ASCII text survive the decode as raw bytes.
+  CHECK(decodeSourceUri("file:///tmp/a b/c.mkv") == "/tmp/a b/c.mkv");
+  CHECK(decodeSourceUri("file:///tmp/\xE4\xB8\xAD\xE6\x96\x87.mkv") ==
+        "/tmp/\xE4\xB8\xAD\xE6\x96\x87.mkv");
+  // A short or non-file URI never reaches the path scan.
+  CHECK(decodeSourceUri("file:/tmp/a.mkv") == "file:/tmp/a.mkv");
+  CHECK(decodeSourceUri("file:") == "file:");
+}
+
 TEST_CASE("decoding is idempotent") {
   const char* cases[] = {
       "file:///home/user/My%20Video.mkv",
