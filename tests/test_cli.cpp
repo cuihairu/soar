@@ -4004,7 +4004,10 @@ TEST_CASE("the SIGABRT probe dumps the stuck thread's backtrace") {
   REQUIRE(::mkfifo(path.c_str(), 0600) == 0);
 
   ::setenv("SOAR_HANG_DUMP", "1", 1);
-  const auto run = runCli({"--headless", "--backend=ffmpeg", path}, 1);
+  // 1s was too tight under TSan: the sanitizer child can take
+  // longer than that to reach soarAppMain, and a SIGABRT landing
+  // before installHangDumpProbe leaves no banner to assert.
+  const auto run = runCli({"--headless", "--backend=ffmpeg", path}, 6);
   ::unsetenv("SOAR_HANG_DUMP");
   std::filesystem::remove(path, ec);
 
