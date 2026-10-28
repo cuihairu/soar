@@ -122,6 +122,12 @@ static void notice_usage(const char* argv0) {
 // calls only (backtrace/backtrace_symbols_fd/write — the same calls
 // glibc's own abort path makes); the handler re-raises with the default
 // disposition so the watchdog's --kill-after escalation never fires.
+// Prime backtrace() here, outside signal context: on glibc the first
+// call lazily dlopens libgcc_s, whose loader machinery mallocs, and
+// under TSan that in-handler malloc self-deadlocks on the sanitizer's
+// own locks — no banner ever lands and the tsan (ubuntu) leg burns the
+// probe case (run 40619886044). One warm call now keeps the in-handler
+// call on the already-initialized, allocation-free path.
 #ifdef __linux__
 static void installHangDumpProbe() {
   if (std::getenv("SOAR_HANG_DUMP") == nullptr) {
@@ -155,6 +161,8 @@ static void installHangDumpProbe() {
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = 0;
   sigaction(SIGABRT, &sa, nullptr);
+  void* warm_frames[1];
+  (void)backtrace(warm_frames, 1);
 }
 #endif  // __linux__
 
