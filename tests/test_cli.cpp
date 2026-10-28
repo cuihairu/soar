@@ -4004,10 +4004,20 @@ TEST_CASE("the SIGABRT probe dumps the stuck thread's backtrace") {
   REQUIRE(::mkfifo(path.c_str(), 0600) == 0);
 
   ::setenv("SOAR_HANG_DUMP", "1", 1);
-  // 1s was too tight under TSan: the sanitizer child can take
-  // longer than that to reach soarAppMain, and a SIGABRT landing
-  // before installHangDumpProbe leaves no banner to assert.
-  const auto run = runCli({"--headless", "--backend=ffmpeg", path}, 6);
+  // The case is a deliberate hang (the FIFO has no writer, so open()
+  // never returns): the budget is the whole runtime, and 1s is enough
+  // for an uninstrumented child. Under TSan the sanitizer can reach
+  // soarAppMain later, and a SIGABRT landing before the probe installs
+  // leaves no banner to assert — but that widening only needs to ride
+  // the sanitizer legs, not every regular CI run (~5s saved each).
+#if defined(__SANITIZE_THREAD__) || \
+    (defined(__has_feature) && __has_feature(thread_sanitizer))
+  constexpr int kHangProbeTimeoutSecs = 6;
+#else
+  constexpr int kHangProbeTimeoutSecs = 1;
+#endif
+  const auto run =
+      runCli({"--headless", "--backend=ffmpeg", path}, kHangProbeTimeoutSecs);
   ::unsetenv("SOAR_HANG_DUMP");
   std::filesystem::remove(path, ec);
 

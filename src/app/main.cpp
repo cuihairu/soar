@@ -127,7 +127,12 @@ static void notice_usage(const char* argv0) {
 // under TSan that in-handler malloc self-deadlocks on the sanitizer's
 // own locks — no banner ever lands and the tsan (ubuntu) leg burns the
 // probe case (run 40619886044). One warm call now keeps the in-handler
-// call on the already-initialized, allocation-free path.
+// call on the already-initialized, allocation-free path. The warm call
+// runs before the handler is installed: if the warm-up itself trips a
+// fatal error (a dlopen failure raises SIGABRT), the default
+// disposition is still in place and the process aborts cleanly instead
+// of re-entering a handler whose primed path never completed — exactly
+// the TSan self-deadlock the warm-up exists to avoid.
 #ifdef __linux__
 static void installHangDumpProbe() {
   if (std::getenv("SOAR_HANG_DUMP") == nullptr) {
@@ -160,9 +165,9 @@ static void installHangDumpProbe() {
   };
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = 0;
-  sigaction(SIGABRT, &sa, nullptr);
   void* warm_frames[1];
   (void)backtrace(warm_frames, 1);
+  sigaction(SIGABRT, &sa, nullptr);
 }
 #endif  // __linux__
 
