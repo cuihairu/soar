@@ -4024,6 +4024,18 @@ TEST_CASE("the SIGABRT probe dumps the stuck thread's backtrace") {
   CHECK(run.exit_code == 124);  // timeout(1) reports its own timeout
   CHECK(run.output.find("=== SOAR HANG DUMP (SIGABRT) backtrace, tid=") !=
         std::string::npos);
+  const auto dump_start = run.output.find(
+      "=== SOAR HANG DUMP (SIGABRT) backtrace, tid=");
+  const auto dump_end = run.output.find("=== end SOAR HANG DUMP ===");
+  REQUIRE(dump_start != std::string::npos);
+  REQUIRE(dump_end != std::string::npos);
+  REQUIRE(dump_end > dump_start);
+  const std::string frames =
+      run.output.substr(dump_start, dump_end - dump_start);
+  CHECK(frames.find('\n', frames.find('\n') + 1) != std::string::npos);
+  CHECK((frames.find("__open64") != std::string::npos ||
+         frames.find("avpriv_open") != std::string::npos ||
+         frames.find("avformat_open_input") != std::string::npos));
   CHECK(run.output.find("=== end SOAR HANG DUMP ===") != std::string::npos);
 #else
   MESSAGE("the hang-dump probe is Linux-only, FFmpeg builds only; skipping");
