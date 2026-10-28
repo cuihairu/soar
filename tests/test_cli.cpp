@@ -4032,7 +4032,12 @@ TEST_CASE("the SIGABRT probe dumps the stuck thread's backtrace") {
   REQUIRE(dump_end > dump_start);
   const std::string frames =
       run.output.substr(dump_start, dump_end - dump_start);
-  CHECK(frames.find('\n', frames.find('\n') + 1) != std::string::npos);
+  // The banner always ends in a newline, so the first one is guaranteed;
+  // asserting it explicitly avoids the unsigned npos+1 wraparound that the
+  // previous one-liner leaned on to search from the head when absent.
+  const auto first_nl = frames.find('\n');
+  REQUIRE(first_nl != std::string::npos);
+  CHECK(frames.find('\n', first_nl + 1) != std::string::npos);
   CHECK((frames.find("__open64") != std::string::npos ||
          frames.find("avpriv_open") != std::string::npos ||
          frames.find("avformat_open_input") != std::string::npos));
