@@ -4010,9 +4010,14 @@ TEST_CASE("the SIGABRT probe dumps the stuck thread's backtrace") {
   // soarAppMain later, and a SIGABRT landing before the probe installs
   // leaves no banner to assert — but that widening only needs to ride
   // the sanitizer legs, not every regular CI run (~5s saved each).
-#if defined(__SANITIZE_THREAD__) || \
-    (defined(__has_feature) && __has_feature(thread_sanitizer))
+#ifdef __SANITIZE_THREAD__
   constexpr int kHangProbeTimeoutSecs = 6;
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+  constexpr int kHangProbeTimeoutSecs = 6;
+#else
+  constexpr int kHangProbeTimeoutSecs = 1;
+#endif
 #else
   constexpr int kHangProbeTimeoutSecs = 1;
 #endif
