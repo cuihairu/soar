@@ -33,3 +33,9 @@ features:
     title: 测试替身内置
     details: NullBackend 用纯状态机模拟完整播放行为，核心 API 的测试可在任何 CI 环境运行。
 ---
+
+## 架构
+
+分层跟着代码走：应用层调用 Player 门面，IBackend 接口分发到 FFmpegBackend 或 NullBackend 测试替身，网络组件置于流水线之侧：
+
+![Soar 分层架构](/images/architecture-zh.svg)

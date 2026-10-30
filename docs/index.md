@@ -34,6 +34,12 @@ features:
     details: NullBackend simulates full playback behavior as a pure state machine, so core API tests run in any CI environment.
 ---
 
+## Architecture
+
+The layers follow the code: the app layer calls the Player facade, the IBackend interface dispatches to the FFmpegBackend or the NullBackend test double, and the network components sit beside the pipeline:
+
+![Soar layered architecture](/images/architecture-en.svg)
+
 <script setup lang="ts">
 // 首次访问按浏览器语言选择文档语言（vitepress 无此能力，GitHub Pages 不支持 _redirects）
 // 优先级：localStorage 手动选择 > navigator.language > 保持当前 locale

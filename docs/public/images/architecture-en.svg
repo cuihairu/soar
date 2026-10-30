@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1120" viewBox="0 0 1280 1120" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">Soar · Layered Architecture</title>
+<desc id="desc">C++17 media player on FFmpeg + SDL2. The app layer calls the Player facade in the core library, dispatched via the IBackend interface to FFmpegBackend or NullBackend. FFmpegBackend depends on FFmpeg/SDL2/libass and HttpCache. The app layer also reaches the network via TorrentStream (libtorrent local HTTP bridge) and CastSession (DLNA). Solid lines are business calls, dashed lines are dependencies.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:30px;font-weight:700}.name{font-size:23px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke-linejoin:round}.control{stroke-dasharray:7 5}</style>
+<rect width="1280" height="1120" rx="20" fill="#f8fafc"/>
+<text x="40" y="48" class="title" text-anchor="start">Soar · Layered Architecture</text>
+<text x="40" y="80" class="body" text-anchor="start">C++17 · FFmpeg + SDL2 · playback abstraction depends on no multimedia library · pluggable IBackend · Apache-2.0 core</text>
+<path d="M320 280 V340" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="app-player" data-from="app" data-to="player" d="M320 280 V340" class="edge" style="stroke:#2563eb;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M570 405 H600" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="player-backend" data-from="player" data-to="ibackend" d="M570 405 H600" class="edge" style="stroke:#2563eb;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M735 470 V500 H320 V530" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="ibackend-ffmpeg" data-from="ibackend" data-to="ffmpeg-backend" d="M735 470 V500 H320 V530" class="edge" style="stroke:#2563eb;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M735 470 V530" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="ibackend-null" data-from="ibackend" data-to="null-backend" d="M735 470 V530" class="edge" style="stroke:#2563eb;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M320 660 V910" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="ffmpeg-deps" data-from="ffmpeg-backend" data-to="deps" d="M320 660 V910" class="edge" style="stroke:#7c3aed;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M735 280 V295 H1080 V350" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="app-torrent" data-from="app" data-to="torrent-stream" d="M735 280 V295 H1080 V350" class="edge" style="stroke:#087f5b;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M800 280 V285 H1160 V470" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="app-cast" data-from="app" data-to="cast-session" d="M800 280 V285 H1160 V470" class="edge control" style="stroke:#087f5b;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M570 660 H950" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="ffmpeg-cache" data-from="ffmpeg-backend" data-to="http-cache" d="M570 660 H950" class="edge control" style="stroke:#64748b;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M1080 440 V910" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="torrent-libtorrent" data-from="torrent-stream" data-to="libtorrent" d="M1080 440 V910" class="edge" style="stroke:#087f5b;stroke-width:2" marker-end="url(#arrow)"/>
+<g id="app" data-node="app"><rect x="40" y="115" width="840" height="165" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+<text x="65" y="147" class="body" text-anchor="start">App layer · soar / soarw executable (src/app/)</text>
+<rect x="70" y="165" width="500" height="95" rx="12" fill="#fff" stroke="#fdba74" stroke-width="1.5"/>
+<text x="90" y="198" class="name" text-anchor="start">SDL2 window + ImGui floating OSC</text>
+<text x="90" y="226" class="body" text-anchor="start">info/recent/help/playlist/library overlays · hotkeys</text>
+<text x="90" y="249" class="body" text-anchor="start">UI logic: library · dir_scan · shortcuts · ui_state</text>
+<rect x="600" y="165" width="250" height="95" rx="12" fill="#fff" stroke="#fdba74" stroke-width="1.5"/>
+<text x="620" y="198" class="name" text-anchor="start">CLI smoke --headless</text>
+<text x="620" y="226" class="body" text-anchor="start">open → play → seek → pause → stop</text>
+<text x="620" y="249" class="body" text-anchor="start">--backend= · --hwdec= · --cast=</text>
+</g>
+<g id="core" data-node="core"><rect x="40" y="340" width="840" height="130" rx="14" fill="#eef2ff" stroke="#a5b4fc" stroke-width="1.5"/>
+<text x="65" y="372" class="body" text-anchor="start">Core library soar_core · pure abstraction (src/core + include/soar/core)</text>
+<rect x="70" y="390" width="500" height="65" rx="12" fill="#fff" stroke="#a5b4fc" stroke-width="1.5"/>
+<text x="90" y="423" class="name" text-anchor="start">Player facade</text>
+<text x="90" y="446" class="body" text-anchor="start">unified API + event callbacks · state machine</text>
+<rect x="600" y="390" width="250" height="65" rx="12" fill="#fff" stroke="#a5b4fc" stroke-width="1.5"/>
+<text x="620" y="423" class="name" text-anchor="start">IBackend interface</text>
+<text x="620" y="446" class="body" text-anchor="start">pluggable · decoupled from UI</text>
+</g>
+<g id="backends" data-node="backends"><rect x="40" y="530" width="840" height="130" rx="14" fill="#eef8f5" stroke="#86c9b3" stroke-width="1.5"/>
+<text x="65" y="562" class="body" text-anchor="start">Backends · implement IBackend</text>
+<rect x="70" y="580" width="500" height="65" rx="12" fill="#fff" stroke="#86c9b3" stroke-width="1.5"/>
+<text x="90" y="613" class="name" text-anchor="start">FFmpegBackend</text>
+<text x="90" y="636" class="body" text-anchor="start">decode thread + A/V sync · PTS clock · backpressure</text>
+<rect x="600" y="580" width="250" height="65" rx="12" fill="#fff" stroke="#86c9b3" stroke-width="1.5"/>
+<text x="620" y="613" class="name" text-anchor="start">NullBackend</text>
+<text x="620" y="636" class="body" text-anchor="start">pure state machine · test double · no media deps</text>
+</g>
+<g id="network" data-node="network"><rect x="920" y="330" width="320" height="370" rx="14" fill="none" stroke="#93b9e3" stroke-width="1.5" stroke-dasharray="6 5"/>
+<text x="940" y="362" class="body" text-anchor="start">Network components (src/p2p + src/cast)</text>
+<g id="torrent-stream" data-node="torrent-stream"><rect x="950" y="370" width="260" height="95" rx="12" fill="#edf5ff" stroke="#93b9e3" stroke-width="1.5"/>
+<text x="970" y="403" class="name" text-anchor="start">TorrentStream · src/p2p</text>
+<text x="970" y="431" class="body" text-anchor="start">libtorrent core → 127.0.0.1</text>
+<text x="970" y="454" class="body" text-anchor="start">local HTTP bridge · stream-while-download</text>
+</g>
+<g id="cast-session" data-node="cast-session"><rect x="950" y="485" width="260" height="95" rx="12" fill="#edf5ff" stroke="#93b9e3" stroke-width="1.5"/>
+<text x="970" y="518" class="name" text-anchor="start">CastSession · src/cast</text>
+<text x="970" y="546" class="body" text-anchor="start">DLNA/UPnP control point · zero new deps</text>
+<text x="970" y="569" class="body" text-anchor="start">SSDP/SOAP/GENA · optional transcode</text>
+</g>
+<g id="http-cache" data-node="http-cache"><rect x="950" y="600" width="260" height="80" rx="12" fill="#edf5ff" stroke="#93b9e3" stroke-width="1.5"/>
+<text x="970" y="633" class="name" text-anchor="start">HttpCache · src/core</text>
+<text x="970" y="661" class="body" text-anchor="start">--cache-dir disk cache · offline replay/resume</text>
+</g>
+</g>
+<g id="deps" data-node="deps"><rect x="40" y="910" width="1200" height="120" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="65" y="942" class="body" text-anchor="start">Third-party deps (within LGPL/GPL boundary · UI also uses SDL2 + Dear ImGui)</text>
+<rect x="70" y="955" width="200" height="60" rx="10" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="170" y="980" class="body" text-anchor="middle">FFmpeg · LGPL</text>
+<text x="170" y="1003" class="small" text-anchor="middle">demux + decode</text>
+<rect x="300" y="955" width="200" height="60" rx="10" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="400" y="980" class="body" text-anchor="middle">SDL2</text>
+<text x="400" y="1003" class="small" text-anchor="middle">render + audio</text>
+<rect x="530" y="955" width="200" height="60" rx="10" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="630" y="980" class="body" text-anchor="middle">libass</text>
+<text x="630" y="1003" class="small" text-anchor="middle">ASS subtitle styling</text>
+<rect x="760" y="955" width="200" height="60" rx="10" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="860" y="980" class="body" text-anchor="middle">Dear ImGui · MIT</text>
+<text x="860" y="1003" class="small" text-anchor="middle">immediate-mode UI</text>
+<rect id="libtorrent" x="990" y="955" width="220" height="60" rx="10" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="1100" y="980" class="body" text-anchor="middle">libtorrent · BSD-3</text>
+<text x="1100" y="1003" class="small" text-anchor="middle">vendored · BT core</text>
+</g>
+<text x="335" y="315" class="label" text-anchor="start" style="fill:#2563eb">calls core API</text>
+<text x="500" y="505" class="label" text-anchor="end" style="fill:#2563eb">interface impl ↓</text>
+<text x="335" y="790" class="label" text-anchor="start" style="fill:#7c3aed">decode · render · subtitle</text>
+<text x="1095" y="325" class="label" text-anchor="end" style="fill:#087f5b">local HTTP bridge</text>
+<text x="1175" y="325" class="label" text-anchor="end" style="fill:#087f5b">DLNA cast</text>
+<text x="1095" y="880" class="label" text-anchor="end" style="fill:#087f5b">vendored</text>
+<text x="40" y="1075" class="label" text-anchor="start">solid: business calls · dashed: dependencies / optional · core abstraction depends on no multimedia library, swap the UI without touching the core</text>
+<text x="40" y="1100" class="small" text-anchor="start">Layers follow the code: soar_core pure abstraction · soar_app_ui / soar_p2p / soar_cast separate libraries · NullBackend built-in test double</text>
+</svg>
