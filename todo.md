@@ -88,3 +88,5 @@
 - [x] 审核发现：本轮 diff 未见问题（947184ab..HEAD）——属实：区间仅一个 docs-only commit（`5e230b6` 关闭上一轮两条审核发现：网络框标题补 `src/core` 枚举、`ffmpeg-deps`/`torrent-libtorrent` 两条依赖边补 `class="edge control"` 虚线），无代码/测试变更；en/zh 两份 SVG 结构一致且 xmllint 校验通过，两条边现与图例「虚线=依赖」一致，标题枚举与框内 `HttpCache·src/core`（src/core/http_cache.cpp）一致，其余依赖边（app-cast/ffmpeg-cache）未被误改；HEAD=5e230b6
 - [x] 审核发现：本轮 diff 未见问题（5e230b6..HEAD）——属实：区间仅一个 docs-only commit（`f2c413f` 勾选上一轮 SVG 审核记录），其父提交即 `5e230b6`，且只新增 `todo.md` 一行，无代码/测试变更；HEAD=f2c413f
 - [x] 审核发现：本轮 diff 未见问题（f2c413f6..HEAD）——属实：区间仅一个 docs-only commit（`152a27b` 关闭上一轮 `5e230b6..HEAD` 审核记录），其父提交即 `f2c413f`，且只新增 `todo.md` 一行，无代码/测试变更；HEAD=152a27b
+
+- [x] 审核发现：本轮 diff 未见问题（152a27b9..HEAD）——属实：区间仅一个 docs-only commit（`4e10854`），其父提交即 `152a27b`，且只新增 `todo.md` 一行，无代码/测试变更；HEAD=4e10854
