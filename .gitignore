@@ -55,6 +55,9 @@ vcpkg-configuration.json
 # Misc
 .DS_Store
 
+# Local test media environment values
+/env.txt
+
 # Codex spec workflow artifacts
 .spec-workflow/
 
