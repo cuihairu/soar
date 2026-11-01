@@ -27,6 +27,8 @@
 
 #include <fmt/format.h>
 
+#include <cmath>
+
 #ifdef SOAR_WITH_SDL2
 #  include <SDL.h>
 
@@ -1196,8 +1198,9 @@ class PlayerHud {
 
     if (!video_active) drawPoster();
     drawPauseOverlay();
+    drawTopBar();
     if (st_.hud_alpha > 0.01f) drawHud(now);
-    drawChips();
+    drawChips(now);
     drawSubtitles(now);
     drawToast(now);
     drawOverlays();
@@ -2586,12 +2589,8 @@ class PlayerHud {
       // holds the presentation knobs (font size, offset, visibility).
       if (ImGui::Button("Sub")) toggleOverlay(Overlay::Subtitle);
       ImGui::SameLine();
-      if (ImGui::Button("Info")) toggleOverlay(Overlay::Info);
-      ImGui::SameLine();
-      if (ImGui::Button(st_.fullscreen ? "Window" : "Full")) {
-        setFullscreen(!st_.fullscreen);
-      }
-      ImGui::SameLine();
+      // Info/Fullscreen moved to the top bar when it landed (M1): the
+      // prototype has the four tools there, not in the transport row.
       // A-B loop, subtitle visibility and screenshot as buttons (the L / V / S
       // shortcuts behind them — same actions, same toasts). The CC button is
       // the prototype's caption toggle: it flips whether canvas subtitles
@@ -2757,30 +2756,70 @@ class PlayerHud {
     ImGui::End();
   }
 
-  void drawChips() {
-    // Buffering chip while the backend reports a stall (P1 events);
-    // download chip while the disk cache is still filling (P3c events).
-    // (The Paused chip is gone: the paused overlay's pill carries the
-    // state name — one indicator, not two.) All fade with the theme,
-    // never block input.
-    if (cfg_.buffering && cfg_.buffering->load(std::memory_order_relaxed)) {
-      chip("##buffering", "Buffering...", 18.0f);
-    }
-    const std::uint64_t total =
-        cfg_.download_total ? cfg_.download_total->load(std::memory_order_relaxed) : 0;
-    const std::uint64_t have =
-        cfg_.download_bytes ? cfg_.download_bytes->load(std::memory_order_relaxed) : 0;
-    if (total > 0 && have < total) {
-      char text[32];
-      std::snprintf(text, sizeof(text), "Downloading %llu%%",
-                    static_cast<unsigned long long>(have * 100 / total));
-      chip("##download", text, 40.0f);
+  void drawChips(milliseconds now) {
+    // The prototype's .statechip (desktop-main.html:166-169): one persistent
+    // pill centered under the top bar — state word, both clocks, and the P2P
+    // download share while the disk cache is still filling. The standalone
+    // Buffering/Downloading chips the old bar showed folded in here. It is
+    // pure information (NoInputs): clicks fall through to the video beneath.
+    // Casting keeps its own pill below — functional state the prototype does
+    // not model, so it stays rather than folding in.
+    if (!current_uri_.empty()) {
+      const bool buffering =
+          cfg_.buffering && cfg_.buffering->load(std::memory_order_relaxed);
+      const std::uint64_t total =
+          cfg_.download_total ? cfg_.download_total->load(std::memory_order_relaxed) : 0;
+      const std::uint64_t have =
+          cfg_.download_bytes ? cfg_.download_bytes->load(std::memory_order_relaxed) : 0;
+      const bool downloading = total > 0 && have < total;
+
+      const char* state = "Stopped";
+      ImVec4 dot = theme::kTextMuted;
+      switch (player_.state()) {
+        case PlaybackState::Playing:
+          if (buffering) {
+            state = "Buffering";
+            dot = theme::kWarn;
+          } else {
+            state = "Playing";
+            dot = theme::kOk;
+          }
+          break;
+        case PlaybackState::Paused:
+          state = "Paused";
+          dot = theme::kTextDim;
+          break;
+        case PlaybackState::Ended:
+          state = "Ended";
+          dot = theme::kTextMuted;
+          break;
+        case PlaybackState::Error:
+          state = "Error";
+          dot = theme::kDanger;
+          break;
+        case PlaybackState::Stopped:
+          break;
+      }
+
+      std::string text = state;
+      const MediaInfo info = player_.mediaInfo();
+      if (info.duration > milliseconds(0)) {
+        text += " - " + formatClock(player_.position()) + " / " +
+                formatClock(info.duration);
+      }
+      if (downloading) {
+        char p2p[24];
+        std::snprintf(p2p, sizeof(p2p), " - P2P %llu%%",
+                      static_cast<unsigned long long>(have * 100 / total));
+        text += p2p;
+      }
+      stateChip("##statechip", text, dot);
     }
     // Cast chip while a DLNA session is live (docs/mvp.md §3): the TV
     // plays even when this window is minimized, so the state stays visible.
     if (cast_active_ &&
         cast_active_->phase() == soar::cast::CastSession::Phase::Casting) {
-      chip("##cast", "Casting", 62.0f);
+      chip("##cast", "Casting", 94.0f);
     }
   }
 
@@ -2917,6 +2956,267 @@ class PlayerHud {
     ImGui::PopStyleVar();
   }
 
+  // The prototype's .statechip (desktop-main.html:166-169): a centered pill
+  // under the top bar with a pulse dot, the state word, both clocks and —
+  // while the disk cache fills — the P2P share. NoInputs: purely a status
+  // readout, clicks fall through to the video beneath. Same draw-list pill
+  // dance as chip() (a 999 WindowRounding would stretch the auto-resize
+  // window — see chip()).
+  void stateChip(const char* name, const std::string& text, const ImVec4& dot) {
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 64.0f), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    if (ImGui::Begin(name, nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoBackground |
+                         ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoInputs)) {
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const float pad = 14.0f;
+      const float dot_r = 3.5f;  // 7px dot (.statechip .dot)
+      const float gap = 9.0f;
+      const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
+      // Reserve the pill's footprint; the window auto-sizes to this Dummy.
+      ImGui::Dummy(ImVec2(pad * 2 + dot_r * 2 + gap + ts.x, ts.y + 12.0f));
+      const ImVec2 p0 = ImGui::GetWindowPos();
+      const ImVec2 p1(p0.x + ImGui::GetWindowWidth(),
+                      p0.y + ImGui::GetWindowHeight());
+      ImVec4 bg = theme::kPanelBg;
+      bg.w = 0.72f;  // .statechip bg rgba(9,10,12,.72) (desktop-main.html:39)
+      dl->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(bg),
+                        theme::kPillRounding);
+      dl->AddRect(p0, p1, ImGui::ColorConvertFloat4ToU32(theme::kBorder),
+                  theme::kPillRounding);
+      // Pulse: a ~1.6s breathing of the dot's radius (the prototype's
+      // .statechip .dot). Only the radius moves — the ink stays steady.
+      const double t = ImGui::GetTime();
+      const float ph =
+          static_cast<float>(std::fmod(t / 1.6, 1.0) * 6.2831853);
+      const float r = dot_r * (1.0f + 0.20f * std::sin(ph));
+      const float cy = (p0.y + p1.y) * 0.5f;
+      dl->AddCircleFilled(ImVec2(p0.x + pad + dot_r, cy), r,
+                          ImGui::ColorConvertFloat4ToU32(dot));
+      dl->AddText(ImVec2(p0.x + pad + dot_r * 2 + gap, cy - ts.y * 0.5f),
+                  ImGui::ColorConvertFloat4ToU32(theme::kTextDim), text.c_str());
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+  }
+
+  // A .pill in the top bar, drawn on the draw list: 22px tall, 999 radius,
+  // tinted text on a tinted ground (or a neutral white .08 ground), and the
+  // small play triangle the .pill.ok carries. Returns the x after the pill
+  // so the caller chains the next one.
+  float topPill(ImDrawList* dl, float x, float cy, const char* text,
+                const ImVec4& fg, bool tinted, bool play) {
+    const float pad = 10.0f;
+    const float ph = 22.0f;  // .pill height
+    const float py = cy - ph * 0.5f;
+    const float triW = play ? 11.0f : 0.0f;
+    const ImVec2 ts = ImGui::CalcTextSize(text);
+    const float pw = pad + triW + ts.x + pad;
+    ImU32 bg;
+    if (tinted) {
+      bg = ImGui::ColorConvertFloat4ToU32(ImVec4(fg.x, fg.y, fg.z, 0.14f));
+    } else {
+      bg = IM_COL32(255, 255, 255, 20);  // rgba(255,255,255,.08) .pill ground
+    }
+    const ImU32 fgU32 = ImGui::ColorConvertFloat4ToU32(fg);
+    dl->AddRectFilled(ImVec2(x, py), ImVec2(x + pw, py + ph), bg,
+                      theme::kPillRounding);
+    dl->AddRect(ImVec2(x, py), ImVec2(x + pw, py + ph),
+                ImGui::ColorConvertFloat4ToU32(theme::kBorder), theme::kPillRounding);
+    float tx = x + pad;
+    if (play) {
+      dl->AddTriangleFilled(ImVec2(tx, cy - 4.0f), ImVec2(tx, cy + 4.0f),
+                            ImVec2(tx + 7.0f, cy), fgU32);
+      tx += triW;
+    }
+    dl->AddText(ImVec2(tx, cy - ts.y * 0.5f), fgU32, text);
+    return x + pw;
+  }
+
+  // A 30x30 tool button with a letter glyph (the shortcut key) drawn on the
+  // draw list; hover paints the prototype's rgba(255,255,255,.08) face.
+  // Returns true on a click. `pos` is the absolute screen-space top-left.
+  bool topTool(const char* id, char glyph, const char* tip, const ImVec2& pos) {
+    const ImVec2 wp = ImGui::GetWindowPos();
+    ImGui::SetCursorPos(ImVec2(pos.x - wp.x, pos.y - wp.y));
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(30.0f, 30.0f));
+    const bool hovered = ImGui::IsItemHovered();
+    if (hovered && tip) ImGui::SetTooltip("%s", tip);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (hovered || ImGui::IsItemActive()) {
+      const float a = ImGui::IsItemActive() ? 0.16f : 0.08f;
+      dl->AddRectFilled(pos, ImVec2(pos.x + 30.0f, pos.y + 30.0f),
+                        IM_COL32(255, 255, 255, static_cast<int>(a * 255)),
+                        theme::kControlRounding);
+    }
+    const char g[2] = {glyph, 0};
+    const ImVec2 ts = ImGui::CalcTextSize(g);
+    dl->AddText(ImVec2(pos.x + (30.0f - ts.x) * 0.5f, pos.y + (30.0f - ts.y) * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(theme::kText), g);
+    return clicked;
+  }
+
+  // The prototype's .topbar (desktop-main.html:138-164): a persistent strip
+  // across the top — brand + state/media/P2P pills on the left, the four
+  // tool buttons (Info/Recent/Help/Fullscreen) on the right — over a
+  // black-to-transparent gradient. Info/Fullscreen moved here from the OSC
+  // when the bar landed (M1): the prototype has the four tools up here, not
+  // in the transport row. Always visible; buttons are mouse- and
+  // keyboard-reachable (I/R/H/F).
+  void drawTopBar() {
+    const ImGuiIO& io = ImGui::GetIO();
+    const float w = io.DisplaySize.x;
+    const float h = 62.0f;  // .topbar padding 16 + 30 content + 16
+
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    if (ImGui::Begin("##topbar", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoBringToFrontOnFocus |
+                         ImGuiWindowFlags_NoBackground |
+                         ImGuiWindowFlags_NoScrollbar)) {
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      // linear-gradient(180deg, rgba(0,0,0,.55), transparent): a 140/255
+      // alpha at the top fading to nothing at the strip's bottom edge.
+      dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(w, h),
+                                  IM_COL32(0, 0, 0, 140), IM_COL32(0, 0, 0, 140),
+                                  IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0));
+
+      const float cy = h * 0.5f;
+      float x = 22.0f;  // .topbar padding-left
+
+      // .app-title: the 22px wing mark — an orange-gradient rounded square
+      // (the bitmap font has no wing glyph, so the face is drawn; the ink
+      // is a small chevron suggesting the wing).
+      const ImVec2 logo(x, cy - 11.0f);
+      const ImU32 acc = ImGui::ColorConvertFloat4ToU32(theme::kAccent);
+      const ImU32 accHi = ImGui::ColorConvertFloat4ToU32(theme::kAccentHover);
+      dl->AddRectFilledMultiColor(logo, ImVec2(x + 22.0f, cy + 11.0f), acc,
+                                  accHi, accHi, acc);
+      dl->AddTriangleFilled(ImVec2(x + 6.0f, cy - 5.0f), ImVec2(x + 6.0f, cy + 5.0f),
+                            ImVec2(x + 15.0f, cy),
+                            ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent));
+      x += 22.0f + 10.0f;
+
+      // "soar" wordmark (the .app-title's title).
+      const ImVec2 ts = ImGui::CalcTextSize("soar");
+      dl->AddText(ImVec2(x, cy - ts.y * 0.5f),
+                  ImGui::ColorConvertFloat4ToU32(theme::kText), "soar");
+      x += ts.x + 16.0f;
+
+      // Left pills — state, media, P2P — only when a source is loaded (the
+      // prototype models the playing page).
+      if (!current_uri_.empty()) {
+        const bool buffering =
+            cfg_.buffering && cfg_.buffering->load(std::memory_order_relaxed);
+        const std::uint64_t total =
+            cfg_.download_total ? cfg_.download_total->load(std::memory_order_relaxed) : 0;
+        const std::uint64_t have =
+            cfg_.download_bytes ? cfg_.download_bytes->load(std::memory_order_relaxed) : 0;
+        const bool downloading = total > 0 && have < total;
+
+        // State pill: ok-green "Playing" (or warn while buffering); the
+        // non-playing states go neutral — the prototype's .pill.ok only
+        // colors the playing row.
+        const char* state = "Playing";
+        ImVec4 stateFg = theme::kOk;
+        bool stateTinted = true;
+        // The .pill.ok's play glyph belongs to the moving state only; the
+        // non-playing pills are plain text.
+        bool statePlaying = true;
+        switch (player_.state()) {
+          case PlaybackState::Playing:
+            if (buffering) {
+              state = "Buffering";
+              stateFg = theme::kWarn;
+            }
+            break;
+          case PlaybackState::Paused:
+            state = "Paused";
+            stateFg = theme::kTextDim;
+            stateTinted = false;
+            statePlaying = false;
+            break;
+          case PlaybackState::Ended:
+            state = "Ended";
+            stateFg = theme::kTextMuted;
+            stateTinted = false;
+            statePlaying = false;
+            break;
+          case PlaybackState::Error:
+            state = "Error";
+            stateFg = theme::kDanger;
+            break;
+          case PlaybackState::Stopped:
+            state = "Stopped";
+            stateFg = theme::kTextMuted;
+            stateTinted = false;
+            statePlaying = false;
+            break;
+        }
+        x = topPill(dl, x, cy, state, stateFg, stateTinted, /*play=*/statePlaying);
+
+        // Media pill: the source's display name (the prototype's plain pill).
+        const std::string name = clipEllipsis(displayName(current_uri_), 26);
+        x = topPill(dl, x, cy, name.c_str(), theme::kTextDim, /*tinted=*/false,
+                    /*play=*/false);
+
+        // P2P pill (the prototype's .pill.sky) while the download is live.
+        if (downloading) {
+          char p2p[24];
+          std::snprintf(p2p, sizeof(p2p), "P2P %llu%%",
+                        static_cast<unsigned long long>(have * 100 / total));
+          x = topPill(dl, x, cy, p2p, theme::kNet, /*tinted=*/true,
+                      /*play=*/false);
+        }
+      }
+
+      // Right: the four .toolbtn (30x30, radius 8, hover white .08): Info,
+      // Recent, Help, Fullscreen. The letters are the shortcuts (the bitmap
+      // font has no icon set); the tooltip names the action.
+      const float bw = 30.0f;
+      const float gap = 8.0f;
+      float bx = w - 22.0f - (4 * bw + 3 * gap);
+      if (topTool("##tb_info", 'I', "Info (I)", ImVec2(bx, cy - 15.0f))) {
+        toggleOverlay(Overlay::Info);
+      }
+      bx += bw + gap;
+      if (topTool("##tb_recent", 'R', "Recent (R)", ImVec2(bx, cy - 15.0f))) {
+        toggleOverlay(Overlay::Recent);
+      }
+      bx += bw + gap;
+      if (topTool("##tb_help", 'H', "Help (H)", ImVec2(bx, cy - 15.0f))) {
+        toggleOverlay(Overlay::Help);
+      }
+      bx += bw + gap;
+      if (topTool("##tb_full", 'F', "Fullscreen (F)", ImVec2(bx, cy - 15.0f))) {
+        setFullscreen(!st_.fullscreen);
+      }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+  }
+
+  // Truncate a long label with a "..." tail so the top-bar media pill stays
+  // a single short pill (the bitmap font has no ellipsis glyph).
+  static std::string clipEllipsis(const std::string& s, std::size_t max_chars) {
+    if (s.size() <= max_chars) return s;
+    const std::size_t keep = max_chars > 3 ? max_chars - 3 : 1;
+    return s.substr(0, keep) + "...";
+  }
+
   void drawToast(milliseconds now) {
     if (!st_.toast.active(now)) return;
     const ImGuiIO& io = ImGui::GetIO();
@@ -2924,7 +3224,9 @@ class PlayerHud {
     // Full opacity for the first 75%, a 25% fade-out tail (docs §4).
     const float alpha =
         static_cast<float>(age < 0.75 ? 1.0 : 1.0 - (age - 0.75) / 0.25);
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 56.0f), ImGuiCond_Always,
+    // The toast sits below the top bar and the state chip (both are
+    // persistent now), so a status message never collides with either.
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 104.0f), ImGuiCond_Always,
                             ImVec2(0.5f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
     ImGui::SetNextWindowBgAlpha(0.6f);

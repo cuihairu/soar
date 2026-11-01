@@ -486,10 +486,7 @@ if mode == "drive":
         wclick(527, 495)   # ... reopen; "Off" only acts as a change when a
         wclick(549, 443)   # track is currently selected, so the order matters
         wclick(586, 495)   # Sub overlay (the Sub button sits between the
-        wclick(586, 495)   # subtitle combo and Info; open, then close)
-        wclick(630, 495)   # Info overlay (shifted right by the Sub button)
-        wclick(630, 495)   # (close again)
-        wclick(682, 495)   # fullscreen toggle button (also shifted)
+        wclick(586, 495)   # subtitle combo and A-B; open, then close)
         focus(); key(d.keysym_to_keycode(0xFF1B)); time.sleep(0.3)
         # Seek bar: the row-1 rail sits at y 452..477 under the OSC top
         # edge, flanked by the elapsed/remaining timecodes (they narrowed
@@ -650,10 +647,12 @@ if mode == "osc":
         # reading back the toast it raises): prev |< 126..155 (click
         # 140), >| 164..193 (178), Mute 202..245, 1x 318..373, Audio
         # 382..451, the Sub combo 460..529, the Sub page button
-        # 538..574 (556), Info 583..626, Full 635..678, A-B 687..723
-        # (705), CC 732..761 (746), Shot 770..813 (791); the bar edge is
-        # ~847. The row reads the same with and without subtitle tracks,
-        # so the null and the real backends share these coordinates.
+        # 538..574 (556), A-B 585..617 (601), CC 630..655 (642), Shot
+        # 668..707 (687); the bar edge is ~847. Info/Fullscreen moved to
+        # the top bar when it landed (M1), so the three faces after Sub
+        # each took the slot of the button that left. The row reads the
+        # same with and without subtitle tracks, so the null and the real
+        # backends share these coordinates.
         bclick(140, 495)   # |< prev: queue head boundary
         if not wait_ge("event: toast=Start of playlist", 1, 5.0):
             rc = 7
@@ -666,16 +665,16 @@ if mode == "osc":
         bclick(140, 495)   # |< prev: back to the sample
         if not wait_ge("event: media-info", 3, 8.0):
             rc = 7
-        bclick(705, 495)   # A-B: arm point A
+        bclick(601, 495)   # A-B: arm point A
         if not wait_ge("event: toast=Loop point A set at", 1, 5.0):
             rc = 7
-        bclick(705, 495)   # A-B again: pair settles somehow
+        bclick(601, 495)   # A-B again: pair settles somehow
         if not wait_ge("event: toast=", 4, 5.0):  # Start, End, arm, 2nd
             rc = 7
-        bclick(746, 495)   # CC: caption visibility off (the V shortcut's action)
+        bclick(642, 495)   # CC: caption visibility off (the V shortcut's action)
         if not wait_ge("event: toast=Subtitles off", 1, 5.0):
             rc = 7
-        bclick(746, 495)   # CC again: back on
+        bclick(642, 495)   # CC again: back on
         if not wait_ge("event: toast=Subtitles on", 1, 5.0):
             rc = 7
         # The paused overlay's round play button (drawn at the window
@@ -685,7 +684,7 @@ if mode == "osc":
         bclick(480, 254)
         if not wait_ge("event: state=2", 2, 5.0):
             rc = 7
-        bclick(791, 495)   # Shot: no frames on the null backend
+        bclick(687, 495)   # Shot: no frames on the null backend
         if not wait_ge("event: toast=Screenshot needs the FFmpeg backend", 1, 5.0):
             rc = 7
     except Exception:
@@ -1711,8 +1710,8 @@ if mode == "audiodrive":
     # because nothing downstream asserted on the pages.)
     dclick(556, 495)   # Sub page: "No subtitle tracks available"
     dclick(556, 495)   # close it again
-    dclick(630, 495)   # Media Info: two titled audio rows, one selected
-    dclick(630, 495)   # close it again
+    dclick(809, 31)    # Media Info (the top-bar I button; Info moved there
+    dclick(809, 31)    # when the bar landed): two titled audio rows, one selected
     time.sleep(0.4)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
