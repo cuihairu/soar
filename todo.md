@@ -96,3 +96,5 @@
 - [x] 审核发现：本轮 diff 未见问题（4bbb48a4..HEAD）——属实：区间仅一个 docs-only commit（`c2c4b3b` 关闭上一轮 `4e108542..HEAD` 审核记录），其父提交即 `4bbb48a`，且只新增 `todo.md` 一行，无代码/测试/构建变更；HEAD=c2c4b3b。证据：`git log --oneline 4bbb48a4..HEAD` → `c2c4b3b docs: verify 4e108542..HEAD review`
 
 - [x] 审核发现：本轮 diff 未见问题（c2c4b3b2..HEAD）——属实：区间仅一个 docs-only commit（`b66a1c0` 关闭上一轮 `4bbb48a4..HEAD` 审核记录），其父提交即 `c2c4b3b`，且只新增 `todo.md` 一行，无代码/测试/构建变更；HEAD=b66a1c0。证据：`git log --oneline c2c4b3b2..HEAD` → `b66a1c0 docs: verify 4bbb48a4..HEAD review`；`ctest --test-dir build --output-on-failure -j1` 15/15 全绿·192.59s、`npm run docs:build` 11.23s 绿
+
+- [ ] **UI-AUDIT · P2 · 界面审核(impeccable 流程)**:原生桌面界面此前不在 web 界面审核范围,补审——按 impeccable 审计(层级/排版/对比度 a11y/布局/边界态),报告+截图入 docs/review/,坏损当场修。
