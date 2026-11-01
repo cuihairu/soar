@@ -93,6 +93,14 @@ std::int64_t resumePositionMs(const LibraryEntry& e);
 // stays a renderer and the bucket membership is unit-testable.
 enum class LibraryCategory { All, Recent, Resume, Finished };
 
+// The sidebar's Type group (docs/public/prototypes/library.html): a source
+// is a network source when its path carries a URI scheme (http://, magnet:,
+// a torrent-bridge URL ...); everything else is a local file. All shows
+// both halves; the state buckets (LibraryCategory) and the type compose.
+enum class LibrarySource { All, Local, Network };
+
+bool matchesSource(const LibraryEntry& e, LibrarySource s);
+
 // Whether an entry belongs to the bucket. Recent reads the file's mtime:
 // the store keeps no add-time, and a scanned file's content time is the
 // closest acquisition signal there is (0 = unknown — URLs, sources never

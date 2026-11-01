@@ -216,6 +216,13 @@ class RecentStore {
   // returns whether the stored list changed.
   bool add(const std::string& uri);
 
+  // The settings page's "Recent playback cap" stepper. Shrinking trims the
+  // live list immediately; the caller re-saves so the file matches.
+  void setMaxEntries(std::size_t n) {
+    max_entries_ = n;
+    if (entries_.size() > n) entries_.resize(n);
+  }
+
   const std::vector<std::string>& entries() const { return entries_; }
 
   bool save() const;

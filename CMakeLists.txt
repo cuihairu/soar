@@ -199,6 +199,7 @@ add_library(soar_app_ui STATIC
   src/app/ui/dir_scan.cpp
   src/app/ui/library.cpp
   src/app/ui/shortcuts.cpp
+  src/app/ui/thumbnail_service.cpp
   src/app/uri_decode.cpp
 )
 target_compile_features(soar_app_ui PUBLIC cxx_std_17)

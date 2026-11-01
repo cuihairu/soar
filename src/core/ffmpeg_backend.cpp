@@ -2084,6 +2084,162 @@ bool FFmpegBackend::exportSubtitleText(TrackId id, std::string& out_srt) {
   return true;
 }
 
+bool FFmpegBackend::grabVideoFrame(std::chrono::milliseconds position,
+                                   DecodedVideoFrame& out) {
+  out = DecodedVideoFrame{};
+
+  // Snapshot the URI under decode_mutex_ and run the whole grab outside
+  // every lock (exportSubtitleText's rule: file/network IO must not block
+  // the decode thread). The input belongs to this call alone — the decode
+  // thread's own input is untouched.
+  std::string uri;
+  {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (!format_ctx_) {
+      return fail("grabVideoFrame: no media opened", /*emit_event=*/false);
+    }
+    uri = opened_source_.uri;
+  }
+
+  AVFormatContext* ctx = nullptr;
+  int ret = avformat_open_input(&ctx, uri.c_str(), nullptr, nullptr);
+  if (ret < 0) {
+    return fail(fmt::format("grabVideoFrame: cannot reopen '{}': {}", uri,
+                            avError(ret)),
+                /*emit_event=*/false);
+  }
+  const auto close_ctx = [&]() { avformat_close_input(&ctx); };
+
+  ret = avformat_find_stream_info(ctx, nullptr);
+  if (ret < 0) {
+    const std::string err =
+        fmt::format("grabVideoFrame: no stream info: {}", avError(ret));
+    close_ctx();
+    return fail(err, /*emit_event=*/false);
+  }
+  const int vstream =
+      av_find_best_stream(ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+  if (vstream < 0) {
+    close_ctx();
+    return fail("grabVideoFrame: no video stream", /*emit_event=*/false);
+  }
+  const AVStream* stream = ctx->streams[vstream];
+  const AVRational tb = stream->time_base;
+
+  // Software decode only: the caller asks for one small frame on a side
+  // thread, and a hwaccel context would need the same device plumbing as
+  // playback. The decoder is found explicitly (alloc_context3(nullptr) +
+  // open2(nullptr) is refused by libavcodec for some codecs) — the same
+  // pattern the subtitle extractor uses.
+  const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
+  AVCodecContext* decoder = avcodec_alloc_context3(codec);
+  if (decoder == nullptr) {
+    close_ctx();
+    return fail("grabVideoFrame: cannot allocate decoder", /*emit_event=*/false);
+  }
+  ret = avcodec_parameters_to_context(decoder, stream->codecpar);
+  if (ret < 0) {
+    avcodec_free_context(&decoder);
+    close_ctx();
+    return fail(
+        fmt::format("grabVideoFrame: cannot copy codec params: {}", avError(ret)),
+        /*emit_event=*/false);
+  }
+  ret = avcodec_open2(decoder, codec, nullptr);
+  if (ret < 0) {
+    avcodec_free_context(&decoder);
+    close_ctx();
+    return fail(
+        fmt::format("grabVideoFrame: cannot open decoder: {}", avError(ret)),
+        /*emit_event=*/false);
+  }
+
+  // Seek backward to the keyframe at/just before the request, then decode
+  // forward to the frame at or past it. A non-seekable source fails here —
+  // a hover thumb needs the seek, and reading a live stream forward to an
+  // arbitrary offset would block the caller.
+  const int64_t target = av_rescale_q(position.count(), AVRational{1, 1000}, tb);
+  ret = av_seek_frame(ctx, vstream, target, AVSEEK_FLAG_BACKWARD);
+  if (ret < 0) {
+    avcodec_free_context(&decoder);
+    close_ctx();
+    return fail(fmt::format("grabVideoFrame: cannot seek: {}", avError(ret)),
+                /*emit_event=*/false);
+  }
+
+  AVPacket* packet = av_packet_alloc();
+  AVFrame* frame = av_frame_alloc();
+  bool have_frame = false;
+  bool reached = false;
+  if (packet != nullptr && frame != nullptr) {
+    while ((ret = av_read_frame(ctx, packet)) >= 0) {
+      if (packet->stream_index != vstream) {
+        av_packet_unref(packet);
+        continue;
+      }
+      const int send_ret = avcodec_send_packet(decoder, packet);
+      av_packet_unref(packet);
+      if (send_ret < 0) {
+        continue;
+      }
+      int recv_ret = 0;
+      while ((recv_ret = avcodec_receive_frame(decoder, frame)) == 0) {
+        have_frame = true;
+        if (frame->pts >= target || frame->best_effort_timestamp >= target) {
+          reached = true;
+          break;
+        }
+        av_frame_unref(frame);
+      }
+      if (reached) break;
+      av_frame_unref(frame);
+    }
+  }
+
+  bool ok = false;
+  if (have_frame) {
+    // Scale to the fixed 16:9 thumb, tightly packed YUV420P (stride ==
+    // width) so the UI uploads it as one SDL IYUV texture.
+    constexpr int kThumbW = 160;
+    constexpr int kThumbH = 90;
+    SwsContext* sws = sws_getContext(decoder->width, decoder->height,
+                                     decoder->pix_fmt, kThumbW, kThumbH,
+                                     AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr,
+                                     nullptr, nullptr);
+    if (sws != nullptr) {
+      out.width = kThumbW;
+      out.height = kThumbH;
+      out.stride_y = kThumbW;
+      out.stride_u = kThumbW / 2;
+      out.stride_v = kThumbW / 2;
+      out.y.resize(static_cast<std::size_t>(kThumbW) * kThumbH);
+      out.u.resize(static_cast<std::size_t>(kThumbW / 2) * (kThumbH / 2));
+      out.v.resize(static_cast<std::size_t>(kThumbW / 2) * (kThumbH / 2));
+      std::uint8_t* dst_data[4] = {out.y.data(), out.u.data(), out.v.data(),
+                                   nullptr};
+      int dst_lines[4] = {out.stride_y, out.stride_u, out.stride_v, 0};
+      sws_scale(sws, frame->data, frame->linesize, 0, decoder->height,
+                dst_data, dst_lines);
+      out.pts = position;
+      ok = true;
+      sws_freeContext(sws);
+    } else {
+      fail("grabVideoFrame: cannot create scaler", /*emit_event=*/false);
+    }
+  }
+
+  av_frame_free(&frame);
+  av_packet_free(&packet);
+  avcodec_free_context(&decoder);
+  close_ctx();
+  if (!ok) {
+    fail(have_frame ? "grabVideoFrame: cannot scale frame"
+                    : "grabVideoFrame: no decodable frame",
+         /*emit_event=*/false);
+  }
+  return ok;
+}
+
 //=============================================================================
 // A-B loop
 //=============================================================================

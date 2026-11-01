@@ -153,6 +153,16 @@ public:
   // unreachable (the PNG encoder ships with FFmpeg on every platform).
   bool saveScreenshot(const std::string& path, bool forceFailEncoder = false);
 
+  // Seek-bar hover thumbnail (docs/ui-design.md §1.6-5): decode a single
+  // video frame near `position` into a small YUV420P `out` (the UI's
+  // thumbnail texture source). FFmpegBackend-only (no IBackend virtual):
+  // the same reopen-per-call contract as exportSubtitleText — the playing
+  // input is untouched, a call-local ctx/decoder is built and freed, and
+  // the whole pass runs outside decode_mutex_ after a URI snapshot, so a
+  // side thread may call it without disturbing playback. False on no
+  // media / non-seekable / no video stream / decode error.
+  bool grabVideoFrame(std::chrono::milliseconds position, DecodedVideoFrame& out);
+
 private:
   // Internal types
   struct AudioParams {

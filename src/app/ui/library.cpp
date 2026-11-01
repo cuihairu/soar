@@ -228,6 +228,15 @@ bool matchesCategory(const LibraryEntry& e, LibraryCategory c) {
   return false;
 }
 
+bool matchesSource(const LibraryEntry& e, LibrarySource s) {
+  if (s == LibrarySource::All) return true;
+  // The dir-scan grouping rule: a URI scheme (scheme://) means a network
+  // source, a bare path means a local file. No filesystem call — the store
+  // keys are paths/URIs exactly as opened.
+  const bool network = e.path.find("://") != std::string::npos;
+  return s == LibrarySource::Network ? network : !network;
+}
+
 bool compareRecent(const LibraryEntry& a, const LibraryEntry& b) {
   if (a.mtime != b.mtime) return a.mtime > b.mtime;
   return a.path < b.path;

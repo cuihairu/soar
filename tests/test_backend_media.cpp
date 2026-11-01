@@ -1005,6 +1005,53 @@ TEST_CASE("tryGetVideoFrame delivers frames during playback") {
   backend->close();
 }
 
+TEST_CASE("grabVideoFrame decodes an arbitrary seek position on a side call") {
+  std::string media;
+  if (!mediaAvailable(media)) {
+    MESSAGE("SOAR_TEST_MEDIA not set; skipping grab frame test");
+    return;
+  }
+
+  auto backend = soar::makeFFmpegBackend();
+  auto* ffmpeg = static_cast<soar::FFmpegBackend*>(backend.get());
+
+  // Before any media is opened the grab fails and records the reason (the
+  // UI path relies on this: a null backend or no source yields no preview,
+  // never a crash).
+  soar::DecodedVideoFrame out;
+  CHECK_FALSE(ffmpeg->grabVideoFrame(0ms, out));
+  CHECK_FALSE(ffmpeg->lastError().empty());
+
+  REQUIRE(backend->open(soar::MediaSource{media}));
+  REQUIRE(backend->play());
+
+  // Two positions: the very start and mid-file. The grab reopens the input
+  // per call (the exportSubtitleText contract), so it must work alongside
+  // playback and return a complete small YUV420P frame.
+  for (const auto pos : {0ms, 3000ms}) {
+    soar::DecodedVideoFrame frame;
+    bool got = false;
+    for (int i = 0; i < 200 && !got; ++i) {
+      got = ffmpeg->grabVideoFrame(pos, frame);
+      if (!got) {
+        std::this_thread::sleep_for(10ms);
+      }
+    }
+    REQUIRE(got);
+    // The grab scales to the fixed 16:9 thumb (docs §1.6-5), regardless of
+    // the source's own 4:3 160x120 geometry.
+    CHECK(frame.width == 160);
+    CHECK(frame.height == 90);
+    CHECK_FALSE(frame.y.empty());
+    CHECK_FALSE(frame.u.empty());
+    CHECK_FALSE(frame.v.empty());
+    CHECK(frame.pts == pos);
+  }
+
+  backend->stop();
+  backend->close();
+}
+
 TEST_CASE("saveScreenshot encodes the presented frame as PNG") {
   std::string media;
   if (!mediaAvailable(media)) {
