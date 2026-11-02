@@ -104,3 +104,23 @@
   - 文档:docs「配置效果」页(双语)逐开关嵌入:说明+off 图+on 图+GIF。
   - 验收:清单内每个开关都有 off/on+GIF;流水线可重跑(配置变更随时再生成);兼作配置效果回归测试。
   - 参考:kode todo C-24 同款流水线模式(2026-11-01 用户令全舰队推广)。
+
+
+- [ ] 审核发现：README 徽章折叠提交（`645782d` 等 4 个 docs commit）把 Status/C++/license/platform/CMake/FFmpeg/SDL2 的 `img` 与文本全部删除，却留下对应的空 `<a>` 链接壳（README.md:8 共 6 个、README.zh.md:8-13 共 6 个），且两文件在 Docs 行尾各新增一个双斜杠 URL 的空 `<a>`（README.md:10 `.../soar//`、README.zh.md:14 `.../soar/zh//`）——渲染后只剩空白链接，无任何徽章内容。
+
+- [ ] 审核发现：`ThumbnailService::tryGet` 只按 `position` 取缓存项，但 `uploadThumbFrame`/`drawThumbPreview` 使用同一 `thumb_texture_`；悬停位置切换时旧帧会留在屏幕上直到新帧就绪，与服务头注释「while the new frame decodes the old preview hides」矛盾——`player_window.cpp:3078-3097` 在 `q_pos != thumb_requested_` 时仅重置 `thumb_shown_`，未隐藏/清除已上传纹理，且 `tryGet` 命中缓存时 `thumb_shown_` 已同步，缓存未命中期间旧 `thumb_texture_` 仍被 `drawThumbPreview`（`player_window.cpp:2970`）绘制。
+
+- [ ] 审核发现：`grabVideoFrame` 对 `frame->pts == AV_NOPTS_VALUE`（-9223372036854775808）未做判空：`frame->pts >= target || frame->best_effort_timestamp >= target` 在无时间戳帧上恒成立，会接受一个时间戳无效的帧作为「到达目标」的帧——`ffmpeg_backend.cpp:2188`，目标帧判定应改用 `frame->best_effort_timestamp`（同样可为 NOPTS）且对 NOPTS 显式跳过。
+
+- [ ] 审核发现：`matchesSource` 用 `e.path.find("://")` 判定网络源，但注释/头文件声明把 `magnet:`（无 `://`）、`asset://`、torrent 桥（`http://127.0.0.1:<port>/` 有 `://` 所以算网络，合理）与 `file://`（含 `://` 会被误判为网络）混在同一规则下；实际 `magnet:` URI 会被归入「Local」，`file://` 会被归入「Network」，与 `library.h:96-100` 的「http://、magnet:、torrent-bridge」注释不符——`library.cpp:236`。
+
+- [ ] 审核发现：`setMaxEntries(0)`（settingsStepper 下限为 5，但接口本身不禁止 0）会让 `RecentStore::load()` 在下次启动清空全部历史，且 `st_.recent_cap` 初始为 15 硬编码、未从 `recent_.entries()` 或持久化恢复，设置页显示的「Recent playback cap」与启动后实际 MRU 上限可能在重启后不一致——`ui_state.h:221-224`、`player_window.cpp:2461-2468`。
+
+- [ ] 审核发现：本轮 diff 新增的库「Type」筛选（`matchesSource`）与 `setMaxEntries` 均无单元测试覆盖（`tests/test_library.cpp` 只测 `matchesCategory`/`resumePositionMs`，`tests/test_ui_state.cpp` 只测 `add`/`load`/`save`），且 `ThumbnailService` 作为一个新线程组件没有任何直接测试；`grabVideoFrame` 测试也仅在 `SOAR_TEST_MEDIA` 设置时运行，否则静默跳过——`tests/test_backend_media.cpp:1008-1048`。
+
+- [ ] 审核发现：docs/ui-design.md §7（`docs/ui-design.md:265`）与 docs/zh/ui-design.md（`docs/zh/ui-design.md:258`）仍写「seek hover thumbnails… still not doing」与「settings panel… still not doing」，而本轮 0d07d89 同时落地了 seek 悬停缩略图与完整设置页；docs/prototype-alignment-audit.md:170/167 仍标「Intentionally deferred (v0.2)」——文档与实现不一致。
+
+- [ ] 审核发现：`grabVideoFrame` 未检查 `avcodec_receive_frame` 的负返回值（`recv_ret < 0` 时循环仅退出，不记录错误），且 `av_seek_frame` 后 `av_read_frame` 可能因流结束返回 `AVERROR_EOF`，此时 `have_frame` 为 false 只报「no decodable frame」；但更关键的是：解码器未 flush（未 `avcodec_send_packet(decoder, nullptr)`），最后一批缓冲帧可能取不到，对短 GOP 文件或 `position` 靠近末尾时可能误报失败——`ffmpeg_backend.cpp:2175-2197`。
+
+- [ ] 审核发现：`grabVideoFrame` 在 `avformat_open_input` 成功后立即 `avformat_find_stream_info`，但解码器使用 `avcodec_find_decoder(stream->codecpar->codec_id)`，对 `AV_CODEC_ID_NONE`（或找不到解码器）时 `avcodec_alloc_context3(nullptr)` 返回非空、`avcodec_open2` 报错；此路径已由测试覆盖，但 `codec == nullptr` 时未显式报「no decoder」而是落入「cannot copy codec params/open decoder」，错误信息不够精确——`ffmpeg_backend.cpp:2134-2155`。
+
