@@ -106,3 +106,15 @@ prev/next、A-B、Shot、剩余时间）在审计时未提交，凡涉及该批�
 - README 31 条快捷键出厂默认、`--cache-dir=`/`--torrent-*=`/`--no-resume`/`--shortcuts=`/`--no-shortcuts`/`--gui`/`--headless`/`--backend=`、环境变量（`SOAR_SUBTITLE_ENDPOINT/_API_KEY`、`SOAR_TRANSLATE_ENDPOINT/_API_KEY`、`SOAR_INSTALL_DIR`、`SOAR_TEST_X11`）。
 - glibc≥2.38 / GLIBCXX_3.4.32、包名（zip/deb/rpm/AppImage/`soar-setup-windows-x64.exe`/`SHA256SUMS.txt`）、安装目录、`xattr -cr`、`screenshot.png`、MRU×15、OSC 2.5s + 四钉住、Loop{Off,All,One}、Shuffle、A-B 三步、字幕解码门、`resumePositionMs` 5s/5s、libtorrent v2.0.15、FFmpeg 四库、CMake 3.20、SDL2≥2.0.18、13 测试套件、gcovr 目录形 `--filter`、Apache-2.0、HLS/DASH/RTSP 冒烟、libass MIT、`soarw.exe` WIN32 目标、SSDP/SOAP/GENA/转码 H.264+AAC MPEG-TS、插件体系未开始。
 - 对齐审计的 OSC 自动隐藏（`kHideDelay=2500` `ui_state.h:46`、四钉住 `ui_state.cpp:91-101`、0.16s 淡出 `player_window.cpp:835`）、设置页未实现、translate 面板未实现、7 张证据 PNG 全在、todo.md 28 勾 + 7 未勾。
+
+## 增量（2026-11-02，批 G5）
+
+| ID | 页 | 主张 | 源码证据 | 类别 | 严重度 | 修法 |
+|---|---|---|---|---|---|---|
+| G1 | ui-design.md §7 + zh 双语 | 「仍不做的：…seek 悬停缩略图…设置面板」 | 两者 2026-11-01 已落地（`0d07d89`）：设置页（G 键，`SettingsTab` `player_window.cpp:198`、`drawSettingsOverlay` `:2299`）、seek 缩略图（ThumbnailService `:747` + `drawThumbPreview` `:2968`）、媒体库 Type 筛选（`matchesSource` `:4346`/`:4369`） | 文档超前于码 | P1 | §7「已落地」清单补三项（中英），「仍不做」收窄为文件对话框/迷你模式/多主题 |
+| G2 | ui-design.md §2 + zh 双语 | 「v0.1 无设置页…v0.2 再做成面板」 | 同 G1 证据，面板已交付 | 文档超前于码 | P1 | 中英两侧改为「设置面板已于 2026-11-01 落地（G 键）」 |
+| G3 | prototype-alignment-audit.md M4/M7 + zh 双语 | 「无——有意延后（v0.2）」 | 同 G1 证据 | 文档超前于码 | P2 | 行内注记「2026-11-01 已落地（`0d07d89`）」并附代码锚点（历史判定保留） |
+
+本增量三桶计数：文档超前于码 **3**（G1–G3）· 码超前于文档 **0** · 描述不符 **0**。P0：无。全部仅改文档；该发现由 2026-11-02 审核批先登记进 `todo.md`，本轮收口（勾账留给台账归属会话）。
+
+文案去味（同轮）：README.md 轨道切换句「seamless while playing or paused」→「works while playing or paused, without interrupting playback」；`docs/zh/coverage-notes.md` ⭐ 装饰标记改粗体导语、「（必读…）」标题软化。历史快照节（alignment-audit-2026-10-13.md、prototypes.md 审计叙述）按收口惯例保留为带日期记录，不回改。

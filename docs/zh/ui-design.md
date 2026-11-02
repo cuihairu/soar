@@ -91,7 +91,7 @@ soar 主窗口
 
 **轨道与字幕选择**：OSC 弹出菜单（当前项打勾）；快捷键 `A`/`C` 循环切换（mpv 语义）；`C` 循环含"关闭"。字幕渲染已落地（libass 画布，内嵌 ASS 样式忠实、外挂文本轨默认样式，无 libass 构建降级为纯文本）；内嵌字幕轨的选择是**解码语义**——解码线程在安全点换字幕解码器、cue 从新轨续流（细节与边界见 docs/mvp.md §6），不再是最早的"元数据选择"。
 
-**设置**：v0.1 无设置页。主题常量、自动隐藏时长（2500ms）、Toast 时长（800ms）、最近上限（15）集中定义，v0.2 再做成面板。
+**设置**：设置面板已于 2026-11-01 落地（`0d07d89`，G 键）——General/Playback/Subtitles/Network/About 五页签，可改主题、自动隐藏时长、Toast 时长、最近上限与网络字段（此前口径为「v0.1 无设置页」；§7 已记账）。
 
 **状态模型**：UI 可见状态 = 播放器状态（`PlaybackState`）× 输入态（控制栏显隐、Toast、缓冲标志）× 浮层态（info/recent/help，互斥单开）。后端错误显示为 Toast + 信息浮层内的错误行，不弹模态框（播放器错误极少需要打断式处理）。
 
@@ -253,6 +253,6 @@ CMake：`SOAR_ENABLE_IMGUI`（默认 ON）取 ImGui v1.91.9b（含 `imgui_impl_s
 
 ## 7. 后续边界（防扩散）
 
-v0.2 已落地的（本节原列"不做"清单中的兑现项，防边界漂移在此记账）：播放队列浮层（P 键：点选/删除、Loop/Shuffle——侧栏形态未做，浮层即现状）、字幕渲染接入后的字幕菜单实效化（下载 `[download]` 与翻译 `[translate]` 行已接线，见 docs/mvp.md §6）。
+v0.2 已落地的（本节原列"不做"清单中的兑现项，防边界漂移在此记账）：播放队列浮层（P 键：点选/删除、Loop/Shuffle——侧栏形态未做，浮层即现状）、字幕渲染接入后的字幕菜单实效化（下载 `[download]` 与翻译 `[translate]` 行已接线，见 docs/mvp.md §6）、完整设置页（G 键；General/Playback/Subtitles/Network/About 五页签，配置持久化——`SettingsTab` `player_window.cpp:198`、`drawSettingsOverlay` `:2299`）、seek 悬停缩略图预览（ThumbnailService 工作线程 + `drawThumbPreview`，`player_window.cpp:747`/`:2968`）、媒体库 Type 筛选（Local/Network，`matchesSource` `:4346`/`:4369`）——均于 2026-11-01 落地（`0d07d89`）。
 
-仍不做的：非 Windows 平台的文件对话框（Windows 的 `GetOpenFileNameW` 已落地于空主界面/O 键入口，其他平台降级为拖放提示——跨平台对话框 UI 未做）、seek 悬停缩略图（120px/500 张缓存规格起步）、迷你音乐模式、设置面板、多主题。
+仍不做的：非 Windows 平台的文件对话框（Windows 的 `GetOpenFileNameW` 已落地于空主界面/O 键入口，其他平台降级为拖放提示——跨平台对话框 UI 未做）、迷你音乐模式、多主题。

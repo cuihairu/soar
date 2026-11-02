@@ -41,7 +41,7 @@ FFmpeg 后端只在装了 libav* dev 头的环境编译，所以这个 Linux job
 
 门禁随实测水位同步上抬：测试合入、数字上涨后，把阈值抬到"实测值下方留出抖动余量"的位置，让回退被 CI 自动拦截。定值法：门禁取 **min(本地, CI) 之下**，余量必须大于既知抖动带（±1-2 行；并发解码负载下会翻转的时序弧，实测 2 行 / 4 分支），否则一次计数噪声就闪红。本批据此把门禁从 94.3/83.2 上抬到 **行 94.6%**（相对 CI 94.75% 留 5 行余量、相对本地 94.84% 留 10 行）与 **分支 84.0%**（相对本地 84.16% 留 8 分支余量、相对 CI 84.66% 留 32 分支）——两套口径都能过，且余量都大于抖动带。上一批取 94.3/83.2 时分支余量高达 42 支，属偏保守；这次的 8 支仍显著大于 4 支的抖动带。
 
-### 2.1 门禁重置的说明（必读，别当成"新代码拉低了覆盖率"）
+### 2.1 门禁重置的说明（先读这段，别当成"新代码拉低了覆盖率"）
 
 本批（桌面 UI，见 UI 设计）**没有**拉低覆盖率，反而把两个总数都抬高了；真正把水位压下来的是上一批 P3a 磁盘缓存，而它**没有**同步门禁：
 
@@ -408,7 +408,7 @@ CI 38699380328 七腿全绿：coverage 腿行 **94.4%（9153/9691）**、支 **8
 
 **d7e7bf6** 圆角/字号令牌落成无依赖头 `ui_tokens.h`（`soar_app_ui` 不链 imgui，令牌要能被单测钉就必须独立头）：`kPanelRounding 10`（window+popup）/`kControlRounding 7`（frame+grab）/`kPillRounding 999`/`kMinFontSize 11`/`kUiFontSize 16` + `static_assert` 地板约束；`chip()` 与暂停提示 pill 改 draw-list 渲染。
 
-**⭐ 999 圆角不能走 `WindowRounding`**：`CalcWindowMinSize`（imgui.cpp:6307）把窗口最小高度抬到 `rounding - 1`，`AlwaysAutoResize` 窗被撑满视口——像素探针实测 249px 宽的 pill 渲染成 540px 高满高带；而同一个 999 走 draw list 时被钳在 `imgui_draw.cpp:1421-1422` 的 `ImMin(rounding, 半宽/半高 - 1)` = 矩形自身半高 = 正 pill。正解 = `NoBackground` + `WindowBorderSize=0` + `AddRectFilled`/`AddRect(kPillRounding)`。**这条回退臂无法用断言钉**：imgui 的窗口尺寸计算不可从应用侧断言，防线是像素探针 + 代码注释，不是用例。修复后探针实测 OSC 面板圆角 10、暂停 pill 251×23 端帽半圆 profile 9/4/1/0/1/3/9。
+**关键回退事实——999 圆角不能走 `WindowRounding`**：`CalcWindowMinSize`（imgui.cpp:6307）把窗口最小高度抬到 `rounding - 1`，`AlwaysAutoResize` 窗被撑满视口——像素探针实测 249px 宽的 pill 渲染成 540px 高满高带；而同一个 999 走 draw list 时被钳在 `imgui_draw.cpp:1421-1422` 的 `ImMin(rounding, 半宽/半高 - 1)` = 矩形自身半高 = 正 pill。正解 = `NoBackground` + `WindowBorderSize=0` + `AddRectFilled`/`AddRect(kPillRounding)`。**这条回退臂无法用断言钉**：imgui 的窗口尺寸计算不可从应用侧断言，防线是像素探针 + 代码注释，不是用例。修复后探针实测 OSC 面板圆角 10、暂停 pill 251×23 端帽半圆 profile 9/4/1/0/1/3/9。
 
 CI 38731794595 七腿全绿：coverage 腿行 **94.5%（9215/9754）**、支 **84.2%（9899/11760）** 双过门禁 94.0/83.0。与 §3.27（0a4ce7e）的 9153/9691 行、9837/11697 支相比：**命中 +62 行 / +62 支，分母 +63 行 / +63 支**——本批新代码（令牌头 + 暂停续播路径 + pill 绘面）全部进分母且全部覆盖，比率各涨 0.1 点。
 

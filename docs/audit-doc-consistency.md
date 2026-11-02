@@ -99,3 +99,22 @@ Baseline: `f1b245d` (the transcode fix commit of this round). The OSC batch (mou
 - README's 31 factory-default shortcuts, `--cache-dir=`/`--torrent-*=`/`--no-resume`/`--shortcuts=`/`--no-shortcuts`/`--gui`/`--headless`/`--backend=`, and the environment variables (`SOAR_SUBTITLE_ENDPOINT/_API_KEY`, `SOAR_TRANSLATE_ENDPOINT/_API_KEY`, `SOAR_INSTALL_DIR`, `SOAR_TEST_X11`).
 - glibc≥2.38 / GLIBCXX_3.4.32, package names (zip/deb/rpm/AppImage/`soar-setup-windows-x64.exe`/`SHA256SUMS.txt`), install directory, `xattr -cr`, `screenshot.png`, MRU×15, OSC 2.5s + four pinning conditions, Loop{Off,All,One}, Shuffle, the three-step A-B, the subtitle decode gate, `resumePositionMs` 5s/5s, libtorrent v2.0.15, the four FFmpeg libraries, CMake 3.20, SDL2≥2.0.18, 13 test suites, gcovr's directory-form `--filter`, Apache-2.0, HLS/DASH/RTSP smoke tests, libass MIT, the `soarw.exe` WIN32 target, SSDP/SOAP/GENA and transcode as H.264+AAC MPEG-TS, and the fact that the plugin system has not started.
 - The alignment audit's OSC auto-hide (`kHideDelay=2500` at `ui_state.h:46`, the four pinning conditions at `ui_state.cpp:91-101`, the 0.16s fade at `player_window.cpp:835`), the settings page not implemented, the translate panel not implemented, all 7 evidence PNGs present, and todo.md at 28 checked + 7 unchecked.
+
+## Increment (2026-11-02, batch G5)
+
+| ID | Page | Claim | Source evidence | Category | Severity | Fix |
+|---|---|---|---|---|---|---|
+| G1 | ui-design.md §7 + zh twin | "Still not doing: … seek hover thumbnails … a settings panel" | Both landed 2026-11-01 (`0d07d89`): settings page (G key, `SettingsTab` `player_window.cpp:198`, `drawSettingsOverlay` `:2299`), seek thumbnails (ThumbnailService `:747` + `drawThumbPreview` `:2968`), library Type filter (`matchesSource` `:4346`/`:4369`) | doc ahead of code | P1 | §7 "landed" list extended with the three items (en+zh); "still not doing" reduced to file dialogs / mini mode / themes |
+| G2 | ui-design.md §2 + zh twin | "v0.1 has no settings page … v0.2 turns them into a panel" | G1 evidence; panel shipped | doc ahead of code | P1 | Reworded to "settings panel landed 2026-11-01 (G key)" in both languages |
+| G3 | prototype-alignment-audit.md M4/M7 + zh twin | "None — Intentionally deferred (v0.2)" | G1 evidence | doc ahead of code | P2 | Rows annotated "landed 2026-11-01 (`0d07d89`)" with code anchors (historical verdicts kept) |
+
+Three-bucket count for this increment: doc ahead of code **3** (G1–G3) · code ahead of
+doc **0** · description mismatch **0**. P0: none. All fixed docs-only; the finding was
+first registered in `todo.md` by the 2026-11-02 review pass and is closed by this round
+(row ticking left to that ledger's owner).
+
+Copy-style fixes (same round): README.md track-selection bullet "seamless while playing
+or paused" → "works while playing or paused, without interrupting playback";
+`docs/zh/coverage-notes.md` ⭐ marker replaced with a bold lead-in and the "（必读…）"
+heading softened. Historical snapshot sections (alignment-audit-2026-10-13.md,
+prototypes.md audit narrative) left as dated records per the closeout convention.

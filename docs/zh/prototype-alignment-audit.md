@@ -134,10 +134,10 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
 | M1 | 顶栏 | `desktop-main.html:165-193` | 无 | 有意偏离 |
 | M2 | 状态徽标（含 P2P 下载百分比） | `:189-193` | `drawChips()` `:2199-2225`（Paused/Buffering/Downloading/Casting） | 已实现，形态差异（修订改正） |
 | M3 | 分辨率/编码 pill | `:202` | 无 | 已代决不做（核心接口冻结，MK_R2A） |
-| M4 | 通用设置页 | `settings.html` | 无（仅 Subtitle Settings `:2997`） | 有意延后（v0.2） |
+| M4 | 通用设置页 | `settings.html` | 无（仅 Subtitle Settings `:2997`） | 有意延后（v0.2）——**2026-11-01 已落地**（`0d07d89`，G 键，General/Playback/Subtitles/Network/About 五页签，`drawSettingsOverlay` `player_window.cpp:2299`） |
 | M5 | 媒体库卡片网格 / 缩略图 / 来源徽标 | `library.html` | 列表式 `:2725` | 原型超前（v0.3） |
 | M6 | 迷你模式 / 音乐模式（纯音频自动切迷你窗） | `ui-design.md:17` §1.1 调研 | 无 | 有意延后（§7 后续边界） |
-| M7 | seek 悬停缩略图预览 | `ui-design.md:55` §1.6-5 | 无 | 有意延后（v0.2） |
+| M7 | seek 悬停缩略图预览 | `ui-design.md:55` §1.6-5 | 无 | 有意延后（v0.2）——**2026-11-01 已落地**（`0d07d89`，ThumbnailService 工作线程 + `drawThumbPreview`，`player_window.cpp:747`/`:2968`） |
 | M8 | 翻译面板 | v1 `translate-panel.html` | 无 | 随 v1 废弃 |
 
 **漏做合计（修订后）：L3、V3、V4、V5、V6、V7、V8 = 7 条，处置为 5 落地 + 2 改判有意偏离 + 0 仍开放。**（落地：L3 39f7ed5、V8 53ae80b、V5 3835768、V3/V4 d7e7bf6、V7b 焦点环 2026-10-15 代决 b；改判：V6 有意偏离＝原型超前，V7 拆 V7a/V7b 且 V7a 有意偏离＝规格明文延后。漏做项全部落地或改判，无开放项）
