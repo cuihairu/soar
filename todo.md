@@ -106,7 +106,7 @@
   - 参考:kode todo C-24 同款流水线模式(2026-11-01 用户令全舰队推广)。
 
 
-- [ ] 审核发现：README 徽章折叠提交（`645782d` 等 4 个 docs commit）把 Status/C++/license/platform/CMake/FFmpeg/SDL2 的 `img` 与文本全部删除，却留下对应的空 `<a>` 链接壳（README.md:8 共 6 个、README.zh.md:8-13 共 6 个），且两文件在 Docs 行尾各新增一个双斜杠 URL 的空 `<a>`（README.md:10 `.../soar//`、README.zh.md:14 `.../soar/zh//`）——渲染后只剩空白链接，无任何徽章内容。
+- [x] 审核发现：README 徽章折叠提交（`645782d` 等 4 个 docs commit）把 Status/C++/license/platform/CMake/FFmpeg/SDL2 的 `img` 与文本全部删除，却留下对应的空 `<a>` 链接壳（README.md:8 共 6 个、README.zh.md:8-13 共 6 个），且两文件在 Docs 行尾各新增一个双斜杠 URL 的空 `<a>`（README.md:10 `.../soar//`、README.zh.md:14 `.../soar/zh//`）——渲染后只剩空白链接，无任何徽章内容。——属实：两个 README 各 8 枚徽章 `img` 已逐一回填进原 `<a>` 锚（含 Docs 行尾双斜杠链接），空锚与游离 `img` 均清零；`npm run docs:build` 5.77s 绿
 
 - [ ] 审核发现：`ThumbnailService::tryGet` 只按 `position` 取缓存项，但 `uploadThumbFrame`/`drawThumbPreview` 使用同一 `thumb_texture_`；悬停位置切换时旧帧会留在屏幕上直到新帧就绪，与服务头注释「while the new frame decodes the old preview hides」矛盾——`player_window.cpp:3078-3097` 在 `q_pos != thumb_requested_` 时仅重置 `thumb_shown_`，未隐藏/清除已上传纹理，且 `tryGet` 命中缓存时 `thumb_shown_` 已同步，缓存未命中期间旧 `thumb_texture_` 仍被 `drawThumbPreview`（`player_window.cpp:2970`）绘制。
 
