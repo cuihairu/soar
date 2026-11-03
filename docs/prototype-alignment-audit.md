@@ -164,10 +164,10 @@ slider; the rail's played/buffer split and thumb are not drawn as separate primi
 | M1 | Top bar | `desktop-main.html:165-193` | None | Intentional deviation |
 | M2 | Status chip (including the P2P download percentage) | `:189-193` | `drawChips()` `:2199-2225` (Paused/Buffering/Downloading/Casting) | Implemented, form difference (corrected in revision) |
 | M3 | Resolution/codec pill | `:202` | None | Decided by proxy not to do it (core interface frozen, MK_R2A) |
-| M4 | General settings page | `settings.html` | None (only Subtitle Settings `:2997`) | Intentionally deferred (v0.2) — **landed 2026-11-01** (`0d07d89`, G key, General/Playback/Subtitles/Network/About tabs, `drawSettingsOverlay` `player_window.cpp:2299`) |
+| M4 | General settings page | `settings.html` | None (only Subtitle Settings `:2997`) | Intentionally deferred (v0.2) — **landed 2026-11-02** (`0d07d89`, G key, General/Playback/Subtitles/Network/About tabs, `drawSettingsOverlay` `player_window.cpp:2299`) |
 | M5 | Library card grid / thumbnails / source chips | `library.html` | List-style `:2725` | Prototype ahead (v0.3) |
 | M6 | Mini mode / music mode (auto-switch to a mini window for pure audio) | `ui-design.md:17` §1.1 research | None | Intentionally deferred (§7 future boundary) |
-| M7 | Seek hover thumbnail preview | `ui-design.md:55` §1.6-5 | None | Intentionally deferred (v0.2) — **landed 2026-11-01** (`0d07d89`, ThumbnailService worker + `drawThumbPreview`, `player_window.cpp:747`/`:2968`) |
+| M7 | Seek hover thumbnail preview | `ui-design.md:55` §1.6-5 | None | Intentionally deferred (v0.2) — **landed 2026-11-02** (`0d07d89`, ThumbnailService worker + `drawThumbPreview`, `player_window.cpp:747`/`:2968`) |
 | M8 | Translation panel | v1 `translate-panel.html` | None | Deprecated with v1 |
 
 **Missed-work total (after revision): L3, V3, V4, V5, V6, V7, V8 = 7 items, resolved as 5 landed +

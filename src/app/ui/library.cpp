@@ -228,12 +228,28 @@ bool matchesCategory(const LibraryEntry& e, LibraryCategory c) {
   return false;
 }
 
+namespace {
+// The sidebar's Type rule (library.h): a URI scheme means a network source,
+// a bare path means a local file. file:// is a *local* file URI (a launcher
+// "open with" hands the app one), so it must not count as network; magnet:
+// carries no "://" yet is a network source. Everything else with a "://"
+// (http(s)://, rtsp://, a torrent-bridge http://127.0.0.1:<port>/ URL) is
+// network. No filesystem call — the store keys are paths/URIs exactly as
+// opened.
+bool isNetworkPath(const std::string& path) {
+  auto startsWith = [&](const char* prefix) {
+    const std::size_t n = std::char_traits<char>::length(prefix);
+    return path.size() >= n && path.compare(0, n, prefix) == 0;
+  };
+  if (startsWith("file://")) return false;
+  if (startsWith("magnet:")) return true;
+  return path.find("://") != std::string::npos;
+}
+}  // namespace
+
 bool matchesSource(const LibraryEntry& e, LibrarySource s) {
   if (s == LibrarySource::All) return true;
-  // The dir-scan grouping rule: a URI scheme (scheme://) means a network
-  // source, a bare path means a local file. No filesystem call — the store
-  // keys are paths/URIs exactly as opened.
-  const bool network = e.path.find("://") != std::string::npos;
+  const bool network = isNetworkPath(e.path);
   return s == LibrarySource::Network ? network : !network;
 }
 

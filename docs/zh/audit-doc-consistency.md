@@ -111,10 +111,10 @@ prev/next、A-B、Shot、剩余时间）在审计时未提交，凡涉及该批�
 
 | ID | 页 | 主张 | 源码证据 | 类别 | 严重度 | 修法 |
 |---|---|---|---|---|---|---|
-| G1 | ui-design.md §7 + zh 双语 | 「仍不做的：…seek 悬停缩略图…设置面板」 | 两者 2026-11-01 已落地（`0d07d89`）：设置页（G 键，`SettingsTab` `player_window.cpp:198`、`drawSettingsOverlay` `:2299`）、seek 缩略图（ThumbnailService `:747` + `drawThumbPreview` `:2968`）、媒体库 Type 筛选（`matchesSource` `:4346`/`:4369`） | 文档超前于码 | P1 | §7「已落地」清单补三项（中英），「仍不做」收窄为文件对话框/迷你模式/多主题 |
-| G2 | ui-design.md §2 + zh 双语 | 「v0.1 无设置页…v0.2 再做成面板」 | 同 G1 证据，面板已交付 | 文档超前于码 | P1 | 中英两侧改为「设置面板已于 2026-11-01 落地（G 键）」 |
-| G3 | prototype-alignment-audit.md M4/M7 + zh 双语 | 「无——有意延后（v0.2）」 | 同 G1 证据 | 文档超前于码 | P2 | 行内注记「2026-11-01 已落地（`0d07d89`）」并附代码锚点（历史判定保留） |
+| G1 | ui-design.md §7 + zh 双语 | 「仍不做的：…seek 悬停缩略图…设置面板」 | 两者 2026-11-02 已落地（`0d07d89`）：设置页（G 键，`SettingsTab` `player_window.cpp:198`、`drawSettingsOverlay` `:2299`）、seek 缩略图（ThumbnailService `:747` + `drawThumbPreview` `:2968`）、媒体库 Type 筛选（`matchesSource` `:4346`/`:4369`） | 码超前于文档 | P1 | §7「已落地」清单补三项（中英），「仍不做」收窄为文件对话框/迷你模式/多主题 |
+| G2 | ui-design.md §2 + zh 双语 | 「v0.1 无设置页…v0.2 再做成面板」 | 同 G1 证据，面板已交付 | 码超前于文档 | P1 | 中英两侧改为「设置面板已于 2026-11-02 落地（G 键）」 |
+| G3 | prototype-alignment-audit.md M4/M7 + zh 双语 | 「无——有意延后（v0.2）」 | 同 G1 证据 | 码超前于文档 | P2 | 行内注记「2026-11-02 已落地（`0d07d89`）」并附代码锚点（历史判定保留） |
 
-本增量三桶计数：文档超前于码 **3**（G1–G3）· 码超前于文档 **0** · 描述不符 **0**。P0：无。全部仅改文档；该发现由 2026-11-02 审核批先登记进 `todo.md`，本轮收口（勾账留给台账归属会话）。
+本增量三桶计数：码超前于文档 **3**（G1–G3）· 文档超前于码 **0** · 描述不符 **0**。P0：无。全部仅改文档；该发现由 2026-11-02 审核批先登记进 `todo.md`，本轮收口（勾账留给台账归属会话）。
 
 文案去味（同轮）：README.md 轨道切换句「seamless while playing or paused」→「works while playing or paused, without interrupting playback」；`docs/zh/coverage-notes.md` ⭐ 装饰标记改粗体导语、「（必读…）」标题软化。历史快照节（alignment-audit-2026-10-13.md、prototypes.md 审计叙述）按收口惯例保留为带日期记录，不回改。

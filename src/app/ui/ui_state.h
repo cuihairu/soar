@@ -217,10 +217,13 @@ class RecentStore {
   bool add(const std::string& uri);
 
   // The settings page's "Recent playback cap" stepper. Shrinking trims the
-  // live list immediately; the caller re-saves so the file matches.
+  // live list immediately; the caller re-saves so the file matches. The
+  // cap is clamped to >= 1: a zero cap is never valid (it would make the
+  // next load() drop every history row, and the settings stepper's own
+  // lower bound is 5 anyway).
   void setMaxEntries(std::size_t n) {
-    max_entries_ = n;
-    if (entries_.size() > n) entries_.resize(n);
+    max_entries_ = n == 0 ? kMaxEntries : n;
+    if (entries_.size() > max_entries_) entries_.resize(max_entries_);
   }
 
   const std::vector<std::string>& entries() const { return entries_; }

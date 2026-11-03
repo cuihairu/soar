@@ -104,12 +104,12 @@ Baseline: `f1b245d` (the transcode fix commit of this round). The OSC batch (mou
 
 | ID | Page | Claim | Source evidence | Category | Severity | Fix |
 |---|---|---|---|---|---|---|
-| G1 | ui-design.md §7 + zh twin | "Still not doing: … seek hover thumbnails … a settings panel" | Both landed 2026-11-01 (`0d07d89`): settings page (G key, `SettingsTab` `player_window.cpp:198`, `drawSettingsOverlay` `:2299`), seek thumbnails (ThumbnailService `:747` + `drawThumbPreview` `:2968`), library Type filter (`matchesSource` `:4346`/`:4369`) | doc ahead of code | P1 | §7 "landed" list extended with the three items (en+zh); "still not doing" reduced to file dialogs / mini mode / themes |
-| G2 | ui-design.md §2 + zh twin | "v0.1 has no settings page … v0.2 turns them into a panel" | G1 evidence; panel shipped | doc ahead of code | P1 | Reworded to "settings panel landed 2026-11-01 (G key)" in both languages |
-| G3 | prototype-alignment-audit.md M4/M7 + zh twin | "None — Intentionally deferred (v0.2)" | G1 evidence | doc ahead of code | P2 | Rows annotated "landed 2026-11-01 (`0d07d89`)" with code anchors (historical verdicts kept) |
+| G1 | ui-design.md §7 + zh twin | "Still not doing: … seek hover thumbnails … a settings panel" | Both landed 2026-11-02 (`0d07d89`): settings page (G key, `SettingsTab` `player_window.cpp:198`, `drawSettingsOverlay` `:2299`), seek thumbnails (ThumbnailService `:747` + `drawThumbPreview` `:2968`), library Type filter (`matchesSource` `:4346`/`:4369`) | code ahead of doc | P1 | §7 "landed" list extended with the three items (en+zh); "still not doing" reduced to file dialogs / mini mode / themes |
+| G2 | ui-design.md §2 + zh twin | "v0.1 has no settings page … v0.2 turns them into a panel" | G1 evidence; panel shipped | code ahead of doc | P1 | Reworded to "settings panel landed 2026-11-02 (G key)" in both languages |
+| G3 | prototype-alignment-audit.md M4/M7 + zh twin | "None — Intentionally deferred (v0.2)" | G1 evidence | code ahead of doc | P2 | Rows annotated "landed 2026-11-02 (`0d07d89`)" with code anchors (historical verdicts kept) |
 
-Three-bucket count for this increment: doc ahead of code **3** (G1–G3) · code ahead of
-doc **0** · description mismatch **0**. P0: none. All fixed docs-only; the finding was
+Three-bucket count for this increment: code ahead of doc **3** (G1–G3) · doc ahead of
+code **0** · description mismatch **0**. P0: none. All fixed docs-only; the finding was
 first registered in `todo.md` by the 2026-11-02 review pass and is closed by this round
 (row ticking left to that ledger's owner).
 

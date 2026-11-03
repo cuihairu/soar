@@ -7,6 +7,7 @@
 #include <doctest/doctest.h>
 
 #include "ui/ui_state.h"
+#include "ui/thumbnail_service.h"
 #include "ui/ui_tokens.h"
 
 #include <chrono>
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifndef _WIN32
@@ -24,6 +26,8 @@ using namespace std::chrono_literals;
 using soar::app::formatClock;
 using soar::app::HudVisibility;
 using soar::app::RecentStore;
+using soar::app::ThumbnailFrame;
+using soar::app::ThumbnailService;
 using soar::app::Toast;
 
 namespace {
@@ -208,6 +212,93 @@ TEST_CASE("recent store honors a constructor-set smaller cap") {
   reloaded.load();
   REQUIRE(reloaded.entries().size() == 8);
   CHECK(reloaded.entries().front() == "dir-11");
+}
+
+TEST_CASE("recent store clamps a zero cap instead of wiping history") {
+  // The settings stepper's lower bound is 5, but the store interface does
+  // not forbid 0 on its own: a zero cap must never collapse to "drop every
+  // entry", or the next load() would clear all history.
+  RecentStore store(kScratch + "/recent_zero_cap.txt");
+  for (int i = 0; i < 20; ++i) {
+    store.add("uri-" + std::to_string(i));
+  }
+  store.setMaxEntries(0);
+  REQUIRE(store.entries().size() == RecentStore::kMaxEntries);
+  CHECK(store.entries().front() == "uri-19");
+
+  // The clamp survives a reload from the same file.
+  store.save();
+  RecentStore reloaded(kScratch + "/recent_zero_cap.txt");
+  reloaded.load();
+  REQUIRE(reloaded.entries().size() == RecentStore::kMaxEntries);
+}
+
+TEST_CASE("thumbnail service decodes once, caches, and supersedes a newer request") {
+  // The worker is a real side thread (the UI contract depends on it never
+  // blocking), so the test polls until the decode lands — the same pattern
+  // the window layer uses. The grab stub records the positions it was asked
+  // for; a cache hit must not re-decode.
+  std::mutex mu;
+  std::vector<std::chrono::milliseconds> asked;
+  ThumbnailService service(
+      [&](std::chrono::milliseconds pos, ThumbnailFrame& out) {
+        {
+          std::lock_guard<std::mutex> lock(mu);
+          asked.push_back(pos);
+        }
+        out.width = 160;
+        out.height = 90;
+        out.stride_y = out.stride_u = out.stride_v = 160;
+        out.y.assign(160 * 90, 0x10);
+        out.u.assign(160 * 90 / 4, 0x80);
+        out.v.assign(160 * 90 / 4, 0x80);
+        return true;
+      });
+
+  service.request(250ms);
+  ThumbnailFrame frame;
+  bool got = false;
+  for (int i = 0; i < 200 && !got; ++i) {
+    got = service.tryGet(250ms, frame);
+    if (!got) std::this_thread::sleep_for(5ms);
+  }
+  REQUIRE(got);
+  CHECK(frame.width == 160);
+  CHECK(frame.height == 90);
+  CHECK(frame.y.size() == 160 * 90);
+  CHECK_FALSE(frame.u.empty());
+  CHECK_FALSE(frame.v.empty());
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    CHECK(asked.size() == 1);
+    CHECK(asked[0] == 250ms);
+  }
+
+  // A repeated identical request is a no-op (already cached).
+  service.request(250ms);
+  std::this_thread::sleep_for(20ms);
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    CHECK(asked.size() == 1);
+  }
+
+  // A newer position supersedes the queue but does not cancel an in-flight
+  // grab; the LRU holds both once each lands.
+  service.request(500ms);
+  ThumbnailFrame f2;
+  got = false;
+  for (int i = 0; i < 200 && !got; ++i) {
+    got = service.tryGet(500ms, f2);
+    if (!got) std::this_thread::sleep_for(5ms);
+  }
+  REQUIRE(got);
+  CHECK(f2.width == 160);
+
+  // clear() drops every cached frame: a stale position must not answer.
+  service.clear();
+  ThumbnailFrame gone;
+  CHECK_FALSE(service.tryGet(250ms, gone));
+  CHECK_FALSE(service.tryGet(500ms, gone));
 }
 
 TEST_CASE("recent store load tolerates hand-edited files") {

@@ -30,6 +30,7 @@ using soar::app::LibraryCategory;
 using soar::app::LibraryEntry;
 using soar::app::matchesCategory;
 using soar::app::matchesLibraryFilter;
+using soar::app::matchesSource;
 using soar::app::MediaLibrary;
 using soar::app::MetadataSource;
 using soar::app::NfoInfo;
@@ -432,6 +433,37 @@ TEST_CASE("the search box folds case and matches the scraped title or the path")
   CHECK_FALSE(matchesLibraryFilter(e, &nfo, "missing"));
   CHECK_FALSE(matchesLibraryFilter(e, nullptr, "great"));
   CHECK(matchesLibraryFilter(e, nullptr, "my movie"));
+}
+
+TEST_CASE("the type filter separates local paths and network schemes") {
+  // A bare path is the scanner's local shape.
+  LibraryEntry local;
+  local.path = "/films/a.mkv";
+  CHECK(matchesSource(local, soar::app::LibrarySource::All));
+  CHECK(matchesSource(local, soar::app::LibrarySource::Local));
+  CHECK_FALSE(matchesSource(local, soar::app::LibrarySource::Network));
+
+  // file:// is a launcher's local path, not a network source.
+  LibraryEntry file_uri;
+  file_uri.path = "file:///films/a.mkv";
+  CHECK(matchesSource(file_uri, soar::app::LibrarySource::Local));
+  CHECK_FALSE(matchesSource(file_uri, soar::app::LibrarySource::Network));
+
+  // http(s) and the session's torrent bridge are network sources.
+  for (const char* uri :
+       {"http://host/a.m3u8", "https://host/a.m3u8",
+        "http://127.0.0.1:8080/stream"}) {
+    LibraryEntry net;
+    net.path = uri;
+    CHECK(matchesSource(net, soar::app::LibrarySource::Network));
+    CHECK_FALSE(matchesSource(net, soar::app::LibrarySource::Local));
+  }
+
+  // magnet: carries no "://" but is still a network source.
+  LibraryEntry magnet;
+  magnet.path = "magnet:?xt=urn:btih:abcdef";
+  CHECK(matchesSource(magnet, soar::app::LibrarySource::Network));
+  CHECK_FALSE(matchesSource(magnet, soar::app::LibrarySource::Local));
 }
 
 TEST_CASE("the store file is bounded at kMaxEntries") {

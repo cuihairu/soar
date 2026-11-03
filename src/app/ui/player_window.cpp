@@ -518,6 +518,80 @@ void saveThemePref() {
   out << (theme::g_light ? "light" : "dark") << "\n";
 }
 
+// <state>/soar/settings.txt — the settings page's persisted rows beyond the
+// palette. Same XDG ladder as theme.txt. Absent or unparsable falls back to
+// the shipped defaults (recent cap 15, remember-last-media on, ESC-exits
+// fullscreen on), so an old install never loses history over a missing row.
+std::string settingsPrefPath() {
+  const char* dir = nullptr;
+#ifdef _WIN32
+  dir = std::getenv("APPDATA");
+  if (dir && *dir) return std::string(dir) + "\\soar\\settings.txt";
+  return "soar-settings.txt";
+#else
+  dir = std::getenv("XDG_STATE_HOME");
+  if (dir && *dir) return std::string(dir) + "/soar/settings.txt";
+  const char* home = std::getenv("HOME");
+  if (home && *home) return std::string(home) + "/.local/state/soar/settings.txt";
+  return "soar-settings.txt";
+#endif
+}
+
+// Reads one persisted "key=value" row. Missing file, unparsable value or a
+// key the caller did not ask for all report `fallback` — never a partial
+// value that would silently reset the setting to 0.
+int loadSettingsInt(const char* key, int fallback) {
+  std::ifstream in(settingsPrefPath());
+  if (!in) return fallback;
+  std::string line;
+  const std::string prefix = std::string(key) + "=";
+  while (std::getline(in, line)) {
+    if (line.rfind(prefix, 0) != 0) continue;
+    const char* v = line.c_str() + prefix.size();
+    char* end = nullptr;
+    const long n = std::strtol(v, &end, 10);
+    if (end == v) return fallback;  // no digits
+    return static_cast<int>(n);
+  }
+  return fallback;
+}
+
+void saveSettingsInt(const char* key, int value) {
+  // Read-modify-write one key at a time: the settings page edits rows
+  // independently, and a stale overwrite of the other rows is worse than
+  // dropping the file. Rewrite the whole file only on a successful read.
+  std::map<std::string, std::string> rows;
+  {
+    std::ifstream in(settingsPrefPath());
+    std::string line;
+    while (std::getline(in, line)) {
+      const auto eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      rows[line.substr(0, eq)] = line.substr(eq + 1);
+    }
+  }
+  rows[key] = std::to_string(value);
+  const std::string path = settingsPrefPath();
+  std::error_code ec;
+  std::filesystem::path p(path);
+  if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+  std::ofstream out(path, std::ios::trunc);
+  if (!out) return;
+  for (const auto& [k, v] : rows) out << k << "=" << v << "\n";
+}
+
+// The MRU cap the settings stepper edits (RecentStore::kMaxEntries default).
+// Persisted so the cap survives a restart; clamped to >= 1 like setMaxEntries
+// (a 0 row from an interrupted write must not wipe history on the next load).
+int loadRecentCap() {
+  const int n = loadSettingsInt("recent_cap", RecentStore::kMaxEntries);
+  return n >= 1 ? n : RecentStore::kMaxEntries;
+}
+
+void saveRecentCap(int n) {
+  saveSettingsInt("recent_cap", n >= 1 ? n : RecentStore::kMaxEntries);
+}
+
 // Best-effort system UI font: the ImGui embedded font is ASCII-only bitmap,
 // which mangles non-ASCII titles. CI runners lack the CJK candidates — the
 // ASCII-everywhere labels keep that fallback path harmless. SOAR_UI_BITMAP_FONT
@@ -650,6 +724,12 @@ class PlayerHud {
     st_.toast.mirror = [](const std::string& text) {
       fmt::print(stderr, "event: toast={}\n", text);
     };
+    // The MRU cap is a persisted setting, not a per-run constant: apply it
+    // before load() so an over-long recent.txt is truncated by the same cap
+    // the settings page shows (a saved 20 would otherwise reload as the 15
+    // default, silently dropping the extra rows the file still holds).
+    st_.recent_cap = loadRecentCap();
+    recent_.setMaxEntries(static_cast<std::size_t>(st_.recent_cap));
     recent_.load();
     recent_dirs_.load();
     // Keyboard shortcuts (docs/ui-design.md §3.2): the config lives next
@@ -2403,6 +2483,7 @@ class PlayerHud {
         st_.recent_cap = 15;
         recent_.setMaxEntries(15);
         recent_.save();
+        saveRecentCap(15);
         if (cfg_.subtitle_visible) {
           cfg_.subtitle_visible->store(true, std::memory_order_relaxed);
         }
@@ -2465,6 +2546,7 @@ class PlayerHud {
                           st_.recent_cap = cap;
                           recent_.setMaxEntries(static_cast<std::size_t>(cap));
                           recent_.save();
+                          saveRecentCap(cap);
                         }
                       });
           break;

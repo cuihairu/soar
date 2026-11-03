@@ -94,9 +94,11 @@ std::int64_t resumePositionMs(const LibraryEntry& e);
 enum class LibraryCategory { All, Recent, Resume, Finished };
 
 // The sidebar's Type group (docs/public/prototypes/library.html): a source
-// is a network source when its path carries a URI scheme (http://, magnet:,
-// a torrent-bridge URL ...); everything else is a local file. All shows
-// both halves; the state buckets (LibraryCategory) and the type compose.
+// is a network source when its path is a magnet: URI or carries any
+// scheme:// marker (http(s)://, a torrent-bridge URL, ...); everything
+// else is a local file — including file://, which is a launcher's local
+// path, not a network source. All shows both halves; the state buckets
+// (LibraryCategory) and the type compose.
 enum class LibrarySource { All, Local, Network };
 
 bool matchesSource(const LibraryEntry& e, LibrarySource s);

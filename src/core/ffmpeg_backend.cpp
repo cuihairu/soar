@@ -2132,6 +2132,10 @@ bool FFmpegBackend::grabVideoFrame(std::chrono::milliseconds position,
   // open2(nullptr) is refused by libavcodec for some codecs) — the same
   // pattern the subtitle extractor uses.
   const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
+  if (codec == nullptr) {
+    close_ctx();
+    return fail("grabVideoFrame: no decoder for this codec", /*emit_event=*/false);
+  }
   AVCodecContext* decoder = avcodec_alloc_context3(codec);
   if (decoder == nullptr) {
     close_ctx();
@@ -2171,6 +2175,7 @@ bool FFmpegBackend::grabVideoFrame(std::chrono::milliseconds position,
   AVFrame* frame = av_frame_alloc();
   bool have_frame = false;
   bool reached = false;
+  int recv_ret = 0;
   if (packet != nullptr && frame != nullptr) {
     while ((ret = av_read_frame(ctx, packet)) >= 0) {
       if (packet->stream_index != vstream) {
@@ -2182,16 +2187,43 @@ bool FFmpegBackend::grabVideoFrame(std::chrono::milliseconds position,
       if (send_ret < 0) {
         continue;
       }
-      int recv_ret = 0;
       while ((recv_ret = avcodec_receive_frame(decoder, frame)) == 0) {
         have_frame = true;
-        if (frame->pts >= target || frame->best_effort_timestamp >= target) {
+        // A frame with no valid timestamp can never be "at or past the
+        // request": NOPTS would compare as >= target and wrongly accept it.
+        // best_effort_timestamp is the decoded frame's authoritative time;
+        // only it is compared, and NOPTS is skipped explicitly.
+        const int64_t ts = frame->best_effort_timestamp;
+        if (ts != AV_NOPTS_VALUE && ts >= target) {
           reached = true;
           break;
         }
         av_frame_unref(frame);
       }
+      if (recv_ret < 0 && recv_ret != AVERROR(EAGAIN) &&
+          recv_ret != AVERROR_EOF) {
+        av_frame_unref(frame);
+        break;  // decode error: stop reading, report below
+      }
       if (reached) break;
+      av_frame_unref(frame);
+    }
+    // Drain the decoder's buffered frames after the last packet: without a
+    // flush (send_packet(nullptr)), frames held at the tail of a short GOP
+    // or near EOF are never received, so a valid grab near the end of the
+    // file would report "no decodable frame". Flush and collect any final
+    // frame that reaches the target before giving up.
+    if (!reached) {
+      avcodec_send_packet(decoder, nullptr);
+      while ((recv_ret = avcodec_receive_frame(decoder, frame)) == 0) {
+        have_frame = true;
+        const int64_t ts = frame->best_effort_timestamp;
+        if (ts != AV_NOPTS_VALUE && ts >= target) {
+          reached = true;
+          break;
+        }
+        av_frame_unref(frame);
+      }
       av_frame_unref(frame);
     }
   }
