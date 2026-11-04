@@ -405,6 +405,16 @@ ffmpeg -hide_banner -loglevel error -y \
   -t 1 -ac 1 -ar 44100 -c:a wmav2 \
   "$media_dir/wma_audio.wma"
 
+# B-frame tail: grabVideoFrame's thumbnail decoder holds reordered frames
+# until the flush after the last packet. The last few testsrc frames only
+# surface during that flush, driving the drain path that returns a valid
+# tail thumbnail instead of an unref'd (NULL-data) AVFrame.
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i testsrc=size=160x120:rate=15 \
+  -t 6 -c:v libx264 -preset ultrafast -crf 30 -bf 2 -g 90 \
+  -pix_fmt yuv420p \
+  "$media_dir/bframes_tail.mp4"
+
 echo "SOAR_TEST_MEDIA=$media_dir/sample_dual_audio.mkv"
 echo "SOAR_TEST_AUDIO_ONLY=$media_dir/audio_only.mkv"
 echo "SOAR_TEST_SUBS_MEDIA=$media_dir/subs_media.mkv"
@@ -417,6 +427,7 @@ echo "SOAR_TEST_BURST_MEDIA=$media_dir/subs_burst_media.mkv"
 echo "SOAR_TEST_JUNK_SRT_MEDIA=$media_dir/subs_junk_media.mkv"
 echo "SOAR_TEST_MOVTEXT_MEDIA=$media_dir/subs_movtext_media.mp4"
 echo "SOAR_TEST_MULTI_RES=$media_dir/multi_res.ts"
+echo "SOAR_TEST_BFRAMES_TAIL=$media_dir/bframes_tail.mp4"
 echo "SOAR_TEST_CORRUPT_DECODE=$media_dir/corrupt_decode.mkv"
 echo "SOAR_TEST_UNKNOWN_CODEC=$media_dir/unknown_codec.mkv"
 echo "SOAR_TEST_TRUNCATED_TINY=$media_dir/trunc_tiny.mkv"

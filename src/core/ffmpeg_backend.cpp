@@ -2224,12 +2224,20 @@ bool FFmpegBackend::grabVideoFrame(std::chrono::milliseconds position,
         }
         av_frame_unref(frame);
       }
-      av_frame_unref(frame);
+      // Keep the frame that reached the target for sws_scale below: the
+      // unconditional unref would clear frame->data/linesize to NULL and
+      // feed sws_scale a null source (the same guard the main loop has).
+      if (!reached) av_frame_unref(frame);
     }
   }
 
   bool ok = false;
-  if (have_frame) {
+  // Only a frame that actually reached the request is valid input for the
+  // scaler. have_frame alone is not enough: it is set on every received
+  // frame, but a frame below the target is unref'd before the next read,
+  // so a grab that never reaches the target must report "no decodable
+  // frame" rather than scaling an unref'd (null-data) AVFrame.
+  if (reached) {
     // Scale to the fixed 16:9 thumb, tightly packed YUV420P (stride ==
     // width) so the UI uploads it as one SDL IYUV texture.
     constexpr int kThumbW = 160;

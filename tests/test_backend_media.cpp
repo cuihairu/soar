@@ -1007,8 +1007,8 @@ TEST_CASE("tryGetVideoFrame delivers frames during playback") {
 
 TEST_CASE("grabVideoFrame decodes an arbitrary seek position on a side call") {
   std::string media;
-  if (!mediaAvailable(media)) {
-    MESSAGE("SOAR_TEST_MEDIA not set; skipping grab frame test");
+  if (!envMedia("SOAR_TEST_BFRAMES_TAIL", media)) {
+    MESSAGE("SOAR_TEST_BFRAMES_TAIL not set; skipping grab frame test");
     return;
   }
 
@@ -1025,10 +1025,12 @@ TEST_CASE("grabVideoFrame decodes an arbitrary seek position on a side call") {
   REQUIRE(backend->open(soar::MediaSource{media}));
   REQUIRE(backend->play());
 
-  // Two positions: the very start and mid-file. The grab reopens the input
-  // per call (the exportSubtitleText contract), so it must work alongside
-  // playback and return a complete small YUV420P frame.
-  for (const auto pos : {0ms, 3000ms}) {
+  // The B-frame tail holds reordered frames until the decoder flush after
+  // the last packet, so a grab near the end (5900ms) only reaches its
+  // target frame during the drain — the exact path that used to unref the
+  // frame and feed sws_scale a NULL-data AVFrame. The start and mid-file
+  // positions cover the ordinary forward-decode path.
+  for (const auto pos : {0ms, 3000ms, 5900ms}) {
     soar::DecodedVideoFrame frame;
     bool got = false;
     for (int i = 0; i < 200 && !got; ++i) {
@@ -1046,6 +1048,11 @@ TEST_CASE("grabVideoFrame decodes an arbitrary seek position on a side call") {
     CHECK_FALSE(frame.u.empty());
     CHECK_FALSE(frame.v.empty());
     CHECK(frame.pts == pos);
+    // A drain-path frame must carry real pixel data (the unref'd-frame bug
+    // returned a full-size but all-zero Y plane).
+    const bool any_pixel = std::any_of(frame.y.begin(), frame.y.end(),
+                                       [](std::uint8_t c) { return c != 0; });
+    CHECK(any_pixel);
   }
 
   backend->stop();

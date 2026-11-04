@@ -464,6 +464,19 @@ TEST_CASE("the type filter separates local paths and network schemes") {
   magnet.path = "magnet:?xt=urn:btih:abcdef";
   CHECK(matchesSource(magnet, soar::app::LibrarySource::Network));
   CHECK_FALSE(matchesSource(magnet, soar::app::LibrarySource::Local));
+
+  // URI schemes are case-insensitive (RFC 3986): an uppercased scheme a
+  // third party or a hand-edited row injects must classify the same as
+  // its lowercase form, or the Type filter would split one source.
+  LibraryEntry upper_file;
+  upper_file.path = "FILE:///films/a.mkv";
+  CHECK(matchesSource(upper_file, soar::app::LibrarySource::Local));
+  CHECK_FALSE(matchesSource(upper_file, soar::app::LibrarySource::Network));
+
+  LibraryEntry upper_magnet;
+  upper_magnet.path = "MAGNET:?xt=urn:btih:abcdef";
+  CHECK(matchesSource(upper_magnet, soar::app::LibrarySource::Network));
+  CHECK_FALSE(matchesSource(upper_magnet, soar::app::LibrarySource::Local));
 }
 
 TEST_CASE("the store file is bounded at kMaxEntries") {

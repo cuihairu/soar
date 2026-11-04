@@ -550,7 +550,10 @@ int loadSettingsInt(const char* key, int fallback) {
     const char* v = line.c_str() + prefix.size();
     char* end = nullptr;
     const long n = std::strtol(v, &end, 10);
-    if (end == v) return fallback;  // no digits
+    // No digits, or trailing garbage ("recent_cap=20abc"), is not a value
+    // the row holds: report the fallback instead of a partial read that
+    // would silently change the setting to a number the row never wrote.
+    if (end == v || *end != '\0') return fallback;
     return static_cast<int>(n);
   }
   return fallback;
@@ -575,17 +578,35 @@ void saveSettingsInt(const char* key, int value) {
   std::error_code ec;
   std::filesystem::path p(path);
   if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) return;
-  for (const auto& [k, v] : rows) out << k << "=" << v << "\n";
+  // Atomic write (tmp + rename), the same convention as RecentStore::save
+  // and HttpCache's meta: a crash or power loss between the truncate and
+  // the final flush leaves the *old* file intact, never an empty or
+  // half-written settings.txt that would silently drop the persisted rows.
+  const std::string tmp = path + ".tmp";
+  {
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    for (const auto& [k, v] : rows) out << k << "=" << v << "\n";
+    if (!out) return;
+  }
+#ifdef _WIN32
+  std::remove(path.c_str());  // rename() fails when the target exists
+#endif
+  std::rename(tmp.c_str(), path.c_str());
 }
 
 // The MRU cap the settings stepper edits (RecentStore::kMaxEntries default).
-// Persisted so the cap survives a restart; clamped to >= 1 like setMaxEntries
-// (a 0 row from an interrupted write must not wipe history on the next load).
+// Persisted so the cap survives a restart. The stepper only admits [5, 50]
+// (settingsStepper's lo/hi), so a hand-edited or legacy row outside that
+// range is clamped to the nearest bound rather than becoming a live cap the
+// stepper cannot display.
 int loadRecentCap() {
   const int n = loadSettingsInt("recent_cap", RecentStore::kMaxEntries);
-  return n >= 1 ? n : RecentStore::kMaxEntries;
+  constexpr int kMinCap = 5;
+  constexpr int kMaxCap = 50;
+  if (n < kMinCap) return kMinCap;
+  if (n > kMaxCap) return kMaxCap;
+  return n;
 }
 
 void saveRecentCap(int n) {

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -237,12 +238,21 @@ namespace {
 // network. No filesystem call — the store keys are paths/URIs exactly as
 // opened.
 bool isNetworkPath(const std::string& path) {
-  auto startsWith = [&](const char* prefix) {
+  // URI schemes are case-insensitive per RFC 3986: "MAGNET:" and "FILE://"
+  // must classify exactly like their lowercase forms, or a hand-edited or
+  // third-party-injected scheme would land in the wrong Type bucket.
+  auto startsWithNoCase = [&](const char* prefix) {
     const std::size_t n = std::char_traits<char>::length(prefix);
-    return path.size() >= n && path.compare(0, n, prefix) == 0;
+    if (path.size() < n) return false;
+    for (std::size_t i = 0; i < n; ++i) {
+      const unsigned char a = static_cast<unsigned char>(path[i]);
+      const unsigned char b = static_cast<unsigned char>(prefix[i]);
+      if (std::tolower(a) != std::tolower(b)) return false;
+    }
+    return true;
   };
-  if (startsWith("file://")) return false;
-  if (startsWith("magnet:")) return true;
+  if (startsWithNoCase("file://")) return false;
+  if (startsWithNoCase("magnet:")) return true;
   return path.find("://") != std::string::npos;
 }
 }  // namespace
