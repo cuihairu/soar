@@ -5,6 +5,23 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   base: '/soar/',
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/soar/logo.svg' }]],
+  markdown: {
+    // Tree/state-machine diagrams use box-drawing characters (U+2500-U+257F)
+    // to keep column alignment; the global pre-wrap in custom.css would break
+    // their rows on narrow screens, so tag those blocks with a no-wrap class.
+    config(md) {
+      const fence = md.renderer.rules.fence
+      md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+        const token = tokens[idx]
+        const isTreeDiagram = /[\u2500-\u257f]/.test(token.content || '')
+        let html = fence(tokens, idx, options, env, self)
+        if (isTreeDiagram) {
+          html = html.replace('<div class="language-', '<div class="language- no-wrap ')
+        }
+        return html
+      }
+    }
+  },
   locales: {
     root: {
       label: 'English',
