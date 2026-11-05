@@ -6,17 +6,29 @@ export default defineConfig({
   base: '/soar/',
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/soar/logo.svg' }]],
   markdown: {
-    // Tree/state-machine diagrams use box-drawing characters (U+2500-U+257F)
-    // to keep column alignment; the global pre-wrap in custom.css would break
-    // their rows on narrow screens, so tag those blocks with a no-wrap class.
+    // Tree/state-machine diagrams rely on column alignment; the global
+    // pre-wrap in custom.css would break their rows on narrow screens. The
+    // explicit `no-wrap` fence marker opts those blocks out regardless of
+    // which drawing characters they use.
     config(md) {
       const fence = md.renderer.rules.fence
+      const noWrapMarker = /(?:^|\s)no-wrap(?:\s|$)/
       md.renderer.rules.fence = (tokens, idx, options, env, self) => {
         const token = tokens[idx]
-        const isTreeDiagram = /[\u2500-\u257f]/.test(token.content || '')
+        const noWrap = noWrapMarker.test(token.info)
+        if (noWrap) {
+          token.info = token.info.replace(noWrapMarker, ' ').trim()
+        }
         let html = fence(tokens, idx, options, env, self)
-        if (isTreeDiagram) {
-          html = html.replace('<div class="language-', '<div class="language- no-wrap ')
+        if (noWrap) {
+          const wrappedHtml = html.replace(
+            /<div class="language-([^"]*)"/,
+            '<div class="language-$1 no-wrap"'
+          )
+          if (wrappedHtml === html) {
+            throw new Error('Unable to add the no-wrap class to a fenced code block')
+          }
+          html = wrappedHtml
         }
         return html
       }

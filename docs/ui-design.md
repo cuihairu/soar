@@ -64,7 +64,7 @@ v0.1 is a **single-window application**: one playback page carries everything, a
 
 **No top bar**: the main window has no permanent top bar — the brand and the title go through the OS window title, and every entry point lives in OSC row 2 and the shortcuts (§3.2); adding a top bar would introduce permanent chrome area, conflicting with the §1.6-1 research conclusion “floating, content-centered, auto-hiding”. The v2 prototype used to have a top bar and the 2026-10-15 patrol round decided by proxy to remove it; **the top bar and the light theme are both v0.2 candidates, not v0.1 baseline**.
 
-```
+```text no-wrap
 soar main window
 ├── Video area (letterboxed black, scaled proportionally)
 │   ├── Pause indicator (large icon, 1s fade)          ← simplified to status text in v0.1
@@ -99,7 +99,7 @@ soar main window
 
 ### 3.1 The OSC auto-hide state machine
 
-```
+```text no-wrap
 visible ──(2500ms without input and not pinned)──▶ hidden
 hidden ──(any key / mouse move / wheel / click)──▶ visible (timer reset)
 pin conditions (any one of these prevents hiding):
