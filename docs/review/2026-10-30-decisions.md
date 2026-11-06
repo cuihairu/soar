@@ -10,7 +10,7 @@
 
 **事实**：`BUGS.md:94` 标题「已修复，待真机复测」；本地可证链路已全部覆盖——Explorer 拉起半已真机实证（`explorer.exe` 拉起无参空启动、零 usage 对话框、空窗存活 ≥9s，BUGS.md:94 段），唤起半已解封锁（`--open-dialog` 落地：`src/app/main.cpp:66,197,264`，进程首帧后自行唤起 `GetOpenFileNameW`，不依赖前台焦点）；Linux 桌面链路半已收敛单一来源 `packaging/linux/soar.desktop.in:6`（`Exec=soar --gui %U`）并补 `%U` 字段码 + `src/app/uri_decode.cpp` 还原 `file://`。
 
-**剩余未证**（`BUGS.md:186` 两分钟配方）：① 对话框在非前台会话里是否立起；② 点选后 `openSource` 是否吃进路径；③ 真桌面「打开方式」点击链路。三项需**真实 Windows 桌面**——真机在位（openclaw/imac/.5），待在真机执行（2026-11-07 起可执行）；「本地无 Windows 无从自证」口径作废。
+**剩余未证**（`BUGS.md:186` 两分钟配方）：① 对话框在非前台会话里是否立起；② 点选后 `openSource` 是否吃进路径；③ 真桌面「打开方式」点击链路。三项需**真实 Windows 桌面**——真机在位（openclaw/imac/.5），待在真机执行（2026-11-07 起可执行）。
 
 ### 推荐决策
 由用户在 Windows 真机按 `BUGS.md:186` 两分钟配方观测并回报；若用户接受当前覆盖度（CI 15/15 绿 + 真机拉起半 + 本地唤起半），可将本条改判「已修复，覆盖度以 CI+真机半+唤起半为准」。
