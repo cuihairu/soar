@@ -188,8 +188,7 @@
   动——文件名编辑框 ValuePattern 置路径 + 「打开」钮 InvokePattern，均不
   需前台）；③ 断言播放开始（窗口标题变媒体名/画面出现/`--backend=null`
   时 CLI 事件流出 media-info）。对话框本体是否在非前台会话里立起、点选后
-  openSource 是否吃进路径，是仅剩的两处待观测点（本地无 Windows，无从
-  自证）。
+  openSource 是否吃进路径，是仅剩的两处待观测点（真机 openclaw/imac/.5 在位，待在其上观测；原「本地无 Windows 无从自证」口径作废）。
   Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）未在真桌面
   环境走查；`.desktop` 已收敛单一来源 `packaging/linux/soar.desktop.in`
   （deb/rpm 与 AppImage 两脚本原本各写一份 heredoc，会漂移），打包时
