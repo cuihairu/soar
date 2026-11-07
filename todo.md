@@ -143,3 +143,26 @@
 
 - [x] 审核发现：四处树形/状态机图围栏由无语言标注的 ``` 改为 ```text no-wrap（docs/ui-design.md:67,102、docs/zh/ui-design.md:67,102），构建产物随之新增可见的 `text` 语言角标（`<span class="lang">text</span>`，此前为空、无角标）；`text` 对 no-wrap 机制并非必需——裸 ```no-wrap 即可触发且保持无角标，故角标为可规避的附带显示变化（低危/仅文档外观）——属实：围栏改为裸 ```no-wrap（`docs/ui-design.md:67,102`、`docs/zh/ui-design.md:67,102`），`config.mts` 钩子剥离 `no-wrap` 后 VitePress 以空语言渲染，`<span class="lang">` 为空、无 `text` 角标；验证 `npm run docs:build` 10.97s 绿，产物 4 处 no-wrap 块（两语言×两图）`span.lang` 均为空、无 `text` 角标，`ctest --output-on-failure -j2` 15/15 全绿·85.33s
 - [x] 审核发现：custom.css:72-73 的 `.vp-doc div.no-wrap pre` 相对上一版丢掉 `[class*='language-']` 限定，仅凭 `no-wrap` 类命中，未来任何含 `no-wrap` 类的非代码 div（如布局辅助类）在 `.vp-doc` 内都会连带对其 `pre`/`pre code` 强制 `white-space: pre`；且该覆盖只靠与 custom.css:64-65（同为 specificity 0,2,2）的源码顺序取胜，重排或提升 64-65 特异性会静默回退为自动换行（低危，当前项目无此类类名）——属实：no-wrap 规则恢复 `[class*='language-']` 限定并提升特异性至 0,3,2（`.vp-doc div.no-wrap[class*='language-'] pre`/`pre code`，`docs/.vitepress/theme/custom.css:72-76`），不再凭源码顺序取胜、也不误命中非代码 div；验证 `npm run docs:build` 绿且产物 CSS 为 `.vp-doc div.no-wrap[class*=language-] pre,...{white-space:pre;word-break:normal}`，`ctest --output-on-failure -j2` 15/15 全绿·85.33s
+## 源码分层分析 2026-11-07
+
+### a) 抽象层清单
+
+- L1 进程入口与窗口界面——解析 CLI、装配窗口配置、渲染 ImGui HUD/浮层并路由输入（`src/app/ui/player_window.cpp:727`）。
+- L2 播放核心——以 `Player` 门面和 `IBackend` 契约隔离真实/测试解码实现（`include/soar/core/backend.h:108`）。
+- L3 媒体服务——承载 HTTP 缓存、字幕发现/翻译、元数据检索和 ASS 渲染的辅助能力（`include/soar/core/http_cache.h:37`）。
+- L4 P2P 桥——把 libtorrent 下载中的文件重新发布为可播放的 HTTP 字节范围源（`src/p2p/torrent_stream.h:53`）。
+- L5 投屏控制点——发现 DLNA 渲染器、发送 AVTransport 命令、接收 GENA 事件并按需提供转码流（`src/cast/cast_session.h:39`）。
+
+详细状态、通道、配置和生命周期见 `docs/architecture.md`；术语定义见 `docs/glossary.md`；拆分理由见 `docs/rationale.md`。中英文页面互相同步。
+
+### b) 超大文件候选（>1000 行）
+
+- [ ] LAY-001 [P1] 拆分 `src/app/ui/player_window.cpp`（5273 行）——主题令牌/字体/状态文件加载/HUD 状态机/各类浮层/SDL 循环耦合在一个翻译单元（`src/app/ui/player_window.cpp:336`、`src/app/ui/player_window.cpp:487`、`src/app/ui/player_window.cpp:727`、`src/app/ui/player_window.cpp:5099`）。
+- [ ] LAY-002 [P1] 拆分 `src/core/ffmpeg_backend.cpp`（4234 行）——AVIO 缓存、解码循环、字幕、HDR、SDL 音频和平台分支共享同一实现文件（`src/core/ffmpeg_backend.cpp:2416`、`src/core/ffmpeg_backend.cpp:3005`、`src/core/ffmpeg_backend.cpp:3467`）。
+- [ ] LAY-003 [P1] 拆分 `src/core/subtitle_provider.cpp`（1174 行）——侧车扫描、HTTP 字幕客户端、翻译客户端和公共 HTTP/socket 代码同处一文件（`src/core/subtitle_provider.cpp:36`、`src/core/subtitle_provider.cpp:272`、`src/core/subtitle_provider.cpp:956`）。
+
+### c) 目录/分类不合理处
+
+- `src/cast/transcode_server.cpp` 直接实现独立的 FFmpeg 解复用/解码/编码管线，但其媒体转换职责与 `src/core/ffmpeg_backend.cpp` 的播放管线不同，却都依赖同一 FFmpeg 基础能力；转码服务器放在 `src/cast/` 使 cast 目录同时承担控制面和媒体面（`src/cast/transcode_server.cpp:728`）。
+- `src/app/ui/shortcuts.cpp` 声明不含 SDL 头文件的键码值，再用 `player_window.cpp` 的 `static_assert` 对照 SDL 值；跨层一致性由手工重复值保证，而不是独立键码抽象（`src/app/ui/shortcuts.cpp:18`）。
+- `src/app/ui/player_window.cpp` 的路径解析、主题、设置持久化、字体选择与 UI 状态同属一个文件，而 `src/app/ui/ui_tokens.h` 已承担部分设计令牌职责；单一文件继续吸纳新偏好逻辑会扩大 LAY-001 的边界（`src/app/ui/player_window.cpp:487`、`src/app/ui/player_window.cpp:525`、`src/app/ui/ui_tokens.h:17`）。

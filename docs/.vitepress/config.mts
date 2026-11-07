@@ -58,6 +58,8 @@ export default defineConfig({
                 { text: 'Build', link: '/build' },
                 { text: 'Scope and roadmap', link: '/mvp' },
                 { text: 'Architecture overview', link: '/architecture' },
+                { text: 'Glossary', link: '/glossary' },
+                { text: 'Layering rationale', link: '/rationale' },
                 { text: 'Prototypes', link: '/prototypes' }
               ]
             },
@@ -101,6 +103,8 @@ export default defineConfig({
                 { text: '构建', link: '/zh/build' },
                 { text: '项目边界与路线图', link: '/zh/mvp' },
                 { text: '架构总览', link: '/zh/architecture' },
+                { text: '术语表', link: '/zh/glossary' },
+                { text: '分层理由', link: '/zh/rationale' },
                 { text: '原型展示', link: '/zh/prototypes' }
               ]
             },

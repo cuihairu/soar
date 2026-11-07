@@ -29,6 +29,43 @@ Soar 是单进程应用：同一个二进制承载桌面界面、播放核心、
 
 本地磁盘存放媒体文件、缓存块与 `library.txt`。字幕目录、元数据检索与翻译 API 都是通过环境变量注入的可选端点；一个都不配置时播放器照常工作，只是少了这些能力。
 
+## 分层图
+
+下面五层是职责，不是目录名。应把状态存储和调用通道理解为所有权发生变化的边界。
+
+### L1 —— 进程入口与窗口界面
+
+`src/app/main.cpp:190` 解析 CLI 模式，`src/app/main.cpp:600` 组装 `WindowUiConfig`；运行时模式声明在 `src/app/ui/player_window.h:27`。`runPlayerWindow` 在 `src/app/ui/player_window.cpp:5099` 持有 SDL2/ImGui 的启动和拆除；`src/app/ui/player_window.cpp:727` 的 `PlayerHud` 持有应用级路由。主题与字体字面量位于 `src/app/ui/player_window.cpp:336` 的运行时令牌表；动作标签和帮助文案由 `PlayerHud` 绘制，快捷键名称与默认值同解析器放在一起（`src/app/ui/shortcuts.cpp:111`、`src/app/ui/shortcuts.cpp:157`）。窗口偏好文件是 `theme.txt`（`player_window.cpp:487`）和 `settings.txt`（`player_window.cpp:525`）；路径构造与启动输出使用 `SOAR_UI_BITMAP_FONT`、`SOAR_STARTUP_LOG`、`SOAR_NO_DIALOG`（`player_window.cpp:651`、`src/app/startup_report.cpp:26`、`src/app/startup_report.cpp:60`）。
+
+本层的文件是最近列表（`ui_state.cpp:158`）、媒体库（`library.cpp:540`）和快捷键表（`shortcuts.cpp:448`）。它用 C++ 方法调用 Player 门面；后端和桥对象作为不透明指针穿过配置（`player_window.h:16`、`player_window.h:63`）。
+
+### L2 —— 播放核心
+
+`Player` 是窄门面（`include/soar/core/player.h:11`）；`IBackend` 是所有权与能力边界（`include/soar/core/backend.h:108`）。`MediaSource` 是完整打开请求（`backend.h:13`），`Event` 是回调词汇表（`backend.h:73`）。具体后端的内部配置模式就是其私有状态，声明在 `include/soar/core/ffmpeg_backend.h:70`；`decodeLoop` 是 `src/core/ffmpeg_backend.cpp:3005` 的线程边界。`src/core/null_backend.cpp:12` 提供无 FFmpeg 状态机。这里没有单独协议文件：本层的“协议”就是 `backend.h` 中的虚拟 ABI。
+
+### L3 —— 媒体服务
+
+`HttpCache` 拥有 `.meta`/`.data` 文件对和 HTTP Range 客户端（`include/soar/core/http_cache.h:37`；文件名在 `src/core/http_cache.cpp:545`）。它刻意只由 `FFmpegBackend` 通过 `AVIOContext` 注入（`ffmpeg_backend.cpp:2576`）。`SidecarSubtitleProvider`、`ExternalSubtitleProvider` 和 `SubtitleTranslator` 共享提供方抽象（`include/soar/core/subtitle_provider.h:37`），但各自拥有独立线上模式：本地侧车在 `subtitle_provider.h:60`，HTTP 搜索/下载在 `subtitle_provider.h:88`，chat-completions 翻译在 `subtitle_provider.h:193`。元数据 API 的配置与协议同样写在注释契约中（`include/soar/core/metadata_scraper.h:35`）。`AssRenderer` 是唯一 libass 边界（`ass_renderer.h:48`），`storeExternalSubtitle` 把远程载荷转成清洗后的本地文件（`src/core/subtitle_provider.cpp:609`）。UI 从 `SOAR_SUBTITLE_*`、`SOAR_TRANSLATE_*`、`SOAR_META_*` 读取端点/密钥/超时（`player_window.cpp:786`、`player_window.cpp:804`、`player_window.cpp:828`）。
+
+### L4 —— P2P 桥
+
+`TorrentStream` 在 `src/p2p/torrent_stream.h:62` 接受 `.torrent`/magnet 和参数，随后发布同步或异步的 `Connecting→Serving` 生命周期（`torrent_stream.cpp:696`、`torrent_stream.cpp:709`）。它与播放之间只有回环字节范围 HTTP URL（`torrent_stream.cpp:601`）；投屏可临时把监听器重绑到 LAN（`torrent_stream.cpp:763`、`torrent_stream.cpp:784`）。分片是 `store_dir` 下的真实文件；入口默认选择 `<tmp>/soar-torrent`（`src/app/main.cpp:376`），并在 `src/app/main.cpp:389` 装配目录/索引/peer。CLI 参数与文件表输出由入口模式拥有（`main.cpp:213`、`main.cpp:408`）。任何 Player 或 UI 对象都不学习种子语义。
+
+### L5 —— 投屏控制点
+
+`CastSession` 编排 DLNA 工作流和状态机（`src/cast/cast_session.h:39`）；从 `src/cast/cast_session.cpp:80` 到 `cast_session.cpp:150` 可见启动顺序——发现、解析、暴露桥、按需转码、SOAP 命令、可选 GENA、轮询。线上协议按文件拆分：SSDP（`src/cast/ssdp.cpp:10`）、设备 XML（`src/cast/device_xml.h:37`）、SOAP（`src/cast/soap.h:37`）、GENA（`src/cast/eventing.cpp:44`）。本地回调和媒体端点是 `EventServer`（`src/cast/event_server.h:16`）与 `TranscodeServer`（`src/cast/transcode_server.h:37`）。UI 投屏状态、发现和逐帧自动投屏仍在 `PlayerHud`（`player_window.cpp:2035`、`player_window.cpp:2115`），无头投屏在 `main.cpp:566` 装配。用户可见的投屏反馈来自 `PlayerHud` toast；没有集中文案文件。
+
+### 状态与通道
+
+| 组件 | 状态 | 通道 |
+| --- | --- | --- |
+| 窗口界面 | 平台状态目录中的文本存储，加上内存中的 ImGui 状态 | 直接调用 `Player`；配置中的原子指针 |
+| Player/FFmpegBackend | 解码/音频帧队列、解码器和会话对象、SDL 音频设备 | 虚拟 `IBackend`；后端到 UI 的 `Event` 回调 |
+| HTTP 缓存 | 哈希命名的 meta/data 文件 | 自定义 FFmpeg `AVIOContext`；阻塞式 HTTP Range |
+| 字幕/元数据 | 临时字幕文件；可选远程端点 | 阻塞式 HTTP 客户端；直接提供方调用 |
+| 种子桥 | `store_dir` 下的真实 torrent 文件；套接字/线程状态 | 回环或 LAN 的 HTTP 字节范围服务 |
+| 投屏层 | 临时套接字和会话状态 | SSDP UDP、HTTP XML/SOAP/GENA，本地 HTTP TS/NOTIFY 服务 |
+
 ## 图与代码不一致之处
 
 本图以代码为准。旧文档里有三处与之不符，这里按代码写法描述：
