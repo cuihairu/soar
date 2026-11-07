@@ -166,3 +166,7 @@
 - `src/cast/transcode_server.cpp` 直接实现独立的 FFmpeg 解复用/解码/编码管线，但其媒体转换职责与 `src/core/ffmpeg_backend.cpp` 的播放管线不同，却都依赖同一 FFmpeg 基础能力；转码服务器放在 `src/cast/` 使 cast 目录同时承担控制面和媒体面（`src/cast/transcode_server.cpp:728`）。
 - `src/app/ui/shortcuts.cpp` 声明不含 SDL 头文件的键码值，再用 `player_window.cpp` 的 `static_assert` 对照 SDL 值；跨层一致性由手工重复值保证，而不是独立键码抽象（`src/app/ui/shortcuts.cpp:18`）。
 - `src/app/ui/player_window.cpp` 的路径解析、主题、设置持久化、字体选择与 UI 状态同属一个文件，而 `src/app/ui/ui_tokens.h` 已承担部分设计令牌职责；单一文件继续吸纳新偏好逻辑会扩大 LAY-001 的边界（`src/app/ui/player_window.cpp:487`、`src/app/ui/player_window.cpp:525`、`src/app/ui/ui_tokens.h:17`）。
+
+## 全界面按原型重做（2026-11-08 用户令：几十次强调按原型做）
+
+- [ ] SOAR-UI-PROTO-002 [P0] 全界面视觉对齐原型：10-13 对齐批只覆盖了播放器 OSC（像素探针层），settings/library/playlist/translate-panel 等界面仍是 v1 占位实现（evidence/prototype-alignment-2026-11-01/after_m4_playback.png 实证：设置面板内容区是占位文本）。要求：以 docs/public/prototypes/*.html 四份原型为唯一视觉基准，逐界面（settings/library/playlist/translate-panel + 主播放窗全态）重做实现；验收口径改死：**每个界面渲染截图与原型 PNG 并排对比、逐项一致（布局/间距/圆角/字号/颜色/控件形态），vision 比对通过才算完**——测试断言绿不算完成；完成后并排对比图入 docs/review/，用户亲眼确认后勾账。
