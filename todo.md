@@ -158,7 +158,7 @@
 ### b) 超大文件候选（>1000 行）
 
 - [x] LAY-001 [P1] 拆分 `src/app/ui/player_window.cpp`（5273 行）——主题令牌/字体/状态文件加载/HUD 状态机/各类浮层/SDL 循环耦合在一个翻译单元（`src/app/ui/player_window.cpp:336`、`src/app/ui/player_window.cpp:487`、`src/app/ui/player_window.cpp:727`、`src/app/ui/player_window.cpp:5099`）。（2026-11-10 完成：HUD 类拆为 `src/app/ui/player_hud.h` + `player_hud_{actions,settings,render,overlays,pages}.cpp` 五个按职责的翻译单元，`player_window.cpp` 只留核心状态机/SDL 事件循环（~520 行）；新 TU 全文件 `SOAR_WITH_IMGUI` 门控，IMGUI=OFF 裸树验证过；全量 15 套 ctest + X11 CLI 636 断言绿。）
-- [ ] LAY-002 [P1] 拆分 `src/core/ffmpeg_backend.cpp`（4234 行）——AVIO 缓存、解码循环、字幕、HDR、SDL 音频和平台分支共享同一实现文件（`src/core/ffmpeg_backend.cpp:2416`、`src/core/ffmpeg_backend.cpp:3005`、`src/core/ffmpeg_backend.cpp:3467`）。
+- [x] LAY-002 [P1] 拆分 `src/core/ffmpeg_backend.cpp`（4234 行）——AVIO 缓存、解码循环、字幕、HDR、SDL 音频和平台分支共享同一实现文件（`src/core/ffmpeg_backend.cpp:2416`、`src/core/ffmpeg_backend.cpp:3005`、`src/core/ffmpeg_backend.cpp:3467`）。（2026-11-10 完成：新增内部头 `src/core/ffmpeg_backend_internal.h`（libav/SDL include 集、文件级辅助函数、嵌套状态结构定义），实现拆为 `ffmpeg_backend{,_open,_decode,_video,_audio,_subtitle}.cpp` 六个翻译单元（生命周期+公共 API / 容器打开+解码器装配+avio 缓存 / 解码循环+帧队列 / 渲染+HDR+截图+取帧 / SDL 音频输出 / 轨道选择+字幕进出）；代码逐字搬移，逐行核对 decodeLoop 283/283 一致；全量 15 套 ctest 绿。）
 - [ ] LAY-003 [P1] 拆分 `src/core/subtitle_provider.cpp`（1174 行）——侧车扫描、HTTP 字幕客户端、翻译客户端和公共 HTTP/socket 代码同处一文件（`src/core/subtitle_provider.cpp:36`、`src/core/subtitle_provider.cpp:272`、`src/core/subtitle_provider.cpp:956`）。
 
 ### c) 目录/分类不合理处
@@ -166,6 +166,7 @@
 - `src/cast/transcode_server.cpp` 直接实现独立的 FFmpeg 解复用/解码/编码管线，但其媒体转换职责与 `src/core/ffmpeg_backend.cpp` 的播放管线不同，却都依赖同一 FFmpeg 基础能力；转码服务器放在 `src/cast/` 使 cast 目录同时承担控制面和媒体面（`src/cast/transcode_server.cpp:728`）。
 - `src/app/ui/shortcuts.cpp` 声明不含 SDL 头文件的键码值，再用 `player_window.cpp` 的 `static_assert` 对照 SDL 值；跨层一致性由手工重复值保证，而不是独立键码抽象（`src/app/ui/shortcuts.cpp:18`）。
 - `src/app/ui/player_window.cpp` 的路径解析、主题、设置持久化、字体选择与 UI 状态同属一个文件，而 `src/app/ui/ui_tokens.h` 已承担部分设计令牌职责；单一文件继续吸纳新偏好逻辑会扩大 LAY-001 的边界（`src/app/ui/player_window.cpp:487`、`src/app/ui/player_window.cpp:525`、`src/app/ui/ui_tokens.h:17`）。
+- 无 SDL2 的 CLI-only 配置（CMake `SOAR_ENABLE_SDL2=OFF` 或装不上 SDL2 时提示 "building CLI-only app"）从未真正可编译：`player_window.cpp` 的 include 门从文件头一直开到尾，`namespace soar::app {` 在门内打开，无 SDL2 时整个命名空间体连同开闭括号一起消失，文件末尾 `}  // namespace soar::app` 成悬空括号（拆分前 HEAD~1 已实证同一错误：`WindowUiConfig` 不知名 + 悬空 `}`；2026-11-10 LAY-002 巡检中 no-SDL2 树复验）。要支持该配置需重构门结构（include 门提前收口、`SOAR_WITH_IMGUI`/`SOAR_WITH_FFMPEG` 门补 `SOAR_WITH_SDL2` 合取、runPlayerWindow 命名空间归属核对 `player_window.h` 声明）。CI 各 runner 均装有 SDL2，故从未暴露。
 
 ## 全界面按原型重做（2026-11-08 用户令：几十次强调按原型做）
 

@@ -62,6 +62,11 @@ if(SOAR_ENABLE_FFMPEG)
     target_compile_definitions(soar_core PUBLIC SOAR_WITH_FFMPEG=1)
     target_sources(soar_core PRIVATE
       src/core/ffmpeg_backend.cpp
+      src/core/ffmpeg_backend_open.cpp
+      src/core/ffmpeg_backend_decode.cpp
+      src/core/ffmpeg_backend_video.cpp
+      src/core/ffmpeg_backend_audio.cpp
+      src/core/ffmpeg_backend_subtitle.cpp
       src/core/audio_extract.cpp
     )
     target_link_libraries(soar_core PUBLIC
