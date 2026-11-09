@@ -1532,24 +1532,27 @@ if mode == "library":
     # Coordinates probed under SOAR_UI_BITMAP_FONT=1 on a 1280x800 Xvfb
     # against the -O0 coverage build, in the injector's own frame: the
     # SDL window is 960x540 centred at (160,130), and moved() warps
-    # window-relative. The overlay is 520x420 centred in the window —
-    # "Add folder..." at (287,100), "Rescan" at (375,100); the watch-mode
-    # picker (checkbox hidden, rows one pitch higher than the import
-    # layout) shows ".." ~127, ".cache/" ~144, "media_a/" ~161, with
-    # "Watch this folder (2 media files, with subfolders)" bottom-left
-    # anchored at (418,459). Below the folder block sits the browse
-    # split: bucket rows All/Recent/Resume/Finished at x~280,
-    # y~163/181/200/219; the entries column starts with the search box
-    # (its hint text spans y~164-174), so entry rows sit one pitch lower
-    # than the buckets. 2026-10-24 re-probe: the entries column renders
-    # a large card per entry (poster + label, one card filling the column
-    # at y 188..481, x 351..713) instead of a row, so the delete "x" is no
-    # longer right-aligned to x~716 — it rides the card's top-right corner,
-    # its glyph spanning x 696..700 / y 199..204 (click 698,201). The old
-    # x~716 now sits past the card's right edge, between it and the
-    # scrollbar at x~717, so those clicks are the deliberate empty-slot
-    # no-ops this drive relies on. argv[4] is the store path; every
-    # destructive click is confirmed against it before the next step.
+    # window-relative. 2026-11-09 re-probe for the full-page library
+    # (prototype layout, no centred overlay): a 224px sidebar (hairline at
+    # x~224) holds the LIBRARY buckets All/Recent/Resume/Finished (row
+    # centres x=112, y 116/155/194/233), the TYPE group below them, then
+    # the FOLDERS group with "Add folder..." (63,414) and "Rescan"
+    # (154,414); a watched folder renders a row whose "x" SmallButton is
+    # right-aligned inside the sidebar (click 209,455 — label-length
+    # independent; trailing the watched path itself would push the
+    # button past the sidebar's clip on a long path). The head strip
+    # (title + count caption +
+    # search box) spans y 16..60, and the card grid starts at y 68: row 1
+    # holds card1 at x 254..473 and card2 at x 490..709 (row-1 centres
+    # 363,166 and 600,166), each card's remove "x" riding the poster's
+    # top-right corner (card1 click 462,81). A click on an empty grid
+    # slot is the deliberate no-op this drive relies on. The watch-mode
+    # picker is unchanged by the relayout (checkbox hidden, rows one
+    # pitch higher than the import layout): ".." ~127, ".cache/" ~144,
+    # "media_a/" ~161, with "Watch this folder (2 media files, with
+    # subfolders)" bottom-left anchored at (418,459). argv[4] is the
+    # store path; every destructive click is confirmed against it before
+    # the next step.
     time.sleep(2.2)
     focus()
     store = sys.argv[4] if len(sys.argv) > 4 else ""
@@ -1570,9 +1573,9 @@ if mode == "library":
         moved(x, y); time.sleep(0.15)
         holdclick(1); time.sleep(0.5)
 
-    key(d.keysym_to_keycode(0x62))  # B -> the Library overlay
+    key(d.keysym_to_keycode(0x62))  # B -> the Library page
     time.sleep(0.9)
-    sclick(287, 100)   # "Add folder..." -> the picker in watch mode
+    sclick(63, 414)    # sidebar "Add folder..." -> the picker in watch mode
     time.sleep(0.9)
     sclick(250, 161)   # enter media_a/
     time.sleep(0.7)
@@ -1589,57 +1592,54 @@ if mode == "library":
             time.sleep(0.25)
         return False
 
-    # The folder row's "x" sits after the row label, and the label is the
-    # watched path itself — pid-dependent in length. Compute the x from
-    # the label (text starts at ~233, ~7 px/char in the bitmap font, plus
-    # the SameLine gap and half a small button ~15) instead of pinning a
-    # coordinate that only fits one pid width.
-    home = sys.argv[5] if len(sys.argv) > 5 else ""
-    folder_x = 233 + len(home + "/media_a") * 7 + 15
+    # The folder row's "x" is right-aligned inside the sidebar — a fixed
+    # pin, label-length independent (the label is the watched path,
+    # pid-dependent in width).
 
-    # Back on the Library overlay: park the pointer on the folder row,
-    # then a1's row (row 1 of All; its tooltip shows path + duration +
-    # play count), then Rescan.
-    moved(245, 136)
+    # Back on the Library page: park the pointer on the folder row,
+    # then card 1 (its tooltip shows path + duration + play count),
+    # then Rescan.
+    moved(112, 447)
     time.sleep(0.8)
-    moved(480, 194)
+    moved(363, 160)
     time.sleep(0.8)
-    sclick(375, 100)   # "Rescan" -> scan + save again (store unchanged)
+    sclick(154, 414)   # sidebar "Rescan" -> scan + save again (store
+                       # unchanged)
     time.sleep(0.6)
 
     # Resume holds only a1 (the seeded 5:21 of a 10-minute file): a click
-    # at the second slot must be a no-op — a2 vanishing here means the
-    # bucket filter leaks (exit 6).
-    sclick(280, 200)   # the Resume bucket
+    # at the second card slot must be a no-op — a2 vanishing here means
+    # the bucket filter leaks (exit 6).
+    sclick(112, 194)   # the Resume bucket
     time.sleep(0.5)
-    sclick(716, 213)   # second slot is empty under Resume
+    sclick(600, 166)   # second slot is empty under Resume
     time.sleep(0.5)
     if store and "a2.mkv" not in store_txt():
         sys.exit(6)
 
     # Finished holds nothing (nothing reached the end): the first slot
     # must be empty too.
-    sclick(280, 219)   # the Finished bucket
+    sclick(112, 233)   # the Finished bucket
     time.sleep(0.5)
-    sclick(716, 194)
+    sclick(363, 166)
     time.sleep(0.5)
     if store and "a1.mkv" not in store_txt():
         sys.exit(6)
 
     # The search half (docs/todo.md 原型对齐批): the Recent bucket, then
-    # "/" focuses the box and a typed needle narrows the bucket's rows.
-    # The needle "a" matches both file paths, so the list keeps the
+    # "/" focuses the box and a typed needle narrows the bucket's cards.
+    # The needle "a" matches both file paths, so the grid keeps the
     # bucket's order — and Recent's scan tokens put the hour-newer a2
-    # first: row 1's "x" must forget exactly a2, with a1 surviving as the
-    # proof the filter did not leak past the needle.
-    sclick(280, 181)   # the Recent bucket
+    # first: card 1's "x" must forget exactly a2, with a1 surviving as
+    # the proof the filter did not leak past the needle.
+    sclick(112, 155)   # the Recent bucket
     time.sleep(0.5)
     key(d.keysym_to_keycode(0x2f))  # / -> focus the search box
     time.sleep(0.5)
     key(d.keysym_to_keycode(0x61))  # a
     time.sleep(0.6)
-    sclick(698, 201)   # row 1's card remove "x" (a2, Recent order under
-                       # the needle)
+    sclick(462, 81)    # card 1's remove "x" (a2, Recent order under the
+                       # needle)
     if store and not wait_no("a2.mkv"):
         sys.exit(7)
     if store and "a1.mkv" not in store_txt():
@@ -1655,15 +1655,15 @@ if mode == "library":
     time.sleep(0.6)
 
     # Recent keeps only a1 now; the second slot must be an empty no-op —
-    # a1 vanishing means a stale row landed where nothing should be.
-    sclick(280, 181)   # the Recent bucket
+    # a1 vanishing means a stale card landed where nothing should be.
+    sclick(112, 155)   # the Recent bucket
     time.sleep(0.5)
-    sclick(716, 213)
+    sclick(600, 166)
     time.sleep(0.5)
     if store and "a1.mkv" not in store_txt():
         sys.exit(6)
 
-    sclick(folder_x, 136)   # folder row's "x" -> removeFolder + save
+    sclick(209, 455)   # folder row's "x" -> removeFolder + save
     wait_no("\nf ")
     time.sleep(0.4)
     qk = d.keysym_to_keycode(0x71)

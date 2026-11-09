@@ -4748,16 +4748,139 @@ class PlayerHud {
   // iterating: a click rewrites the store (recordOpen re-sorts entries_,
   // an unwatch mutates folders_) and the loop must not walk a vector
   // being mutated — the Recent overlay learned this first.
+  // The sidebar row icons (library.html .side a svg, 16px, stroke ~1.6).
+  enum class LibIcon { All, Recent, Resume, Finished, Folder, Globe };
+  void drawLibIcon(ImDrawList* dl, const ImVec2& c, LibIcon icon, ImU32 col) {
+    const float th = 1.5f;
+    switch (icon) {
+      case LibIcon::All: {  // hexagon
+        const ImVec2 pts[6] = {
+            {c.x, c.y - 7.0f},     {c.x + 6.1f, c.y - 3.5f},
+            {c.x + 6.1f, c.y + 3.5f}, {c.x, c.y + 7.0f},
+            {c.x - 6.1f, c.y + 3.5f}, {c.x - 6.1f, c.y - 3.5f}};
+        dl->PathLineTo(pts[0]);
+        for (int i = 1; i < 6; ++i) dl->PathLineTo(pts[i]);
+        dl->PathStroke(col, 0, th);
+        break;
+      }
+      case LibIcon::Recent: {  // clock
+        dl->AddCircle(c, 7.0f, col, 0, th);
+        dl->AddLine(c, ImVec2(c.x, c.y - 4.0f), col, th);
+        dl->AddLine(c, ImVec2(c.x + 2.8f, c.y + 1.4f), col, th);
+        break;
+      }
+      case LibIcon::Resume: {  // circle + play
+        dl->AddCircle(c, 7.0f, col, 0, th);
+        dl->AddTriangleFilled(ImVec2(c.x - 1.6f, c.y - 3.4f),
+                              ImVec2(c.x - 1.6f, c.y + 3.4f),
+                              ImVec2(c.x + 3.4f, c.y), col);
+        break;
+      }
+      case LibIcon::Finished: {  // check
+        dl->AddLine(ImVec2(c.x - 6.0f, c.y + 0.6f), ImVec2(c.x - 1.4f, c.y + 4.8f),
+                    col, th);
+        dl->AddLine(ImVec2(c.x - 1.4f, c.y + 4.8f), ImVec2(c.x + 6.4f, c.y - 4.8f),
+                    col, th);
+        break;
+      }
+      case LibIcon::Folder: {  // folder outline
+        dl->PathLineTo(ImVec2(c.x - 7.0f, c.y - 4.0f));
+        dl->PathLineTo(ImVec2(c.x - 2.0f, c.y - 4.0f));
+        dl->PathLineTo(ImVec2(c.x, c.y - 1.4f));
+        dl->PathLineTo(ImVec2(c.x + 7.0f, c.y - 1.4f));
+        dl->PathLineTo(ImVec2(c.x + 7.0f, c.y + 5.0f));
+        dl->PathLineTo(ImVec2(c.x - 7.0f, c.y + 5.0f));
+        dl->PathLineTo(ImVec2(c.x - 7.0f, c.y - 4.0f));
+        dl->PathStroke(col, 0, th);
+        break;
+      }
+      case LibIcon::Globe: {  // globe
+        dl->AddCircle(c, 7.0f, col, 0, th);
+        dl->AddLine(ImVec2(c.x - 7.0f, c.y), ImVec2(c.x + 7.0f, c.y), col, th);
+        dl->AddEllipse(ImVec2(c.x, c.y), ImVec2(3.2f, 7.0f), col, 0, th);
+        break;
+      }
+    }
+  }
+
+  // The full-page library (docs/public/prototypes/library.html): a 224px
+  // sidebar (category + type groups with live counts) over a main column
+  // whose head holds the title/count/search and whose body is the card
+  // grid. The prototype's .side is 224px (wider than the settings nav's
+  // 196px) and its active row is the Recent bucket — the screenshot state.
   void drawLibraryOverlay() {
-    bool open = true;
     const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_Appearing);
-    if (ImGui::Begin("Library", &open, ImGuiWindowFlags_NoSavedSettings)) {
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(io.DisplaySize);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kPageBg);
+    ImGui::Begin("##lib_page", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoSavedSettings);
+    {
       if (library_ == nullptr) {
         ImGui::TextDisabled("%s", "No library in this session.");
-      } else {
+        ImGui::End();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(4);
+        return;
+      }
+      const std::vector<LibraryEntry> entries = library_->entries();
+      const std::vector<std::string> folders = library_->folders();
+
+      // Sidebar (.side, 224px, --bg0, border-right).
+      ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
+      ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kNavBg);
+      ImGui::BeginChild("##lib_side", ImVec2(224.0f, 0.0f), ImGuiChildFlags_None);
+      {
+        ImGui::SetCursorPos(ImVec2(10.0f, 16.0f));
+        const ImVec2 libwing = ImGui::GetCursorScreenPos();
+        drawGradientMark(ImGui::GetWindowDrawList(),
+                         ImVec2(libwing.x + 8.0f, libwing.y), 26.0f, 8.0f,
+                         ImGui::ColorConvertFloat4ToU32(theme::kNavBg));
+        ImGui::Dummy(ImVec2(26.0f, 26.0f));
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 16.0f);
+        // .side .grp "媒体库" -> LIBRARY.
+        librarySideGrp("LIBRARY");
+        // The four state buckets (library.html's first group). The count is
+        // the live total over the same snapshot the grid renders.
+        static const char* const kCat[] = {"All", "Recent", "Resume", "Finished"};
+        for (int i = 0; i < 4; ++i) {
+          const LibraryCategory cat = static_cast<LibraryCategory>(i);
+          std::size_t n = 0;
+          for (const LibraryEntry& e : entries)
+            if (matchesCategory(e, cat)) ++n;
+          if (librarySideRow(("##libcat_" + std::string(kCat[i])).c_str(),
+                             kCat[i], n, st_.library_category == cat,
+                             static_cast<LibIcon>(i))) {
+            st_.library_category = cat;
+          }
+        }
+        // .side .grp "类型" -> TYPE.
+        librarySideGrp("TYPE");
+        static const char* const kSrc[] = {"Local", "Network"};
+        for (int i = 0; i < 2; ++i) {
+          // LibrarySource::All is index 0; the two pickable rows follow it.
+          const LibrarySource src = static_cast<LibrarySource>(i + 1);
+          std::size_t n = 0;
+          for (const LibraryEntry& e : entries)
+            if (matchesSource(e, src)) ++n;
+          if (librarySideRow(("##libsrc_" + std::string(kSrc[i])).c_str(),
+                             kSrc[i], n, st_.library_source == src,
+                             i == 0 ? LibIcon::Folder : LibIcon::Globe)) {
+            st_.library_source = src;
+          }
+        }
+        // The management group the prototype leaves implicit: watched
+        // folders and the scan/scrape actions. Sits below the browse rows so
+        // the category pins keep their measured pitch.
+        librarySideGrp("FOLDERS");
+        ImGui::SetCursorPosX(10.0f);
         if (ImGui::SmallButton("Add folder...")) openDirPickerWatch();
         ImGui::SameLine();
         if (ImGui::SmallButton("Rescan")) {
@@ -4766,100 +4889,185 @@ class PlayerHud {
         }
         // The network half of the scrape (docs/mvp.md §3): only offered
         // with an endpoint configured, so an offline session never shows a
-        // button that could only fail. Each click is capped (the scrape
-        // budget) and every attempt costs up to the configured timeout, same
-        // UI-thread precedent as the subtitle download. The SameLine rides
-        // inside the gate: an unconditional one would pull the "Watched
-        // folders" caption onto the button row and lift every row below it
-        // one pitch (the walkthrough's bucket pins mis-clicked Resume for
-        // Recent that way — BUGS.md #7).
+        // button that could only fail.
         if (meta_ready_) {
           ImGui::SameLine();
           if (ImGui::SmallButton("Scrape")) {
-            const std::size_t n = library_->scrapeEntries(MediaLibrary::kScrapeBudget);
+            const std::size_t n =
+                library_->scrapeEntries(MediaLibrary::kScrapeBudget);
             st_.toast.show(
-                n == 1 ? "Scraped 1 entry" : "Scraped " + std::to_string(n) + " entries",
+                n == 1 ? "Scraped 1 entry"
+                       : "Scraped " + std::to_string(n) + " entries",
                 nowMs());
           }
         }
-        const std::vector<std::string> folders = library_->folders();
         if (folders.empty()) {
-          ImGui::TextDisabled("%s", "No folders watched yet - add one to scan it.");
+          ImGui::TextDisabled("%s", "No folders watched yet.");
         } else {
-          ImGui::TextDisabled("Watched folders (%zu)", folders.size());
+          ImGui::TextDisabled("Watched: %zu", folders.size());
           for (std::size_t i = 0; i < folders.size(); ++i) {
             ImGui::PushID(static_cast<int>(1000 + i));
-            // The row itself is not a pick target — only the "x" acts on a
-            // folder row (unwatch); the full path is the tooltip.
             ImGui::Selectable(folders[i].c_str(), false,
                               ImGuiSelectableFlags_AllowOverlap);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", folders[i].c_str());
-            ImGui::SameLine();
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("%s", folders[i].c_str());
+            // The remove affordance pins to the row's right edge: the
+            // watched path is the label, so trailing the text would push
+            // the button past the sidebar's clip on a long path and
+            // strand the unwatch action.
+            ImGui::SameLine(ImGui::GetWindowWidth() - 26.0f);
             if (ImGui::SmallButton("x")) {
               library_->removeFolder(folders[i]);
               library_->save();
             }
             ImGui::PopID();
           }
-          ImGui::Separator();
         }
-        // The browse split (docs/todo.md 原型对齐批): the buckets read the
-        // entries' state, the rows obey. The bucket is session state, so
-        // reopening the overlay lands where the user left off.
-        const std::vector<LibraryEntry> entries = library_->entries();
-        drawLibraryBuckets(entries);
-        ImGui::SameLine();
+        // .side border-right: the hairline splitting sidebar from content.
+        const ImVec2 sp = ImGui::GetWindowPos();
+        const float sh = ImGui::GetWindowHeight();
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(sp.x + 223.5f, sp.y), ImVec2(sp.x + 223.5f, sp.y + sh),
+            ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
+      }
+      ImGui::EndChild();
+      ImGui::PopStyleColor();
+      ImGui::PopStyleVar();
+      ImGui::SameLine();
+
+      // Main: the head (title/count/search) over the card-grid child.
+      ImGui::BeginChild("##lib_main", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
+      {
+        drawLibraryHead(entries);
         drawLibraryEntries(entries, !folders.empty());
       }
+      ImGui::EndChild();
     }
     ImGui::End();
-    if (!open) st_.overlay = Overlay::None;
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(4);
   }
 
-  // The bucket column: one row per category, each showing its live count
-  // over the same snapshot the row side renders. All is the default and
-  // the unfiltered view — with it selected the overlay reads exactly like
-  // the pre-sidebar layout.
-  void drawLibraryBuckets(const std::vector<LibraryEntry>& entries) {
-    static const char* const kLabels[] = {"All", "Recent", "Resume", "Finished"};
-    ImGui::BeginChild("library-buckets", ImVec2(110, 0));
-    for (int i = 0; i < 4; ++i) {
-      const LibraryCategory cat = static_cast<LibraryCategory>(i);
-      std::size_t count = 0;
-      for (const LibraryEntry& e : entries) {
-        if (matchesCategory(e, cat)) ++count;
-      }
-      const std::string label =
-          std::string(kLabels[i]) + " (" + std::to_string(count) + ")";
-      if (ImGui::Selectable(label.c_str(), st_.library_category == cat)) {
-        st_.library_category = cat;
-      }
+  // The .side .grp label (library.html .side .grp, margin 12px 8px 4px).
+  void librarySideGrp(const char* label) {
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12.0f);
+    ImGui::SetCursorPosX(18.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
+  }
+
+  // A .side a row: 32px, icon + label + right-aligned count (.cnt, mono,
+  // --t4; --accent-hi when active). Returns true on a click.
+  bool librarySideRow(const char* id, const char* label, std::size_t count,
+                      bool active, LibIcon icon) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGui::SetCursorPosX(10.0f);
+    const float w = ImGui::GetWindowWidth() - 20.0f;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, 32.0f));
+    const bool hovered = ImGui::IsItemHovered();
+    if (active) {
+      ImVec4 a = theme::kAccent;
+      a.w = 0.14f;  // --accent-soft
+      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 32.0f),
+                        ImGui::ColorConvertFloat4ToU32(a), 8.0f);
+    } else if (hovered) {
+      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 32.0f),
+                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 8.0f);
     }
-    // The Type group (docs/public/prototypes/library.html, the sidebar's
-    // second column group): a source is local or network by its URI scheme.
-    // It composes with the bucket above — both halves default to "show
-    // everything", so the grid view is unchanged until a row is picked. The
-    // rows sit BELOW the four buckets on purpose: the walkthrough pins the
-    // Recent/Resume/Finished rows, and a header above them would lift every
-    // bucket row one pitch and re-aim those clicks.
-    ImGui::Dummy(ImVec2(0.0f, 8.0f));
-    ImGui::TextDisabled("Type");
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    static const char* const kSourceLabels[] = {"Local", "Network"};
-    for (int i = 0; i < 2; ++i) {
-      // LibrarySource::All is index 0; the two pickable rows follow it.
-      const LibrarySource src = static_cast<LibrarySource>(i + 1);
-      std::size_t count = 0;
+    const ImU32 fg = ImGui::ColorConvertFloat4ToU32(
+        active ? theme::kAccentHi : (hovered ? theme::kText2 : theme::kText3));
+    drawLibIcon(dl, ImVec2(p.x + 18.0f, p.y + 16.0f), icon, fg);
+    const ImVec2 ls = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(p.x + 36.0f, p.y + (32.0f - ls.y) * 0.5f), fg, label);
+    // .cnt: the mono count right-aligned to the row's 10px padding.
+    const std::string cs = std::to_string(count);
+    const ImVec2 css = ImGui::CalcTextSize(cs.c_str());
+    dl->AddText(ImVec2(p.x + w - 10.0f - css.x, p.y + (32.0f - css.y) * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(
+                    active ? theme::kAccentHi : theme::kText4),
+                cs.c_str());
+    return clicked;
+  }
+
+  // The .head: the active bucket's title, the count caption, the spacer,
+  // then the search box (icon + input + "/" kbd tip) — library.html .head.
+  void drawLibraryHead(const std::vector<LibraryEntry>& entries) {
+    static const char* const kCat[] = {"All", "Recent", "Resume", "Finished"};
+    static const char* const kCatDesc[] = {
+        "everything", "by time added", "in progress", "completed"};
+    const std::size_t shown_count = [&] {
+      std::size_t n = 0;
       for (const LibraryEntry& e : entries) {
-        if (matchesSource(e, src)) ++count;
+        if (!matchesCategory(e, st_.library_category)) continue;
+        if (!matchesSource(e, st_.library_source)) continue;
+        const NfoInfo* nfo = library_->nfoFor(e.path);
+        if (!matchesLibraryFilter(e, nfo, st_.library_filter)) continue;
+        ++n;
       }
-      const std::string label =
-          std::string(kSourceLabels[i]) + " (" + std::to_string(count) + ")";
-      if (ImGui::Selectable(label.c_str(), st_.library_source == src)) {
-        st_.library_source = src;
-      }
+      return n;
+    }();
+    const int ci = static_cast<int>(st_.library_category);
+    const char* cat = kCat[ci < 4 ? ci : 0];
+    const char* cdesc = kCatDesc[ci < 4 ? ci : 0];
+    // The head is a fixed 44px strip with a bottom hairline, like the
+    // settings .chead.
+    ImGui::SetCursorPos(ImVec2(22.0f, 14.0f));
+    ImGui::TextUnformatted(cat);
+    const ImVec2 ts = ImGui::CalcTextSize(cat);
+    ImGui::SameLine();
+    ImGui::SetCursorPosY(14.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
+    const std::string count_cap =
+        std::string(cdesc) + " · " + std::to_string(shown_count) + " items";
+    ImGui::TextUnformatted(count_cap.c_str());
+    ImGui::PopStyleColor();
+    // The spacer pushes the search box to the head's right edge.
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 22.0f - 240.0f);
+    ImGui::SetCursorPosY(11.0f);
+    // The search box (240x30, --line-strong border). The "/" kbd tip sits at
+    // its right; the icon at its left. The box is the focused item when the
+    // "/" action's one-shot flag is set.
+    const float box_h = 30.0f;
+    const ImVec2 bp(ImGui::GetCursorScreenPos());
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, theme::kFieldBg);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText);
+    if (st_.library_search_focus) {
+      st_.library_search_focus = false;
+      ImGui::SetKeyboardFocusHere(0);
     }
-    ImGui::EndChild();
+    if (blur_text_next_) {
+      // Tab moved the focus ring onto the rows (V7b): the caret leaves
+      // the box so the next key lands on the ring, not in the needle.
+      blur_text_next_ = false;
+      ImGui::ClearActiveID();
+    }
+    // The hint clears the magnifier icon (drawn over the frame's left), so
+    // the text origin is pushed right past it for this one input.
+    const ImVec2 fp = ImGui::GetStyle().FramePadding;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(26.0f, fp.y));
+    ImGui::SetNextItemWidth(240.0f);
+    ImGui::InputTextWithHint("##library-filter", "Search media...",
+                             st_.library_filter, sizeof(st_.library_filter));
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+    const ImVec2 ep(bp.x + 240.0f, bp.y);
+    ImGui::GetWindowDrawList()->AddText(
+        ImVec2(ep.x + 8.0f, bp.y + (box_h - ImGui::CalcTextSize("/").y) * 0.5f),
+        ImGui::ColorConvertFloat4ToU32(theme::kText4), "/");
+    // The search icon at the box's left (drawn over the input).
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 u_t4 = ImGui::ColorConvertFloat4ToU32(theme::kText4);
+    dl->AddCircle(ImVec2(bp.x + 16.0f, bp.y + 15.0f), 5.0f, u_t4, 0, 1.4f);
+    dl->AddLine(ImVec2(bp.x + 19.5f, bp.y + 18.5f),
+                ImVec2(bp.x + 23.0f, bp.y + 22.0f), u_t4, 1.4f);
+    // The bottom hairline of the head.
+    dl->AddLine(ImVec2(0.0f, bp.y + box_h + 9.0f),
+                ImVec2(ImGui::GetWindowWidth(), bp.y + box_h + 9.0f),
+                ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
+    ImGui::SetCursorPosY(bp.y + box_h + 10.0f);
   }
 
   // The row side of the split: the selected bucket's entries. Only Recent
@@ -4891,27 +5099,11 @@ class PlayerHud {
     // V7b: the source rows are the library's focusable face (the category
     // sidebar and folder rows stay mouse-only this batch).
     library_rows_ = static_cast<int>(shown.size());
-    // The search box (docs/todo.md 原型对齐批): it narrows the bucket's
-    // rows, so the two halves compose — the sidebar filters by state, the
-    // box by text. It lives INSIDE this child on purpose: it shares the
-    // buckets' line, and a line's height is its tallest item (the buckets
-    // child takes all of it), so a box drawn next to that child would
-    // push everything after it past the window edge. SetKeyboardFocusHere
-    // has to precede the item it targets, so the / action's one-shot flag
-    // is consumed on the frame the box is drawn.
+    // The .grid body: the search box lives in the head (drawLibraryHead),
+    // so this child opens straight onto the card grid at the prototype's
+    // 16px 22px padding.
     ImGui::BeginChild("library-entries", ImVec2(0, 0));
-    if (st_.library_search_focus) {
-      st_.library_search_focus = false;
-      ImGui::SetKeyboardFocusHere(0);
-    }
-    if (blur_text_next_) {
-      // Tab moved the focus ring onto the rows (V7b): the caret leaves
-      // the box so the next key lands on the ring, not in the needle.
-      blur_text_next_ = false;
-      ImGui::ClearActiveID();
-    }
-    ImGui::InputTextWithHint("##library-filter", "Filter title or path ( / )",
-                             st_.library_filter, sizeof(st_.library_filter));
+    ImGui::SetCursorPos(ImVec2(22.0f, 16.0f));
     if (shown.empty()) {
       // The bucket's filter and the store's emptiness are different facts:
       // a watched folder with no media says one thing, a filtered bucket
@@ -4969,53 +5161,90 @@ class PlayerHud {
       const ImU32 u_net = ImGui::ColorConvertFloat4ToU32(theme::kNet);
       const ImU32 u_accent = ImGui::ColorConvertFloat4ToU32(theme::kAccent);
       const ImU32 u_ink = ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent);
-      // Card frame: surface-2 fill, 1px border (line → line-strong on hover),
-      // panel radius. (proto.css .card :69-74)
+      // Card frame: surface-2 fill (the 1px border is stroked after the
+      // poster so the poster doesn't sit on it). (proto.css .card :69-74)
       const float rad = static_cast<float>(theme::kPanelRounding);
       dl->AddRectFilled(rmin, rmax, u_card, rad);
-      dl->AddRect(rmin, rmax, hovered ? u_edge : u_line, rad, 0, 1.0f);
-      // Poster: the 16:9 placeholder thumb (library.html .thumb). The v1
-      // card carries no centred glyph — the poster is the gradient/glow, and
-      // the hover play badge is the only affordance — so the thumb base takes
-      // the prototype's soft radial accent at the card's lower-left (the
-      // glyph token supplies the glow ink). The flat base is on purpose:
-      // ImGui's 4-corner gradient fill cannot round the top corners, and the
-      // card's rounded border would leave a square gradient sliver outside
-      // the corner curve.
+      // Poster: the prototype's 140deg diagonal gradient, #243047 -> #12161f
+      // (58%) -> #0c0e13 (library.html .card .poster), plus the two soft
+      // radial accents (cool 72%/62%, warm 20%/30% — .poster::after, clipped
+      // to the poster by the .poster overflow:hidden). ImGui's 4-corner
+      // bilinear fill reproduces the diagonal, with the corner values matched
+      // to the prototype PNG below (the HTML's bright-at-right direction is
+      // kept). The bilinear fill is square, so the card's r-md top corners are
+      // re-rounded: a window-bg mask square + a solid gradient circle restores
+      // each corner (the circle's inboard quarters blend into the surrounding
+      // gradient at 10px).
       const ImVec2 pmin(rmin.x + 1.0f, rmin.y + 1.0f);
       const ImVec2 pmax(rmax.x - 1.0f, rmin.y + poster_h);
-      dl->AddRectFilled(pmin, pmax, ImGui::ColorConvertFloat4ToU32(kThumbBg),
-                        rad, ImDrawFlags_RoundCornersTop);
-      const ImVec2 gc((pmin.x + pmax.x) * 0.5f, (pmin.y + pmax.y) * 0.5f);
-      const ImU32 u_glyph = ImGui::ColorConvertFloat4ToU32(kThumbGlyph);
-      const ImU32 u_glow =
-          IM_COL32((u_glyph & 0xFF), ((u_glyph >> 8) & 0xFF),
-                   ((u_glyph >> 16) & 0xFF), 22);
-      dl->AddCircleFilled(
-          ImVec2(pmin.x + poster_h * 0.35f, pmin.y + poster_h * 0.72f),
-          poster_h * 0.5f, u_glow, 48);
+      const float pw = pmax.x - pmin.x;
+      const float ph = poster_h;
+      // The prototype PNG's poster renders darker than its own HTML
+      // gradient (#243047 -> #0c0e13): the card titles in the same PNG
+      // are full-brightness (--t1), so the dim is poster-only — a
+      // capture artifact. The acceptance target is the PNG, so the base
+      // is matched to the PNG's measured corners (TL 13,15,18 / TR
+      // 19,24,33 / BR 19,22,27 / BL 14,16,19) with the HTML's gradient
+      // direction (bright at the right) and the radial accents kept.
+      const ImU32 u_gl0 = IM_COL32(13, 15, 18, 0xFF);  // PNG TL
+      const ImU32 u_gl1 = IM_COL32(19, 24, 33, 0xFF);  // PNG TR
+      const ImU32 u_gl2 = IM_COL32(19, 22, 27, 0xFF);  // PNG BR
+      const ImU32 u_gl3 = IM_COL32(14, 16, 19, 0xFF);  // PNG BL
+      dl->AddRectFilledMultiColor(pmin, pmax, u_gl0, u_gl1, u_gl3, u_gl2);
+      // The two radial accents, faked as concentric low-alpha circles (the CSS
+      // fades each to transparent at ~55-60% of its radius). Clipped to the
+      // poster so no glow bleeds into the gutter/meta.
+      dl->PushClipRect(pmin, pmax, true);
+      // Warm accent: rgba(255,107,53,.10) fading to transparent at 60% of a
+      // 70%x60% ellipse at 20% 30% (.poster::after). One soft low-alpha
+      // ellipse stands in for the falloff — the prototype's glow is subtle.
+      dl->AddEllipseFilled(ImVec2(pmin.x + pw * 0.20f, pmin.y + ph * 0.30f),
+                           ImVec2(pw * 0.42f, ph * 0.36f),
+                           IM_COL32(255, 107, 53, 9), 0.0f, 48);
+      // Cool accent: rgba(108,177,255,.15), 55%x50% at 72% 62%.
+      dl->AddEllipseFilled(ImVec2(pmin.x + pw * 0.72f, pmin.y + ph * 0.62f),
+                           ImVec2(pw * 0.33f, ph * 0.30f),
+                           IM_COL32(108, 177, 255, 13), 0.0f, 48);
+      dl->PopClipRect();
+      // Re-round the top corners over the square gradient.
+      const ImU32 u_page = ImGui::ColorConvertFloat4ToU32(theme::kPageBg);
+      dl->AddRectFilled(ImVec2(pmin.x, pmin.y),
+                        ImVec2(pmin.x + rad + 2.0f, pmin.y + rad + 2.0f),
+                        u_page);
+      dl->AddRectFilled(ImVec2(pmax.x - rad - 2.0f, pmin.y),
+                        ImVec2(pmax.x, pmin.y + rad + 2.0f), u_page);
+      dl->AddCircleFilled(ImVec2(pmin.x + rad, pmin.y + rad), rad, u_gl0, 16);
+      dl->AddCircleFilled(ImVec2(pmax.x - rad, pmin.y + rad), rad, u_gl1, 16);
+      // The 1px border over the poster (line -> line-strong on hover).
+      dl->AddRect(rmin, rmax, hovered ? u_edge : u_line, rad, 0, 1.0f);
       // Source-format pill, top-left (proto.css .card .poster .kind :76 —
-      // a .pill.net: net-soft ground, net ink). The format is the card's
-      // source chip.
+      // a .pill: --line border, --bg3 ground, --t2 ink; a network source
+      // takes the .pill.sky variant: net-soft ground, --sky ink).
       const std::string fmt = fileFormatLabel(e.path);
       if (!fmt.empty()) {
         const float pill_h = 18.0f;
         const ImVec2 tsize = ImGui::CalcTextSize(fmt.c_str());
         const ImVec2 ppmin(pmin.x + 8.0f, pmin.y + 8.0f);
         const ImVec2 ppmax(ppmin.x + tsize.x + 12.0f, ppmin.y + pill_h);
-        dl->AddRectFilled(ppmin, ppmax, IM_COL32((u_net & 0xFF),
-                                                 ((u_net >> 8) & 0xFF),
-                                                 ((u_net >> 16) & 0xFF), 31),
-                          pill_h * 0.5f);
+        const bool net = matchesSource(e, LibrarySource::Network);
+        const ImU32 u_bg3 = ImGui::ColorConvertFloat4ToU32(theme::kFieldBg);
+        const ImU32 u_t2 = ImGui::ColorConvertFloat4ToU32(theme::kText2);
+        const ImU32 u_line = ImGui::ColorConvertFloat4ToU32(theme::kCardLine);
+        const ImU32 u_net_rgb = u_net & 0x00FFFFFF;
+        const ImU32 p_bg = net ? (u_net_rgb | 0x1F000000) : u_bg3;
+        const ImU32 p_edge = net ? (u_net_rgb | 0x66000000) : u_line;
+        const ImU32 p_ink = net ? u_net : u_t2;
+        dl->AddRectFilled(ppmin, ppmax, p_bg, pill_h * 0.5f);
+        dl->AddRect(ppmin, ppmax, p_edge, pill_h * 0.5f, 0, 1.0f);
         dl->AddText(ImVec2(ppmin.x + 6.0f, ppmin.y + (pill_h - tsize.y) * 0.5f),
-                    u_net, fmt.c_str());
+                    p_ink, fmt.c_str());
       }
       // Remove affordance, top-right of the poster: a small x that reads as
       // part of the poster chrome (click zones are resolved below).
       dl->AddText(ImVec2(pmax.x - 18.0f, pmin.y + 6.0f), u_text3, "x");
       // Centre play badge on hover (proto.css .card .play-badge :86-92).
       if (hovered) {
-        const ImVec2 bc(gc.x, gc.y);
+        const ImVec2 bc((pmin.x + pmax.x) * 0.5f, (pmin.y + pmax.y) * 0.5f);
         dl->AddCircleFilled(bc, 20.0f, u_accent, 48);
         dl->AddTriangleFilled(ImVec2(bc.x - 4.0f, bc.y - 6.0f),
                               ImVec2(bc.x - 4.0f, bc.y + 6.0f),
