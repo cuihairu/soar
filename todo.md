@@ -157,7 +157,7 @@
 
 ### b) 超大文件候选（>1000 行）
 
-- [ ] LAY-001 [P1] 拆分 `src/app/ui/player_window.cpp`（5273 行）——主题令牌/字体/状态文件加载/HUD 状态机/各类浮层/SDL 循环耦合在一个翻译单元（`src/app/ui/player_window.cpp:336`、`src/app/ui/player_window.cpp:487`、`src/app/ui/player_window.cpp:727`、`src/app/ui/player_window.cpp:5099`）。
+- [x] LAY-001 [P1] 拆分 `src/app/ui/player_window.cpp`（5273 行）——主题令牌/字体/状态文件加载/HUD 状态机/各类浮层/SDL 循环耦合在一个翻译单元（`src/app/ui/player_window.cpp:336`、`src/app/ui/player_window.cpp:487`、`src/app/ui/player_window.cpp:727`、`src/app/ui/player_window.cpp:5099`）。（2026-11-10 完成：HUD 类拆为 `src/app/ui/player_hud.h` + `player_hud_{actions,settings,render,overlays,pages}.cpp` 五个按职责的翻译单元，`player_window.cpp` 只留核心状态机/SDL 事件循环（~520 行）；新 TU 全文件 `SOAR_WITH_IMGUI` 门控，IMGUI=OFF 裸树验证过；全量 15 套 ctest + X11 CLI 636 断言绿。）
 - [ ] LAY-002 [P1] 拆分 `src/core/ffmpeg_backend.cpp`（4234 行）——AVIO 缓存、解码循环、字幕、HDR、SDL 音频和平台分支共享同一实现文件（`src/core/ffmpeg_backend.cpp:2416`、`src/core/ffmpeg_backend.cpp:3005`、`src/core/ffmpeg_backend.cpp:3467`）。
 - [ ] LAY-003 [P1] 拆分 `src/core/subtitle_provider.cpp`（1174 行）——侧车扫描、HTTP 字幕客户端、翻译客户端和公共 HTTP/socket 代码同处一文件（`src/core/subtitle_provider.cpp:36`、`src/core/subtitle_provider.cpp:272`、`src/core/subtitle_provider.cpp:956`）。
 

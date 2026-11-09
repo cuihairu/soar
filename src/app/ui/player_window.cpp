@@ -25,6 +25,7 @@
 #include "ui_tokens.h"
 #include "ui_state.h"
 #include "uri_decode.h"
+#include "player_hud.h"
 
 #include <fmt/format.h>
 
@@ -162,43 +163,9 @@ static_assert(static_cast<int>(SDLK_KP_EQUALS) == static_cast<int>(kKeyNumEquals
 
 using milliseconds = std::chrono::milliseconds;
 
-milliseconds nowMs() {
-  return std::chrono::duration_cast<milliseconds>(
-      std::chrono::steady_clock::now().time_since_epoch());
-}
-
-const char* stateName(PlaybackState s) {
-  switch (s) {
-    case PlaybackState::Stopped: return "Stopped";
-    case PlaybackState::Paused: return "Paused";
-    case PlaybackState::Playing: return "Playing";
-    case PlaybackState::Ended: return "Ended";
-    case PlaybackState::Error: return "Error";
-  }
-  return "?";
-}
-
-const char* trackTypeName(TrackType t) {
-  switch (t) {
-    case TrackType::Video: return "video";
-    case TrackType::Audio: return "audio";
-    case TrackType::Subtitle: return "subtitle";
-  }
-  return "?";
-}
-
-// Which overlay page is open; at most one at a time (docs/ui-design.md §2).
-enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist, DirPick, Library,
-                     Cast, Settings };
-
-// The settings page's nav tabs (proto settings.html): General, Playback and
-// Subtitles form the first group, Network and About their own (the .grp
-// separators). Playback/About have no content in the v1 prototype, so they
-// render a minimal placeholder.
-enum class SettingsTab { General, Playback, Subtitles, Network, About };
-
-// Letterbox destination: the frame scaled to fit, centered (docs §4 — the
-// video area is always aspect-correct on the theme background).
+// nowMs/stateName/trackTypeName, the theme/pref helpers, the subtitle
+// font loading and PlayerHud moved to player_hud.h; its core members
+// (construction, event routing, frame driving) stay below.
 SDL_Rect letterboxRect(SDL_Renderer* renderer, SDL_Texture* texture) {
   int rw = 0;
   int rh = 0;
@@ -302,5920 +269,729 @@ bool presentVideoFrame(SDL_Renderer* renderer, SDL_Texture** texture,
   return false;
 #endif
 }
+}  // namespace
 
-// System font candidates, in order: Linux Noto/DejaVu, macOS, Windows.
-// Shared by the ImGui overlay fonts and the libass default font (both
-// compilations of this TU — with and without ImGui — reach the latter).
-std::vector<std::string> fontCandidates() {
-  return {
-      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-      "/System/Library/Fonts/PingFang.ttc",
-      "/System/Library/Fonts/Helvetica.ttc",
-      "C:\\Windows\\Fonts\\msyh.ttc",
-      "C:\\Windows\\Fonts\\segoeui.ttf",
+// PlayerHud core members. Out-of-class member definitions
+// must live in the class namespace, not the anonymous one.
+#ifdef SOAR_WITH_IMGUI
+
+PlayerHud::PlayerHud(soar::Player& player, const WindowUiConfig& cfg, SDL_Window* window,
+          SDL_Renderer* renderer)
+    : player_(player), cfg_(cfg), window_(window), renderer_(renderer),
+      recent_(cfg.recent_path),
+      current_uri_(cfg.initial_uri), source_label_(cfg.source_label),
+      torrent_(cfg.torrent), torrent_pending_(cfg.torrent != nullptr),
+      cast_location_(cfg.cast_location),
+      cast_transcode_(cfg.cast_transcode),
+      cast_iface_(cfg.cast_iface),
+      open_dialog_on_start_(cfg.open_dialog_on_start),
+      recent_dirs_(defaultRecentDirsPath(), 8),
+      library_(cfg.library),
+      subtitle_fonts_(loadSubtitleFonts()) {
+  // Every toast lands on the CLI event trail (main.cpp prints the
+  // player-side events; the UI side mirrors its own here) so the
+  // walkthrough tests assert OSD feedback from the teed stderr alone.
+  st_.toast.mirror = [](const std::string& text) {
+    fmt::print(stderr, "event: toast={}\n", text);
   };
+  // The MRU cap is a persisted setting, not a per-run constant: apply it
+  // before load() so an over-long recent.txt is truncated by the same cap
+  // the settings page shows (a saved 20 would otherwise reload as the 15
+  // default, silently dropping the extra rows the file still holds).
+  st_.recent_cap = loadRecentCap();
+  recent_.setMaxEntries(static_cast<std::size_t>(st_.recent_cap));
+  recent_.load();
+  recent_dirs_.load();
+  // Keyboard shortcuts (docs/ui-design.md §3.2): the config lives next
+  // to recent.txt/library.txt; --shortcuts= moves it, --no-shortcuts is
+  // the kill switch and wins over a `shortcuts = on` line in the file.
+  shortcuts_.load(cfg.shortcuts_path.empty() ? defaultShortcutsPath()
+                                             : cfg.shortcuts_path);
+  shortcuts_.setEnabled(cfg.shortcuts_enabled);
+  if (library_ != nullptr) library_->load();
+  if (cfg.torrent == nullptr) {
+    recordOpen(cfg.initial_uri);
+    // Playlist seeding (docs/mvp.md §2): the CLI-opened source plays
+    // first; further positionals queue behind it (mpv's multi-argument
+    // semantics).
+    if (!cfg.initial_uri.empty()) playlist_.add(cfg.initial_uri);
+    // Resume bookkeeping (docs/mvp.md §3): the source is already open and
+    // playing (main.cpp opened it before the window exists), so a saved
+    // position applies now — a few ms of from-zero playback precede the
+    // jump, the honest cost of the synchronous open contract.
+    applyResume(cfg.initial_uri, nowMs());
+  } else {
+    // Async P2P source (P4b-4): the magnet/.torrent URI is not openable
+    // by the player until the metadata lands — handlePendingTorrent
+    // records and queues the bridge URL instead. The raw URI never joins
+    // Recent or the playlist, so nothing unopenable lingers in either.
+    current_uri_.clear();
+  }
+  for (const std::string& uri : cfg.queued_uris) playlist_.add(uri);
+  // Remote subtitle download (docs/mvp.md §6): endpoint and key arrive
+  // from the environment — the core embeds no endpoint and no credential,
+  // and with nothing configured the provider never touches the network.
+  soar::HttpSubtitleConfig sub;
+  if (const char* ep = std::getenv("SOAR_SUBTITLE_ENDPOINT")) {
+    sub.endpoint = ep;
+  }
+  if (const char* key = std::getenv("SOAR_SUBTITLE_API_KEY")) {
+    sub.api_key = key;
+  }
+  if (const char* t = std::getenv("SOAR_SUBTITLE_TIMEOUT_MS")) {
+    const long ms = std::atol(t);
+    if (ms > 0) sub.timeout = std::chrono::milliseconds(ms);
+  }
+  subtitle_env_cfg_ = sub;
+  configureHttpSubtitles(st_.subtitle_autodl);
+  // Subtitle text translation (docs/mvp.md §6), same env-injection
+  // contract as the download provider above: no configured endpoint and
+  // model means the menu never offers a [translate] row and nothing ever
+  // dials out. The target language is also env-configured — the window
+  // has no language picker of its own (assumption: one language per
+  // installation is enough for the entry slice).
+  soar::SubtitleTranslateConfig tr_cfg;
+  if (const char* ep = std::getenv("SOAR_TRANSLATE_ENDPOINT")) {
+    tr_cfg.endpoint = ep;
+  }
+  if (const char* key = std::getenv("SOAR_TRANSLATE_API_KEY")) {
+    tr_cfg.api_key = key;
+  }
+  if (const char* m = std::getenv("SOAR_TRANSLATE_MODEL")) {
+    tr_cfg.model = m;
+  }
+  if (const char* t = std::getenv("SOAR_TRANSLATE_TIMEOUT_MS")) {
+    const long ms = std::atol(t);
+    if (ms > 0) tr_cfg.timeout = std::chrono::milliseconds(ms);
+  }
+  if (const char* l = std::getenv("SOAR_TRANSLATE_LANGUAGE")) {
+    if (*l != '\0') target_language_ = l;
+  }
+  translate_ready_ = !tr_cfg.endpoint.empty() && !tr_cfg.model.empty();
+  translator_.configure(std::move(tr_cfg));
+  // Library network scraping (docs/mvp.md §3), same env-injection
+  // contract as the two subtitle providers: endpoint and key arrive from
+  // the environment, the core embeds neither, and with nothing configured
+  // the library never touches the network. The window holds the scraper;
+  // the library holds a non-owning pointer to the adapter below.
+  soar::HttpMetadataConfig meta;
+  if (const char* ep = std::getenv("SOAR_META_ENDPOINT")) {
+    meta.endpoint = ep;
+  }
+  if (const char* key = std::getenv("SOAR_META_API_KEY")) {
+    meta.api_key = key;
+  }
+  if (const char* t = std::getenv("SOAR_META_TIMEOUT_MS")) {
+    const long ms = std::atol(t);
+    if (ms > 0) meta.timeout = std::chrono::milliseconds(ms);
+  }
+  metadata_.configure(std::move(meta));
+  meta_ready_ = metadata_.online();
+  if (library_ != nullptr) library_->setMetadataSource(&metadata_source_);
+#ifdef SOAR_WITH_FFMPEG
+  // Seek-hover thumbnail (docs/ui-design.md §1.6-5): the worker owns the
+  // reopen-per-call grab (grabVideoFrame), so the UI only queues hover
+  // positions and polls the LRU — a decode never runs on the UI thread.
+  // The grab runs on the worker thread; the backend contract guarantees
+  // it is safe alongside playback. Null backend → no preview, silently.
+  if (cfg_.ffmpeg != nullptr && renderer_ != nullptr) {
+    thumb_service_ = std::make_unique<ThumbnailService>(
+        [this](std::chrono::milliseconds pos, ThumbnailFrame& f) {
+          DecodedVideoFrame d;
+          if (!cfg_.ffmpeg->grabVideoFrame(pos, d)) return false;
+          f.width = d.width;
+          f.height = d.height;
+          f.stride_y = d.stride_y;
+          f.stride_u = d.stride_u;
+          f.stride_v = d.stride_v;
+          f.y = std::move(d.y);
+          f.u = std::move(d.u);
+          f.v = std::move(d.v);
+          return true;
+        });
+    // The initial source was recorded before the service existed (ctor
+    // order); tag it now so the first hover's frames belong to it.
+    thumb_source_ = current_uri_;
+  }
+#endif
 }
 
-bool fileExists(const std::string& path) {
-  if (FILE* f = std::fopen(path.c_str(), "rb")) {
-    std::fclose(f);
+PlayerHud::~PlayerHud() {
+  // The seek-thumb texture dies with the window (the service's worker is
+  // joined at member teardown; it may finish one in-flight grab first).
+  if (thumb_texture_ != nullptr) {
+    SDL_DestroyTexture(thumb_texture_);
+    thumb_texture_ = nullptr;
+  }
+  // The cast session dies first: its stop() restores the bridge to
+  // 127.0.0.1 and joins the poller, and the discovery thread (a bounded
+  // 3s window) must be joined before the members go away.
+  endCastSearch();
+  if (cast_active_) cast_active_->stop();
+  if (library_ == nullptr) return;
+  if (!current_uri_.empty() && !isTorrentBridge(current_uri_)) {
+    switch (player_.state()) {
+      case PlaybackState::Playing:
+      case PlaybackState::Paused:
+        library_->recordProgress(current_uri_, player_.position().count(),
+                                 player_.mediaInfo().duration.count());
+        break;
+      case PlaybackState::Ended:
+        library_->clearPosition(current_uri_);
+        break;
+      default:
+        break;  // Stopped/Error: nothing honest to write
+    }
+  }
+  library_->save();
+}
+
+void PlayerHud::drawFocusRing() {
+  const ImVec2 lo = ImGui::GetItemRectMin();
+  const ImVec2 hi = ImGui::GetItemRectMax();
+  ImGui::GetWindowDrawList()->AddRect(
+      ImVec2(lo.x - kFocusRingExpand, lo.y - kFocusRingExpand),
+      ImVec2(hi.x + kFocusRingExpand, hi.y + kFocusRingExpand),
+      ImGui::GetColorU32(theme::kAccent), 0.0f, 0, kFocusRingWidth);
+}
+
+bool PlayerHud::menuRowEnter() {
+  return ui_focus_.takesActivation(UiFocus::Face::MenuItems, menu_rows_);
+}
+
+void PlayerHud::menuRowRing() {
+  if (ui_focus_.holds(UiFocus::Face::MenuItems, menu_rows_)) drawFocusRing();
+  ++menu_rows_;
+}
+
+void PlayerHud::focusMenuKey(SDL_Keycode key, bool shift) {
+  if (menu_count_ <= 0) return;  // popup is drawing its first frame
+  if (key == SDLK_TAB) {
+    ui_focus_.advance(UiFocus::Face::MenuItems, shift ? -1 : 1, menu_count_);
+  } else if (key == SDLK_DOWN) {
+    ui_focus_.advance(UiFocus::Face::MenuItems, 1, menu_count_);
+  } else if (key == SDLK_UP) {
+    ui_focus_.advance(UiFocus::Face::MenuItems, -1, menu_count_);
+  } else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+    ui_focus_.armActivate();
+  }
+}
+
+bool PlayerHud::focusOverlayKey(SDL_Keycode key, bool shift) {
+  UiFocus::Face face = UiFocus::Face::None;
+  if (st_.overlay == Overlay::Playlist) face = UiFocus::Face::PlaylistRows;
+  else if (st_.overlay == Overlay::Library) face = UiFocus::Face::LibraryRows;
+  else return false;
+  if (key == SDLK_TAB) {
+    const int count =
+        face == UiFocus::Face::PlaylistRows ? playlist_rows_ : library_rows_;
+    ui_focus_.advance(face, shift ? -1 : 1, count);
+    // The caret (if any) leaves the search box: the ring is moving
+    // onto the rows, and they must be able to take the next key.
+    if (face == UiFocus::Face::LibraryRows) blur_text_next_ = true;
+    return ui_focus_.active();  // a zero-row face leaves the key alone
+  }
+  if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+    // While the filter box has the caret it also owns Enter (typing a
+    // needle must not fire a row); Tab above is the way out.
+    if (ImGui::GetIO().WantCaptureKeyboard) return false;
+    ui_focus_.armActivate();
     return true;
   }
   return false;
 }
 
-#ifdef SOAR_WITH_IMGUI
-
-// Theme tokens (prototypes/redesign/assets/proto.css — the v2 design
-// language the user reviews against). Single signal orange is the only
-// interactive accent; sky-blue is reserved for network/P2P semantics. Every
-// colour and radius the UI draws is named here — the draw code reads tokens,
-// never bare literals. Hex comments are the prototype token values.
-namespace theme {
-// Palette tokens. These are runtime-mutable so the light/dark toggle
-// (proto.css :root[data-theme]) can swap them; the draw code reads token
-// names, never literals, so switching is a single applyPalette() call.
-// Defaults below are the DARK palette; applyPalette(false) reloads them.
-ImVec4 kText{0.933f, 0.945f, 0.961f, 1.0f};             // #EEF1F5 text-1
-ImVec4 kTextDim{0.725f, 0.753f, 0.796f, 1.0f};          // #B9C0CB text-2
-ImVec4 kTextMuted{0.545f, 0.580f, 0.639f, 1.0f};        // #8B94A3 text-3
-// Single accent lock (proto.css --orange-500 + --ink-on-accent): the play /
-// interactive accent. Hover is --accent-hover; the ink on accent buttons is
-// the warm near-black, not the neutral one. Accent + its ink are identical in
-// both themes (the orange is the same orange on light and dark).
-ImVec4 kAccent{1.0f, 0.420f, 0.208f, 1.0f};             // #FF6B35 orange-500
-ImVec4 kAccentHover{1.0f, 0.490f, 0.302f, 1.0f};        // #FF7D4D accent-hover
-ImVec4 kInkOnAccent{0.110f, 0.051f, 0.016f, 1.0f};      // #1C0D04 ink-on-accent
-ImVec4 kDanger{1.0f, 0.361f, 0.400f, 1.0f};             // #FF5C66 red-500
-ImVec4 kOk{0.243f, 0.812f, 0.431f, 1.0f};               // #3ECF6E ok-500
-ImVec4 kWarn{1.0f, 0.698f, 0.141f, 1.0f};               // #FFB224 warn-500
-// Network / P2P semantic (proto.css --sky-net): the one place sky-blue stays.
-ImVec4 kNet{0.424f, 0.694f, 1.0f, 1.0f};                // #6CB1FF sky-net
-// The opaque page background behind the video (theme::kPanelBg is the
-// translucent OSC face over the video; this is the SDL clear colour, i.e.
-// surface-0). Dark #0A0B0E, light #EEF0F4.
-ImVec4 kWindowBg{0.039f, 0.043f, 0.055f, 1.0f};         // #0A0B0E surface-0
-ImVec4 kPanelBg{0.043f, 0.047f, 0.059f, 0.88f};         // #0A0B0E oscbg over video
-ImVec4 kPopupBg{0.10f, 0.11f, 0.15f, 0.98f};
-ImVec4 kBorder{1.0f, 1.0f, 1.0f, 0.10f};                // --oline rgba(255,255,255,.10)
-ImVec4 kFrameBg{1.0f, 1.0f, 1.0f, 0.10f};
-ImVec4 kFrameBgHovered{1.0f, 1.0f, 1.0f, 0.16f};
-ImVec4 kFrameBgActive{1.0f, 1.0f, 1.0f, 0.20f};
-ImVec4 kButton{1.0f, 1.0f, 1.0f, 0.10f};
-ImVec4 kButtonHovered{1.0f, 1.0f, 1.0f, 0.18f};
-ImVec4 kHeader{1.0f, 1.0f, 1.0f, 0.08f};
-ImVec4 kHeaderHovered{1.0f, 1.0f, 1.0f, 0.14f};
-// Card surfaces (proto.css --surface-2 card bg + --line-strong hover edge):
-// the library grid's tiles sit on surface-2 and light their border to
-// line-strong on hover. surface-2 is opaque (it fully covers the panel).
-ImVec4 kSurface2{0.086f, 0.098f, 0.125f, 1.0f};         // #161920 surface-2 (dark)
-ImVec4 kLineStrong{0.212f, 0.243f, 0.294f, 1.0f};       // #363E4B line-strong (dark)
-// The v1 prototype pages (docs/public/prototypes/*.html, proto.css :root) —
-// the single visual baseline for the settings/library/playlist/translate
-// pages and the main-window recheck. v1 palette differs from the redesign
-// v2 surface tokens above in the page/card/text tiers, so the page draws
-// use these; the OSC keeps the v2 tokens it was pixel-probed against.
-ImVec4 kPageBg{0.055f, 0.063f, 0.075f, 1.0f};           // #0E1013 v1 --bg1
-ImVec4 kNavBg{0.031f, 0.035f, 0.043f, 1.0f};            // #08090B v1 --bg0
-ImVec4 kCardBg{0.075f, 0.086f, 0.106f, 1.0f};           // #13161B v1 --bg2
-ImVec4 kCardLine{0.141f, 0.169f, 0.208f, 1.0f};         // #242B35 v1 --line
-ImVec4 kText2{0.635f, 0.671f, 0.722f, 1.0f};            // #A2ABB8 v1 --t2
-ImVec4 kText3{0.431f, 0.471f, 0.525f, 1.0f};            // #6E7886 v1 --t3
-ImVec4 kText4{0.302f, 0.333f, 0.376f, 1.0f};            // #4D5560 v1 --t4
-ImVec4 kAccentHi{1.0f, 0.522f, 0.329f, 1.0f};           // #FF8554 v1 --accent-hi
-// Field faces (v1 --bg3 / --bg4): the select boxes, stepper buttons, the
-// nav hover fill and the switch's off state all sit one tier above the
-// card ground.
-ImVec4 kFieldBg{0.102f, 0.118f, 0.145f, 1.0f};          // #1A1E25 v1 --bg3
-ImVec4 kFieldBgHi{0.133f, 0.153f, 0.184f, 1.0f};        // #22272F v1 --bg4
-
-// Which palette is loaded. false = dark (the default the app ships with).
-inline bool g_light = false;
-
-// Load one of the two proto.css palettes into the tokens above. Callers then
-// re-run applyTheme() (ImGui style) and refresh the SDL clear colour. Values
-// are the prototype's CSS custom properties for each [data-theme] block.
-inline void applyPalette(bool light) {
-  g_light = light;
-  if (!light) {
-    // :root (dark) — the palette the tokens above already default to.
-    kText = {0.933f, 0.945f, 0.961f, 1.0f};         // #EEF1F5 text-1
-    kTextDim = {0.725f, 0.753f, 0.796f, 1.0f};      // #B9C0CB text-2
-    kTextMuted = {0.545f, 0.580f, 0.639f, 1.0f};    // #8B94A3 text-3
-    kDanger = {1.0f, 0.361f, 0.400f, 1.0f};         // #FF5C66 red-500
-    kOk = {0.243f, 0.812f, 0.431f, 1.0f};           // #3ECF6E ok-500
-    kWarn = {1.0f, 0.698f, 0.141f, 1.0f};           // #FFB224 warn-500
-    kNet = {0.424f, 0.694f, 1.0f, 1.0f};            // #6CB1FF sky-net
-    kWindowBg = {0.043f, 0.047f, 0.059f, 1.0f};     // #0B0C0F surface-0
-    kPanelBg = {0.039f, 0.043f, 0.055f, 0.88f};     // #0A0B0E oscbg over video
-    kPopupBg = {0.10f, 0.11f, 0.15f, 0.98f};
-    kBorder = {1.0f, 1.0f, 1.0f, 0.10f};            // rgba(255,255,255,.10)
-    kFrameBg = {1.0f, 1.0f, 1.0f, 0.10f};
-    kFrameBgHovered = {1.0f, 1.0f, 1.0f, 0.16f};
-    kFrameBgActive = {1.0f, 1.0f, 1.0f, 0.20f};
-    kButton = {1.0f, 1.0f, 1.0f, 0.10f};
-    kButtonHovered = {1.0f, 1.0f, 1.0f, 0.18f};
-    kHeader = {1.0f, 1.0f, 1.0f, 0.08f};
-    kHeaderHovered = {1.0f, 1.0f, 1.0f, 0.14f};
-    kSurface2 = {0.086f, 0.098f, 0.125f, 1.0f};   // #161920 surface-2
-    kLineStrong = {0.212f, 0.243f, 0.294f, 1.0f}; // #363E4B line-strong
-    return;
-  }
-  // :root[data-theme="light"] — the light palette. Accent + ink-on-accent
-  // stay the same orange/near-black; the semantic inks switch to their
-  // "-ink" variants (readable on a light ground) and every surface flips to
-  // the light ladder (#eef0f4 / #f7f8fa / #ffffff) with dark-alpha controls.
-  kText = {0.090f, 0.102f, 0.122f, 1.0f};           // #171A1F text-1
-  kTextDim = {0.271f, 0.306f, 0.361f, 1.0f};        // #454E5C text-2
-  kTextMuted = {0.384f, 0.424f, 0.490f, 1.0f};      // #626C7D text-3
-  kDanger = {0.788f, 0.208f, 0.251f, 1.0f};         // --red-ink #C93540
-  kOk = {0.118f, 0.557f, 0.306f, 1.0f};             // --ok-ink #1E8E4E
-  kWarn = {0.604f, 0.404f, 0.0f, 1.0f};             // --warn-ink #9A6700
-  kNet = {0.169f, 0.424f, 0.690f, 1.0f};            // --sky-net-ink #2B6CB0
-  kWindowBg = {0.933f, 0.941f, 0.957f, 1.0f};       // #EEF0F4 surface-0
-  kPanelBg = {1.0f, 1.0f, 1.0f, 0.94f};             // #FFFFFF oscbg over video
-  kPopupBg = {1.0f, 1.0f, 1.0f, 0.98f};             // #FFFFFF surface-2
-  kBorder = {0.875f, 0.890f, 0.918f, 1.0f};         // --line #DFE3EA
-  kFrameBg = {0.906f, 0.918f, 0.941f, 1.0f};        // --surface-3 #E7EAF0
-  kFrameBgHovered = {0.831f, 0.855f, 0.898f, 1.0f}; // --line-strong #C3CAD5
-  kFrameBgActive = {0.765f, 0.792f, 0.847f, 1.0f};  // a shade darker
-  kButton = {0.906f, 0.918f, 0.941f, 1.0f};         // --surface-3 #E7EAF0
-  kButtonHovered = {0.831f, 0.855f, 0.898f, 1.0f};  // --line-strong #C3CAD5
-  kHeader = {0.906f, 0.918f, 0.941f, 1.0f};         // --surface-3 #E7EAF0
-  kHeaderHovered = {0.831f, 0.855f, 0.898f, 1.0f};  // --line-strong #C3CAD5
-  kSurface2 = {1.0f, 1.0f, 1.0f, 1.0f};             // --surface-2 #FFFFFF
-  kLineStrong = {0.765f, 0.792f, 0.835f, 1.0f};     // --line-strong #C3CAD5
-  // The v1 page tokens flip onto the same light ladder the v2 tokens use
-  // (#EEF0F4 / #F7F8FA / #FFFFFF); accents and accent-hi are theme-invariant.
-  kPageBg = {0.969f, 0.973f, 0.980f, 1.0f};         // #F7F8FA v1 --bg1 (light)
-  kNavBg = {0.933f, 0.941f, 0.957f, 1.0f};          // #EEF0F4 v1 --bg0 (light)
-  kCardBg = {1.0f, 1.0f, 1.0f, 1.0f};               // #FFFFFF v1 --bg2 (light)
-  kCardLine = {0.875f, 0.890f, 0.918f, 1.0f};       // #DFE3EA v1 --line (light)
-  kText2 = {0.271f, 0.306f, 0.361f, 1.0f};          // #454E5C v1 --t2 (light)
-  kText3 = {0.384f, 0.424f, 0.490f, 1.0f};          // #626C7D v1 --t3 (light)
-  kText4 = {0.596f, 0.631f, 0.686f, 1.0f};          // #98A1AF v1 --t4 (light)
-  kAccentHi = {1.0f, 0.522f, 0.329f, 1.0f};         // #FF8554 accent-hi (same)
-  kFieldBg = {0.906f, 0.918f, 0.941f, 1.0f};        // #E7EAF0 v1 --bg3 (light)
-  kFieldBgHi = {0.765f, 0.792f, 0.835f, 1.0f};      // #C3CAD5 v1 --bg4 (light)
-}
-// Radii live in ui_tokens.h (no ImGui dependency, so the suite can pin
-// them): the redesign v2 system is panel 10 / control 7 / badge pill.
-using soar::app::kPanelRounding;
-using soar::app::kControlRounding;
-using soar::app::kPillRounding;
-using soar::app::kUiFontSize;
-}  // namespace theme
-
-// Poster placeholder (proto.css .thumb / .ph-glyph :215-224). This is the
-// CONTENT layer, which stays deep in both themes — so it is a pair of fixed
-// literals, deliberately NOT theme tokens. #14171e ground, #3a4250 glyph.
-static const ImVec4 kThumbBg{0.078f, 0.090f, 0.118f, 1.0f};    // #14171e
-static const ImVec4 kThumbGlyph{0.227f, 0.259f, 0.314f, 1.0f}; // #3a4250
-
-void applyTheme() {
-  ImGuiStyle& st = ImGui::GetStyle();
-  ImGui::StyleColorsDark(&st);
-  st.WindowRounding = theme::kPanelRounding;
-  st.PopupRounding = theme::kPanelRounding;
-  st.FrameRounding = theme::kControlRounding;
-  st.GrabRounding = theme::kControlRounding;
-  st.WindowBorderSize = 1.0f;
-  st.WindowPadding = ImVec2(12, 8);
-  st.FramePadding = ImVec2(8, 6);
-  st.ItemSpacing = ImVec2(8, 6);
-
-  using theme::kAccent;
-  ImVec4* c = st.Colors;
-  c[ImGuiCol_Text] = theme::kText;
-  c[ImGuiCol_TextDisabled] = theme::kTextDim;
-  c[ImGuiCol_WindowBg] = theme::kPanelBg;
-  c[ImGuiCol_PopupBg] = theme::kPopupBg;
-  c[ImGuiCol_Border] = theme::kBorder;
-  c[ImGuiCol_FrameBg] = theme::kFrameBg;
-  c[ImGuiCol_FrameBgHovered] = theme::kFrameBgHovered;
-  c[ImGuiCol_FrameBgActive] = theme::kFrameBgActive;
-  c[ImGuiCol_TitleBg] = c[ImGuiCol_WindowBg];
-  c[ImGuiCol_TitleBgActive] = c[ImGuiCol_WindowBg];
-  c[ImGuiCol_Button] = theme::kButton;
-  c[ImGuiCol_ButtonHovered] = theme::kButtonHovered;
-  c[ImGuiCol_ButtonActive] = kAccent;
-  c[ImGuiCol_SliderGrab] = kAccent;
-  c[ImGuiCol_SliderGrabActive] = kAccent;
-  c[ImGuiCol_Header] = theme::kHeader;
-  c[ImGuiCol_HeaderHovered] = theme::kHeaderHovered;
-  c[ImGuiCol_HeaderActive] = kAccent;
-  c[ImGuiCol_CheckMark] = kAccent;
-  c[ImGuiCol_Separator] = theme::kBorder;
-  c[ImGuiCol_TextSelectedBg] = kAccent;
-}
-
-// <state>/soar/theme.txt — one line, "light" or "dark". Same XDG ladder the
-// recent/library/shortcut stores use; absent or unrecognised means dark (the
-// default the app ships with).
-std::string themePrefPath() {
-  const char* dir = nullptr;
-#ifdef _WIN32
-  dir = std::getenv("APPDATA");
-  if (dir && *dir) return std::string(dir) + "\\soar\\theme.txt";
-  return "soar-theme.txt";
-#else
-  dir = std::getenv("XDG_STATE_HOME");
-  if (dir && *dir) return std::string(dir) + "/soar/theme.txt";
-  const char* home = std::getenv("HOME");
-  if (home && *home) return std::string(home) + "/.local/state/soar/theme.txt";
-  return "soar-theme.txt";
-#endif
-}
-
-// Load the saved palette before the first applyTheme(). Called once at init.
-void loadThemePref() {
-  std::ifstream in(themePrefPath());
-  std::string word;
-  if (in >> word) theme::applyPalette(word == "light");
-}
-
-// Persist the current palette (called after a ToggleTheme).
-void saveThemePref() {
-  const std::string path = themePrefPath();
-  // Best-effort: mirror the parent dir the other stores create before write.
-  std::error_code ec;
-  std::filesystem::path p(path);
-  if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) return;
-  out << (theme::g_light ? "light" : "dark") << "\n";
-}
-
-// <state>/soar/settings.txt — the settings page's persisted rows beyond the
-// palette. Same XDG ladder as theme.txt. Absent or unparsable falls back to
-// the shipped defaults (recent cap 15, remember-last-media on, ESC-exits
-// fullscreen on), so an old install never loses history over a missing row.
-std::string settingsPrefPath() {
-  const char* dir = nullptr;
-#ifdef _WIN32
-  dir = std::getenv("APPDATA");
-  if (dir && *dir) return std::string(dir) + "\\soar\\settings.txt";
-  return "soar-settings.txt";
-#else
-  dir = std::getenv("XDG_STATE_HOME");
-  if (dir && *dir) return std::string(dir) + "/soar/settings.txt";
-  const char* home = std::getenv("HOME");
-  if (home && *home) return std::string(home) + "/.local/state/soar/settings.txt";
-  return "soar-settings.txt";
-#endif
-}
-
-// Reads one persisted "key=value" row. Missing file, unparsable value or a
-// key the caller did not ask for all report `fallback` — never a partial
-// value that would silently reset the setting to 0.
-int loadSettingsInt(const char* key, int fallback) {
-  std::ifstream in(settingsPrefPath());
-  if (!in) return fallback;
-  std::string line;
-  const std::string prefix = std::string(key) + "=";
-  while (std::getline(in, line)) {
-    if (line.rfind(prefix, 0) != 0) continue;
-    const char* v = line.c_str() + prefix.size();
-    char* end = nullptr;
-    const long n = std::strtol(v, &end, 10);
-    // No digits, or trailing garbage ("recent_cap=20abc"), is not a value
-    // the row holds: report the fallback instead of a partial read that
-    // would silently change the setting to a number the row never wrote.
-    if (end == v || *end != '\0') return fallback;
-    return static_cast<int>(n);
-  }
-  return fallback;
-}
-
-void saveSettingsInt(const char* key, int value) {
-  // Read-modify-write one key at a time: the settings page edits rows
-  // independently, and a stale overwrite of the other rows is worse than
-  // dropping the file. Rewrite the whole file only on a successful read.
-  std::map<std::string, std::string> rows;
-  {
-    std::ifstream in(settingsPrefPath());
-    std::string line;
-    while (std::getline(in, line)) {
-      const auto eq = line.find('=');
-      if (eq == std::string::npos) continue;
-      rows[line.substr(0, eq)] = line.substr(eq + 1);
-    }
-  }
-  rows[key] = std::to_string(value);
-  const std::string path = settingsPrefPath();
-  std::error_code ec;
-  std::filesystem::path p(path);
-  if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
-  // Atomic write (tmp + rename), the same convention as RecentStore::save
-  // and HttpCache's meta: a crash or power loss between the truncate and
-  // the final flush leaves the *old* file intact, never an empty or
-  // half-written settings.txt that would silently drop the persisted rows.
-  const std::string tmp = path + ".tmp";
-  {
-    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-    if (!out) return;
-    for (const auto& [k, v] : rows) out << k << "=" << v << "\n";
-    if (!out) return;
-  }
-#ifdef _WIN32
-  std::remove(path.c_str());  // rename() fails when the target exists
-#endif
-  std::rename(tmp.c_str(), path.c_str());
-}
-
-// The MRU cap the settings stepper edits (RecentStore::kMaxEntries default).
-// Persisted so the cap survives a restart. The stepper only admits [5, 50]
-// (settingsStepper's lo/hi), so a hand-edited or legacy row outside that
-// range is clamped to the nearest bound rather than becoming a live cap the
-// stepper cannot display.
-int loadRecentCap() {
-  const int n = loadSettingsInt("recent_cap", RecentStore::kMaxEntries);
-  constexpr int kMinCap = 5;
-  constexpr int kMaxCap = 50;
-  if (n < kMinCap) return kMinCap;
-  if (n > kMaxCap) return kMaxCap;
-  return n;
-}
-
-void saveRecentCap(int n) {
-  saveSettingsInt("recent_cap", n >= 1 ? n : RecentStore::kMaxEntries);
-}
-
-// Best-effort system UI font: the ImGui embedded font is ASCII-only bitmap,
-// which mangles non-ASCII titles. CI runners lack the CJK candidates — the
-// ASCII-everywhere labels keep that fallback path harmless. SOAR_UI_BITMAP_FONT
-// (set by the X11 drive test) pins the embedded font: identical glyph metrics
-// on every machine, so the OSC widget geometry the injector clicks is stable.
-// Also loads the same font at multiple sizes for subtitle rendering (v0.2).
-struct SubtitleFonts {
-  ImFont* size_16 = nullptr;
-  ImFont* size_20 = nullptr;
-  ImFont* size_24 = nullptr;
-  ImFont* size_28 = nullptr;
-  ImFont* size_32 = nullptr;
-  ImFont* size_36 = nullptr;
-  ImFont* size_48 = nullptr;
-};
-
-// Whether an embedded subtitle track's codec carries text the exporter can
-// demux out (decoder names, exactly as mediaInfo() spells them via
-// codecNameFromCodecId). Bitmap subtitles (pgssub/dvdsub/dvbsub) and exotic
-// codecs get no [translate] row — exportSubtitleText would only ever fail.
-static bool embeddedTextSubtitleCodec(const std::string& codec) {
-  static const char* const kTextCodecs[] = {"subrip", "srt",  "ass",
-                                            "ssa",    "movtext", "mov_text",
-                                            "webvtt", "text"};
-  for (const char* name : kTextCodecs) {
-    if (codec == name) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static SubtitleFonts loadSubtitleFonts() {
-  SubtitleFonts fonts;
-  ImGuiIO& io = ImGui::GetIO();
-  if (std::getenv("SOAR_UI_BITMAP_FONT") != nullptr) {
-    // Bitmap font mode: all sizes point to default
-    io.Fonts->AddFontDefault();
-    fonts.size_16 = fonts.size_20 = fonts.size_24 = fonts.size_28 =
-        fonts.size_32 = fonts.size_36 = fonts.size_48 = io.Fonts->Fonts[0];
-    return fonts;
-  }
-  for (const std::string& path : fontCandidates()) {
-    if (fileExists(path)) {
-      fonts.size_16 = io.Fonts->AddFontFromFileTTF(path.c_str(),
-                                                   theme::kUiFontSize);
-      fonts.size_20 = io.Fonts->AddFontFromFileTTF(path.c_str(), 20.0f);
-      fonts.size_24 = io.Fonts->AddFontFromFileTTF(path.c_str(), 24.0f);
-      fonts.size_28 = io.Fonts->AddFontFromFileTTF(path.c_str(), 28.0f);
-      fonts.size_32 = io.Fonts->AddFontFromFileTTF(path.c_str(), 32.0f);
-      fonts.size_36 = io.Fonts->AddFontFromFileTTF(path.c_str(), 36.0f);
-      fonts.size_48 = io.Fonts->AddFontFromFileTTF(path.c_str(), 48.0f);
-      if (fonts.size_24) return fonts;  // At least the default size loaded
-    }
-  }
-  // Fallback: all point to default
-  io.Fonts->AddFontDefault();
-  fonts.size_16 = fonts.size_20 = fonts.size_24 = fonts.size_28 =
-      fonts.size_32 = fonts.size_36 = fonts.size_48 = io.Fonts->Fonts[0];
-  return fonts;
-}
-
-// Best-effort system UI font: the ImGui embedded font is ASCII-only bitmap,
-// which mangles non-ASCII titles. CI runners lack the CJK candidates — the
-// ASCII-everywhere labels keep that fallback path harmless. SOAR_UI_BITMAP_FONT
-// (set by the X11 drive test) pins the embedded font: identical glyph metrics
-// on every machine, so the OSC widget geometry the injector clicks is stable.
-// Both paths clear the v2 font floor (ui_tokens.h): the UI loads
-// theme::kUiFontSize, and ImGui's embedded default is 13px — above
-// soar::app::kMinFontSize.
-void loadOverlayFont() {
-  ImGuiIO& io = ImGui::GetIO();
-  if (std::getenv("SOAR_UI_BITMAP_FONT") != nullptr) {
-    io.Fonts->AddFontDefault();
-    return;
-  }
-  for (const std::string& path : fontCandidates()) {
-    if (fileExists(path)) {
-      if (io.Fonts->AddFontFromFileTTF(path.c_str(), theme::kUiFontSize) !=
-          nullptr)
+void PlayerHud::handleEvent(const SDL_Event& e, bool* quit) {
+  const auto now = nowMs();
+  switch (e.type) {
+    case SDL_QUIT:
+      *quit = true;
+      return;
+    case SDL_KEYDOWN: {
+      if (e.key.repeat != 0) return;  // held key: no repeat actions in v0.1
+      // SDL reports uppercase letter syms under Shift/CapsLock and defines
+      // no SDLK_Q-style constants — normalize so one case label covers both.
+      SDL_Keycode key = e.key.keysym.sym;
+      if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
+      // An open combo popup owns the keyboard (arrows drive the app-drawn
+      // menu focus, docs §5.2); app shortcuts must not fire through it.
+      if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId |
+                                           ImGuiPopupFlags_AnyPopupLevel)) {
+        focusMenuKey(key, (e.key.keysym.mod & KMOD_SHIFT) != 0);
         return;
+      }
+      // Tab/Enter are bound to nothing in §3.2: they move and fire the
+      // app-drawn overlay focus (V7b, docs §5.2).
+      if (focusOverlayKey(key, (e.key.keysym.mod & KMOD_SHIFT) != 0)) return;
+      st_.hud.noteActivity(now);
+      // A focused text field owns the keyboard (the library search box):
+      // typing a "v" must not toggle subtitles. WantCaptureKeyboard is
+      // ImGui's own verdict for the frame, so the shortcut map simply
+      // stands aside; noteActivity above still counts the keypress as
+      // the user being present, so the OSC stays awake while typing.
+      // (Tab already slipped past via focusOverlayKey — it is how focus
+      // escapes the box onto the rows.)
+      if (ImGui::GetIO().WantCaptureKeyboard) return;
+      const ShortcutKey pressed{
+          static_cast<std::uint32_t>(key),
+          (e.key.keysym.mod & KMOD_SHIFT) != 0,
+          (e.key.keysym.mod & KMOD_CTRL) != 0,
+          (e.key.keysym.mod & KMOD_ALT) != 0};
+      // The rebindable map (docs/ui-design.md §3.2) decides which action
+      // a keydown fires; its defaults reproduce the switch that used to
+      // live here. Plain bindings ignore held modifiers (shift+q still
+      // quits); a flagged binding (shift+left, ctrl+o) outranks the
+      // plain one for the same key.
+      ShortcutAction action = ShortcutAction::None;
+      const int binding = shortcuts_.bindingFor(pressed, &action);
+      switch (action) {
+        case ShortcutAction::None:
+          return;
+        case ShortcutAction::Escape:
+          // Fullscreen → window first; otherwise quit (docs §3.2, which
+          // also keeps the CLI's Escape-exit contract the tests pin). The
+          // Settings panel's "ESC exits fullscreen" switch gates the
+          // leave-fullscreen half: off means Escape quits even in
+          // fullscreen (the switch is the only caller of that state).
+          if (st_.fullscreen && st_.esc_exits_fullscreen) {
+            setFullscreen(false);
+          } else {
+            *quit = true;
+          }
+          return;
+        case ShortcutAction::Quit:
+          *quit = true;
+          return;
+        case ShortcutAction::PlayPause:
+          togglePlayPause();
+          return;
+        case ShortcutAction::SeekBack5:
+          nudgeSeek(-5000, now);
+          return;
+        case ShortcutAction::SeekFwd5:
+          nudgeSeek(5000, now);
+          return;
+        case ShortcutAction::SeekBack1:
+          nudgeSeek(-1000, now);
+          return;
+        case ShortcutAction::SeekFwd1:
+          nudgeSeek(1000, now);
+          return;
+        case ShortcutAction::SeekBack60:
+          nudgeSeek(-60000, now);
+          return;
+        case ShortcutAction::SeekFwd60:
+          nudgeSeek(60000, now);
+          return;
+        case ShortcutAction::SeekStart:
+          seekTo(milliseconds(0), now);
+          return;
+        case ShortcutAction::PercentSeek:
+          // Jump in 10% steps: the Nth binding of the action goes to
+          // N*10% (the shipped 0-9 table gives the digit semantics; a
+          // rebound set maps ordinally; the cap bounds custom lists).
+          if (binding >= 0) {
+            percentSeek(std::min(binding * 10, 100), now);
+          }
+          return;
+        case ShortcutAction::VolumeUp:
+          nudgeVolume(+0.05, now);
+          return;
+        case ShortcutAction::VolumeDown:
+          nudgeVolume(-0.05, now);
+          return;
+        case ShortcutAction::Mute:
+          toggleMute(now);
+          return;
+        case ShortcutAction::RateDown:
+          nudgeRate(-1, now);
+          return;
+        case ShortcutAction::RateUp:
+          nudgeRate(+1, now);
+          return;
+        case ShortcutAction::Fullscreen:
+          setFullscreen(!st_.fullscreen);
+          return;
+        case ShortcutAction::LoopAB:
+          cycleLoopAB(now);
+          return;
+        case ShortcutAction::CycleAudio:
+          cycleTrack(TrackType::Audio, now);
+          return;
+        case ShortcutAction::CycleSubtitle:
+          cycleTrack(TrackType::Subtitle, now);
+          return;
+        // Subtitle keys (v0.2), back on since the X11 drive scripts
+        // pin every coordinate they used to disturb (subsdrive presses
+        // [ ] v with the overlay measured). `s` follows mpv and takes a
+        // screenshot instead of toggling visibility: V does that now.
+        case ShortcutAction::SubtitleOffsetBack:
+          nudgeSubtitleOffset(-500, now);
+          return;
+        case ShortcutAction::SubtitleOffsetFwd:
+          nudgeSubtitleOffset(+500, now);
+          return;
+        case ShortcutAction::SubtitleVisibility:
+          toggleSubtitleVisibility(now);
+          return;
+        case ShortcutAction::Screenshot:
+          takeScreenshot(now);
+          return;
+        case ShortcutAction::OpenFile:
+          // Open-a-file (BUGS.md #3): the Windows common dialog;
+          // elsewhere the attempt degrades to a toast saying what works.
+          openFilePicker();
+          return;
+        case ShortcutAction::OpenFolder:
+          // The open-a-folder entry (v0.2.1): the in-app picker with the
+          // recursive toggle and the recent-dirs list.
+          openDirPicker();
+          return;
+        case ShortcutAction::Playlist:
+          toggleOverlay(Overlay::Playlist);
+          return;
+        case ShortcutAction::Library:
+          openLibrary();  // media library (docs/mvp.md §3)
+          return;
+        case ShortcutAction::SearchLibrary:
+          // The search half of the browse split (docs/todo.md 原型对齐
+          // 批): open the overlay when needed, then put the caret in
+          // the box — the flag is consumed by the next frame's draw.
+          if (st_.overlay != Overlay::Library) openLibrary();
+          if (st_.overlay == Overlay::Library) {
+            st_.library_search_focus = true;
+          }
+          return;
+        case ShortcutAction::Cast:
+          openCast();  // DLNA cast overlay (docs/mvp.md §3)
+          return;
+        case ShortcutAction::QueueNext:
+          playlistStep(false, now);
+          return;
+        case ShortcutAction::QueuePrev:
+          playlistStep(true, now);
+          return;
+        case ShortcutAction::Info:
+          toggleOverlay(Overlay::Info);
+          return;
+        case ShortcutAction::Recent:
+          toggleOverlay(Overlay::Recent);
+          return;
+        case ShortcutAction::Help:
+          toggleOverlay(Overlay::Help);
+          return;
+        case ShortcutAction::ToggleTheme: {
+          // Light/dark palette (proto.css [data-theme]). Swap the palette
+          // tokens, re-apply the ImGui style, and refresh the SDL clear
+          // colour; the choice persists to <state>/soar/theme.txt.
+          theme::applyPalette(!theme::g_light);
+          applyTheme();
+          saveThemePref();
+          return;
+        }
+        case ShortcutAction::OpenSettings:
+          toggleOverlay(Overlay::Settings);  // the settings panel (proto)
+          return;
+      }
     }
+    case SDL_MOUSEMOTION:
+      // Pointer movement is user presence too (the prototype's idle
+      // wording is "no input", not "no keys or clicks"; mpv behaves the
+      // same): motion over or off the widgets alike wakes a hidden bar
+      // and restarts its idle window. Visibility itself is decided
+      // per-frame from the pins, so no filtering is wanted here.
+      st_.hud.noteActivity(now);
+      return;
+    case SDL_MOUSEBUTTONDOWN: {
+      if (e.button.button != SDL_BUTTON_LEFT) return;
+      // On a widget, or on the bar itself: docs §1.1 scopes the toggle to
+      // the video area, and a press that lands in the same frame as a
+      // warp onto the bar must not toggle it either (see mouseOverHud).
+      if (ImGui::GetIO().WantCaptureMouse ||
+          (st_.hud_alpha > 0.01f && mouseOverHud())) {
+        return;
+      }
+      // First-run window (BUGS.md #3): no source yet — a click is the
+      // open-file entry, not an OSC toggle (nothing is playing to
+      // toggle anything for).
+      if (firstRunEmpty()) {
+        openFilePicker();
+        return;
+      }
+      // Double click (<=500ms) toggles fullscreen; a single click toggles
+      // the OSC (IINA singleClickAction semantics, docs §1.1 — keeps the
+      // second click of the fullscreen gesture from toggling pause).
+      // Decide visibility BEFORE any noteActivity: activity resets the
+      // manual force, so checking after would never see a hidden bar.
+      if (now - st_.last_click < milliseconds(500)) {
+        setFullscreen(!st_.fullscreen);
+        st_.last_click = milliseconds(0);
+        return;
+      }
+      // Widget events were skipped above, so the pointer is not over the
+      // HUD and no seek drag is live; the remaining pins still count.
+      const bool shown = st_.hud.visible(
+          now, /*pointer_over_hud=*/false, /*seek_drag=*/false,
+          st_.overlay != Overlay::None,
+          player_.state() != PlaybackState::Playing);
+      if (shown) {
+        st_.hud.setForce(HudVisibility::Force::Hide);
+      } else {
+        // noteActivity clears the force and restarts the timer: the bar
+        // reappears for a fresh idle window.
+        st_.hud.noteActivity(now);
+      }
+      st_.last_click = now;
+      return;
+    }
+    case SDL_MOUSEWHEEL: {
+      if (ImGui::GetIO().WantCaptureMouse) return;
+      st_.hud.noteActivity(now);
+      // Vertical wheel: volume; horizontal wheel or Shift+wheel: seek
+      // (IINA scroll-action defaults, docs §1.1).
+      const bool seek_wheel = e.wheel.x != 0 || shiftHeld();
+      if (seek_wheel) {
+        const int dir =
+            e.wheel.x != 0 ? (e.wheel.x > 0 ? 1 : -1) : (e.wheel.y > 0 ? 1 : -1);
+        nudgeSeek(dir * 5000, now);
+      } else {
+        nudgeVolume(e.wheel.y > 0 ? +0.05 : -0.05, now);
+      }
+      return;
+    }
+    case SDL_DROPFILE: {
+      // Drag-and-drop open (docs §2): backends take plain paths as-is.
+      // Drop payloads come from the source's text/uri-list, so the same
+      // decode the CLI positional gets applies here too (a space in the
+      // name arrives percent-encoded).
+      std::string uri(e.drop.file ? e.drop.file : "");
+      if (e.drop.file) SDL_free(e.drop.file);
+      uri = soar::app::decodeSourceUri(uri);
+      if (!uri.empty()) openSource(uri);
+      return;
+    }
+    default:
+      return;
   }
-  io.Fonts->AddFontDefault();
 }
 
-// The library's MetadataSource (ui/library.h) over the core scraper: derives
-// the query the scraper wants from the media path, and folds the answer into
-// the library's scrape shape. It lives here, not in the core, because picking
-// a metadata service is an app choice - the library only sees the interface.
-class LibraryMetadataSource : public MetadataSource {
- public:
-  explicit LibraryMetadataSource(const soar::HttpMetadataScraper& scraper)
-      : scraper_(scraper) {}
-
-  bool scrape(const std::string& path, NfoInfo& out) const override {
-    const std::string query = scrapeQueryForPath(path);
-    if (query.empty()) return false;  // nothing to search on
-    soar::ScrapedMetadata answer;
-    if (!scraper_.scrape(query, &answer, nullptr)) return false;
-    out.title = std::move(answer.title);
-    out.plot = std::move(answer.plot);
-    return !out.title.empty() || !out.plot.empty();
+void PlayerHud::handlePendingTorrent(milliseconds now) {
+  if (!torrent_pending_) return;
+  switch (torrent_->phase()) {
+    case soar::p2p::TorrentPhase::Connecting:
+      return;
+    case soar::p2p::TorrentPhase::Serving: {
+      torrent_pending_ = false;
+      const std::string uri = torrent_->playbackUrl();
+      source_label_ = torrent_->fileName();
+      fmt::print(stderr, "torrent: {} ({} bytes) -> {}\n", source_label_,
+                 torrent_->fileSize(), uri);
+      if (player_.open(soar::MediaSource{uri, cfg_.cache_dir, cfg_.hwdec})) {
+        if (!source_label_.empty()) {
+          SDL_SetWindowTitle(window_, (cfg_.title + " - " + source_label_).c_str());
+        }
+        recordOpen(uri);
+        playlist_.add(uri);
+        playlist_.setCurrent(playlist_.size() - 1);
+        st_.loop_a_set = false;
+        st_.toast.show("Opened " + displayName(uri), now);
+        player_.play();
+      } else {
+        st_.toast.show("Open failed: " + player_.lastError(), now);
+      }
+      break;
+    }
+    case soar::p2p::TorrentPhase::Failed: {
+      torrent_pending_ = false;
+      std::string err = torrent_->lastError();
+      const size_t nl = err.find('\n');
+      if (nl != std::string::npos) err.resize(nl);
+      fmt::print(stderr, "{}\n", torrent_->lastError());
+      st_.toast.show("Open failed: " + err, now);
+      break;
+    }
+    case soar::p2p::TorrentPhase::Idle:
+      break;  // not started (or already stopped): nothing pending anymore
   }
+}
 
- private:
-  const soar::HttpMetadataScraper& scraper_;
-};
-
-// The player HUD: OSC, overlays, toast, and app-level input routing. Every
-// action goes through the Player facade — no backend knowledge (docs §5.2).
-class PlayerHud {
- public:
-  PlayerHud(soar::Player& player, const WindowUiConfig& cfg, SDL_Window* window,
-            SDL_Renderer* renderer)
-      : player_(player), cfg_(cfg), window_(window), renderer_(renderer),
-        recent_(cfg.recent_path),
-        current_uri_(cfg.initial_uri), source_label_(cfg.source_label),
-        torrent_(cfg.torrent), torrent_pending_(cfg.torrent != nullptr),
-        cast_location_(cfg.cast_location),
-        cast_transcode_(cfg.cast_transcode),
-        cast_iface_(cfg.cast_iface),
-        open_dialog_on_start_(cfg.open_dialog_on_start),
-        recent_dirs_(defaultRecentDirsPath(), 8),
-        library_(cfg.library),
-        subtitle_fonts_(loadSubtitleFonts()) {
-    // Every toast lands on the CLI event trail (main.cpp prints the
-    // player-side events; the UI side mirrors its own here) so the
-    // walkthrough tests assert OSD feedback from the teed stderr alone.
-    st_.toast.mirror = [](const std::string& text) {
-      fmt::print(stderr, "event: toast={}\n", text);
-    };
-    // The MRU cap is a persisted setting, not a per-run constant: apply it
-    // before load() so an over-long recent.txt is truncated by the same cap
-    // the settings page shows (a saved 20 would otherwise reload as the 15
-    // default, silently dropping the extra rows the file still holds).
-    st_.recent_cap = loadRecentCap();
-    recent_.setMaxEntries(static_cast<std::size_t>(st_.recent_cap));
-    recent_.load();
-    recent_dirs_.load();
-    // Keyboard shortcuts (docs/ui-design.md §3.2): the config lives next
-    // to recent.txt/library.txt; --shortcuts= moves it, --no-shortcuts is
-    // the kill switch and wins over a `shortcuts = on` line in the file.
-    shortcuts_.load(cfg.shortcuts_path.empty() ? defaultShortcutsPath()
-                                               : cfg.shortcuts_path);
-    shortcuts_.setEnabled(cfg.shortcuts_enabled);
-    if (library_ != nullptr) library_->load();
-    if (cfg.torrent == nullptr) {
-      recordOpen(cfg.initial_uri);
-      // Playlist seeding (docs/mvp.md §2): the CLI-opened source plays
-      // first; further positionals queue behind it (mpv's multi-argument
-      // semantics).
-      if (!cfg.initial_uri.empty()) playlist_.add(cfg.initial_uri);
-      // Resume bookkeeping (docs/mvp.md §3): the source is already open and
-      // playing (main.cpp opened it before the window exists), so a saved
-      // position applies now — a few ms of from-zero playback precede the
-      // jump, the honest cost of the synchronous open contract.
-      applyResume(cfg.initial_uri, nowMs());
-    } else {
-      // Async P2P source (P4b-4): the magnet/.torrent URI is not openable
-      // by the player until the metadata lands — handlePendingTorrent
-      // records and queues the bridge URL instead. The raw URI never joins
-      // Recent or the playlist, so nothing unopenable lingers in either.
-      current_uri_.clear();
-    }
-    for (const std::string& uri : cfg.queued_uris) playlist_.add(uri);
-    // Remote subtitle download (docs/mvp.md §6): endpoint and key arrive
-    // from the environment — the core embeds no endpoint and no credential,
-    // and with nothing configured the provider never touches the network.
-    soar::HttpSubtitleConfig sub;
-    if (const char* ep = std::getenv("SOAR_SUBTITLE_ENDPOINT")) {
-      sub.endpoint = ep;
-    }
-    if (const char* key = std::getenv("SOAR_SUBTITLE_API_KEY")) {
-      sub.api_key = key;
-    }
-    if (const char* t = std::getenv("SOAR_SUBTITLE_TIMEOUT_MS")) {
-      const long ms = std::atol(t);
-      if (ms > 0) sub.timeout = std::chrono::milliseconds(ms);
-    }
-    subtitle_env_cfg_ = sub;
-    configureHttpSubtitles(st_.subtitle_autodl);
-    // Subtitle text translation (docs/mvp.md §6), same env-injection
-    // contract as the download provider above: no configured endpoint and
-    // model means the menu never offers a [translate] row and nothing ever
-    // dials out. The target language is also env-configured — the window
-    // has no language picker of its own (assumption: one language per
-    // installation is enough for the entry slice).
-    soar::SubtitleTranslateConfig tr_cfg;
-    if (const char* ep = std::getenv("SOAR_TRANSLATE_ENDPOINT")) {
-      tr_cfg.endpoint = ep;
-    }
-    if (const char* key = std::getenv("SOAR_TRANSLATE_API_KEY")) {
-      tr_cfg.api_key = key;
-    }
-    if (const char* m = std::getenv("SOAR_TRANSLATE_MODEL")) {
-      tr_cfg.model = m;
-    }
-    if (const char* t = std::getenv("SOAR_TRANSLATE_TIMEOUT_MS")) {
-      const long ms = std::atol(t);
-      if (ms > 0) tr_cfg.timeout = std::chrono::milliseconds(ms);
-    }
-    if (const char* l = std::getenv("SOAR_TRANSLATE_LANGUAGE")) {
-      if (*l != '\0') target_language_ = l;
-    }
-    translate_ready_ = !tr_cfg.endpoint.empty() && !tr_cfg.model.empty();
-    translator_.configure(std::move(tr_cfg));
-    // Library network scraping (docs/mvp.md §3), same env-injection
-    // contract as the two subtitle providers: endpoint and key arrive from
-    // the environment, the core embeds neither, and with nothing configured
-    // the library never touches the network. The window holds the scraper;
-    // the library holds a non-owning pointer to the adapter below.
-    soar::HttpMetadataConfig meta;
-    if (const char* ep = std::getenv("SOAR_META_ENDPOINT")) {
-      meta.endpoint = ep;
-    }
-    if (const char* key = std::getenv("SOAR_META_API_KEY")) {
-      meta.api_key = key;
-    }
-    if (const char* t = std::getenv("SOAR_META_TIMEOUT_MS")) {
-      const long ms = std::atol(t);
-      if (ms > 0) meta.timeout = std::chrono::milliseconds(ms);
-    }
-    metadata_.configure(std::move(meta));
-    meta_ready_ = metadata_.online();
-    if (library_ != nullptr) library_->setMetadataSource(&metadata_source_);
-#ifdef SOAR_WITH_FFMPEG
-    // Seek-hover thumbnail (docs/ui-design.md §1.6-5): the worker owns the
-    // reopen-per-call grab (grabVideoFrame), so the UI only queues hover
-    // positions and polls the LRU — a decode never runs on the UI thread.
-    // The grab runs on the worker thread; the backend contract guarantees
-    // it is safe alongside playback. Null backend → no preview, silently.
-    if (cfg_.ffmpeg != nullptr && renderer_ != nullptr) {
-      thumb_service_ = std::make_unique<ThumbnailService>(
-          [this](std::chrono::milliseconds pos, ThumbnailFrame& f) {
-            DecodedVideoFrame d;
-            if (!cfg_.ffmpeg->grabVideoFrame(pos, d)) return false;
-            f.width = d.width;
-            f.height = d.height;
-            f.stride_y = d.stride_y;
-            f.stride_u = d.stride_u;
-            f.stride_v = d.stride_v;
-            f.y = std::move(d.y);
-            f.u = std::move(d.u);
-            f.v = std::move(d.v);
-            return true;
-          });
-      // The initial source was recorded before the service existed (ctor
-      // order); tag it now so the first hover's frames belong to it.
-      thumb_source_ = current_uri_;
-    }
-#endif
+void PlayerHud::drawUi(milliseconds now, bool video_active) {
+  handlePendingTorrent(now);
+  handleCastTick(now);
+  // The one-shot --open-dialog request: cleared before the call so a
+  // modal stay inside the picker cannot re-summon it on the next frame.
+  if (open_dialog_on_start_) {
+    open_dialog_on_start_ = false;
+    openFilePicker();
   }
+  const ImGuiIO& io = ImGui::GetIO();
+  // A minimized window reports a zero-sized drawable, and every OSC
+  // dimension below is derived from it (bar_w would go negative). Skip
+  // the frame's draws instead of handing ImGui a degenerate geometry.
+  if (io.DisplaySize.x < 1.0f || io.DisplaySize.y < 1.0f) return;
+  // Pin while "not playing" covers Paused/Stopped/Ended/Error: the user
+  // is between content and about to act (vidstack behavior, docs §3.1).
+  const bool paused = player_.state() != PlaybackState::Playing;
+  const bool hud_shown = st_.hud.visible(now, /*pointer_over_hud=*/io.WantCaptureMouse,
+                                         st_.seek_dragging,
+                                         st_.overlay != Overlay::None, paused);
+  // Trail edge for the walkthrough tests: the bar's logical visibility
+  // flip (the 0.16s alpha ramp rides along; the edge is the assertion
+  // surface, not the fade).
+  if (hud_shown != st_.hud_was_shown) {
+    st_.hud_was_shown = hud_shown;
+    fmt::print(stderr, "event: osc={}\n", hud_shown ? "shown" : "hidden");
+  }
+  maybeRecordProgress(now);
+  maybeAdvancePlaylist(now);
+  // "Auto-show first subtitle" (settings Subtitles tab): the first frame
+  // a track becomes selected turns visibility on — no V press needed.
+  // The -1 -> >=0 edge keeps it one-shot per selection; the detector
+  // never selects anything itself (a fresh open still starts with no
+  // track selected — the frozen core contract the walkthrough pins).
+  if (st_.subtitle_autoshow) {
+    const int sel = player_.mediaInfo().selected_subtitle;
+    if (st_.prev_selected_subtitle < 0 && sel >= 0 && !st_.subtitle_visible) {
+      st_.subtitle_visible = true;
+      if (cfg_.subtitle_visible) {
+        cfg_.subtitle_visible->store(true, std::memory_order_relaxed);
+      }
+      st_.toast.show("Subtitles on", now);
+    }
+    st_.prev_selected_subtitle = sel;
+  }
+  const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
+  const float target = hud_shown ? 1.0f : 0.0f;
+  st_.hud_alpha += (target - st_.hud_alpha) * std::min(1.0f, dt / 0.160f);
+  st_.hud_alpha = std::clamp(st_.hud_alpha, 0.0f, 1.0f);
 
-  // Watched-to-end bookkeeping: the final record before the window goes
-  // away. The player is still open here (runPlayerWindow stops it after
-  // the HUD block ends), so position()/state() are live.
-  ~PlayerHud() {
-    // The seek-thumb texture dies with the window (the service's worker is
-    // joined at member teardown; it may finish one in-flight grab first).
+  if (!video_active) drawPoster();
+  drawPauseOverlay();
+  // The full-page Settings overlay replaces the HUD (the v1 settings page
+  // is standalone; the top bar / chips / OSC would otherwise keep drawing
+  // over it). The overlay is drawn after, so nothing of the page is hidden.
+  if (st_.overlay != Overlay::Settings) {
+    drawTopBar();
+    if (st_.hud_alpha > 0.01f) drawHud(now);
+    drawChips(now);
+  }
+  drawSubtitles(now);
+  drawToast(now);
+  drawOverlays();
+}
+
+void PlayerHud::recordOpen(const std::string& uri) {
+  if (uri.empty()) return;
+  current_uri_ = uri;
+  // The seek-hover thumbnail cache is keyed by position only, so a new
+  // source makes every cached frame meaningless (docs §1.6-5). Drop the
+  // cache and the uploaded texture so a stale frame can never flash over
+  // the new file.
+  if (thumb_service_ != nullptr && uri != thumb_source_) {
+    thumb_source_ = uri;
+    thumb_service_->clear();
+    thumb_requested_ = milliseconds(-1);
+    thumb_shown_ = milliseconds(-1);
+    thumb_tex_w_ = thumb_tex_h_ = 0;
     if (thumb_texture_ != nullptr) {
       SDL_DestroyTexture(thumb_texture_);
       thumb_texture_ = nullptr;
     }
-    // The cast session dies first: its stop() restores the bridge to
-    // 127.0.0.1 and joins the poller, and the discovery thread (a bounded
-    // 3s window) must be joined before the members go away.
-    endCastSearch();
-    if (cast_active_) cast_active_->stop();
-    if (library_ == nullptr) return;
-    if (!current_uri_.empty() && !isTorrentBridge(current_uri_)) {
-      switch (player_.state()) {
-        case PlaybackState::Playing:
-        case PlaybackState::Paused:
-          library_->recordProgress(current_uri_, player_.position().count(),
-                                   player_.mediaInfo().duration.count());
-          break;
-        case PlaybackState::Ended:
-          library_->clearPosition(current_uri_);
-          break;
-        default:
-          break;  // Stopped/Error: nothing honest to write
-      }
-    }
+  }
+  library_end_cleared_ = false;  // the new source starts a fresh resume book
+  if (recent_.add(uri)) recent_.save();
+  if (library_ != nullptr && !isTorrentBridge(uri)) {
+    // Torrent bridge URLs change port every session (P4b-4): recording
+    // one would plant a history row that can never replay. They keep
+    // their Recent entry — that contract predates the library.
+    library_->recordOpen(uri, std::time(nullptr));
     library_->save();
   }
+}
 
-  // ---- App-drawn keyboard focus (V7b, docs/ui-design.md §5.2「焦点可见」).
-  // ImGui nav stays off — §3.2's rebindable shortcut map keeps every key —
-  // so the ring is plain state moved by keys nobody else owns: Tab
-  // (+Shift backward) on the playlist/library overlays (unbound in §3.2)
-  // and arrows inside a popup menu, where the map already stands aside
-  // (handleEvent returns above while a popup is open). Enter replays the
-  // focused row through its own click path on the next draw. Row counts
-  // are re-published every frame by the drawing side, so focus can never
-  // point past a list that shrank between frames (clamp in drawOverlays).
-  UiFocus ui_focus_;
-  int playlist_rows_ = 0;        // queue rows the last playlist draw saw
-  int library_rows_ = 0;         // source rows the last library draw saw
-  int menu_rows_ = 0;            // rows drawn so far in the open popup
-  int menu_count_ = 0;           // rows the open popup had last frame
-  bool blur_text_next_ = false;  // Tab left the library search box's caret
+bool PlayerHud::applyResume(const std::string& uri, milliseconds now) {
+  if (!cfg_.resume_playback || library_ == nullptr) return false;
+  // The Settings panel's "Remember last media" switch gates the jump: off
+  // means the session opens at the top regardless of a saved position.
+  if (!st_.remember_last_media) return false;
+  const LibraryEntry* entry = library_->find(uri);
+  if (entry == nullptr) return false;
+  const std::int64_t pos = resumePositionMs(*entry);
+  if (pos <= 0) return false;
+  // An unseekable source refuses the jump and stays at zero — the
+  // policy function only knows the recorded numbers, the backend has
+  // the final say (the same asymmetry as the seek bar).
+  if (!player_.seek(std::chrono::milliseconds(pos))) return false;
+  st_.toast.show("Resumed at " +
+                     formatClock(std::chrono::milliseconds(pos)),
+                 now);
+  return true;
+}
 
-  // The ring: 2px accent drawn 4px outside the focused row (the
-  // prototype's :focus-visible; geometry pinned in ui_tokens.h). Call
-  // right after the row's widget so GetItemRect* still reads that row.
-  void drawFocusRing() {
-    const ImVec2 lo = ImGui::GetItemRectMin();
-    const ImVec2 hi = ImGui::GetItemRectMax();
-    ImGui::GetWindowDrawList()->AddRect(
-        ImVec2(lo.x - kFocusRingExpand, lo.y - kFocusRingExpand),
-        ImVec2(hi.x + kFocusRingExpand, hi.y + kFocusRingExpand),
-        ImGui::GetColorU32(theme::kAccent), 0.0f, 0, kFocusRingWidth);
-  }
+bool PlayerHud::isTorrentBridge(const std::string& uri) const {
+  return torrent_ != nullptr && uri == torrent_->playbackUrl();
+}
 
-  // Per-row protocol for the popup menus: read before the widget (did
-  // Enter pick this row?), ring+count after it. One pair per focusable
-  // row site keeps the index order identical to the visual order.
-  bool menuRowEnter() {
-    return ui_focus_.takesActivation(UiFocus::Face::MenuItems, menu_rows_);
-  }
-  void menuRowRing() {
-    if (ui_focus_.holds(UiFocus::Face::MenuItems, menu_rows_)) drawFocusRing();
-    ++menu_rows_;
-  }
-
-  // Arrows/Tab/Enter inside an open combo popup. handleEvent stands aside
-  // there, so these keys are nobody else's — the arrows are not dual-role
-  // (outside a popup they keep their §3.2 seek/volume meaning).
-  void focusMenuKey(SDL_Keycode key, bool shift) {
-    if (menu_count_ <= 0) return;  // popup is drawing its first frame
-    if (key == SDLK_TAB) {
-      ui_focus_.advance(UiFocus::Face::MenuItems, shift ? -1 : 1, menu_count_);
-    } else if (key == SDLK_DOWN) {
-      ui_focus_.advance(UiFocus::Face::MenuItems, 1, menu_count_);
-    } else if (key == SDLK_UP) {
-      ui_focus_.advance(UiFocus::Face::MenuItems, -1, menu_count_);
-    } else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
-      ui_focus_.armActivate();
-    }
-  }
-
-  // Tab/Enter on the playlist/library overlays. Returns true when the key
-  // was consumed.
-  bool focusOverlayKey(SDL_Keycode key, bool shift) {
-    UiFocus::Face face = UiFocus::Face::None;
-    if (st_.overlay == Overlay::Playlist) face = UiFocus::Face::PlaylistRows;
-    else if (st_.overlay == Overlay::Library) face = UiFocus::Face::LibraryRows;
-    else return false;
-    if (key == SDLK_TAB) {
-      const int count =
-          face == UiFocus::Face::PlaylistRows ? playlist_rows_ : library_rows_;
-      ui_focus_.advance(face, shift ? -1 : 1, count);
-      // The caret (if any) leaves the search box: the ring is moving
-      // onto the rows, and they must be able to take the next key.
-      if (face == UiFocus::Face::LibraryRows) blur_text_next_ = true;
-      return ui_focus_.active();  // a zero-row face leaves the key alone
-    }
-    if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
-      // While the filter box has the caret it also owns Enter (typing a
-      // needle must not fire a row); Tab above is the way out.
-      if (ImGui::GetIO().WantCaptureKeyboard) return false;
-      ui_focus_.armActivate();
-      return true;
-    }
-    return false;
-  }
-
-  // App-level input (docs §3). `quit` is set on the exit paths. The UI's
-  // widgets have already seen the event (ImGui_ImplSDL2_ProcessEvent runs
-  // first in the caller); events the UI claims are skipped here.
-  void handleEvent(const SDL_Event& e, bool* quit) {
-    const auto now = nowMs();
-    switch (e.type) {
-      case SDL_QUIT:
-        *quit = true;
-        return;
-      case SDL_KEYDOWN: {
-        if (e.key.repeat != 0) return;  // held key: no repeat actions in v0.1
-        // SDL reports uppercase letter syms under Shift/CapsLock and defines
-        // no SDLK_Q-style constants — normalize so one case label covers both.
-        SDL_Keycode key = e.key.keysym.sym;
-        if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
-        // An open combo popup owns the keyboard (arrows drive the app-drawn
-        // menu focus, docs §5.2); app shortcuts must not fire through it.
-        if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId |
-                                             ImGuiPopupFlags_AnyPopupLevel)) {
-          focusMenuKey(key, (e.key.keysym.mod & KMOD_SHIFT) != 0);
-          return;
-        }
-        // Tab/Enter are bound to nothing in §3.2: they move and fire the
-        // app-drawn overlay focus (V7b, docs §5.2).
-        if (focusOverlayKey(key, (e.key.keysym.mod & KMOD_SHIFT) != 0)) return;
-        st_.hud.noteActivity(now);
-        // A focused text field owns the keyboard (the library search box):
-        // typing a "v" must not toggle subtitles. WantCaptureKeyboard is
-        // ImGui's own verdict for the frame, so the shortcut map simply
-        // stands aside; noteActivity above still counts the keypress as
-        // the user being present, so the OSC stays awake while typing.
-        // (Tab already slipped past via focusOverlayKey — it is how focus
-        // escapes the box onto the rows.)
-        if (ImGui::GetIO().WantCaptureKeyboard) return;
-        const ShortcutKey pressed{
-            static_cast<std::uint32_t>(key),
-            (e.key.keysym.mod & KMOD_SHIFT) != 0,
-            (e.key.keysym.mod & KMOD_CTRL) != 0,
-            (e.key.keysym.mod & KMOD_ALT) != 0};
-        // The rebindable map (docs/ui-design.md §3.2) decides which action
-        // a keydown fires; its defaults reproduce the switch that used to
-        // live here. Plain bindings ignore held modifiers (shift+q still
-        // quits); a flagged binding (shift+left, ctrl+o) outranks the
-        // plain one for the same key.
-        ShortcutAction action = ShortcutAction::None;
-        const int binding = shortcuts_.bindingFor(pressed, &action);
-        switch (action) {
-          case ShortcutAction::None:
-            return;
-          case ShortcutAction::Escape:
-            // Fullscreen → window first; otherwise quit (docs §3.2, which
-            // also keeps the CLI's Escape-exit contract the tests pin). The
-            // Settings panel's "ESC exits fullscreen" switch gates the
-            // leave-fullscreen half: off means Escape quits even in
-            // fullscreen (the switch is the only caller of that state).
-            if (st_.fullscreen && st_.esc_exits_fullscreen) {
-              setFullscreen(false);
-            } else {
-              *quit = true;
-            }
-            return;
-          case ShortcutAction::Quit:
-            *quit = true;
-            return;
-          case ShortcutAction::PlayPause:
-            togglePlayPause();
-            return;
-          case ShortcutAction::SeekBack5:
-            nudgeSeek(-5000, now);
-            return;
-          case ShortcutAction::SeekFwd5:
-            nudgeSeek(5000, now);
-            return;
-          case ShortcutAction::SeekBack1:
-            nudgeSeek(-1000, now);
-            return;
-          case ShortcutAction::SeekFwd1:
-            nudgeSeek(1000, now);
-            return;
-          case ShortcutAction::SeekBack60:
-            nudgeSeek(-60000, now);
-            return;
-          case ShortcutAction::SeekFwd60:
-            nudgeSeek(60000, now);
-            return;
-          case ShortcutAction::SeekStart:
-            seekTo(milliseconds(0), now);
-            return;
-          case ShortcutAction::PercentSeek:
-            // Jump in 10% steps: the Nth binding of the action goes to
-            // N*10% (the shipped 0-9 table gives the digit semantics; a
-            // rebound set maps ordinally; the cap bounds custom lists).
-            if (binding >= 0) {
-              percentSeek(std::min(binding * 10, 100), now);
-            }
-            return;
-          case ShortcutAction::VolumeUp:
-            nudgeVolume(+0.05, now);
-            return;
-          case ShortcutAction::VolumeDown:
-            nudgeVolume(-0.05, now);
-            return;
-          case ShortcutAction::Mute:
-            toggleMute(now);
-            return;
-          case ShortcutAction::RateDown:
-            nudgeRate(-1, now);
-            return;
-          case ShortcutAction::RateUp:
-            nudgeRate(+1, now);
-            return;
-          case ShortcutAction::Fullscreen:
-            setFullscreen(!st_.fullscreen);
-            return;
-          case ShortcutAction::LoopAB:
-            cycleLoopAB(now);
-            return;
-          case ShortcutAction::CycleAudio:
-            cycleTrack(TrackType::Audio, now);
-            return;
-          case ShortcutAction::CycleSubtitle:
-            cycleTrack(TrackType::Subtitle, now);
-            return;
-          // Subtitle keys (v0.2), back on since the X11 drive scripts
-          // pin every coordinate they used to disturb (subsdrive presses
-          // [ ] v with the overlay measured). `s` follows mpv and takes a
-          // screenshot instead of toggling visibility: V does that now.
-          case ShortcutAction::SubtitleOffsetBack:
-            nudgeSubtitleOffset(-500, now);
-            return;
-          case ShortcutAction::SubtitleOffsetFwd:
-            nudgeSubtitleOffset(+500, now);
-            return;
-          case ShortcutAction::SubtitleVisibility:
-            toggleSubtitleVisibility(now);
-            return;
-          case ShortcutAction::Screenshot:
-            takeScreenshot(now);
-            return;
-          case ShortcutAction::OpenFile:
-            // Open-a-file (BUGS.md #3): the Windows common dialog;
-            // elsewhere the attempt degrades to a toast saying what works.
-            openFilePicker();
-            return;
-          case ShortcutAction::OpenFolder:
-            // The open-a-folder entry (v0.2.1): the in-app picker with the
-            // recursive toggle and the recent-dirs list.
-            openDirPicker();
-            return;
-          case ShortcutAction::Playlist:
-            toggleOverlay(Overlay::Playlist);
-            return;
-          case ShortcutAction::Library:
-            openLibrary();  // media library (docs/mvp.md §3)
-            return;
-          case ShortcutAction::SearchLibrary:
-            // The search half of the browse split (docs/todo.md 原型对齐
-            // 批): open the overlay when needed, then put the caret in
-            // the box — the flag is consumed by the next frame's draw.
-            if (st_.overlay != Overlay::Library) openLibrary();
-            if (st_.overlay == Overlay::Library) {
-              st_.library_search_focus = true;
-            }
-            return;
-          case ShortcutAction::Cast:
-            openCast();  // DLNA cast overlay (docs/mvp.md §3)
-            return;
-          case ShortcutAction::QueueNext:
-            playlistStep(false, now);
-            return;
-          case ShortcutAction::QueuePrev:
-            playlistStep(true, now);
-            return;
-          case ShortcutAction::Info:
-            toggleOverlay(Overlay::Info);
-            return;
-          case ShortcutAction::Recent:
-            toggleOverlay(Overlay::Recent);
-            return;
-          case ShortcutAction::Help:
-            toggleOverlay(Overlay::Help);
-            return;
-          case ShortcutAction::ToggleTheme: {
-            // Light/dark palette (proto.css [data-theme]). Swap the palette
-            // tokens, re-apply the ImGui style, and refresh the SDL clear
-            // colour; the choice persists to <state>/soar/theme.txt.
-            theme::applyPalette(!theme::g_light);
-            applyTheme();
-            saveThemePref();
-            return;
-          }
-          case ShortcutAction::OpenSettings:
-            toggleOverlay(Overlay::Settings);  // the settings panel (proto)
-            return;
-        }
-      }
-      case SDL_MOUSEMOTION:
-        // Pointer movement is user presence too (the prototype's idle
-        // wording is "no input", not "no keys or clicks"; mpv behaves the
-        // same): motion over or off the widgets alike wakes a hidden bar
-        // and restarts its idle window. Visibility itself is decided
-        // per-frame from the pins, so no filtering is wanted here.
-        st_.hud.noteActivity(now);
-        return;
-      case SDL_MOUSEBUTTONDOWN: {
-        if (e.button.button != SDL_BUTTON_LEFT) return;
-        // On a widget, or on the bar itself: docs §1.1 scopes the toggle to
-        // the video area, and a press that lands in the same frame as a
-        // warp onto the bar must not toggle it either (see mouseOverHud).
-        if (ImGui::GetIO().WantCaptureMouse ||
-            (st_.hud_alpha > 0.01f && mouseOverHud())) {
-          return;
-        }
-        // First-run window (BUGS.md #3): no source yet — a click is the
-        // open-file entry, not an OSC toggle (nothing is playing to
-        // toggle anything for).
-        if (firstRunEmpty()) {
-          openFilePicker();
-          return;
-        }
-        // Double click (<=500ms) toggles fullscreen; a single click toggles
-        // the OSC (IINA singleClickAction semantics, docs §1.1 — keeps the
-        // second click of the fullscreen gesture from toggling pause).
-        // Decide visibility BEFORE any noteActivity: activity resets the
-        // manual force, so checking after would never see a hidden bar.
-        if (now - st_.last_click < milliseconds(500)) {
-          setFullscreen(!st_.fullscreen);
-          st_.last_click = milliseconds(0);
-          return;
-        }
-        // Widget events were skipped above, so the pointer is not over the
-        // HUD and no seek drag is live; the remaining pins still count.
-        const bool shown = st_.hud.visible(
-            now, /*pointer_over_hud=*/false, /*seek_drag=*/false,
-            st_.overlay != Overlay::None,
-            player_.state() != PlaybackState::Playing);
-        if (shown) {
-          st_.hud.setForce(HudVisibility::Force::Hide);
-        } else {
-          // noteActivity clears the force and restarts the timer: the bar
-          // reappears for a fresh idle window.
-          st_.hud.noteActivity(now);
-        }
-        st_.last_click = now;
-        return;
-      }
-      case SDL_MOUSEWHEEL: {
-        if (ImGui::GetIO().WantCaptureMouse) return;
-        st_.hud.noteActivity(now);
-        // Vertical wheel: volume; horizontal wheel or Shift+wheel: seek
-        // (IINA scroll-action defaults, docs §1.1).
-        const bool seek_wheel = e.wheel.x != 0 || shiftHeld();
-        if (seek_wheel) {
-          const int dir =
-              e.wheel.x != 0 ? (e.wheel.x > 0 ? 1 : -1) : (e.wheel.y > 0 ? 1 : -1);
-          nudgeSeek(dir * 5000, now);
-        } else {
-          nudgeVolume(e.wheel.y > 0 ? +0.05 : -0.05, now);
-        }
-        return;
-      }
-      case SDL_DROPFILE: {
-        // Drag-and-drop open (docs §2): backends take plain paths as-is.
-        // Drop payloads come from the source's text/uri-list, so the same
-        // decode the CLI positional gets applies here too (a space in the
-        // name arrives percent-encoded).
-        std::string uri(e.drop.file ? e.drop.file : "");
-        if (e.drop.file) SDL_free(e.drop.file);
-        uri = soar::app::decodeSourceUri(uri);
-        if (!uri.empty()) openSource(uri);
-        return;
-      }
-      default:
-        return;
-    }
-  }
-
-  // P4b-4 async torrent open: while the stream is Connecting the poster
-  // (below) shows the wait; on Serving the window opens the bridge URL —
-  // the same path a synchronous open would have taken, now from the UI
-  // thread — and on Failed the error becomes a toast (first line only:
-  // lastError can carry a bounded file table). The raw magnet/.torrent URI
-  // never opens here; only the bridge URL does.
-  void handlePendingTorrent(milliseconds now) {
-    if (!torrent_pending_) return;
-    switch (torrent_->phase()) {
-      case soar::p2p::TorrentPhase::Connecting:
-        return;
-      case soar::p2p::TorrentPhase::Serving: {
-        torrent_pending_ = false;
-        const std::string uri = torrent_->playbackUrl();
-        source_label_ = torrent_->fileName();
-        fmt::print(stderr, "torrent: {} ({} bytes) -> {}\n", source_label_,
-                   torrent_->fileSize(), uri);
-        if (player_.open(soar::MediaSource{uri, cfg_.cache_dir, cfg_.hwdec})) {
-          if (!source_label_.empty()) {
-            SDL_SetWindowTitle(window_, (cfg_.title + " - " + source_label_).c_str());
-          }
-          recordOpen(uri);
-          playlist_.add(uri);
-          playlist_.setCurrent(playlist_.size() - 1);
-          st_.loop_a_set = false;
-          st_.toast.show("Opened " + displayName(uri), now);
-          player_.play();
-        } else {
-          st_.toast.show("Open failed: " + player_.lastError(), now);
-        }
-        break;
-      }
-      case soar::p2p::TorrentPhase::Failed: {
-        torrent_pending_ = false;
-        std::string err = torrent_->lastError();
-        const size_t nl = err.find('\n');
-        if (nl != std::string::npos) err.resize(nl);
-        fmt::print(stderr, "{}\n", torrent_->lastError());
-        st_.toast.show("Open failed: " + err, now);
-        break;
-      }
-      case soar::p2p::TorrentPhase::Idle:
-        break;  // not started (or already stopped): nothing pending anymore
-    }
-  }
-
-  // Per frame: animate the HUD alpha, then emit the UI draws. Must be
-  // called between ImGui::NewFrame and ImGui::Render.
-  void drawUi(milliseconds now, bool video_active) {
-    handlePendingTorrent(now);
-    handleCastTick(now);
-    // The one-shot --open-dialog request: cleared before the call so a
-    // modal stay inside the picker cannot re-summon it on the next frame.
-    if (open_dialog_on_start_) {
-      open_dialog_on_start_ = false;
-      openFilePicker();
-    }
-    const ImGuiIO& io = ImGui::GetIO();
-    // A minimized window reports a zero-sized drawable, and every OSC
-    // dimension below is derived from it (bar_w would go negative). Skip
-    // the frame's draws instead of handing ImGui a degenerate geometry.
-    if (io.DisplaySize.x < 1.0f || io.DisplaySize.y < 1.0f) return;
-    // Pin while "not playing" covers Paused/Stopped/Ended/Error: the user
-    // is between content and about to act (vidstack behavior, docs §3.1).
-    const bool paused = player_.state() != PlaybackState::Playing;
-    const bool hud_shown = st_.hud.visible(now, /*pointer_over_hud=*/io.WantCaptureMouse,
-                                           st_.seek_dragging,
-                                           st_.overlay != Overlay::None, paused);
-    // Trail edge for the walkthrough tests: the bar's logical visibility
-    // flip (the 0.16s alpha ramp rides along; the edge is the assertion
-    // surface, not the fade).
-    if (hud_shown != st_.hud_was_shown) {
-      st_.hud_was_shown = hud_shown;
-      fmt::print(stderr, "event: osc={}\n", hud_shown ? "shown" : "hidden");
-    }
-    maybeRecordProgress(now);
-    maybeAdvancePlaylist(now);
-    // "Auto-show first subtitle" (settings Subtitles tab): the first frame
-    // a track becomes selected turns visibility on — no V press needed.
-    // The -1 -> >=0 edge keeps it one-shot per selection; the detector
-    // never selects anything itself (a fresh open still starts with no
-    // track selected — the frozen core contract the walkthrough pins).
-    if (st_.subtitle_autoshow) {
-      const int sel = player_.mediaInfo().selected_subtitle;
-      if (st_.prev_selected_subtitle < 0 && sel >= 0 && !st_.subtitle_visible) {
-        st_.subtitle_visible = true;
-        if (cfg_.subtitle_visible) {
-          cfg_.subtitle_visible->store(true, std::memory_order_relaxed);
-        }
-        st_.toast.show("Subtitles on", now);
-      }
-      st_.prev_selected_subtitle = sel;
-    }
-    const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
-    const float target = hud_shown ? 1.0f : 0.0f;
-    st_.hud_alpha += (target - st_.hud_alpha) * std::min(1.0f, dt / 0.160f);
-    st_.hud_alpha = std::clamp(st_.hud_alpha, 0.0f, 1.0f);
-
-    if (!video_active) drawPoster();
-    drawPauseOverlay();
-    // The full-page Settings overlay replaces the HUD (the v1 settings page
-    // is standalone; the top bar / chips / OSC would otherwise keep drawing
-    // over it). The overlay is drawn after, so nothing of the page is hidden.
-    if (st_.overlay != Overlay::Settings) {
-      drawTopBar();
-      if (st_.hud_alpha > 0.01f) drawHud(now);
-      drawChips(now);
-    }
-    drawSubtitles(now);
-    drawToast(now);
-    drawOverlays();
-  }
-
-  void recordOpen(const std::string& uri) {
-    if (uri.empty()) return;
-    current_uri_ = uri;
-    // The seek-hover thumbnail cache is keyed by position only, so a new
-    // source makes every cached frame meaningless (docs §1.6-5). Drop the
-    // cache and the uploaded texture so a stale frame can never flash over
-    // the new file.
-    if (thumb_service_ != nullptr && uri != thumb_source_) {
-      thumb_source_ = uri;
-      thumb_service_->clear();
-      thumb_requested_ = milliseconds(-1);
-      thumb_shown_ = milliseconds(-1);
-      thumb_tex_w_ = thumb_tex_h_ = 0;
-      if (thumb_texture_ != nullptr) {
-        SDL_DestroyTexture(thumb_texture_);
-        thumb_texture_ = nullptr;
-      }
-    }
-    library_end_cleared_ = false;  // the new source starts a fresh resume book
-    if (recent_.add(uri)) recent_.save();
-    if (library_ != nullptr && !isTorrentBridge(uri)) {
-      // Torrent bridge URLs change port every session (P4b-4): recording
-      // one would plant a history row that can never replay. They keep
-      // their Recent entry — that contract predates the library.
-      library_->recordOpen(uri, std::time(nullptr));
+void PlayerHud::maybeRecordProgress(milliseconds now) {
+  if (library_ == nullptr || current_uri_.empty()) return;
+  if (isTorrentBridge(current_uri_)) return;
+  if (player_.state() == PlaybackState::Ended) {
+    if (!library_end_cleared_) {
+      library_end_cleared_ = true;
+      library_->clearPosition(current_uri_);
       library_->save();
     }
-  }
-
-  // Jumps back to the saved position of `uri` when the resume policy
-  // (resumePositionMs in library.h) says it is worth it. True when the
-  // jump happened — the caller lets a "Resumed at m:ss" toast replace its
-  // own, the jump is the more informative story.
-  bool applyResume(const std::string& uri, milliseconds now) {
-    if (!cfg_.resume_playback || library_ == nullptr) return false;
-    // The Settings panel's "Remember last media" switch gates the jump: off
-    // means the session opens at the top regardless of a saved position.
-    if (!st_.remember_last_media) return false;
-    const LibraryEntry* entry = library_->find(uri);
-    if (entry == nullptr) return false;
-    const std::int64_t pos = resumePositionMs(*entry);
-    if (pos <= 0) return false;
-    // An unseekable source refuses the jump and stays at zero — the
-    // policy function only knows the recorded numbers, the backend has
-    // the final say (the same asymmetry as the seek bar).
-    if (!player_.seek(std::chrono::milliseconds(pos))) return false;
-    st_.toast.show("Resumed at " +
-                       formatClock(std::chrono::milliseconds(pos)),
-                   now);
-    return true;
-  }
-
-  // Torrent bridge URLs are session-scoped: display-labeled, never
-  // history-keyed.
-  bool isTorrentBridge(const std::string& uri) const {
-    return torrent_ != nullptr && uri == torrent_->playbackUrl();
-  }
-
-  // The library's write half of the frame loop (the read half is
-  // applyResume at open time): a throttled progress write while playing,
-  // and the watched-to-end clear when a source runs into Ended. Ordered
-  // before the playlist advance in drawUi so the clearing frame still
-  // knows the finished source as current.
-  void maybeRecordProgress(milliseconds now) {
-    if (library_ == nullptr || current_uri_.empty()) return;
-    if (isTorrentBridge(current_uri_)) return;
-    if (player_.state() == PlaybackState::Ended) {
-      if (!library_end_cleared_) {
-        library_end_cleared_ = true;
-        library_->clearPosition(current_uri_);
-        library_->save();
-      }
-      return;
-    }
-    if (player_.state() != PlaybackState::Playing) return;
-    if (now - last_progress_write_ < kProgressInterval) return;
-    last_progress_write_ = now;
-    library_->recordProgress(current_uri_, player_.position().count(),
-                             player_.mediaInfo().duration.count());
-    library_->save();
-  }
-
-  // Source name as displayed (poster, toasts, playlist): P2P sources stream
-  // from a 127.0.0.1 bridge whose URL reads badly, so cfg_.source_label —
-  // the streamed torrent file's name — replaces it for the current entry;
-  // everything else keeps the plain base name.
-  std::string displayName(const std::string& uri) const {
-    return (!source_label_.empty() && uri == current_uri_) ? source_label_
-                                                           : baseName(uri);
-  }
-
-  // The card grid's source chip: the path's extension uppercased (MKV, MP4,
-  // WEBM...), or "" for a path with no usable extension (a bare host URL).
-  static std::string fileFormatLabel(const std::string& uri) {
-    const std::string name = baseName(uri);
-    const std::size_t dot = name.find_last_of('.');
-    if (dot == std::string::npos || dot + 1 >= name.size()) return "";
-    std::string ext = name.substr(dot + 1);
-    for (char& c : ext) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return ext;
-  }
-
-  // The card grid's sub line when nothing is resumable: the entry's parent
-  // folder leaf (the watched root it came from), or "" if it has no parent.
-  static std::string parentFolderLabel(const std::string& uri) {
-    const std::string name = baseName(uri);
-    const std::size_t slash = name.find_last_of("/\\");
-    if (slash == std::string::npos || slash == 0) return "";
-    return name.substr(0, slash);
-  }
-
- private:
-  // ---- Actions (all keyboard-reachable; toasts acknowledge, docs §3.2) ----
-
-  void togglePlayPause() {
-    if (player_.state() == PlaybackState::Playing) {
-      player_.pause();
-    } else {
-      if (player_.state() == PlaybackState::Ended) {
-        player_.seek(milliseconds(0));  // replay from the top, mpv style
-      }
-      player_.play();
-    }
-  }
-
-  void seekTo(milliseconds target, milliseconds now) {
-    const MediaInfo info = player_.mediaInfo();
-    if (!info.seekable || info.duration <= milliseconds(0)) {
-      st_.toast.show("Not seekable", now);
-      return;
-    }
-    const auto clamped = std::clamp(target, milliseconds(0), info.duration);
-    if (player_.seek(clamped)) {
-      st_.toast.show(formatClock(clamped), now);  // mpv OSD: show the target
-    } else {
-      st_.toast.show("Seek failed", now);
-    }
-  }
-
-  void nudgeSeek(long long delta_ms, milliseconds now) {
-    seekTo(player_.position() + milliseconds(delta_ms), now);
-  }
-
-  void percentSeek(int percent, milliseconds now) {
-    const MediaInfo info = player_.mediaInfo();
-    seekTo(info.duration * percent / 100, now);
-  }
-
-  void nudgeVolume(double delta, milliseconds now) {
-    st_.last_volume = std::clamp(st_.last_volume + delta, 0.0, 1.0);
-    player_.setVolume(st_.last_volume);
-    st_.toast.show(
-        "Volume " + std::to_string(static_cast<int>(st_.last_volume * 100)) + "%",
-        now);
-  }
-
-  void toggleMute(milliseconds now) {
-    st_.last_muted = !st_.last_muted;
-    player_.setMuted(st_.last_muted);
-    st_.toast.show(st_.last_muted ? "Muted" : "Unmuted", now);
-  }
-
-  // Rate steps through the same ladder the combo offers (vidstack </>).
-  void nudgeRate(int step, milliseconds now) {
-    static const double kRates[] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
-    std::size_t idx = 2;  // default 1.0x
-    for (std::size_t i = 0; i < sizeof(kRates) / sizeof(kRates[0]); ++i) {
-      if (std::abs(kRates[i] - st_.last_rate) < 1e-9) {
-        idx = i;
-        break;
-      }
-    }
-    const std::size_t count = sizeof(kRates) / sizeof(kRates[0]);
-    idx = step > 0 ? std::min(idx + 1, count - 1)
-                   : (idx == 0 ? count - 1 : idx - 1);
-    st_.last_rate = kRates[idx];
-    player_.setRate(st_.last_rate);
-    char item[16];
-    std::snprintf(item, sizeof(item), "%.2gx", st_.last_rate);
-    st_.toast.show(std::string(item) + " speed", now);
-  }
-
-  // The remote catalog for the current media, searched at most once per
-  // uri while a menu is open (an open menu redraws every frame; the answer
-  // must not re-query the server each time). Unconfigured means the search
-  // returns empty without any network activity.
-  const std::vector<SubtitleCandidate>& remoteCandidates() {
-    if (!remote_searched_ || searched_uri_ != current_uri_) {
-      remote_searched_ = true;
-      searched_uri_ = current_uri_;
-      remote_candidates_ = external_.findCandidates(MediaSource{current_uri_, {}});
-    }
-    return remote_candidates_;
-  }
-
-  // Sidecar subtitle candidates (docs/mvp.md §6): what a SubtitleProvider
-  // finds next to the media. Shared by the subtitle combo and the Subtitle
-  // Settings overlay; both call it only while their menu is open, because
-  // enumerating means reading a directory. Picking one loads it as a real
-  // subtitle track (its id sits past the container's stream range, so it
-  // shows up in the track list like any other) and selects it.
-  //
-  // Already-loaded sidecars are not offered again — the track above carries
-  // them, and loading is idempotent by path anyway. When a remote endpoint
-  // is configured, its candidates follow as a "[download]" section: picking
-  // one downloads, stores under the system temp and loads the stored file
-  // through the same pipeline as a sidecar pick.
-  // Loaded external tracks a "[translate]" row can work on (docs/mvp.md §6
-  // "字幕文本翻译", the window wiring): the window knows their source paths
-  // because it loaded them, each has not been translated this session, and
-  // an endpoint is configured. Embedded text streams follow as the
-  // "内嵌轨先导出" slice: their row carries no path, and picking one demuxes
-  // the stream out to plain SubRip first (exportSubtitleText). Bitmap and
-  // unknown-codec streams get no row that can only fail. A subtitle track
-  // whose title is not a loaded external path is embedded by construction —
-  // loadExternalSubtitle titles every external track after its file and the
-  // window records exactly those titles.
-  std::vector<std::pair<const TrackInfo*, const std::string*>> translatableTracks(
-      const MediaInfo& info) const {
-    std::vector<std::pair<const TrackInfo*, const std::string*>> out;
-    if (!translate_ready_) {
-      return out;
-    }
-    // External rows first, embedded rows after: the rows that predate the
-    // embedded slice keep their exact popup positions (the window's
-    // coordinate-pinned drivers probe them), and the section reads in the
-    // order the feature arrived.
-    std::vector<const TrackInfo*> embedded;
-    for (const auto& t : info.tracks) {
-      if (t.type != TrackType::Subtitle) {
-        continue;
-      }
-      const auto path = loaded_external_paths_.find(t.title);
-      if (path == loaded_external_paths_.end()) {
-        if (embeddedTextSubtitleCodec(t.codec) &&
-            std::find(translated_ids_.begin(), translated_ids_.end(),
-                      t.id) == translated_ids_.end()) {
-          embedded.push_back(&t);
-        }
-        continue;
-      }
-      // ASS/SSA documents and TTML/DFXP files are not translator input
-      // (the batch path speaks numbered SubRip/WebVTT cues; the translator
-      // rejects both up front), so no row that can only fail.
-      const SubtitleFormat source_format = subtitleFormatFromPath(path->second);
-      if (source_format == SubtitleFormat::Ass ||
-          source_format == SubtitleFormat::Ttml) {
-        continue;
-      }
-      if (std::find(translated_titles_.begin(), translated_titles_.end(),
-                    t.title) != translated_titles_.end()) {
-        continue;
-      }
-      out.emplace_back(&t, &path->second);
-    }
-    for (const TrackInfo* t : embedded) {
-      out.emplace_back(t, nullptr);
-    }
-    return out;
-  }
-
-  void drawSidecarEntries(const MediaInfo& info, milliseconds now) {
-    const std::vector<SubtitleCandidate> candidates =
-        sidecar_.findCandidates(MediaSource{current_uri_, {}});
-    const std::vector<SubtitleCandidate>& remote = remoteCandidates();
-    const auto translatable = translatableTracks(info);
-    if (candidates.empty() && remote.empty() && translatable.empty()) {
-      ImGui::Separator();
-      ImGui::TextDisabled("No sidecar subtitle files");
-      return;
-    }
-    // A loaded external track is titled with its file name, and the
-    // candidates all come from the media's own directory, so a name match
-    // identifies one without the track list having to carry the path.
-    std::vector<const SubtitleCandidate*> pending;
-    for (const auto& c : candidates) {
-      const bool loaded = std::any_of(
-        info.tracks.begin(),
-        info.tracks.end(),
-        [&](const TrackInfo& t) {
-          return t.type == TrackType::Subtitle && t.title == c.title;
-        });
-      if (!loaded) pending.push_back(&c);
-    }
-    if (pending.empty() && remote.empty() && translatable.empty()) {
-      return;
-    }
-    // The leading separator belongs to the candidate lists (the rule the
-    // menu predates [translate] with): it printed whenever either list had
-    // anything to show, even when every remote row then filtered out. A
-    // translate-only popup opens without it, keeping the probed positions
-    // of every row above unchanged.
-    if (!pending.empty() || !remote.empty()) {
-      ImGui::Separator();
-    }
-    for (const auto* c : pending) {
-      std::string item = c->title;
-      if (!c->language.empty()) {
-        item += " (" + c->language + ")";
-      }
-      const bool enter = menuRowEnter();
-      if (ImGui::Selectable(item.c_str()) || enter) {
-        TrackId id = -1;
-        if (player_.loadExternalSubtitle(c->path, id) &&
-            player_.selectTrack(TrackType::Subtitle, id)) {
-          loaded_external_paths_[externalTrackTitle(c->path)] = c->path;
-          st_.toast.show("Loaded " + c->title, now);
-        } else {
-          // A missing or cue-less file is a normal outcome, so this is a
-          // toast, not an error dialog.
-          st_.toast.show("Sidecar load failed", now);
-        }
-      }
-      menuRowRing();
-    }
-
-    // Remote candidates: everything already downloaded this session is
-    // filtered, mirroring the loaded-sidecar rule above.
-    bool any_remote = false;
-    for (const auto& c : remote) {
-      const bool downloaded = std::find(downloaded_titles_.begin(),
-                                        downloaded_titles_.end(), c.title) !=
-                              downloaded_titles_.end();
-      if (downloaded) {
-        continue;
-      }
-      if (!any_remote) {
-        ImGui::Separator();
-        any_remote = true;
-      }
-      std::string item = "[download] " + c.title;
-      if (!c.language.empty()) {
-        item += " (" + c.language + ")";
-      }
-      const bool enter = menuRowEnter();
-      if (ImGui::Selectable(item.c_str()) || enter) {
-        downloadAndLoad(c, now);
-      }
-      menuRowRing();
-    }
-
-    // The [translate] section: one row per loaded external track that has
-    // not been translated yet, then one per embedded text track. Picking an
-    // external row sends the track's file through SubtitleTranslator;
-    // picking an embedded row demuxes the stream out first ("内嵌轨先导出")
-    // and translates that. Both load the result as a further external track.
-    if (!translatable.empty()) {
-      ImGui::Separator();
-    }
-    for (const auto& [track, path] : translatable) {
-      std::string item = "[translate] " + track->title;
-      if (path == nullptr && !track->language.empty() &&
-          track->language != "und") {
-        item += " (" + track->language + ")";
-      }
-      item += " -> " + target_language_;
-      if (path == nullptr) {
-        // Container titles repeat ("Subtitles" twice is normal); the hidden
-        // suffix keeps ImGui's ids distinct without changing the label.
-        item += "##tr" + std::to_string(track->id);
-      }
-      const bool enter = menuRowEnter();
-      if (ImGui::Selectable(item.c_str()) || enter) {
-        if (path != nullptr) {
-          translateAndLoad(track->title, *path, now);
-        } else {
-          exportTranslateAndLoad(*track, now);
-        }
-      }
-      menuRowRing();
-    }
-  }
-
-  // The translation path behind a "[translate]" pick: read the track's
-  // source file, batch-translate it, store and load the result like any
-  // sidecar. Every failure degrades to a toast — the media keeps playing
-  // and the original track is untouched (the translator is all-or-nothing,
-  // so no half-translated track can appear). Like downloadAndLoad this
-  // runs on the UI thread: the loopback fixture answers in milliseconds,
-  // and the timeout env bounds a slow endpoint.
-  void translateAndLoad(const std::string& title, const std::string& path,
-                        milliseconds now) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-      st_.toast.show("Translation failed", now);
-      return;
-    }
-    std::string text((std::istreambuf_iterator<char>(in)),
-                     std::istreambuf_iterator<char>());
-    std::string lower;
-    lower.resize(path.size());
-    for (size_t i = 0; i < path.size(); ++i) {
-      lower[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(path[i])));
-    }
-    const SubtitleFormat format =
-        lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".vtt") == 0
-            ? SubtitleFormat::WebVtt
-            : SubtitleFormat::SubRip;
-    if (translateTextAndLoad(title, text, format, now)) {
-      translated_titles_.push_back(title);
-    }
-  }
-
-  // The embedded-track variant (docs/mvp.md §6 "内嵌轨先导出"): demux the
-  // stream out to plain SubRip first, then run the same translate-and-load
-  // tail. The export pass reopens the source independently, so the playing
-  // decode path is never touched; it is synchronous (quick for local and
-  // loopback sources), which is why the pick accepts the pause.
-  void exportTranslateAndLoad(const TrackInfo& track, milliseconds now) {
-    std::string srt;
-    if (!player_.exportSubtitleText(track.id, srt) || srt.empty()) {
-      st_.toast.show("Translation failed", now);
-      return;
-    }
-    if (translateTextAndLoad(track.title, srt, SubtitleFormat::SubRip, now)) {
-      translated_ids_.push_back(track.id);
-    }
-  }
-
-  // Shared tail of both paths: batch-translate, store under the system
-  // temp, load and select. Records the stored path so the new track itself
-  // becomes translatable-external, and reports the result — false means a
-  // toast was shown and nothing changed.
-  bool translateTextAndLoad(const std::string& title, const std::string& text,
-                            SubtitleFormat format, milliseconds now) {
-    std::string out;
-    if (!translator_.translate(text, target_language_, &out, nullptr)) {
-      st_.toast.show("Translation failed", now);
-      return false;
-    }
-    SubtitleCandidate c;
-    // The stored name drops the source extension (storeExternalSubtitle
-    // re-appends one from c.format) and carries the target language, so
-    // the new track's menu title reads "source (Klingon)".
-    std::string stem = title;
-    const size_t dot = stem.rfind('.');
-    if (dot != std::string::npos && dot != 0) {
-      stem = stem.substr(0, dot);
-    }
-    c.title = stem + " (" + target_language_ + ")";
-    c.language = target_language_;
-    c.format = format;
-    const std::string stored = storeExternalSubtitle({}, c, out);
-    TrackId id = -1;
-    if (stored.empty() || !player_.loadExternalSubtitle(stored, id) ||
-        !player_.selectTrack(TrackType::Subtitle, id)) {
-      st_.toast.show("Translation failed", now);
-      return false;
-    }
-    loaded_external_paths_[externalTrackTitle(stored)] = stored;
-    st_.toast.show("Translated " + title, now);
-    return true;
-  }
-
-  // The title a loaded external track carries in the track list: the
-  // backend names it after the file it loaded (ffmpeg_backend's
-  // loadExternalSubtitle). Keying loaded_external_paths_ the same way
-  // makes a menu row resolvable back to its source path by title alone.
-  static std::string externalTrackTitle(const std::string& path) {
-    return std::filesystem::path(path).filename().string();
-  }
-
-  // The download path behind a "[download]" pick: fetch the text, persist
-  // it under the system temp and load it like any sidecar. Every failure
-  // degrades to a toast — the media keeps playing (SubtitleProvider
-  // contract, docs/mvp.md §6).
-  void downloadAndLoad(const SubtitleCandidate& c, milliseconds now) {
-    std::string text;
-    if (!external_.fetch(c, text)) {
-      st_.toast.show("Download failed", now);
-      return;
-    }
-    const std::string path = storeExternalSubtitle({}, c, text);
-    TrackId id = -1;
-    if (path.empty() || !player_.loadExternalSubtitle(path, id) ||
-        !player_.selectTrack(TrackType::Subtitle, id)) {
-      st_.toast.show("Download failed", now);
-      return;
-    }
-    loaded_external_paths_[externalTrackTitle(path)] = path;
-    downloaded_titles_.push_back(c.title);
-    st_.toast.show("Downloaded " + c.title, now);
-  }
-
-  void cycleTrack(TrackType type, milliseconds now) {
-    const MediaInfo info = player_.mediaInfo();
-    std::vector<TrackId> ids;
-    for (const auto& t : info.tracks) {
-      if (t.type == type) ids.push_back(t.id);
-    }
-    if (ids.empty()) {
-      st_.toast.show(
-          type == TrackType::Audio ? "No audio tracks" : "No subtitle tracks",
-          now);
-      return;
-    }
-    if (type == TrackType::Audio) {
-      const auto it = std::find(ids.begin(), ids.end(), info.selected_audio);
-      const TrackId next =
-          it == ids.end() || it + 1 == ids.end() ? ids.front() : *(it + 1);
-      if (player_.selectTrack(TrackType::Audio, next)) {
-        st_.toast.show("Audio track " + std::to_string(next), now);
-      } else {
-        st_.toast.show("Audio switch failed", now);
-      }
-      return;
-    }
-    // Subtitle cycle includes Off: off -> 1 -> ... -> off (mpv `j`).
-    if (info.selected_subtitle < 0) {
-      if (player_.selectTrack(TrackType::Subtitle, ids.front())) {
-        st_.toast.show("Subtitle track " + std::to_string(ids.front()), now);
-      } else {
-        st_.toast.show("Subtitle switch failed", now);
-      }
-      return;
-    }
-    const auto it = std::find(ids.begin(), ids.end(), info.selected_subtitle);
-    if (it != ids.end() && it + 1 != ids.end()) {
-      if (player_.selectTrack(TrackType::Subtitle, *(it + 1))) {
-        st_.toast.show("Subtitle track " + std::to_string(*(it + 1)), now);
-      } else {
-        st_.toast.show("Subtitle switch failed", now);
-      }
-    } else {
-      player_.disableSubtitles();
-      st_.toast.show("Subtitles off", now);
-    }
-  }
-
-  // First-run window (BUGS.md #3): the GUI entry can start with no media
-  // at all (--gui, the installed shortcuts, a double-clicked soarw.exe).
-  // The poster is then the open entry rather than a playback state. The
-  // async torrent wait also runs source-less, but it has its own poster
-  // state (connecting...), so it stays out of this predicate.
-  bool firstRunEmpty() const {
-    return current_uri_.empty() && !torrent_pending_;
-  }
-
-  // Open-a-file entry: the Windows common dialog picks a path and rides
-  // the same openSource() path as a drop; elsewhere (SDL2 ships no dialog
-  // API) the attempt degrades to a toast that names what does work.
-  void openFilePicker() {
-#ifdef _WIN32
-    wchar_t picked[4096] = L"";
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    SDL_SysWMinfo wmi{};
-    SDL_VERSION(&wmi.version);
-    if (SDL_GetWindowWMInfo(window_, &wmi)) {
-      ofn.hwndOwner = wmi.info.win.window;
-    }
-    ofn.lpstrFile = picked;
-    ofn.nMaxFile = static_cast<DWORD>(std::size(picked));
-    ofn.lpstrFilter =
-        L"Media files\0*.mp4;*.m4v;*.mkv;*.webm;*.avi;*.mov;*.flv;*.wmv;"
-        L"*.ts;*.m2ts;*.mp3;*.m4a;*.aac;*.flac;*.wav;*.ogg;*.opus;"
-        L"*.m3u8;*.mpd;*.torrent\0"
-        L"All files\0*.*\0";
-    ofn.lpstrTitle = L"Open media file";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (GetOpenFileNameW(&ofn)) {
-      const int bytes = WideCharToMultiByte(
-          CP_UTF8, 0, picked, -1, nullptr, 0, nullptr, nullptr);
-      if (bytes > 0) {
-        std::string path(static_cast<std::size_t>(bytes), '\0');
-        WideCharToMultiByte(
-            CP_UTF8, 0, picked, -1, path.data(), bytes, nullptr, nullptr);
-        path.resize(static_cast<std::size_t>(bytes) - 1);  // drop the nul
-        openSource(path);
-      }
-    }
-    // Cancel leaves the window exactly as it was: no toast, no state.
-#else
-    st_.toast.show("No file dialog in this build - drop a file to open",
-                   nowMs());
-#endif
-  }
-
-  // Open-a-folder entry (v0.2.1): the in-app directory picker. Starts at
-  // the most recent folder, falling back to $HOME (then the cwd) so the
-  // first use still lands somewhere browsable.
-  void openDirPicker() {
-    dirpick_for_library_ = false;  // a plain open imports into the queue
-    dirpick_files_ = false;        // ... and picks folders, not files
-    if (dirpick_path_.empty()) {
-      const std::vector<std::string>& dirs = recent_dirs_.entries();
-      if (!dirs.empty()) {
-        dirpick_path_ = dirs.front();
-      } else if (const char* home = std::getenv("HOME"); home && *home) {
-        dirpick_path_ = home;
-      } else {
-        dirpick_path_ = ".";
-      }
-    }
-    toggleOverlay(Overlay::DirPick);
-  }
-
-  // Same picker, library mode: the action button becomes "Watch this
-  // folder" (docs/mvp.md §3) and the pick lands back in the Library
-  // overlay instead of the queue.
-  void openDirPickerWatch() {
-    openDirPicker();
-    dirpick_for_library_ = true;
-  }
-
-  // Same picker, file mode (todo.md 原型对齐批): the rows gain file
-  // checkboxes and the action button adds the checked set to the queue —
-  // the picker for when a folder import is more than the user wanted.
-  void openDirPickerFiles() {
-    openDirPicker();
-    dirpick_files_ = true;
-    dirpick_checked_.clear();
-  }
-
-  // The file-mode action: queue the checked files in the order they were
-  // ticked (a pick across directories keeps the user's order, not an
-  // alphabetical one), then hand the user back to the Playlist overlay
-  // that sent them here — the same shape importDirectory and
-  // watchDirectory end on.
-  void addCheckedFiles(milliseconds now) {
-    if (recent_dirs_.add(dirpick_path_)) recent_dirs_.save();
-    const bool was_empty =
-        playlist_.empty() || playlist_.current() == PlaylistStore::kNone;
-    const std::size_t n = dirpick_checked_.size();
-    for (const std::string& f : dirpick_checked_) playlist_.add(f);
-    dirpick_checked_.clear();
-    st_.overlay = Overlay::Playlist;
-    // A fresh queue plays its first pick immediately (importDirectory's
-    // rule); on an open failure the backend's toast is the one to keep.
-    if (was_empty && !openPlaylistEntry(playlist_.size() - n, now)) return;
-    st_.toast.show((was_empty ? "Imported " : "Added ") + std::to_string(n) +
-                       " file" + (n == 1 ? "" : "s") +
-                       (was_empty ? "" : " to queue"),
-                   now);
-  }
-
-  // Watch action from the picker's library mode: the folder joins the
-  // watched set, an immediate scan lands its files in the store, and the
-  // user is handed back to the Library overlay that sent them here.
-  void watchDirectory(const std::string& dir, milliseconds now) {
-    if (library_ == nullptr) return;
-    library_->addFolder(dir);
-    library_->scan();
-    library_->save();
-    if (recent_dirs_.add(dir)) recent_dirs_.save();
-    library_scanned_ = true;
-    st_.overlay = Overlay::Library;
-    st_.toast.show("Watching " + baseName(dir) + " - " +
-                       std::to_string(library_->entries().size()) +
-                       " file" + (library_->entries().size() == 1 ? "" : "s") +
-                       " in library",
-                   now);
-  }
-
-  // Media library browse (docs/mvp.md §3): the first open of a session
-  // walks the watched folders once — a big tree must not be re-scanned on
-  // every toggle; after that the Rescan button owns the refresh.
-  void openLibrary() {
-    if (library_ != nullptr && !library_scanned_) {
-      library_->scan();
-      library_->save();
-      library_scanned_ = true;
-    }
-    toggleOverlay(Overlay::Library);
-  }
-
-  // ---- Casting (docs/mvp.md §3): the DLNA control-point entry ----
-  //
-  // Ownership: every start attempt constructs a fresh CastSession (the
-  // component's start() demands the Idle phase, so a failed attempt can
-  // never restart in place — a new object is the retry). Discovery runs on
-  // a plain background thread so the 3s M-SEARCH window never freezes the
-  // UI; the session itself is always started from the UI thread with a
-  // direct location, which keeps CastSession's owner-thread contract.
-
-  void openCast() { toggleOverlay(Overlay::Cast); }
-
-  // One discovery burst in the background; results land under cast_mu_.
-  void beginCastSearch() {
-    if (cast_discover_thread_.joinable()) {
-      if (cast_searching_.load(std::memory_order_acquire)) return;  // one at a time
-      cast_discover_thread_.join();  // finished: reap before respawning
-    }
-    {
-      std::lock_guard<std::mutex> lock(cast_mu_);
-      cast_found_.clear();
-    }
-    cast_searching_.store(true, std::memory_order_release);
-    cast_discover_thread_ = std::thread([this] {
-      std::vector<soar::cast::DiscoveredRenderer> found;
-      std::string err;
-      soar::cast::discoverRenderers(
-          3000, &found, &err,
-          cast_iface_.empty() ? nullptr : cast_iface_.c_str());
-      std::lock_guard<std::mutex> lock(cast_mu_);
-      cast_found_ = std::move(found);
-      cast_searching_.store(false, std::memory_order_release);
-    });
-  }
-
-  // Joins the discovery thread (bounded by the component's 3s window).
-  void endCastSearch() {
-    if (cast_discover_thread_.joinable()) cast_discover_thread_.join();
-  }
-
-  // Starts a cast toward the renderer description at `location`. One
-  // session at a time: a fresh attempt stops and replaces the previous one.
-  void startCastTo(const std::string& location, milliseconds now) {
-    if (torrent_ == nullptr || torrent_->phase() != soar::p2p::TorrentPhase::Serving) {
-      st_.toast.show("The torrent source is not serving", now);
-      return;
-    }
-    if (cast_active_ && cast_active_->phase() == soar::cast::CastSession::Phase::Casting) {
-      return;  // already casting; stop first
-    }
-    if (cast_active_) cast_active_->stop();
-    auto session = std::make_unique<soar::cast::CastSession>();
-    soar::cast::CastSession::Params p;
-    p.bridge = torrent_;
-    p.renderer_location = location;
-    p.title = source_label_;
-    p.transcode = cast_transcode_;
-    p.on_position = [this](std::int64_t pos, std::int64_t dur) {
-      cast_pos_ms_.store(pos, std::memory_order_relaxed);
-      cast_dur_ms_.store(dur, std::memory_order_relaxed);
-    };
-    if (session->start(p)) {
-      st_.toast.show("Casting to " + session->rendererName(), now);
-      cast_active_ = std::move(session);
-    } else {
-      st_.toast.show("Cast failed: " + session->lastError(), now);
-    }
-  }
-
-  void stopCast(milliseconds now) {
-    if (!cast_active_) return;
-    cast_active_->stop();
-    st_.toast.show("Cast stopped", now);
-  }
-
-  // Pause/Resume at the renderer. A rejected action is surfaced: the user
-  // asked for something the receiver refused, and the button must not read
-  // as if it had worked.
-  void pauseCast(milliseconds now) {
-    if (!cast_active_) return;
-    if (cast_active_->pause()) st_.toast.show("Cast paused", now);
-    else st_.toast.show("Pause rejected: " + cast_active_->lastError(), now);
-  }
-
-  void resumeCast(milliseconds now) {
-    if (!cast_active_) return;
-    if (cast_active_->resume()) st_.toast.show("Cast resumed", now);
-    else st_.toast.show("Resume rejected: " + cast_active_->lastError(), now);
-  }
-
-  // Per-frame: the pre-armed --cast request and the auto-pick handoff.
-  // The auto request waits for the discovery burst to finish, then casts
-  // to the first answer (or toasts the silence).
-  void handleCastTick(milliseconds now) {
-    if (cast_location_.empty() || cast_auto_done_) return;
-    if (torrent_ == nullptr ||
-        torrent_->phase() != soar::p2p::TorrentPhase::Serving) {
-      return;  // the pre-armed request waits for a serving bridge
-    }
-    if (cast_location_ != "auto") {
-      cast_auto_done_ = true;
-      startCastTo(cast_location_, now);
-      return;
-    }
-    if (cast_searching_.load(std::memory_order_acquire)) return;
-    if (!cast_discover_started_) {
-      cast_discover_started_ = true;
-      beginCastSearch();
-      return;
-    }
-    cast_auto_done_ = true;  // the burst is over either way
-    std::vector<soar::cast::DiscoveredRenderer> found;
-    {
-      std::lock_guard<std::mutex> lock(cast_mu_);
-      found = cast_found_;
-    }
-    if (found.empty()) {
-      st_.toast.show("No DLNA renderer answered", now);
-      return;
-    }
-    startCastTo(found[0].location, now);
-  }
-
-  void drawCastOverlay() {
-    bool open = true;
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_Appearing);
-    if (ImGui::Begin("Cast", &open, ImGuiWindowFlags_NoSavedSettings)) {
-      const auto now = nowMs();
-      if (torrent_ == nullptr) {
-        ImGui::TextDisabled("%s",
-            "Casting streams a torrent source through the local bridge.\n"
-            "Open a .torrent or magnet: source first - this build casts\n"
-            "torrent sources only.");
-      } else {
-        const std::string what = source_label_.empty()
-                                     ? std::string("the torrent source")
-                                     : source_label_;
-        ImGui::Text("Cast '%s' to a DLNA renderer", what.c_str());
-        if (torrent_->phase() != soar::p2p::TorrentPhase::Serving) {
-          ImGui::TextDisabled("%s", "The torrent source is not serving yet.");
-        } else if (cast_active_) {
-          switch (cast_active_->phase()) {
-            case soar::cast::CastSession::Phase::Discovering:
-              ImGui::TextDisabled("%s", "Connecting to the renderer...");
-              break;
-            case soar::cast::CastSession::Phase::Casting: {
-              const std::string name = cast_active_->rendererName();
-              ImGui::Text("Casting to %s", name.c_str());
-              const std::int64_t pos = cast_pos_ms_.load(std::memory_order_relaxed);
-              const std::int64_t dur = cast_dur_ms_.load(std::memory_order_relaxed);
-              if (pos >= 0) {
-                std::string line = "at " + formatClock(milliseconds(pos));
-                if (dur > 0) line += " / " + formatClock(milliseconds(dur));
-                ImGui::TextDisabled("%s", line.c_str());
-              }
-              if (cast_active_->paused()) {
-                if (ImGui::SmallButton("Resume")) resumeCast(now);
-              } else {
-                if (ImGui::SmallButton("Pause")) pauseCast(now);
-              }
-              if (ImGui::SmallButton("Stop casting")) stopCast(now);
-              break;
-            }
-            case soar::cast::CastSession::Phase::Failed:
-              ImGui::Text("Cast failed: %s", cast_active_->lastError().c_str());
-              ImGui::TextDisabled("%s", "Pick a renderer below to retry.");
-              break;
-            case soar::cast::CastSession::Phase::Stopped:
-              ImGui::TextDisabled("%s", "Cast stopped. Pick a renderer to start again.");
-              break;
-            case soar::cast::CastSession::Phase::Idle:
-              break;  // between attempts; the list below is the way forward
-          }
-        }
-        ImGui::Separator();
-        if (ImGui::SmallButton("Search again")) beginCastSearch();
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", cast_searching_.load(std::memory_order_acquire)
-                                      ? "searching..."
-                                      : "SSDP M-SEARCH, 3s window");
-        // Sender-side transcoding: for renderers that cannot decode the
-        // source itself. Session-local, off by default — transcoding costs
-        // CPU and gives up Seek.
-        ImGui::Checkbox("Transcode to H.264/AAC (no seek)", &cast_transcode_);
-        std::vector<soar::cast::DiscoveredRenderer> found;
-        {
-          std::lock_guard<std::mutex> lock(cast_mu_);
-          found = cast_found_;
-        }
-        if (found.empty()) {
-          ImGui::TextDisabled("%s", "No renderers found yet.");
-        }
-        for (const soar::cast::DiscoveredRenderer& d : found) {
-          ImGui::PushID(d.location.c_str());
-          const std::string label =
-              d.friendly_name.empty() ? d.location : d.friendly_name;
-          if (ImGui::Selectable(label.c_str(), false,
-                                ImGuiSelectableFlags_AllowOverlap)) {
-            startCastTo(d.location, now);
-          }
-          if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.location.c_str());
-          ImGui::PopID();
-        }
-      }
-    }
-    ImGui::End();
-    if (!open) st_.overlay = Overlay::None;
-  }
-
-  // The prototype's .switch (settings.html): a 34x20 pill toggled by a
-  // click. Off = a --bg4 face with a line-strong border and a --t3 knob
-  // parked left; on = accent fill, no border, the warm ink knob parked
-  // right. Drawn on the draw list; the hit area is an InvisibleButton.
-  bool settingsSwitch(const char* id, bool* on) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const bool clicked = ImGui::InvisibleButton(id, ImVec2(34.0f, 20.0f));
-    const bool hovered = ImGui::IsItemHovered();
-    ImU32 bg;
-    ImU32 border;
-    if (*on) {
-      bg = ImGui::ColorConvertFloat4ToU32(theme::kAccent);
-      border = bg;
-    } else {
-      bg = ImGui::ColorConvertFloat4ToU32(hovered ? theme::kFieldBgHi
-                                                  : theme::kFieldBg);
-      border = ImGui::ColorConvertFloat4ToU32(theme::kLineStrong);
-    }
-    dl->AddRectFilled(p, ImVec2(p.x + 34.0f, p.y + 20.0f), bg,
-                      theme::kPillRounding);
-    dl->AddRect(p, ImVec2(p.x + 34.0f, p.y + 20.0f), border,
-                theme::kPillRounding);
-    const float kx = *on ? p.x + 34.0f - 2.0f - 14.0f : p.x + 2.0f;
-    dl->AddCircleFilled(
-        ImVec2(kx + 7.0f, p.y + 10.0f), 7.0f,
-        ImGui::ColorConvertFloat4ToU32(*on ? theme::kInkOnAccent
-                                           : theme::kText3));
-    if (clicked) *on = !*on;
-    return clicked;
-  }
-
-  // The prototype's .stepper: a -/+ pair around a 44px value field (the
-  // .val min-width keeps the control's width stable). Buttons carry the
-  // --bg3 face with a --line border and --t2 glyphs; the value prints in
-  // --t1. Returns true when the value moved. Width is 24+2+44+2+24 = 96.
-  bool settingsStepper(const char* id, int* val, int delta, int lo, int hi,
-                       const char* fmt) {
-    char buf[24];
-    std::snprintf(buf, sizeof(buf), fmt, *val);
-    const std::string key(id);
-    bool changed = false;
-    ImGui::PushStyleColor(ImGuiCol_Button, theme::kFieldBg);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::kFieldBgHi);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme::kFieldBgHi);
-    ImGui::PushStyleColor(ImGuiCol_Border, theme::kCardLine);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText2);
-    if (ImGui::Button((std::string("-") + key + "_m").c_str(), ImVec2(24.0f, 24.0f))) {
-      if (*val - delta >= lo) {
-        *val -= delta;
-        changed = true;
-      }
-    }
-    ImGui::SameLine(0.0f, 2.0f);
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(44.0f, 24.0f));  // .val field
-    ImGui::SameLine(0.0f, 2.0f);
-    if (ImGui::Button((std::string("+") + key + "_p").c_str(), ImVec2(24.0f, 24.0f))) {
-      if (*val + delta <= hi) {
-        *val += delta;
-        changed = true;
-      }
-    }
-    ImGui::PopStyleColor(5);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 ts = ImGui::CalcTextSize(buf);
-    dl->AddText(ImVec2(p.x + (44.0f - ts.x) * 0.5f, p.y + (24.0f - ts.y) * 0.5f),
-                ImGui::ColorConvertFloat4ToU32(theme::kText), buf);
-    return changed;
-  }
-
-  // Runtime switch for the remote download provider (the settings page's
-  // "Auto download" row): on = the env-configured endpoint (an empty one
-  // stays offline — the provider never dials without a URL); off =
-  // reconfigured with an empty endpoint so findCandidates()/fetch() go
-  // inert immediately (docs/mvp.md §6 zero-network default).
-  void configureHttpSubtitles(bool enabled) {
-    soar::HttpSubtitleConfig sub = subtitle_env_cfg_;
-    if (!enabled) sub.endpoint.clear();
-    external_.configure(std::move(sub));
-  }
-
-  // The chead's Reset defaults: every live session setting returns to its
-  // factory value; the persisted ones (recent cap, theme) rewrite their
-  // files too, so the choice survives a restart.
-  void resetSettingsDefaults() {
-    st_.remember_last_media = true;
-    st_.esc_exits_fullscreen = true;
-    st_.subtitle_visible = true;
-    st_.subtitle_font_size = 24.0f;
-    st_.subtitle_offset_ms = 0;
-    st_.subtitle_autoshow = true;
-    st_.subtitle_autodl = true;
-    configureHttpSubtitles(true);
-    st_.recent_cap = 15;
-    recent_.setMaxEntries(15);
-    recent_.save();
-    saveRecentCap(15);
-    if (cfg_.subtitle_visible) {
-      cfg_.subtitle_visible->store(true, std::memory_order_relaxed);
-    }
-    if (cfg_.subtitle_font_size) {
-      cfg_.subtitle_font_size->store(24.0f, std::memory_order_relaxed);
-    }
-    if (cfg_.subtitle_offset_ms) {
-      cfg_.subtitle_offset_ms->store(0, std::memory_order_relaxed);
-    }
-    if (theme::g_light) {
-      theme::applyPalette(false);
-      applyTheme();
-      saveThemePref();
-    }
-    st_.last_rate = 1.0;
-    player_.setRate(1.0);
-    playlist_.setLoop(PlaylistStore::Loop::Off);
-    if (playlist_.shuffle()) playlist_.setShuffle(false);
-  }
-
-  // The nav's 16px line icons (settings.html inlines the same five SVGs,
-  // stroke-width 1.6 on a 24px grid — rescaled here to 16px). Drawn with
-  // the draw list: the bitmap font carries no icon set.
-  void settingsNavIcon(ImDrawList* dl, const ImVec2 c, SettingsTab tab,
-                       ImU32 col) {
-    const float th = 1.5f;
-    switch (tab) {
-      case SettingsTab::General: {  // sun: a small disc + eight rays
-        dl->AddCircleFilled(c, 2.5f, col);
-        for (int i = 0; i < 8; ++i) {
-          const float a = i * 0.7853981634f;  // pi/4
-          dl->AddLine(ImVec2(c.x + std::cos(a) * 4.5f, c.y + std::sin(a) * 4.5f),
-                      ImVec2(c.x + std::cos(a) * 7.0f, c.y + std::sin(a) * 7.0f),
-                      col, th);
-        }
-        break;
-      }
-      case SettingsTab::Playback: {  // play outline + the leading bar
-        dl->AddTriangle(ImVec2(c.x + 5.3f, c.y + 3.7f),
-                        ImVec2(c.x + 5.3f, c.y + 12.3f),
-                        ImVec2(c.x + 12.7f, c.y + 8.0f), col, th);
-        dl->AddLine(ImVec2(c.x + 2.7f, c.y + 3.3f),
-                    ImVec2(c.x + 2.7f, c.y + 12.7f), col, th);
-        break;
-      }
-      case SettingsTab::Subtitles: {  // rounded screen + two line pairs
-        dl->AddRect(ImVec2(c.x + 1.3f, c.y + 2.0f),
-                    ImVec2(c.x + 14.7f, c.y + 11.3f), col, 2.0f, 0, th);
-        dl->AddLine(ImVec2(c.x + 3.3f, c.y + 5.8f), ImVec2(c.x + 6.0f, c.y + 5.8f),
-                    col, th);
-        dl->AddLine(ImVec2(c.x + 8.7f, c.y + 5.8f),
-                    ImVec2(c.x + 11.3f, c.y + 5.8f), col, th);
-        dl->AddLine(ImVec2(c.x + 3.3f, c.y + 8.5f), ImVec2(c.x + 8.0f, c.y + 8.5f),
-                    col, th);
-        break;
-      }
-      case SettingsTab::Network: {  // globe: disc + equator + two meridians
-        dl->AddCircle(c, 6.0f, col, 0, th);
-        dl->AddLine(ImVec2(c.x - 6.0f, c.y), ImVec2(c.x + 6.0f, c.y), col, th);
-        dl->AddEllipse(c, ImVec2(2.7f, 6.0f), col, 0.0f, 0, th);
-        dl->AddEllipse(c, ImVec2(1.0f, 6.0f), col, 0.0f, 0, th);
-        break;
-      }
-      case SettingsTab::About: {  // info: circle + stem + dot
-        dl->AddCircle(c, 6.0f, col, 0, th);
-        dl->AddLine(ImVec2(c.x, c.y + 2.2f), ImVec2(c.x, c.y + 4.6f), col, th);
-        dl->AddCircleFilled(ImVec2(c.x, c.y - 2.6f), 0.8f, col);
-        break;
-      }
-    }
-  }
-
-  // The prototype's orange rounded square with the "S" initial
-  // (settings.html .nav .wing and .about .logo). The face is the accent
-  // (the prototype's 140deg #FF8F5F->#FF5A2A gradient reads as one orange
-  // at these sizes); the bitmap font's "S" is the ink.
-  void drawGradientMark(ImDrawList* dl, const ImVec2& p, float size, float r,
-                        ImU32) {
-    dl->AddRectFilled(p, ImVec2(p.x + size, p.y + size),
-                      ImGui::ColorConvertFloat4ToU32(theme::kAccent), r);
-    const ImU32 ink = ImGui::ColorConvertFloat4ToU32(
-        ImVec4(0.078f, 0.039f, 0.016f, 1.0f));  // #140A04
-    const ImVec2 ss = ImGui::CalcTextSize("S");
-    dl->AddText(ImVec2(p.x + (size - ss.x) * 0.5f, p.y + (size - ss.y) * 0.5f),
-                ink, "S");
-  }
-
-  // A nav tab row: a 32px strip with the tab's line icon + label, an
-  // accent-soft face when active, a --bg3 fill on hover. Ink follows the
-  // prototype tiering: --t3 idle, --t2 hover, --accent-hi active.
-  // Returns true on a click.
-  bool settingsNavRow(const char* id, SettingsTab tab, const char* label,
-                      bool active) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    // .nav padding 10px on each side: the row fills the nav's content box,
-    // whatever the previous item left the cursor at.
-    ImGui::SetCursorPosX(10.0f);
-    const float w = ImGui::GetWindowWidth() - 20.0f;
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, 32.0f));
-    const bool hovered = ImGui::IsItemHovered();
-    if (active) {
-      ImVec4 a = theme::kAccent;
-      a.w = 0.14f;  // --accent-soft
-      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 32.0f),
-                        ImGui::ColorConvertFloat4ToU32(a), 8.0f);
-    } else if (hovered) {
-      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 32.0f),
-                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 8.0f);
-    }
-    const ImU32 fg = ImGui::ColorConvertFloat4ToU32(
-        active ? theme::kAccentHi : (hovered ? theme::kText2 : theme::kText3));
-    // icon 16px at the row's 10px padding, then the 10px gap -> text at 36
-    settingsNavIcon(dl, ImVec2(p.x + 10.0f, p.y + 16.0f), tab, fg);
-    const ImVec2 ls = ImGui::CalcTextSize(label);
-    dl->AddText(ImVec2(p.x + 36.0f, p.y + (32.0f - ls.y) * 0.5f), fg, label);
-    return clicked;
-  }
-
-  // The nav's .grp separator: a muted uppercase group label above the tabs
-  // it heads (the prototype's 10px letter-spaced label, rendered at the
-  // bitmap font's single size).
-  void settingsGrp(const char* label) {
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f);
-    // .nav .grp margin-left 8 on the nav's 10px padding.
-    ImGui::SetCursorPosX(18.0f);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
-    ImGui::TextUnformatted(label);
-    ImGui::PopStyleColor();
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
-  }
-
-  // A prototype .set row: a bordered rounded card (--bg2 face, --line
-  // border, r-md 10) with the label block (title + description) on the
-  // left and a fixed-width control on the right, vertically centred.
-  void settingCard(const char* id, const char* title, const char* desc,
-                   float control_w, float control_h,
-                   const std::function<void()>& control) {
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kPanelRounding);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kCardBg);
-    ImGui::PushStyleColor(ImGuiCol_Border, theme::kCardLine);
-    if (ImGui::BeginChild(id, ImVec2(-1.0f, 52.0f),
-                          ImGuiChildFlags_Borders,
-                          ImGuiWindowFlags_NoScrollbar |
-                              ImGuiWindowFlags_NoScrollWithMouse)) {
-      ImGui::SetCursorPos(ImVec2(12.0f, 8.0f));
-      ImGui::TextUnformatted(title);
-      ImGui::SetCursorPos(ImVec2(12.0f, 28.0f));
-      ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
-      ImGui::TextUnformatted(desc);
-      ImGui::PopStyleColor();
-      ImGui::SetCursorPos(
-          ImVec2(ImGui::GetContentRegionAvail().x - control_w - 10.0f,
-                 (52.0f - control_h) * 0.5f));
-      control();
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar();
-  }
-
-  // The prototype's .dangerbtn: a danger-outline button (red at .4 border
-  // / .1 face / full ink text; hover raises the face to .18).
-  bool dangerButton(const char* label, ImVec2 size) {
-    ImGui::PushStyleColor(
-        ImGuiCol_Button, ImGui::ColorConvertFloat4ToU32(ImVec4(
-                             theme::kDanger.x, theme::kDanger.y,
-                             theme::kDanger.z, 0.10f)));
-    ImGui::PushStyleColor(
-        ImGuiCol_ButtonHovered, ImGui::ColorConvertFloat4ToU32(ImVec4(
-                                    theme::kDanger.x, theme::kDanger.y,
-                                    theme::kDanger.z, 0.18f)));
-    ImGui::PushStyleColor(
-        ImGuiCol_ButtonActive, ImGui::ColorConvertFloat4ToU32(ImVec4(
-                                   theme::kDanger.x, theme::kDanger.y,
-                                   theme::kDanger.z, 0.18f)));
-    ImGui::PushStyleColor(
-        ImGuiCol_Border, ImGui::ColorConvertFloat4ToU32(ImVec4(
-                             theme::kDanger.x, theme::kDanger.y,
-                             theme::kDanger.z, 0.40f)));
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::kDanger);
-    const bool clicked = ImGui::Button(label, size);
-    ImGui::PopStyleColor(5);
-    return clicked;
-  }
-
-  // The prototype's .select: a 26px box with a line-strong border and a
-  // --bg3 face. Live = clicking cycles through the caller's options (the
-  // bitmap font cannot unfold a dropdown cleanly, so the box shows the
-  // current value); disabled = an honest static box for the options the
-  // app does not implement yet.
-  bool settingsSelectBox(const char* id, const char* label, float w,
-                         bool disabled) {
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    bool clicked = false;
-    if (disabled) {
-      ImGui::Dummy(ImVec2(w, 26.0f));
-    } else {
-      clicked = ImGui::InvisibleButton(id, ImVec2(w, 26.0f));
-    }
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const bool hov = !disabled && ImGui::IsItemHovered();
-    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 26.0f),
-                      ImGui::ColorConvertFloat4ToU32(hov ? theme::kFieldBgHi
-                                                         : theme::kFieldBg),
-                      kControlRounding);
-    dl->AddRect(p, ImVec2(p.x + w, p.y + 26.0f),
-                ImGui::ColorConvertFloat4ToU32(theme::kLineStrong),
-                kControlRounding);
-    const ImVec2 ts = ImGui::CalcTextSize(label);
-    dl->AddText(ImVec2(p.x + 8.0f, p.y + (26.0f - ts.y) * 0.5f),
-                ImGui::ColorConvertFloat4ToU32(disabled ? theme::kText2
-                                                        : theme::kText),
-                label);
-    return clicked;
-  }
-
-  // The prototype's .pill: a rounded badge with a soft tinted face and the
-  // matching ink (settings.html uses sky for the tracker count and ok for
-  // the offline summary).
-  void settingsPill(const char* label, const ImVec4& ink) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const ImVec2 ts = ImGui::CalcTextSize(label);
-    const float w = ts.x + 16.0f;
-    const float h = ts.y + 6.0f;
-    ImVec4 face = ink;
-    face.w = 0.14f;
-    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h),
-                      ImGui::ColorConvertFloat4ToU32(face), 99.0f);
-    dl->AddText(ImVec2(p.x + 8.0f, p.y + 3.0f),
-                ImGui::ColorConvertFloat4ToU32(ink), label);
-    ImGui::Dummy(ImVec2(w, h));
-  }
-
-  // The prototype's .textinput: a 26px mono box (line-strong border, --bg3
-  // face). Rendered read-only — the sidecar directory comes from the state
-  // layout, not a per-run edit.
-  void settingsTextInput(const char* value, float w) {
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(w, 26.0f));
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 26.0f),
-                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBg),
-                      kControlRounding);
-    dl->AddRect(p, ImVec2(p.x + w, p.y + 26.0f),
-                ImGui::ColorConvertFloat4ToU32(theme::kLineStrong),
-                kControlRounding);
-    const int max_chars = std::max(4, static_cast<int>((w - 18.0f) / 8.0f));
-    const std::string text = clipEllipsis(value, max_chars);
-    const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
-    dl->AddText(ImVec2(p.x + 9.0f, p.y + (26.0f - ts.y) * 0.5f),
-                ImGui::ColorConvertFloat4ToU32(theme::kText2), text.c_str());
-  }
-
-  // The .sect h2: a muted uppercase tier heading (--t4).
-  void settingsSect(const char* label) {
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
-    ImGui::TextUnformatted(label);
-    ImGui::PopStyleColor();
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-  }
-
-  // The prototype's .version-row: a bordered k/v strip (r-md, --line).
-  void versionRow(const char* id, const char* k, const char* v) {
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kPanelRounding);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kPageBg);
-    ImGui::PushStyleColor(ImGuiCol_Border, theme::kCardLine);
-    if (ImGui::BeginChild(id, ImVec2(-1.0f, 32.0f),
-                          ImGuiChildFlags_Borders,
-                          ImGuiWindowFlags_NoScrollbar |
-                              ImGuiWindowFlags_NoScrollWithMouse)) {
-      ImGui::SetCursorPos(ImVec2(12.0f, 7.0f));
-      ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
-      ImGui::TextUnformatted(k);
-      ImGui::PopStyleColor();
-      const float w = ImGui::GetContentRegionAvail().x;
-      const ImVec2 vs = ImGui::CalcTextSize(v);
-      ImGui::SetCursorPos(ImVec2(w - vs.x - 10.0f, 7.0f));
-      ImGui::TextUnformatted(v);
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar();
-  }
-
-  // The prototype's .ep endpoint row: a tag column, a dim ellipsised value
-  // and an Edit button (the settings page's honest unconfigured state).
-  void endpointRow(const char* id, const char* tag, const char* value,
-                   milliseconds now) {
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kPanelRounding);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kCardBg);
-    ImGui::PushStyleColor(ImGuiCol_Border, theme::kCardLine);
-    if (ImGui::BeginChild(id, ImVec2(-1.0f, 40.0f),
-                          ImGuiChildFlags_Borders,
-                          ImGuiWindowFlags_NoScrollbar |
-                              ImGuiWindowFlags_NoScrollWithMouse)) {
-      const float avail = ImGui::GetContentRegionAvail().x;
-      ImGui::SetCursorPos(ImVec2(12.0f, 11.0f));
-      ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
-      ImGui::TextUnformatted(tag);
-      ImGui::PopStyleColor();
-      // The tag column tracks the label's real width (the 16px bitmap font
-      // is wider than the prototype's 10px .tag, so the fixed 52px column
-      // would overlap the value).
-      const float tag_w = ImGui::CalcTextSize(tag).x;
-      const float value_w = avail - (12.0f + tag_w + 16.0f) - 68.0f;
-      const int max_chars = std::max(8, static_cast<int>(value_w / 8.0f));
-      ImGui::SetCursorPos(ImVec2(12.0f + tag_w + 16.0f, 11.0f));
-      ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
-      ImGui::TextUnformatted(clipEllipsis(value, max_chars).c_str());
-      ImGui::PopStyleColor();
-      ImGui::SetCursorPos(ImVec2(avail - 58.0f, 8.0f));
-      if (dangerButton("Edit##ep", ImVec2(48.0f, 24.0f))) {
-        st_.toast.show("Endpoint not configured", now);
-      }
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar();
-  }
-
-  // The full settings page (docs/public/prototypes/settings.html, v1): a
-  // full-window layout — a 196px nav (--bg0, General / Playback /
-  // Subtitles, then .grp NETWORK / ABOUT) beside a content column (--bg1)
-  // with its chead (title + Reset defaults / Done) and a per-tab body of
-  // .set rows. Every tab renders real content: the General startup rows,
-  // Playback's rate/loop/shuffle, the Subtitles render/timing/fetch grid
-  // + endpoints, Network's local-first rows + zero-external summary, and
-  // About's mark + version rows. Controls the app does not implement yet
-  // render disabled — visible per the prototype, honestly inert.
-  void drawSettingsOverlay() {
-    bool open = true;
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
-    ImGui::SetNextWindowSize(io.DisplaySize);
-    // The full-height page must sit above the video/pause layers; the
-    // focus request puts the page at the front of the z-order every frame
-    // it is open.
-    ImGui::SetNextWindowFocus();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kPageBg);
-    ImGui::PushStyleColor(ImGuiCol_Border, 0);
-    if (ImGui::Begin("Settings", &open,
-                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                         ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoCollapse |
-                         ImGuiWindowFlags_NoScrollbar |
-                         ImGuiWindowFlags_NoSavedSettings)) {
-      // ---- nav sidebar (settings.html .nav: 196px --bg0) ----
-      ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kNavBg);
-      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 16.0f));
-      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
-      ImGui::BeginChild("##set_nav", ImVec2(196.0f, 0.0f), ImGuiChildFlags_None);
-      {
-        // .nav padding 16px 10px, set explicitly (a child window's content
-        // origin does not track the pushed WindowPadding the way a top
-        // window's does, so the wing/rows would otherwise start at the
-        // child's corner).
-        ImGui::SetCursorPos(ImVec2(10.0f, 16.0f));
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        // .nav .wing: the 26px rounded gradient mark, indented 8px more than
-        // the rows (.wing margin-left 8 on the nav's 10px padding).
-        const ImVec2 lp = ImGui::GetCursorScreenPos();
-        drawGradientMark(dl, ImVec2(lp.x + 8.0f, lp.y), 26.0f, 8.0f,
-                         ImGui::ColorConvertFloat4ToU32(theme::kNavBg));
-        ImGui::Dummy(ImVec2(26.0f, 26.0f));
-        // .wing margin-bottom: 16px below the mark before the first tab.
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 16.0f);
-        if (settingsNavRow("##st_general", SettingsTab::General, "General",
-                           st_.settings_tab == SettingsTab::General)) {
-          st_.settings_tab = SettingsTab::General;
-        }
-        if (settingsNavRow("##st_playback", SettingsTab::Playback, "Playback",
-                           st_.settings_tab == SettingsTab::Playback)) {
-          st_.settings_tab = SettingsTab::Playback;
-        }
-        if (settingsNavRow("##st_subtitles", SettingsTab::Subtitles, "Subtitles",
-                           st_.settings_tab == SettingsTab::Subtitles)) {
-          st_.settings_tab = SettingsTab::Subtitles;
-        }
-        settingsGrp("NETWORK");
-        if (settingsNavRow("##st_network", SettingsTab::Network,
-                           "Network & Download",
-                           st_.settings_tab == SettingsTab::Network)) {
-          st_.settings_tab = SettingsTab::Network;
-        }
-        settingsGrp("ABOUT");
-        if (settingsNavRow("##st_about", SettingsTab::About, "About",
-                           st_.settings_tab == SettingsTab::About)) {
-          st_.settings_tab = SettingsTab::About;
-        }
-        // .nav border-right: the hairline splitting nav from content.
-        const ImVec2 np = ImGui::GetWindowPos();
-        const float nh = ImGui::GetWindowHeight();
-        dl->AddLine(ImVec2(np.x + 195.5f, np.y), ImVec2(np.x + 195.5f, np.y + nh),
-                    ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
-      }
-      ImGui::EndChild();
-      ImGui::PopStyleVar(2);
-      ImGui::PopStyleColor();
-      ImGui::SameLine();
-
-      // ---- content column (.main: chead + body) ----
-      ImGui::BeginChild("##set_main", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
-                        ImGuiWindowFlags_NoScrollbar);
-      const char* title = "General";
-      const char* desc = "Startup & interface";
-      switch (st_.settings_tab) {
-        case SettingsTab::General: title = "General"; desc = "Startup & interface"; break;
-        case SettingsTab::Playback: title = "Playback"; desc = "Transport, loop & queue"; break;
-        case SettingsTab::Subtitles: title = "Subtitles"; desc = "Rendering, timing, download"; break;
-        case SettingsTab::Network: title = "Network"; desc = "Local first, explicit endpoints"; break;
-        case SettingsTab::About: title = "About"; desc = "soar"; break;
-      }
-      // chead (settings.html .chead: 14/24/12 padding + bottom hairline):
-      // title + muted desc, the Reset defaults button (--bg3 face) and the
-      // accent Done button right-aligned.
-      {
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 mp = ImGui::GetWindowPos();
-        const float mw = ImGui::GetWindowWidth();
-        const float chead_h = 44.0f;
-        const float btn_h = 28.0f;
-        ImGui::SetCursorPos(ImVec2(24.0f, 14.0f));
-        ImGui::TextUnformatted(title);
-        ImGui::SameLine(0.0f, 10.0f);
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
-        ImGui::TextUnformatted(desc);
-        ImGui::PopStyleColor();
-        const float done_w = ImGui::CalcTextSize("Done").x + 24.0f;
-        const float reset_w = ImGui::CalcTextSize("Reset defaults").x + 24.0f;
-        const ImVec2 done_p(mp.x + mw - 24.0f - done_w, mp.y + 14.0f);
-        ImGui::SetCursorScreenPos(done_p);
-        ImGui::InvisibleButton("##set_done", ImVec2(done_w, btn_h));
-        if (ImGui::IsItemClicked()) st_.overlay = Overlay::None;
-        dl->AddRectFilled(done_p, ImVec2(done_p.x + done_w, done_p.y + btn_h),
-                          ImGui::ColorConvertFloat4ToU32(
-                              ImGui::IsItemHovered() ? theme::kAccentHover
-                                                     : theme::kAccent),
-                          kControlRounding);
-        const ImVec2 dts = ImGui::CalcTextSize("Done");
-        dl->AddText(ImVec2(done_p.x + (done_w - dts.x) * 0.5f,
-                           done_p.y + (btn_h - dts.y) * 0.5f),
-                    ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent), "Done");
-        const ImVec2 rst_p(done_p.x - 10.0f - reset_w, mp.y + 14.0f);
-        ImGui::SetCursorScreenPos(rst_p);
-        ImGui::InvisibleButton("##set_reset", ImVec2(reset_w, btn_h));
-        if (ImGui::IsItemClicked()) resetSettingsDefaults();
-        const bool rst_hov = ImGui::IsItemHovered();
-        dl->AddRectFilled(rst_p, ImVec2(rst_p.x + reset_w, rst_p.y + btn_h),
-                          ImGui::ColorConvertFloat4ToU32(rst_hov ? theme::kFieldBgHi
-                                                                 : theme::kFieldBg),
-                          kControlRounding);
-        dl->AddRect(rst_p, ImVec2(rst_p.x + reset_w, rst_p.y + btn_h),
-                    ImGui::ColorConvertFloat4ToU32(theme::kCardLine),
-                    kControlRounding);
-        const ImVec2 rts = ImGui::CalcTextSize("Reset defaults");
-        dl->AddText(ImVec2(rst_p.x + (reset_w - rts.x) * 0.5f,
-                           rst_p.y + (btn_h - rts.y) * 0.5f),
-                    ImGui::ColorConvertFloat4ToU32(rst_hov ? theme::kText
-                                                           : theme::kText2),
-                    "Reset defaults");
-        // the chead's bottom hairline spans the whole column
-        dl->AddLine(ImVec2(mp.x, mp.y + chead_h),
-                    ImVec2(mp.x + mw, mp.y + chead_h),
-                    ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
-      }
-      // body (.body: 18/24/24 padding) — the per-tab scroll region
-      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-      ImGui::SetCursorPos(ImVec2(24.0f, 62.0f));
-      ImGui::BeginChild("##set_scroll", ImVec2(-24.0f, -24.0f),
-                        ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
-
-      switch (st_.settings_tab) {
-        case SettingsTab::General: {
-          // sect h2 启动与界面 — the four prototype rows (theme stays on
-          // the y shortcut; the prototype page has no theme row either).
-          settingsSect("STARTUP & INTERFACE");
-          settingCard(
-              "##g_remember", "Remember last media",
-              "Restore the last file and position on startup", 34.0f, 20.0f,
-              [&] { settingsSwitch("##g_remember_sw", &st_.remember_last_media); });
-          settingCard(
-              "##g_esc", "ESC exits fullscreen",
-              "Only in fullscreen; in-window ESC closes settings", 34.0f, 20.0f,
-              [&] { settingsSwitch("##g_esc_sw", &st_.esc_exits_fullscreen); });
-          // 界面语言 — ASCII-only build: the shipped label set is English
-          // (the bitmap font has no CJK), so the select has one honest row.
-          settingCard(
-              "##g_lang", "Interface language",
-              "Follows the system; kept across restarts", 120.0f, 26.0f, [&] {
-                settingsSelectBox("##g_lang_sel", "English", 120.0f, true);
-              });
-          settingCard("##g_recent", "Recent playback cap",
-                      "MRU list size (O key opens the list)", 96.0f, 24.0f, [&] {
-                        int cap = st_.recent_cap;
-                        if (settingsStepper("##g_recent_step", &cap, 1, 5, 50, "%d")) {
-                          st_.recent_cap = cap;
-                          recent_.setMaxEntries(static_cast<std::size_t>(cap));
-                          recent_.save();
-                          saveRecentCap(cap);
-                        }
-                      });
-          break;
-        }
-        case SettingsTab::Playback: {
-          // Real transport rows: the rate select cycles the same kRates
-          // table the ,/. shortcuts do; loop mode walks off/all/one and
-          // shuffle flips the queue's round order — all live stores.
-          settingsSect("TRANSPORT & QUEUE");
-          settingCard("##p_rate", "Playback rate",
-                      "Cycles the transport speed (, and . keys)", 120.0f, 26.0f,
-                      [&] {
-                        static const double kRates[] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
-                        const std::size_t count = sizeof(kRates) / sizeof(kRates[0]);
-                        std::size_t idx = 2;
-                        for (std::size_t i = 0; i < count; ++i) {
-                          if (std::abs(kRates[i] - st_.last_rate) < 1e-9) idx = i;
-                        }
-                        char cur[16];
-                        std::snprintf(cur, sizeof(cur), "%.2gx", st_.last_rate);
-                        if (settingsSelectBox("##p_rate_sel", cur, 120.0f, false)) {
-                          const double next = kRates[(idx + 1) % count];
-                          st_.last_rate = next;
-                          player_.setRate(next);
-                          std::snprintf(cur, sizeof(cur), "Rate %.2gx", next);
-                          st_.toast.show(cur, nowMs());
-                        }
-                      });
-          settingCard("##p_loop", "Loop mode",
-                      "Off, all (whole queue) or one (this file)", 120.0f, 26.0f,
-                      [&] {
-                        const char* names[] = {"Off", "All", "One"};
-                        int idx = static_cast<int>(playlist_.loop());
-                        if (settingsSelectBox("##p_loop_sel", names[idx], 120.0f,
-                                              false)) {
-                          const auto next =
-                              static_cast<PlaylistStore::Loop>((idx + 1) % 3);
-                          playlist_.setLoop(next);
-                          st_.toast.show(next == PlaylistStore::Loop::Off ? "Loop off"
-                                         : next == PlaylistStore::Loop::All
-                                             ? "Loop all"
-                                             : "Loop one",
-                                         nowMs());
-                        }
-                      });
-          settingCard("##p_shuffle", "Shuffle queue",
-                      "Random round order (P overlay honours it)", 34.0f, 20.0f,
-                      [&] {
-                        bool sh = playlist_.shuffle();
-                        if (settingsSwitch("##p_shuffle_sw", &sh)) {
-                          playlist_.setShuffle(sh);
-                        }
-                      });
-          break;
-        }
-        case SettingsTab::Subtitles: {
-          // The prototype's primary frame: a 2-column grid (渲染 / 时长对齐
-          // + 获取) with the endpoints section full-width below.
-          ImGui::BeginChild("##s_grid", ImVec2(-1.0f, 316.0f),
-                            ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
-          const float col_w = (ImGui::GetContentRegionAvail().x - 14.0f) * 0.5f;
-          ImGui::BeginChild("##s_cl", ImVec2(col_w, 0.0f), ImGuiChildFlags_None);
-          // sect h2 渲染
-          settingsSect("RENDERING");
-          settingCard(
-              "##s_show", "Show subtitles",
-              "Render at the bottom edge", 34.0f,
-              20.0f, [&] {
-                if (settingsSwitch("##s_show_sw", &st_.subtitle_visible)) {
-                  if (cfg_.subtitle_visible) {
-                    cfg_.subtitle_visible->store(st_.subtitle_visible,
-                                                 std::memory_order_relaxed);
-                  }
-                }
-              });
-          settingCard(
-              "##s_autoshow", "Auto-show first subtitle",
-              "Shows the first selected track", 34.0f, 20.0f, [&] {
-                settingsSwitch("##s_autoshow_sw", &st_.subtitle_autoshow);
-              });
-          settingCard(
-              "##s_font", "Subtitle font",
-              "System font fallback", 120.0f, 26.0f, [&] {
-                settingsSelectBox("##s_font_sel", "Noto Sans SC", 120.0f, true);
-              });
-          settingCard("##s_size", "Font size",
-                      "Scales with window height", 96.0f, 24.0f,
-                      [&] {
-                        int px = static_cast<int>(st_.subtitle_font_size);
-                        if (settingsStepper("##s_size_step", &px, 1, 12, 48, "%d px")) {
-                          st_.subtitle_font_size = static_cast<float>(px);
-                          if (cfg_.subtitle_font_size) {
-                            cfg_.subtitle_font_size->store(
-                                static_cast<float>(px), std::memory_order_relaxed);
-                          }
-                        }
-                      });
-          ImGui::EndChild();
-          ImGui::SameLine(0.0f, 14.0f);
-          ImGui::BeginChild("##s_cr", ImVec2(col_w, 0.0f), ImGuiChildFlags_None);
-          // sect h2 时长对齐
-          settingsSect("TIMING");
-          settingCard("##s_offset", "Global sync offset",
-                      "+ leads / - lags", 96.0f, 24.0f, [&] {
-                        int ms = st_.subtitle_offset_ms;
-                        if (settingsStepper("##s_offset_step", &ms, 100, -5000, 5000,
-                                            "%d ms")) {
-                          st_.subtitle_offset_ms = ms;
-                          if (cfg_.subtitle_offset_ms) {
-                            cfg_.subtitle_offset_ms->store(ms,
-                                                           std::memory_order_relaxed);
-                          }
-                        }
-                      });
-          settingCard(
-              "##s_style", "Render style",
-              "Plain text first", 120.0f, 26.0f,
-              [&] { settingsSelectBox("##s_style_sel", "Plain text", 120.0f, true); });
-          ImGui::Dummy(ImVec2(0.0f, 6.0f));
-          // sect h2 获取
-          settingsSect("FETCH");
-          settingCard("##s_dir", "Subtitle directory",
-                      "Scans .srt/.ass/.vtt", 150.0f, 26.0f, [&] {
-                        settingsTextInput("~/.local/share/soar/subtitles", 150.0f);
-                      });
-          settingCard(
-              "##s_auto", "Auto download",
-              "Matched by hash + name", 34.0f, 20.0f,
-              [&] {
-                if (settingsSwitch("##s_auto_sw", &st_.subtitle_autodl)) {
-                  configureHttpSubtitles(st_.subtitle_autodl);
-                }
-              });
-          ImGui::EndChild();
-          ImGui::EndChild();
-          // sect h2 端点 — full width below the grid
-          ImGui::Dummy(ImVec2(0.0f, 8.0f));
-          settingsSect("ENDPOINTS");
-          endpointRow("##ep_download", "Download",
-                      "Not configured - no automatic subtitle fetch", nowMs());
-          endpointRow("##ep_translate", "Translate",
-                      "Not configured - no translated track", nowMs());
-          ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
-          ImGui::TextUnformatted(
-              "Translate endpoint is optional: offline beats overreach; keys stay local");
-          ImGui::PopStyleColor();
-          break;
-        }
-        case SettingsTab::Network: {
-          // sect h2 本地优先（默认态，无任何外部依赖）
-          settingsSect("LOCAL FIRST (THE DEFAULT HAS NO DEPENDENCIES)");
-          settingCard("##n_trackers", "P2P / DHT trackers",
-                      "Empty = local files and direct URLs only", 150.0f, 24.0f,
-                      [&] {
-                        settingsPill("0 trackers", theme::kNet);
-                        ImGui::SameLine(0.0f, 8.0f);
-                        if (dangerButton("Add##n_add", ImVec2(44.0f, 24.0f))) {
-                          st_.toast.show("No tracker list yet", nowMs());
-                        }
-                      });
-          settingCard("##n_port", "Inbound port",
-                      "Default 0 = random high port", 96.0f, 24.0f, [&] {
-                        int port = 0;
-                        ImGui::BeginDisabled(true);
-                        settingsStepper("##n_port_step", &port, 1, 0, 65535, "%d");
-                        ImGui::EndDisabled();
-                      });
-          ImGui::Dummy(ImVec2(0.0f, 8.0f));
-          settingsSect("ENDPOINTS (NOTHING CALLS OUT BY DEFAULT)");
-          endpointRow("##n_ep_sub", "Subtitles", "Not configured - no subtitle fetch",
-                      nowMs());
-          endpointRow("##n_ep_translate", "Translate", "Not configured - no translated track",
-                      nowMs());
-          endpointRow("##n_ep_stats", "Stats", "Not configured - no telemetry, all local",
-                      nowMs());
-          // The green zero-external summary row (border/face tinted with
-          // ok, the title in the ok ink, an ok pill on the right).
-          ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kPanelRounding);
-          ImGui::PushStyleColor(
-              ImGuiCol_ChildBg,
-              ImGui::ColorConvertFloat4ToU32(ImVec4(
-                  theme::kOk.x, theme::kOk.y, theme::kOk.z, 0.06f)));
-          ImGui::PushStyleColor(
-              ImGuiCol_Border,
-              ImGui::ColorConvertFloat4ToU32(ImVec4(
-                  theme::kOk.x, theme::kOk.y, theme::kOk.z, 0.35f)));
-          if (ImGui::BeginChild("##n_zero", ImVec2(-1.0f, 52.0f),
-                                ImGuiChildFlags_Borders,
-                                ImGuiWindowFlags_NoScrollbar |
-                                    ImGuiWindowFlags_NoScrollWithMouse)) {
-            ImGui::SetCursorPos(ImVec2(12.0f, 8.0f));
-            ImGui::PushStyleColor(ImGuiCol_Text, theme::kOk);
-            ImGui::TextUnformatted("* Currently zero-external");
-            ImGui::PopStyleColor();
-            ImGui::SetCursorPos(ImVec2(12.0f, 28.0f));
-            ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
-            ImGui::TextUnformatted(
-                "The only network is the URL you opened; no background requests");
-            ImGui::PopStyleColor();
-            ImGui::SetCursorPos(
-                ImVec2(ImGui::GetContentRegionAvail().x - 10.0f -
-                           ImGui::CalcTextSize("Offline capable").x - 16.0f,
-                       (52.0f - ImGui::CalcTextSize("Offline capable").y - 6.0f) *
-                           0.5f));
-            settingsPill("Offline capable", theme::kOk);
-          }
-          ImGui::EndChild();
-          ImGui::PopStyleColor(2);
-          ImGui::PopStyleVar();
-          break;
-        }
-        case SettingsTab::About: {
-          // The prototype's .about block: centered mark, name, version,
-          // description, then the version rows. All positions derive from
-          // the column's own origin so the block stays centred on any
-          // window size.
-          ImDrawList* dl = ImGui::GetWindowDrawList();
-          const float cw = ImGui::GetContentRegionAvail().x;
-          const ImVec2 sp = ImGui::GetCursorScreenPos();
-          const float cx = sp.x + cw * 0.5f;
-          const float top = sp.y + 20.0f;
-          // .about .logo: 56px rounded gradient mark with the "S" initial.
-          drawGradientMark(dl, ImVec2(cx - 28.0f, top), 56.0f, 16.0f,
-                           ImGui::ColorConvertFloat4ToU32(theme::kPageBg));
-          const ImVec2 ns = ImGui::CalcTextSize("soar");
-          dl->AddText(ImVec2(cx - ns.x * 0.5f, top + 66.0f),
-                      ImGui::ColorConvertFloat4ToU32(theme::kText), "soar");
-          const std::string ver = std::string("v") + SOAR_APP_VERSION;
-          const ImVec2 vs = ImGui::CalcTextSize(ver.c_str());
-          dl->AddText(ImVec2(cx - vs.x * 0.5f, top + 90.0f),
-                      ImGui::ColorConvertFloat4ToU32(theme::kText3), ver.c_str());
-          const char* d1 = "Universal media player on FFmpeg + SDL2.";
-          const char* d2 = "Local first; nothing dials out unconfigured.";
-          const ImVec2 s1 = ImGui::CalcTextSize(d1);
-          const ImVec2 s2 = ImGui::CalcTextSize(d2);
-          dl->AddText(ImVec2(cx - s1.x * 0.5f, top + 116.0f),
-                      ImGui::ColorConvertFloat4ToU32(theme::kText3), d1);
-          dl->AddText(ImVec2(cx - s2.x * 0.5f, top + 136.0f),
-                      ImGui::ColorConvertFloat4ToU32(theme::kText3), d2);
-          ImGui::SetCursorScreenPos(ImVec2(sp.x, top + 170.0f));
-          versionRow("##about_version", "Version", ver.c_str());
-          versionRow("##about_backend", "Backend", "FFmpeg + SDL2 (libass / libtorrent)");
-          versionRow("##about_ui", "Interface", "Dear ImGui + SDL2 renderer");
-          break;
-        }
-      }
-      ImGui::EndChild();  // ##set_scroll
-      ImGui::PopStyleVar();
-      ImGui::EndChild();  // ##set_main
-    }
-    ImGui::End();
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(2);
-    if (!open) st_.overlay = Overlay::None;
-  }
-
-
-  // Folder import: every media file under `dir` (recursive per the picker
-  // toggle) joins the queue; an empty queue starts playing the first one —
-  // importing into a fresh window should leave something on screen, while
-  // importing into a running session is append-only. The folder joins the
-  // recent-dirs MRU either way (it was picked, even if it held no media).
-  void importDirectory(const std::string& dir, milliseconds now) {
-    const std::vector<std::string> files = listMediaFiles(dir, dirpick_recursive_);
-    if (recent_dirs_.add(dir)) recent_dirs_.save();
-    if (files.empty()) {
-      st_.toast.show("No media files in " + baseName(dir), now);
-      return;
-    }
-    const bool was_empty = playlist_.empty() || playlist_.current() == PlaylistStore::kNone;
-    for (const std::string& f : files) playlist_.add(f);
-    st_.overlay = Overlay::None;
-    // Playing into a fresh queue happens first; on an open failure the
-    // backend's "Open failed" toast is the thing that must stay up, so the
-    // success line is skipped entirely. Otherwise the import toast runs
-    // second on purpose: which fact matters more ("5 files imported") is
-    // the import, not the "Playlist i/n" position line beneath it.
-    if (was_empty && !openPlaylistEntry(playlist_.size() - files.size(), now)) return;
-    st_.toast.show((was_empty ? "Imported " : "Added ") +
-                       std::to_string(files.size()) + " file" +
-                       (files.size() == 1 ? "" : "s") +
-                       (was_empty ? "" : " to queue"),
-                   now);
-  }
-
-  // Reopen path for Recent/DnD; Player::open closes existing media first
-  // (the FFmpeg backend re-enters cleanly — verified in its open()). Both
-  // are user-initiated opens, so the source also joins the playlist as the
-  // new current entry (mpv semantics: a dropped/queued file plays now).
-  void openSource(const std::string& uri) {
-    if (player_.open(soar::MediaSource{uri, cfg_.cache_dir, cfg_.hwdec})) {
-      recordOpen(uri);
-      playlist_.add(uri);
-      playlist_.setCurrent(playlist_.size() - 1);
-      st_.loop_a_set = false;  // a fresh source starts without a pending A
-      player_.play();
-      // Resume first: when the jump happens, "Resumed at m:ss" replaces
-      // the plain "Opened" toast (the jump is the story).
-      if (!applyResume(uri, nowMs())) {
-        st_.toast.show("Opened " + displayName(uri), nowMs());
-      }
-    } else {
-      st_.toast.show("Open failed: " + player_.lastError(), nowMs());
-    }
-  }
-
-  // Playlist navigation (docs/mvp.md §2). Opens entry `index` from the
-  // queue without re-adding it — add() is for user-initiated opens.
-  // Returns whether the entry actually opened (the import flow needs to
-  // know so its success toast does not bury an "Open failed").
-  bool openPlaylistEntry(std::size_t index, milliseconds now) {
-    const std::vector<std::string> entries = playlist_.entries();
-    if (index >= entries.size()) return false;
-    if (!player_.open(soar::MediaSource{entries[index], cfg_.cache_dir, cfg_.hwdec})) {
-      st_.toast.show("Open failed: " + player_.lastError(), now);
-      return false;
-    }
-    recordOpen(entries[index]);
-    playlist_.setCurrent(index);
-    st_.loop_a_set = false;
-    player_.play();
-    if (!applyResume(entries[index], now)) {
-      st_.toast.show("Playlist " + std::to_string(index + 1) + "/" +
-                         std::to_string(entries.size()) + ": " +
-                         displayName(entries[index]),
-                     now);
-    }
-    return true;
-  }
-
-  void playlistStep(bool backward, milliseconds now) {
-    if (playlist_.empty()) {
-      st_.toast.show("Playlist empty", now);
-      return;
-    }
-    const std::size_t index = backward ? playlist_.prev() : playlist_.next();
-    if (index == PlaylistStore::kNone) {
-      st_.toast.show(backward ? "Start of playlist" : "End of playlist", now);
-      return;
-    }
-    openPlaylistEntry(index, now);
-  }
-
-  // Fires once per Ended: the queue's next entry opens (Loop::One replays
-  // the finished one, Loop::Off stops when the round is exhausted). The
-  // edge flag resets as soon as playback leaves Ended, so a later manual
-  // replay (space at the end) does not double-advance.
-  void maybeAdvancePlaylist(milliseconds now) {
-    if (player_.state() != PlaybackState::Ended) {
-      st_.playlist_end_handled = false;
-      return;
-    }
-    if (st_.playlist_end_handled) return;
-    st_.playlist_end_handled = true;
-    const std::size_t index = playlist_.advance();
-    if (index != PlaylistStore::kNone) openPlaylistEntry(index, now);
-  }
-
-  void setFullscreen(bool on) {
-    st_.fullscreen = on;
-    SDL_SetWindowFullscreen(window_, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-  }
-
-  void toggleOverlay(Overlay which) {
-    st_.overlay = st_.overlay == which ? Overlay::None : which;
-  }
-
-  // A-B loop (v0.2): L cycles arm-A -> arm-B -> clear. Point A is held in
-  // the UI state because the backend only knows armed pairs; the B press
-  // validates the pair through the player (so A >= B or B > duration land
-  // as a toast instead of a silent no-op).
-  void cycleLoopAB(milliseconds now) {
-    std::chrono::milliseconds a{0}, b{0};
-    if (player_.loopAB(a, b)) {
-      if (player_.clearLoopAB()) {
-        st_.loop_a_set = false;
-        st_.toast.show("A-B loop cleared", now);
-      }
-      return;
-    }
-    if (!st_.loop_a_set) {
-      st_.loop_a_set = true;
-      st_.loop_a_ms = player_.position();
-      st_.toast.show(
-          std::string("Loop point A set at ") + formatClock(st_.loop_a_ms), now);
-      return;
-    }
-    st_.loop_a_set = false;
-    if (player_.setLoopAB(st_.loop_a_ms, player_.position())) {
-      st_.toast.show(
-          std::string("A-B loop ") + formatClock(st_.loop_a_ms) + " - " +
-              formatClock(player_.position()),
-          now);
-    } else {
-      st_.toast.show(player_.lastError(), now);
-    }
-  }
-
-  void nudgeSubtitleOffset(int delta_ms, milliseconds now) {
-    st_.subtitle_offset_ms += delta_ms;
-    if (cfg_.subtitle_offset_ms) {
-      cfg_.subtitle_offset_ms->store(st_.subtitle_offset_ms, std::memory_order_relaxed);
-    }
-    char text[32];
-    std::snprintf(text, sizeof(text), "Sub offset %+d ms", st_.subtitle_offset_ms);
-    st_.toast.show(text, now);
-  }
-
-  void toggleSubtitleVisibility(milliseconds now) {
-    st_.subtitle_visible = !st_.subtitle_visible;
-    if (cfg_.subtitle_visible) {
-      cfg_.subtitle_visible->store(st_.subtitle_visible, std::memory_order_relaxed);
-    }
-    st_.toast.show(st_.subtitle_visible ? "Subtitles on" : "Subtitles off", now);
-  }
-
-  // Screenshot (v0.2, mpv's `s`): PNG of the last presented frame in the
-  // working directory. The dereference needs the full backend type, which
-  // only exists in FFmpeg builds (player_window.h keeps it opaque), and
-  // the null backend has no frames to capture at all.
-  void takeScreenshot(milliseconds now) {
-#ifdef SOAR_WITH_FFMPEG
-    if (cfg_.ffmpeg) {
-      if (cfg_.ffmpeg->saveScreenshot("screenshot.png")) {
-        st_.toast.show("Saved screenshot.png", now);
-      } else {
-        st_.toast.show("Screenshot failed: " + player_.lastError(), now);
-      }
-      return;
-    }
-#endif
-    st_.toast.show("Screenshot needs the FFmpeg backend", now);
-  }
-
-  bool shiftHeld() const { return (SDL_GetModState() & KMOD_SHIFT) != 0; }
-
-  // ---- Drawing ----
-
-  // The bar's rect, mirrored from drawHud below: bar_w = min(w - 24, 920),
-  // bar_h = 80, centered, 16px above the bottom edge. The click handler
-  // needs this instead of ImGui::GetIO().WantCaptureMouse: that flag is
-  // decided at the previous frame's end from the mouse position then in
-  // effect, so a pointer that warped onto the bar in the same frame as
-  // the press still reports "not over a widget" for the new position and
-  // the click both fires the button and toggles the OSC. The geometry is
-  // exact; it only counts while the bar is actually drawn.
-  bool mouseOverHud() const {
-    const ImGuiIO& io = ImGui::GetIO();
-    const float bar_w = std::min(io.DisplaySize.x - 24.0f, 920.0f);
-    const float bar_h = 80.0f;
-    const float x0 = (io.DisplaySize.x - bar_w) * 0.5f;
-    const float y0 = io.DisplaySize.y - bar_h - 16.0f;
-    return io.MousePos.x >= x0 && io.MousePos.x < x0 + bar_w &&
-           io.MousePos.y >= y0 && io.MousePos.y < y0 + bar_h;
-  }
-
-  // Paused: dim the video and center a round 64px accent play button with
-  // a resume hint (the prototype's paused overlay, redesign/desktop-main.html).
-  // This replaces the old Paused chip — the pill carries the state name. The
-  // dim is input-transparent; only the button takes clicks (click = resume,
-  // same as Space). Drawn before the HUD so the bar, chips and canvas
-  // subtitles stay crisp above the dim.
-  //
-  // Window order matters here and is counterintuitive: ImGui 1.91 pushes a
-  // new NoBringToFrontOnFocus window to the FRONT of g.Windows, and g.Windows
-  // is drawn front-to-back — so the LAST of these three Begin() calls lands at
-  // the BACK of the stack. The dim is therefore begun last even though it is
-  // the first thing seen; reordering these blocks puts the button under the
-  // dim (verified by pixel probe: a 38%-black rect over the accent reads a
-  // dimmed accent, not the full-strength face).
-  void drawPauseOverlay() {
-    if (player_.state() != PlaybackState::Paused) return;
-    const ImGuiIO& io = ImGui::GetIO();
-    const float cx = io.DisplaySize.x * 0.5f;
-    const float cy = io.DisplaySize.y * 0.5f - 16.0f;
-
-    ImGui::SetNextWindowPos(ImVec2(cx, cy), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    if (ImGui::Begin("##pauseplay", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoFocusOnAppearing |
-                         ImGuiWindowFlags_NoBringToFrontOnFocus |
-                         ImGuiWindowFlags_NoScrollbar |
-                         ImGuiWindowFlags_NoBackground |
-                         ImGuiWindowFlags_AlwaysAutoResize)) {
-      // Bitmap fonts carry no triangle glyph, so the face is drawn: a
-      // filled circle in the accent (brightened on hover/press) with the
-      // ink play triangle. InvisibleButton supplies the hit box.
-      if (ImGui::InvisibleButton("##resume", ImVec2(64.0f, 64.0f))) {
-        togglePlayPause();
-      }
-      const bool hover = ImGui::IsItemHovered();
-      const bool press = ImGui::IsItemActive();
-      ImVec4 face = theme::kAccent;
-      face.x += press ? 0.10f : (hover ? 0.06f : 0.0f);
-      face.y += press ? 0.10f : (hover ? 0.06f : 0.0f);
-      face.z += press ? 0.10f : (hover ? 0.06f : 0.0f);
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      const ImVec2 bmin = ImGui::GetItemRectMin();
-      const ImVec2 center(bmin.x + 32.0f, bmin.y + 32.0f);
-      dl->AddCircleFilled(center, 32.0f,
-                          ImGui::ColorConvertFloat4ToU32(face), 48);
-      dl->AddTriangleFilled(ImVec2(center.x - 6.0f, center.y - 9.0f),
-                            ImVec2(center.x - 6.0f, center.y + 9.0f),
-                            ImVec2(center.x + 10.0f, center.y),
-                            ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent));
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
-
-    ImGui::SetNextWindowPos(ImVec2(cx, cy + 32.0f + 14.0f + 11.0f),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    // The prototype's .floatpill: a full pill. Drawn on the draw list, for
-    // the same reason as chip() — a 999 WindowRounding would stretch the
-    // auto-resize window to the viewport (see chip's comment).
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 5.0f));
-    if (ImGui::Begin("##pausehint", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoFocusOnAppearing |
-                         ImGuiWindowFlags_NoBringToFrontOnFocus |
-                         ImGuiWindowFlags_NoScrollbar |
-                         ImGuiWindowFlags_NoBackground |
-                         ImGuiWindowFlags_AlwaysAutoResize |
-                         ImGuiWindowFlags_NoInputs)) {
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      const ImVec2 p0 = ImGui::GetWindowPos();
-      const ImVec2 p1(p0.x + ImGui::GetWindowWidth(),
-                      p0.y + ImGui::GetWindowHeight());
-      dl->AddRectFilled(p0, p1,
-                        ImGui::ColorConvertFloat4ToU32(theme::kPanelBg),
-                        theme::kPillRounding);
-      // The prototype's .floatpill keeps its 1px hairline over the pill.
-      dl->AddRect(p0, p1, ImGui::ColorConvertFloat4ToU32(theme::kBorder),
-                  theme::kPillRounding);
-      ImGui::TextUnformatted("Paused - Space or click to resume");
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(2);
-
-    // Begun last so it is the back-most of the three (see the ordering note
-    // above). NoInputs: a capturing fullscreen window would set
-    // WantCaptureMouse and swallow the app-level click gestures (OSC toggle,
-    // double-click fullscreen) while paused.
-    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    if (ImGui::Begin("##pausedim", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoFocusOnAppearing |
-                         ImGuiWindowFlags_NoBringToFrontOnFocus |
-                         ImGuiWindowFlags_NoScrollbar |
-                         ImGuiWindowFlags_NoBackground |
-                         ImGuiWindowFlags_NoInputs)) {
-      // rgba(4,5,7,.38) over the video, as in the prototype.
-      ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f),
-                                                io.DisplaySize,
-                                                IM_COL32(4, 5, 7, 97));
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
-  }
-
-  // Uploads a grabbed thumbnail into the dedicated SDL texture — the same
-  // IYUV path presentVideoFrame uses, on its own texture so the video
-  // texture and its mailbox are untouched. (Re)creates the texture when
-  // the frame size changes (a different source can scale differently).
-  void uploadThumbFrame(const ThumbnailFrame& f) {
-    if (f.width <= 0 || f.height <= 0) return;
-    if (thumb_texture_ == nullptr || thumb_tex_w_ != f.width ||
-        thumb_tex_h_ != f.height) {
-      if (thumb_texture_ != nullptr) {
-        SDL_DestroyTexture(thumb_texture_);
-        thumb_texture_ = nullptr;
-      }
-      thumb_texture_ =
-          SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_IYUV,
-                            SDL_TEXTUREACCESS_STREAMING, f.width, f.height);
-      if (thumb_texture_ == nullptr) return;  // out of memory: no preview
-      thumb_tex_w_ = f.width;
-      thumb_tex_h_ = f.height;
-    }
-    SDL_UpdateYUVTexture(thumb_texture_, nullptr, f.y.data(), f.stride_y,
-                         f.u.data(), f.stride_u, f.v.data(), f.stride_v);
-  }
-
-  // The seek-hover preview card (docs §1.6-5, the v1 thumbnail): a rounded
-  // frame with the thumbnail and the hovered timecode strip, floating above
-  // the rail and centered on the pointer (clamped to the window). NoInputs
-  // keeps the mouse on the rail; the card is drawn on the window's draw list
-  // with zero window padding so the geometry is exact.
-  void drawThumbPreview(milliseconds pos, float frac, const ImVec2& rail_min,
-                        const ImVec2& rail_max) {
-    if (thumb_texture_ == nullptr) return;
-    const float tw = 160.0f, th = 90.0f;  // the grab's native size
-    const float frame = 4.0f;             // card frame around the image
-    const float strip = 18.0f;            // the timecode strip
-    const float card_w = tw + 2.0f * frame;
-    const float card_h = th + frame + strip;
-    const float gap = 10.0f;  // between the card and the rail
-    const ImVec2 disp = ImGui::GetIO().DisplaySize;
-    const float cx = std::clamp(rail_min.x + frac * (rail_max.x - rail_min.x),
-                                card_w * 0.5f + 6.0f,
-                                disp.x - card_w * 0.5f - 6.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::SetNextWindowPos(
-        ImVec2(cx - card_w * 0.5f, rail_min.y - gap - card_h), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(card_w, card_h), ImGuiCond_Always);
-    if (ImGui::Begin("##thumbprev", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoInputs |
-                         ImGuiWindowFlags_NoFocusOnAppearing |
-                         ImGuiWindowFlags_NoBringToFrontOnFocus |
-                         ImGuiWindowFlags_NoScrollbar)) {
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      const ImVec2 pmin = ImGui::GetWindowPos();
-      dl->AddRectFilled(pmin, ImVec2(pmin.x + card_w, pmin.y + card_h),
-                        ImGui::ColorConvertFloat4ToU32(kThumbBg), 8.0f);
-      dl->AddImage((ImTextureID)(intptr_t)thumb_texture_,
-                   ImVec2(pmin.x + frame, pmin.y + frame),
-                   ImVec2(pmin.x + frame + tw, pmin.y + frame + th));
-      const std::string tc = formatClock(pos);
-      const float tc_w = ImGui::CalcTextSize(tc.c_str()).x;
-      dl->AddText(
-          ImVec2(pmin.x + (card_w - tc_w) * 0.5f,
-                 pmin.y + frame + th + (strip - ImGui::GetTextLineHeight()) * 0.5f),
-          IM_COL32(255, 255, 255, 235), tc.c_str());
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleVar();
-  }
-
-  void drawHud(milliseconds now) {
-    const ImGuiIO& io = ImGui::GetIO();
-    const float w = io.DisplaySize.x;
-    const float h = io.DisplaySize.y;
-    // OSC geometry per redesign/desktop-main.html:62-63 (.osc): width
-    // min(97%, 1240px), bottom 26px. The old 920px/16px came from the v1
-    // draft; the v2 spec is wider and sits a touch higher off the edge.
-    const float bar_w = std::min(w * 0.97f, 1240.0f);
-    const float bar_h = 80.0f;  // seek row + button row
-
-    const MediaInfo info = player_.mediaInfo();
-    const double dur = static_cast<double>(info.duration.count());
-    const double pos = static_cast<double>(player_.position().count());
-    const double shown = st_.seek_dragging ? st_.seek_scrub : pos;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, st_.hud_alpha);
-    ImGui::SetNextWindowPos(ImVec2((w - bar_w) * 0.5f, h - bar_h - 26.0f),
-                            ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(bar_w, bar_h), ImGuiCond_Always);
-    if (ImGui::Begin("##osc", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoFocusOnAppearing |
-                         ImGuiWindowFlags_NoBringToFrontOnFocus |
-                         ImGuiWindowFlags_NoScrollbar)) {
-      // Row 1: elapsed | seek rail | -remaining, the prototype's seekrow
-      // (redesign/desktop-main.html). The clocks used to sit in row 2; the
-      // audit's L3 moved them up beside the bar. Hover/drag tooltip shows
-      // the time under the pointer; dragging previews, release commits
-      // (docs §3.1).
-      const bool seekable = info.seekable && dur > 0.0;
-      const std::string left_tc =
-          (st_.seek_dragging ? "> " : "") +
-          formatClock(milliseconds(static_cast<long long>(shown)));
-      std::string right_tc;
-      if (dur > 0.0) {
-        const auto remaining = std::max(
-            milliseconds(0),
-            info.duration - milliseconds(static_cast<long long>(shown)));
-        right_tc = "-" + formatClock(remaining);
-      }
-      ImGui::TextUnformatted(left_tc.c_str());
-      ImGui::SameLine();
-      if (!seekable) ImGui::BeginDisabled();
-      const float right_w =
-          right_tc.empty() ? 0.0f : ImGui::CalcTextSize(right_tc.c_str()).x;
-      const float rail_w =
-          ImGui::GetContentRegionAvail().x - right_w -
-          (right_w > 0.0f ? ImGui::GetStyle().ItemSpacing.x : 0.0f);
-      ImGui::PushItemWidth(std::max(rail_w, 40.0f));
-      double v = shown;
-      const double v_min = 0.0;
-      // Core imgui has no SliderDouble; the generic double slider does.
-      if (ImGui::SliderScalar("##seek", ImGuiDataType_Double, &v, &v_min, &dur,
-                              "",
-                              ImGuiSliderFlags_AlwaysClamp |
-                                  ImGuiSliderFlags_NoInput)) {
-        st_.seek_dragging = true;
-        st_.seek_scrub = v;
-      }
-      if (seekable && ImGui::IsItemHovered()) {
-        const ImVec2 rmin = ImGui::GetItemRectMin();
-        const ImVec2 rmax = ImGui::GetItemRectMax();
-        const float frac =
-            std::clamp((io.MousePos.x - rmin.x) / std::max(rmax.x - rmin.x, 1.0f),
-                       0.0f, 1.0f);
-        // Seek-hover thumbnail (docs §1.6-5): the hovered position is
-        // quantized to ~250ms so a still pointer decodes once instead of
-        // every frame; the service dedupes identical requests and answers
-        // repeat scrubs from its LRU. While the new frame decodes the old
-        // preview hides (a stale image over a new position is worse than
-        // none), then the card appears as soon as the frame lands.
-        const milliseconds hover_pos(static_cast<long long>(frac * dur));
-        const milliseconds q_pos((hover_pos.count() / 250) * 250);
-        if (q_pos != thumb_requested_) {
-          thumb_requested_ = q_pos;
-          thumb_shown_ = milliseconds(-1);
-          if (thumb_service_ != nullptr) thumb_service_->request(q_pos);
-        }
-        ThumbnailFrame tf;
-        if (thumb_service_ != nullptr && thumb_service_->tryGet(q_pos, tf) &&
-            thumb_shown_ != q_pos) {
-          uploadThumbFrame(tf);
-          thumb_shown_ = q_pos;
-        }
-        if (thumb_shown_ == q_pos) drawThumbPreview(q_pos, frac, rmin, rmax);
-      } else if (ImGui::IsItemActive()) {
-        // Dragging keeps the small time tooltip (the preview is a hover
-        // affordance; a drag is already "here, now", docs §1.6-5).
-        const ImVec2 rmin = ImGui::GetItemRectMin();
-        const ImVec2 rmax = ImGui::GetItemRectMax();
-        const float frac =
-            std::clamp((io.MousePos.x - rmin.x) / std::max(rmax.x - rmin.x, 1.0f),
-                       0.0f, 1.0f);
-        ImGui::SetTooltip(
-            "%s",
-            formatClock(milliseconds(static_cast<long long>(frac * dur))).c_str());
-      }
-      if (ImGui::IsItemDeactivatedAfterEdit()) {
-        seekTo(milliseconds(static_cast<long long>(st_.seek_scrub)), now);
-        st_.seek_dragging = false;
-      } else if (ImGui::IsItemDeactivated()) {
-        st_.seek_dragging = false;  // cancelled drag: drop the pending scrub
-      }
-      if (!seekable) ImGui::EndDisabled();
-      ImGui::PopItemWidth();
-      if (!right_tc.empty()) {
-        ImGui::SameLine();
-        ImGui::TextUnformatted(right_tc.c_str());
-      }
-
-      // Row 2: transport, volume, rate, tracks, overlays, tools.
-      const bool playing = player_.state() == PlaybackState::Playing;
-      // Play/pause as the prototype's .tplay: a 38px circular accent button
-      // with an ink glyph (redesign/desktop-main.html:95-99). The bitmap font
-      // carries no triangle/pause glyph, so the face + glyph are drawn on the
-      // draw list the same way drawPauseOverlay does.
-      if (ImGui::InvisibleButton("##playpause", ImVec2(38.0f, 38.0f))) {
-        togglePlayPause();
-      }
-      {
-        const bool phover = ImGui::IsItemHovered();
-        const bool ppress = ImGui::IsItemActive();
-        ImVec4 face = theme::kAccent;
-        face.x += ppress ? 0.10f : (phover ? 0.06f : 0.0f);
-        face.y += ppress ? 0.10f : (phover ? 0.06f : 0.0f);
-        face.z += ppress ? 0.10f : (phover ? 0.06f : 0.0f);
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 bmin = ImGui::GetItemRectMin();
-        const ImVec2 center(bmin.x + 19.0f, bmin.y + 19.0f);
-        const ImU32 faceU32 = ImGui::ColorConvertFloat4ToU32(face);
-        const ImU32 inkU32 = ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent);
-        dl->AddCircleFilled(center, 19.0f, faceU32, 48);
-        if (playing) {
-          // Pause: two vertical ink bars (prototype's pause glyph).
-          dl->AddRectFilled(ImVec2(center.x - 5.0f, center.y - 7.0f),
-                            ImVec2(center.x - 1.5f, center.y + 7.0f), inkU32, 1.0f);
-          dl->AddRectFilled(ImVec2(center.x + 1.5f, center.y - 7.0f),
-                            ImVec2(center.x + 5.0f, center.y + 7.0f), inkU32, 1.0f);
-        } else {
-          // Play: ink triangle.
-          dl->AddTriangleFilled(ImVec2(center.x - 4.0f, center.y - 6.5f),
-                                ImVec2(center.x - 4.0f, center.y + 6.5f),
-                                ImVec2(center.x + 7.0f, center.y), inkU32);
-        }
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Stop", ImVec2(46, 0))) player_.stop();
-      ImGui::SameLine();
-      // Prev/next as buttons (prototype's transport cluster; the N /
-      // Shift+N shortcuts behind them — same playlistStep, same boundary
-      // toasts).
-      if (ImGui::Button("|<", ImVec2(30, 0))) playlistStep(true, now);
-      ImGui::SameLine();
-      if (ImGui::Button(">|", ImVec2(30, 0))) playlistStep(false, now);
-      ImGui::SameLine();
-      // (The clock used to sit here; it moved to the seek row when the
-      // audit's L3 flanked the rail with timecodes — no duplicate.)
-      if (ImGui::Button(st_.last_muted ? "Unmute" : "Mute")) toggleMute(now);
-      ImGui::SameLine();
-      ImGui::PushItemWidth(56.0f);
-      const double vol_min = 0.0;
-      const double vol_max = 1.0;
-      if (ImGui::SliderScalar("##vol", ImGuiDataType_Double, &st_.last_volume,
-                              &vol_min, &vol_max, "",
-                              ImGuiSliderFlags_AlwaysClamp |
-                                  ImGuiSliderFlags_NoInput)) {
-        player_.setVolume(st_.last_volume);
-        st_.toast.show(
-            "Volume " + std::to_string(static_cast<int>(st_.last_volume * 100)) + "%",
-            now);
-      }
-      ImGui::PopItemWidth();
-
-      ImGui::SameLine();
-      ImGui::PushItemWidth(56.0f);
-      drawRateCombo(now);
-      ImGui::PopItemWidth();
-      ImGui::SameLine();
-      ImGui::PushItemWidth(70.0f);
-      drawTrackCombo(TrackType::Audio, now);
-      ImGui::PopItemWidth();
-      ImGui::SameLine();
-      ImGui::PushItemWidth(70.0f);
-      drawTrackCombo(TrackType::Subtitle, now);
-      ImGui::PopItemWidth();
-      ImGui::SameLine();
-      // Sub overlay button (v0.2): track combo selects the stream, this page
-      // holds the presentation knobs (font size, offset, visibility).
-      if (ImGui::Button("Sub")) toggleOverlay(Overlay::Subtitle);
-      ImGui::SameLine();
-      // Info/Fullscreen moved to the top bar when it landed (M1): the
-      // prototype has the four tools there, not in the transport row.
-      // A-B loop, subtitle visibility and screenshot as buttons (the L / V / S
-      // shortcuts behind them — same actions, same toasts). The CC button is
-      // the prototype's caption toggle: it flips whether canvas subtitles
-      // draw, independent of which subtitle stream the Sub combo selected.
-      if (ImGui::Button("A-B")) cycleLoopAB(now);
-      ImGui::SameLine();
-      if (ImGui::Button("CC")) toggleSubtitleVisibility(now);
-      ImGui::SameLine();
-      if (ImGui::Button("Shot")) takeScreenshot(now);
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
-  }
-
-  void drawRateCombo(milliseconds now) {
-    static const double kRates[] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
-    char label[16];
-    std::snprintf(label, sizeof(label), "%.2gx", st_.last_rate);
-    if (!ImGui::BeginCombo("##rate", label)) return;
-    menu_rows_ = 0;  // the open popup republishes its rows every frame
-    for (const double r : kRates) {
-      const bool selected = std::abs(r - st_.last_rate) < 1e-9;
-      char item[16];
-      std::snprintf(item, sizeof(item), "%.2gx", r);
-      const bool enter = menuRowEnter();
-      if ((ImGui::Selectable(item, selected) || enter) && !selected) {
-        st_.last_rate = r;
-        player_.setRate(r);
-        st_.toast.show(std::string(item) + " speed", now);
-      }
-      menuRowRing();
-    }
-    menu_count_ = menu_rows_;
-    ImGui::EndCombo();
-  }
-
-  void drawTrackCombo(TrackType type, milliseconds now) {
-    const MediaInfo info = player_.mediaInfo();
-    std::vector<const TrackInfo*> tracks;
-    for (const auto& t : info.tracks) {
-      if (t.type == type) tracks.push_back(&t);
-    }
-    const TrackId selected =
-        type == TrackType::Audio ? info.selected_audio : info.selected_subtitle;
-    char label[40];
-    if (type == TrackType::Audio) {
-      std::snprintf(label, sizeof(label), "Audio %d/%d",
-                    tracks.empty() ? 0 : static_cast<int>(selected),
-                    static_cast<int>(tracks.size()));
-    } else {
-      std::snprintf(label, sizeof(label), "Sub %d/%d",
-                    selected < 0 ? 0 : static_cast<int>(selected),
-                    static_cast<int>(tracks.size()));
-    }
-    if (!ImGui::BeginCombo(type == TrackType::Audio ? "##audio" : "##sub", label)) {
-      return;
-    }
-    menu_rows_ = 0;  // the open popup republishes its rows every frame
-    // Current value marked, one level of nesting max (docs §1.4-4).
-    if (type == TrackType::Subtitle) {
-      const bool off = selected < 0;
-      const bool enter = menuRowEnter();
-      if ((ImGui::Selectable("Off", off) || enter) && !off) {
-        player_.disableSubtitles();
-        st_.toast.show("Subtitles off", now);
-      }
-      menuRowRing();
-      ImGui::Separator();
-    }
-    for (const auto* t : tracks) {
-      std::string item =
-          "#" + std::to_string(t->id) + " " + t->codec;
-      if (!t->language.empty()) item += " (" + t->language + ")";
-      const bool is_sel = t->id == selected;
-      const bool enter = menuRowEnter();
-      if ((ImGui::Selectable(item.c_str(), is_sel) || enter) && !is_sel) {
-        if (player_.selectTrack(type, t->id)) {
-          st_.toast.show((type == TrackType::Audio ? "Audio track "
-                                                   : "Subtitle track ") +
-                             std::to_string(t->id),
-                         now);
-        } else {
-          st_.toast.show("Track switch failed", now);
-        }
-      }
-      menuRowRing();
-    }
-    // Output endpoint under the audio combo (v0.2): the tracks above pick
-    // the stream, these entries pick where it comes out. Enumerated only
-    // while the combo is open — SDL device discovery is not per-frame
-    // material. Host names can be long descriptive strings; the label is
-    // clipped but the selection carries the full name.
-    if (type == TrackType::Audio) {
-      ImGui::Separator();
-      const std::string current = player_.currentAudioOutputDevice();
-      auto deviceItem = [&](const char* label, const std::string& value) {
-        const bool is_sel = current == value;
-        const bool enter = menuRowEnter();
-        if ((ImGui::Selectable(label, is_sel) || enter) && !is_sel) {
-          if (player_.selectAudioOutputDevice(value)) {
-            st_.toast.show(value.empty() ? "Output: default"
-                                         : "Output: " + value.substr(0, 24),
-                           now);
-          } else {
-            st_.toast.show("Device switch failed", now);
-          }
-        }
-        menuRowRing();
-      };
-      deviceItem("Output: default", "");
-      for (const auto& d : player_.audioOutputDevices()) {
-        const std::string label = d.substr(0, 28);
-        deviceItem(label.c_str(), d);
-      }
-    } else {
-      // Sidecar subtitle files: the loader for tracks that are not in the
-      // container (docs/mvp.md §6).
-      drawSidecarEntries(info, now);
-    }
-    menu_count_ = menu_rows_;
-    ImGui::EndCombo();
-  }
-
-  // No video (audio-only / null backend): a centered "what is playing"
-  // panel so the window carries content (docs §2).
-  void drawPoster() {
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.42f),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    if (ImGui::Begin("##poster", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoBackground |
-                         ImGuiWindowFlags_NoInputs)) {
-      if (firstRunEmpty()) {
-        // GUI start with no source (BUGS.md #3): the poster is the open
-        // entry itself — click / O / drop all land in openFilePicker().
-        ImGui::TextUnformatted("Open a file");
-        ImGui::TextDisabled("%s", stateName(player_.state()));
-        ImGui::Spacing();
-#ifdef _WIN32
-        ImGui::TextDisabled("%s",
-                            "Click, press O (file) or Ctrl+O (folder), or drop");
-#else
-        ImGui::TextDisabled("%s", "Drop a file here - Ctrl+O folder - R recent - H shortcuts");
-#endif
-      } else {
-        ImGui::TextUnformatted(displayName(current_uri_).c_str());
-        if (torrent_pending_ && torrent_->phase() ==
-                soar::p2p::TorrentPhase::Connecting) {
-          // Async P2P source not yet serving: the wait itself is the state.
-          char line[64];
-          std::snprintf(line, sizeof(line), "connecting to swarm - %d peers",
-                        torrent_->status().peers);
-          ImGui::TextDisabled("%s", line);
-        } else {
-          ImGui::TextDisabled("%s", stateName(player_.state()));
-        }
-        ImGui::Spacing();
-        ImGui::TextDisabled("%s", "Drop a file here - Ctrl+O folder - R recent - H shortcuts");
-      }
-    }
-    ImGui::End();
-  }
-
-  void drawChips(milliseconds now) {
-    // The prototype's .statechip (desktop-main.html:166-169): one persistent
-    // pill centered under the top bar — state word, both clocks, and the P2P
-    // download share while the disk cache is still filling. The standalone
-    // Buffering/Downloading chips the old bar showed folded in here. It is
-    // pure information (NoInputs): clicks fall through to the video beneath.
-    // Casting keeps its own pill below — functional state the prototype does
-    // not model, so it stays rather than folding in.
-    if (!current_uri_.empty()) {
-      const bool buffering =
-          cfg_.buffering && cfg_.buffering->load(std::memory_order_relaxed);
-      const std::uint64_t total =
-          cfg_.download_total ? cfg_.download_total->load(std::memory_order_relaxed) : 0;
-      const std::uint64_t have =
-          cfg_.download_bytes ? cfg_.download_bytes->load(std::memory_order_relaxed) : 0;
-      const bool downloading = total > 0 && have < total;
-
-      const char* state = "Stopped";
-      ImVec4 dot = theme::kTextMuted;
-      switch (player_.state()) {
-        case PlaybackState::Playing:
-          if (buffering) {
-            state = "Buffering";
-            dot = theme::kWarn;
-          } else {
-            state = "Playing";
-            dot = theme::kOk;
-          }
-          break;
-        case PlaybackState::Paused:
-          state = "Paused";
-          dot = theme::kTextDim;
-          break;
-        case PlaybackState::Ended:
-          state = "Ended";
-          dot = theme::kTextMuted;
-          break;
-        case PlaybackState::Error:
-          state = "Error";
-          dot = theme::kDanger;
-          break;
-        case PlaybackState::Stopped:
-          break;
-      }
-
-      std::string text = state;
-      const MediaInfo info = player_.mediaInfo();
-      if (info.duration > milliseconds(0)) {
-        text += " - " + formatClock(player_.position()) + " / " +
-                formatClock(info.duration);
-      }
-      if (downloading) {
-        char p2p[24];
-        std::snprintf(p2p, sizeof(p2p), " - P2P %llu%%",
-                      static_cast<unsigned long long>(have * 100 / total));
-        text += p2p;
-      }
-      stateChip("##statechip", text, dot);
-    }
-    // Cast chip while a DLNA session is live (docs/mvp.md §3): the TV
-    // plays even when this window is minimized, so the state stays visible.
-    if (cast_active_ &&
-        cast_active_->phase() == soar::cast::CastSession::Phase::Casting) {
-      chip("##cast", "Casting", 94.0f);
-    }
-  }
-
-  // Draw subtitle overlay: polls the backend for decoded subtitle frames
-  // and renders them at the bottom of the video area.
-  void drawSubtitles(milliseconds now) {
-    if (!cfg_.ffmpeg) return;
-    if (!st_.subtitle_visible) return;
-
-    // Sync config to local state (config is owned by caller, may be updated externally)
-    if (cfg_.subtitle_font_size) {
-      st_.subtitle_font_size = cfg_.subtitle_font_size->load(std::memory_order_relaxed);
-    }
-    if (cfg_.subtitle_offset_ms) {
-      st_.subtitle_offset_ms = cfg_.subtitle_offset_ms->load(std::memory_order_relaxed);
-    }
-    if (cfg_.subtitle_visible) {
-      st_.subtitle_visible = cfg_.subtitle_visible->load(std::memory_order_relaxed);
-    }
-
-    // Canvas mode (batch 1c): the libass overlay holds the selected
-    // subtitle — an ASS document or a synthesized text sidecar — so
-    // drawing the queue's plain-text copy on top would render every line
-    // twice. Returning here also parks the sidecar pump (this window is
-    // its only driver in production) and leaves embedded text frames to
-    // age out of the FIFO undrawn; the queue itself is untouched.
-#ifdef SOAR_WITH_FFMPEG
-    if (cfg_.ffmpeg && cfg_.ffmpeg->subtitleDocumentActive()) {
-      return;
-    }
-#endif
-
-    // Poll for new subtitle frame. The dereference needs the full backend
-    // type, which only exists in FFmpeg builds (the header keeps the class
-    // opaque so the window compiles without the libav* dev packages).
-#ifdef SOAR_WITH_FFMPEG
-    soar::DecodedSubtitleFrame sub_frame;
-    if (cfg_.ffmpeg->tryGetSubtitleFrame(sub_frame)) {
-      // Store the latest subtitle frame with its timing
-      st_.current_subtitle = sub_frame.text;
-      st_.subtitle_pts = sub_frame.pts;
-      st_.subtitle_duration = sub_frame.duration;
-    }
-#endif
-
-    // Check if current subtitle should be displayed based on position + offset
-    const auto pos = player_.position();
-    const auto adjusted_pos = pos + std::chrono::milliseconds(st_.subtitle_offset_ms);
-
-    if (st_.current_subtitle.empty()) return;
-
-    // Display subtitle if current position is within subtitle's time range
-    const auto sub_start = st_.subtitle_pts;
-    const auto sub_end = st_.subtitle_duration > milliseconds(0)
-                             ? st_.subtitle_pts + st_.subtitle_duration
-                             : st_.subtitle_pts + std::chrono::milliseconds(5000); // default 5s if no duration
-
-    if (adjusted_pos < sub_start || adjusted_pos >= sub_end) {
-      return; // Not time to show this subtitle yet, or already past it
-    }
-
-    // Render subtitle at bottom of video area
-    const ImGuiIO& io = ImGui::GetIO();
-    const float video_bottom = io.DisplaySize.y * 0.9f; // 90% down
-
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, video_bottom),
-                            ImGuiCond_Always, ImVec2(0.5f, 1.0f));
-    ImGui::SetNextWindowBgAlpha(0.7f);
-
-    // Select font based on configured size (v0.2)
-    ImFont* sub_font = subtitle_fonts_.size_24;
-    float fs = st_.subtitle_font_size;
-    if (fs <= 18.0f) sub_font = subtitle_fonts_.size_16;
-    else if (fs <= 22.0f) sub_font = subtitle_fonts_.size_20;
-    else if (fs <= 26.0f) sub_font = subtitle_fonts_.size_24;
-    else if (fs <= 30.0f) sub_font = subtitle_fonts_.size_28;
-    else if (fs <= 34.0f) sub_font = subtitle_fonts_.size_32;
-    else if (fs <= 42.0f) sub_font = subtitle_fonts_.size_36;
-    else sub_font = subtitle_fonts_.size_48;
-    if (sub_font) ImGui::PushFont(sub_font);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(io.DisplaySize.x * 0.9f, 0));
-
-
-    if (ImGui::Begin("##subtitle", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoFocusOnAppearing |
-                         ImGuiWindowFlags_AlwaysAutoResize |
-                         ImGuiWindowFlags_NoInputs)) {
-      ImGui::PushTextWrapPos(io.DisplaySize.x * 0.85f);
-      ImGui::TextWrapped("%s", st_.current_subtitle.c_str());
-      ImGui::PopTextWrapPos();
-    }
-    ImGui::End();
-    ImGui::PopFont();
-  }
-
-  // Subtitle state
-  std::string current_subtitle;
-  std::chrono::milliseconds subtitle_pts{0};
-  std::chrono::milliseconds subtitle_duration{0};
-
-  void chip(const char* name, const char* text, float y) {
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, y), ImGuiCond_Always,
-                            ImVec2(0.5f, 0.0f));
-    // The prototype's .statechip: a full pill. Drawn on the draw list rather
-    // than through WindowRounding — Begin() floors a window's minimum height
-    // at (rounding - 1) [imgui.cpp CalcWindowMinSize], so a 999 rounding
-    // stretches an auto-resize window to the viewport (pixel-probed: a
-    // 249px-wide pill rendered 540px tall). PathRect clamps the same 999 to
-    // the rect's own half-height, which is exactly the pill.
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    if (ImGui::Begin(name, nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoFocusOnAppearing |
-                         ImGuiWindowFlags_NoBackground |
-                         ImGuiWindowFlags_AlwaysAutoResize)) {
-      ImVec4 bg = theme::kPanelBg;
-      bg.w = 0.72f;  // .statechip bg rgba(9,10,12,.72) (desktop-main.html:39)
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      const ImVec2 p0 = ImGui::GetWindowPos();
-      const ImVec2 p1(p0.x + ImGui::GetWindowWidth(),
-                      p0.y + ImGui::GetWindowHeight());
-      dl->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(bg),
-                        theme::kPillRounding);
-      // The prototype's .statechip keeps its 1px hairline over the pill.
-      dl->AddRect(p0, p1, ImGui::ColorConvertFloat4ToU32(theme::kBorder),
-                  theme::kPillRounding);
-      ImGui::TextUnformatted(text);
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
-  }
-
-  // The prototype's .statechip (desktop-main.html:166-169): a centered pill
-  // under the top bar with a pulse dot, the state word, both clocks and —
-  // while the disk cache fills — the P2P share. NoInputs: purely a status
-  // readout, clicks fall through to the video beneath. Same draw-list pill
-  // dance as chip() (a 999 WindowRounding would stretch the auto-resize
-  // window — see chip()).
-  void stateChip(const char* name, const std::string& text, const ImVec4& dot) {
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 64.0f), ImGuiCond_Always,
-                            ImVec2(0.5f, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    if (ImGui::Begin(name, nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoFocusOnAppearing |
-                         ImGuiWindowFlags_NoBackground |
-                         ImGuiWindowFlags_AlwaysAutoResize |
-                         ImGuiWindowFlags_NoInputs)) {
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      const float pad = 14.0f;
-      const float dot_r = 3.5f;  // 7px dot (.statechip .dot)
-      const float gap = 9.0f;
-      const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
-      // Reserve the pill's footprint; the window auto-sizes to this Dummy.
-      ImGui::Dummy(ImVec2(pad * 2 + dot_r * 2 + gap + ts.x, ts.y + 12.0f));
-      const ImVec2 p0 = ImGui::GetWindowPos();
-      const ImVec2 p1(p0.x + ImGui::GetWindowWidth(),
-                      p0.y + ImGui::GetWindowHeight());
-      ImVec4 bg = theme::kPanelBg;
-      bg.w = 0.72f;  // .statechip bg rgba(9,10,12,.72) (desktop-main.html:39)
-      dl->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(bg),
-                        theme::kPillRounding);
-      dl->AddRect(p0, p1, ImGui::ColorConvertFloat4ToU32(theme::kBorder),
-                  theme::kPillRounding);
-      // Pulse: a ~1.6s breathing of the dot's radius (the prototype's
-      // .statechip .dot). Only the radius moves — the ink stays steady.
-      const double t = ImGui::GetTime();
-      const float ph =
-          static_cast<float>(std::fmod(t / 1.6, 1.0) * 6.2831853);
-      const float r = dot_r * (1.0f + 0.20f * std::sin(ph));
-      const float cy = (p0.y + p1.y) * 0.5f;
-      dl->AddCircleFilled(ImVec2(p0.x + pad + dot_r, cy), r,
-                          ImGui::ColorConvertFloat4ToU32(dot));
-      dl->AddText(ImVec2(p0.x + pad + dot_r * 2 + gap, cy - ts.y * 0.5f),
-                  ImGui::ColorConvertFloat4ToU32(theme::kTextDim), text.c_str());
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(2);
-  }
-
-  // A .pill in the top bar, drawn on the draw list: 22px tall, 999 radius,
-  // tinted text on a tinted ground (or a neutral white .08 ground), and the
-  // small play triangle the .pill.ok carries. Returns the x after the pill
-  // so the caller chains the next one.
-  float topPill(ImDrawList* dl, float x, float cy, const char* text,
-                const ImVec4& fg, bool tinted, bool play) {
-    const float pad = 10.0f;
-    const float ph = 22.0f;  // .pill height
-    const float py = cy - ph * 0.5f;
-    const float triW = play ? 11.0f : 0.0f;
-    const ImVec2 ts = ImGui::CalcTextSize(text);
-    const float pw = pad + triW + ts.x + pad;
-    ImU32 bg;
-    if (tinted) {
-      bg = ImGui::ColorConvertFloat4ToU32(ImVec4(fg.x, fg.y, fg.z, 0.14f));
-    } else {
-      bg = IM_COL32(255, 255, 255, 20);  // rgba(255,255,255,.08) .pill ground
-    }
-    const ImU32 fgU32 = ImGui::ColorConvertFloat4ToU32(fg);
-    dl->AddRectFilled(ImVec2(x, py), ImVec2(x + pw, py + ph), bg,
-                      theme::kPillRounding);
-    dl->AddRect(ImVec2(x, py), ImVec2(x + pw, py + ph),
-                ImGui::ColorConvertFloat4ToU32(theme::kBorder), theme::kPillRounding);
-    float tx = x + pad;
-    if (play) {
-      dl->AddTriangleFilled(ImVec2(tx, cy - 4.0f), ImVec2(tx, cy + 4.0f),
-                            ImVec2(tx + 7.0f, cy), fgU32);
-      tx += triW;
-    }
-    dl->AddText(ImVec2(tx, cy - ts.y * 0.5f), fgU32, text);
-    return x + pw;
-  }
-
-  // A 30x30 tool button with a letter glyph (the shortcut key) drawn on the
-  // draw list; hover paints the prototype's rgba(255,255,255,.08) face.
-  // Returns true on a click. `pos` is the absolute screen-space top-left.
-  bool topTool(const char* id, char glyph, const char* tip, const ImVec2& pos) {
-    const ImVec2 wp = ImGui::GetWindowPos();
-    ImGui::SetCursorPos(ImVec2(pos.x - wp.x, pos.y - wp.y));
-    const bool clicked = ImGui::InvisibleButton(id, ImVec2(30.0f, 30.0f));
-    const bool hovered = ImGui::IsItemHovered();
-    if (hovered && tip) ImGui::SetTooltip("%s", tip);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    if (hovered || ImGui::IsItemActive()) {
-      const float a = ImGui::IsItemActive() ? 0.16f : 0.08f;
-      dl->AddRectFilled(pos, ImVec2(pos.x + 30.0f, pos.y + 30.0f),
-                        IM_COL32(255, 255, 255, static_cast<int>(a * 255)),
-                        theme::kControlRounding);
-    }
-    const char g[2] = {glyph, 0};
-    const ImVec2 ts = ImGui::CalcTextSize(g);
-    dl->AddText(ImVec2(pos.x + (30.0f - ts.x) * 0.5f, pos.y + (30.0f - ts.y) * 0.5f),
-                ImGui::ColorConvertFloat4ToU32(theme::kText), g);
-    return clicked;
-  }
-
-  // The prototype's .topbar (desktop-main.html:138-164): a persistent strip
-  // across the top — brand + state/media/P2P pills on the left, the four
-  // tool buttons (Info/Recent/Help/Fullscreen) on the right — over a
-  // black-to-transparent gradient. Info/Fullscreen moved here from the OSC
-  // when the bar landed (M1): the prototype has the four tools up here, not
-  // in the transport row. Always visible; buttons are mouse- and
-  // keyboard-reachable (I/R/H/F).
-  void drawTopBar() {
-    const ImGuiIO& io = ImGui::GetIO();
-    const float w = io.DisplaySize.x;
-    const float h = 62.0f;  // .topbar padding 16 + 30 content + 16
-
-    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    if (ImGui::Begin("##topbar", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_NoFocusOnAppearing |
-                         ImGuiWindowFlags_NoBringToFrontOnFocus |
-                         ImGuiWindowFlags_NoBackground |
-                         ImGuiWindowFlags_NoScrollbar)) {
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      // linear-gradient(180deg, rgba(0,0,0,.55), transparent): a 140/255
-      // alpha at the top fading to nothing at the strip's bottom edge.
-      dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(w, h),
-                                  IM_COL32(0, 0, 0, 140), IM_COL32(0, 0, 0, 140),
-                                  IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0));
-
-      const float cy = h * 0.5f;
-      float x = 22.0f;  // .topbar padding-left
-
-      // .app-title: the 22px wing mark — an orange-gradient rounded square
-      // (the bitmap font has no wing glyph, so the face is drawn; the ink
-      // is a small chevron suggesting the wing).
-      const ImVec2 logo(x, cy - 11.0f);
-      const ImU32 acc = ImGui::ColorConvertFloat4ToU32(theme::kAccent);
-      const ImU32 accHi = ImGui::ColorConvertFloat4ToU32(theme::kAccentHover);
-      dl->AddRectFilledMultiColor(logo, ImVec2(x + 22.0f, cy + 11.0f), acc,
-                                  accHi, accHi, acc);
-      dl->AddTriangleFilled(ImVec2(x + 6.0f, cy - 5.0f), ImVec2(x + 6.0f, cy + 5.0f),
-                            ImVec2(x + 15.0f, cy),
-                            ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent));
-      x += 22.0f + 10.0f;
-
-      // "soar" wordmark (the .app-title's title).
-      const ImVec2 ts = ImGui::CalcTextSize("soar");
-      dl->AddText(ImVec2(x, cy - ts.y * 0.5f),
-                  ImGui::ColorConvertFloat4ToU32(theme::kText), "soar");
-      x += ts.x + 16.0f;
-
-      // Left pills — state, media, P2P — only when a source is loaded (the
-      // prototype models the playing page).
-      if (!current_uri_.empty()) {
-        const bool buffering =
-            cfg_.buffering && cfg_.buffering->load(std::memory_order_relaxed);
-        const std::uint64_t total =
-            cfg_.download_total ? cfg_.download_total->load(std::memory_order_relaxed) : 0;
-        const std::uint64_t have =
-            cfg_.download_bytes ? cfg_.download_bytes->load(std::memory_order_relaxed) : 0;
-        const bool downloading = total > 0 && have < total;
-
-        // State pill: ok-green "Playing" (or warn while buffering); the
-        // non-playing states go neutral — the prototype's .pill.ok only
-        // colors the playing row.
-        const char* state = "Playing";
-        ImVec4 stateFg = theme::kOk;
-        bool stateTinted = true;
-        // The .pill.ok's play glyph belongs to the moving state only; the
-        // non-playing pills are plain text.
-        bool statePlaying = true;
-        switch (player_.state()) {
-          case PlaybackState::Playing:
-            if (buffering) {
-              state = "Buffering";
-              stateFg = theme::kWarn;
-            }
-            break;
-          case PlaybackState::Paused:
-            state = "Paused";
-            stateFg = theme::kTextDim;
-            stateTinted = false;
-            statePlaying = false;
-            break;
-          case PlaybackState::Ended:
-            state = "Ended";
-            stateFg = theme::kTextMuted;
-            stateTinted = false;
-            statePlaying = false;
-            break;
-          case PlaybackState::Error:
-            state = "Error";
-            stateFg = theme::kDanger;
-            break;
-          case PlaybackState::Stopped:
-            state = "Stopped";
-            stateFg = theme::kTextMuted;
-            stateTinted = false;
-            statePlaying = false;
-            break;
-        }
-        x = topPill(dl, x, cy, state, stateFg, stateTinted, /*play=*/statePlaying);
-
-        // Media pill: the source's display name (the prototype's plain pill).
-        const std::string name = clipEllipsis(displayName(current_uri_), 26);
-        x = topPill(dl, x, cy, name.c_str(), theme::kTextDim, /*tinted=*/false,
-                    /*play=*/false);
-
-        // P2P pill (the prototype's .pill.sky) while the download is live.
-        if (downloading) {
-          char p2p[24];
-          std::snprintf(p2p, sizeof(p2p), "P2P %llu%%",
-                        static_cast<unsigned long long>(have * 100 / total));
-          x = topPill(dl, x, cy, p2p, theme::kNet, /*tinted=*/true,
-                      /*play=*/false);
-        }
-      }
-
-      // Right: the four .toolbtn (30x30, radius 8, hover white .08): Info,
-      // Recent, Help, Fullscreen. The letters are the shortcuts (the bitmap
-      // font has no icon set); the tooltip names the action.
-      const float bw = 30.0f;
-      const float gap = 8.0f;
-      float bx = w - 22.0f - (4 * bw + 3 * gap);
-      if (topTool("##tb_info", 'I', "Info (I)", ImVec2(bx, cy - 15.0f))) {
-        toggleOverlay(Overlay::Info);
-      }
-      bx += bw + gap;
-      if (topTool("##tb_recent", 'R', "Recent (R)", ImVec2(bx, cy - 15.0f))) {
-        toggleOverlay(Overlay::Recent);
-      }
-      bx += bw + gap;
-      if (topTool("##tb_help", 'H', "Help (H)", ImVec2(bx, cy - 15.0f))) {
-        toggleOverlay(Overlay::Help);
-      }
-      bx += bw + gap;
-      if (topTool("##tb_full", 'F', "Fullscreen (F)", ImVec2(bx, cy - 15.0f))) {
-        setFullscreen(!st_.fullscreen);
-      }
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(3);
-  }
-
-  // Truncate a long label with a "..." tail so the top-bar media pill stays
-  // a single short pill (the bitmap font has no ellipsis glyph).
-  static std::string clipEllipsis(const std::string& s, std::size_t max_chars) {
-    if (s.size() <= max_chars) return s;
-    const std::size_t keep = max_chars > 3 ? max_chars - 3 : 1;
-    return s.substr(0, keep) + "...";
-  }
-
-  void drawToast(milliseconds now) {
-    if (!st_.toast.active(now)) return;
-    const ImGuiIO& io = ImGui::GetIO();
-    const double age = st_.toast.age(now);
-    // Full opacity for the first 75%, a 25% fade-out tail (docs §4).
-    const float alpha =
-        static_cast<float>(age < 0.75 ? 1.0 : 1.0 - (age - 0.75) / 0.25);
-    // The toast sits below the top bar and the state chip (both are
-    // persistent now), so a status message never collides with either.
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 104.0f), ImGuiCond_Always,
-                            ImVec2(0.5f, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
-    ImGui::SetNextWindowBgAlpha(0.6f);
-    if (ImGui::Begin("##toast", nullptr,
-                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoSavedSettings |
-                         ImGuiWindowFlags_AlwaysAutoResize)) {
-      ImGui::TextUnformatted(st_.toast.text().c_str());
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
-  }
-
-  void drawOverlays() {
-    // V7b focus upkeep: a face exists only while its surface is up — the
-    // overlay enum is authoritative (overlays close by enum writes in the
-    // row handlers), a popup menu by ImGui's own verdict — and focus
-    // clamps to the counts the last draw published.
-    const bool popup_open = ImGui::IsPopupOpen(
-        nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-    if (ui_focus_.face() == UiFocus::Face::PlaylistRows &&
-        st_.overlay != Overlay::Playlist) {
-      ui_focus_.clear();
-    }
-    if (ui_focus_.face() == UiFocus::Face::LibraryRows &&
-        st_.overlay != Overlay::Library) {
-      ui_focus_.clear();
-    }
-    if (ui_focus_.face() == UiFocus::Face::MenuItems && !popup_open) {
-      ui_focus_.clear();
-    }
-    ui_focus_.clamp(UiFocus::Face::PlaylistRows, playlist_rows_);
-    ui_focus_.clamp(UiFocus::Face::LibraryRows, library_rows_);
-    if (popup_open) ui_focus_.clamp(UiFocus::Face::MenuItems, menu_count_);
-    switch (st_.overlay) {
-      case Overlay::None: return;
-      case Overlay::Info: drawInfoOverlay(); return;
-      case Overlay::Recent: drawRecentOverlay(); return;
-      case Overlay::Help: drawHelpOverlay(); return;
-      case Overlay::Subtitle: drawSubtitleOverlay(); return;
-      case Overlay::Playlist: drawPlaylistOverlay(); return;
-      case Overlay::DirPick: drawDirPickOverlay(); return;
-      case Overlay::Library: drawLibraryOverlay(); return;
-      case Overlay::Cast: drawCastOverlay(); return;
-      case Overlay::Settings: drawSettingsOverlay(); return;
-    }
-  }
-
-  void drawInfoOverlay() {
-    bool open = true;
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSizeConstraints(ImVec2(360, 200), ImVec2(480, 800));
-    if (ImGui::Begin("Media Info", &open,
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
-      const MediaInfo info = player_.mediaInfo();
-      ImGui::TextWrapped("%s", current_uri_.c_str());
-      ImGui::Separator();
-      ImGui::Text("State: %s", stateName(player_.state()));
-      ImGui::Text("Position: %s / %s", formatClock(player_.position()).c_str(),
-                  formatClock(info.duration).c_str());
-      ImGui::Text("Seekable: %s", info.seekable ? "yes" : "no");
-      ImGui::Text("Backend: %s", cfg_.backend_label.c_str());
-      if (!cfg_.cache_dir.empty()) ImGui::Text("Cache: %s", cfg_.cache_dir.c_str());
-      ImGui::Text("Rate: %.2gx  Volume: %d%%%s", st_.last_rate,
-                  static_cast<int>(st_.last_volume * 100),
-                  st_.last_muted ? " (muted)" : "");
-      {
-        std::chrono::milliseconds loop_a{0}, loop_b{0};
-        if (player_.loopAB(loop_a, loop_b)) {
-          ImGui::Text("A-B Loop: %s - %s", formatClock(loop_a).c_str(),
-                      formatClock(loop_b).c_str());
-        }
-      }
-      if (!playlist_.empty()) {
-        const char* loop_name = playlist_.loop() == PlaylistStore::Loop::Off
-                                    ? "off"
-                                    : playlist_.loop() == PlaylistStore::Loop::All
-                                        ? "all"
-                                        : "one";
-        ImGui::Text("Playlist: %d entr%s (current %d, loop %s%s)",
-                    static_cast<int>(playlist_.size()),
-                    playlist_.size() == 1 ? "y" : "ies",
-                    static_cast<int>(playlist_.current()) + 1, loop_name,
-                    playlist_.shuffle() ? ", shuffle" : "");
-      }
-      const std::string err = player_.lastError();
-      if (!err.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::kDanger);
-        ImGui::TextWrapped("Error: %s", err.c_str());
-        ImGui::PopStyleColor();
-      }
-      ImGui::Separator();
-      ImGui::Text("Tracks: %d", static_cast<int>(info.tracks.size()));
-      for (const auto& t : info.tracks) {
-        const bool selected =
-            (t.type == TrackType::Video && t.id == info.selected_video) ||
-            (t.type == TrackType::Audio && t.id == info.selected_audio) ||
-            (t.type == TrackType::Subtitle && t.id == info.selected_subtitle);
-        std::string line = std::string("  [") + trackTypeName(t.type) + "] #" +
-                           std::to_string(t.id) + " " + t.codec;
-        if (!t.language.empty()) line += " (" + t.language + ")";
-        if (!t.title.empty()) line += " - " + t.title;
-        if (selected) {
-          ImGui::TextUnformatted((line + "  *").c_str());
-        } else {
-          ImGui::TextDisabled("%s", line.c_str());
-        }
-      }
-    }
-    ImGui::End();
-    if (!open) st_.overlay = Overlay::None;
-  }
-
-  void drawRecentOverlay() {
-    bool open = true;
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(460, 340), ImGuiCond_Appearing);
-    if (ImGui::Begin("Recent", &open, ImGuiWindowFlags_NoSavedSettings)) {
-      if (recent_.entries().empty()) {
-        ImGui::TextDisabled("%s", "No recent files yet.");
-      }
-      // Snapshot before iterating: picking an entry rewrites the list
-      // (move-to-front plus a save), and iterating the very vector that
-      // the pick mutates leaves both the loop's iterator and the `uri`
-      // reference dangling.
-      const std::vector<std::string> entries = recent_.entries();
-      for (const std::string& uri : entries) {
-        if (ImGui::Selectable(displayName(uri).c_str())) {
-          openSource(uri);
-          st_.overlay = Overlay::None;
-        }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", uri.c_str());
-      }
-    }
-    ImGui::End();
-    if (!open) st_.overlay = Overlay::None;
-  }
-
-  // The open-folder picker (v0.2.1). In-app on purpose: it carries the
-  // recursive-import toggle and the recent-dirs shortcuts, which native
-  // dialogs cannot, and it renders identically on every platform. A click
-  // on a row descends into that subdirectory, ".." climbs out, and the
-  // import button acts on the browsed directory itself. The media count
-  // under the browsed directory is cached per (path, recursive) pair — a
-  // deep tree must not be re-walked on every frame while the dialog is up.
-  void drawDirPickOverlay() {
-    bool open = true;
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_Appearing);
-    if (ImGui::Begin(dirpick_files_ ? "Add files" : "Open folder", &open,
-                     ImGuiWindowFlags_NoSavedSettings)) {
-      ImGui::TextDisabled("%s", dirpick_path_.c_str());
-      // Library watch mode is always recursive (a library watches a tree,
-      // not a folder shelf); file mode picks individual files, so the
-      // toggle governs nothing there either. It only governs queue imports.
-      if (!dirpick_for_library_ && !dirpick_files_) {
-        ImGui::Checkbox("Include subfolders", &dirpick_recursive_);
-      }
-      const bool effective_recursive = dirpick_for_library_ || dirpick_recursive_;
-      ImGui::Separator();
-
-      const std::vector<std::string>& dirs = recent_dirs_.entries();
-      if (!dirs.empty() && ImGui::CollapsingHeader("Recent folders")) {
-        const std::vector<std::string> snapshot = dirs;  // pick rewrites it
-        for (const std::string& d : snapshot) {
-          if (ImGui::Selectable(baseName(d).c_str())) dirpick_path_ = d;
-          if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.c_str());
-        }
-      }
-
-      // Directory rows, and in file mode the current directory's media
-      // files below them. The child region keeps the action button pinned
-      // below the scrollable list. The files list flat (no recursion) —
-      // a deep pick walks the tree directory by directory, which is what
-      // the checkboxes are for.
-      if (ImGui::BeginChild("dirs", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()))) {
-        const std::string up = parentOfDir(dirpick_path_);
-        if (!up.empty() && ImGui::Selectable("..")) dirpick_path_ = up;
-        const std::vector<std::string> subs = listSubdirectories(dirpick_path_);
-        for (const std::string& s : subs) {
-          if (ImGui::Selectable((s + "/").c_str())) dirpick_path_ = joinDir(dirpick_path_, s);
-        }
-        if (up.empty() && subs.empty()) ImGui::TextDisabled("%s", "No subfolders");
-        if (dirpick_files_) {
-          for (const std::string& f : listMediaFiles(dirpick_path_, false)) {
-            // Membership by scan, mutation by the checkbox's own verdict:
-            // the vector keeps click order across directory changes, which
-            // is the order the queued set will take.
-            const auto at = std::find(dirpick_checked_.begin(),
-                                      dirpick_checked_.end(), f);
-            bool checked = at != dirpick_checked_.end();
-            if (ImGui::Checkbox(baseName(f).c_str(), &checked)) {
-              if (checked && at == dirpick_checked_.end()) {
-                dirpick_checked_.push_back(f);
-              } else if (!checked && at != dirpick_checked_.end()) {
-                dirpick_checked_.erase(at);
-              }
-            }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", f.c_str());
-          }
-        }
-      }
-      ImGui::EndChild();
-
-      if (dirpick_files_) {
-        // File mode's action: the checked set, not the walked tree — no
-        // recursive count to cache, the vector's size is the count.
-        ImGui::BeginDisabled(dirpick_checked_.empty());
-        if (ImGui::Button(("Add " + std::to_string(dirpick_checked_.size()) +
-                           " file" + (dirpick_checked_.size() == 1 ? "" : "s"))
-                              .c_str())) {
-          addCheckedFiles(nowMs());
-        }
-        ImGui::EndDisabled();
-      } else {
-        if (dirpick_count_valid_ && dirpick_counted_path_ == dirpick_path_ &&
-            dirpick_counted_recursive_ == effective_recursive) {
-          // cache hit — the walk below is skipped
-        } else {
-          dirpick_count_ = listMediaFiles(dirpick_path_, effective_recursive).size();
-          dirpick_counted_path_ = dirpick_path_;
-          dirpick_counted_recursive_ = effective_recursive;
-          dirpick_count_valid_ = true;
-        }
-        ImGui::BeginDisabled(dirpick_count_ == 0);
-        char label[160];
-        std::snprintf(label, sizeof(label), "%s this folder (%zu media file%s%s)",
-                      dirpick_for_library_ ? "Watch" : "Import",
-                      dirpick_count_, dirpick_count_ == 1 ? "" : "s",
-                      effective_recursive ? ", with subfolders" : "");
-        if (ImGui::Button(label)) {
-          if (dirpick_for_library_) {
-            watchDirectory(dirpick_path_, nowMs());
-          } else {
-            importDirectory(dirpick_path_, nowMs());
-          }
-        }
-        ImGui::EndDisabled();
-      }
-    }
-    ImGui::End();
-    if (!open) st_.overlay = Overlay::None;
-  }
-
-  // The play queue (docs/mvp.md §2). Rows show the playing entry with a
-  // ">" marker; a row click jumps to it (the overlay stays open so the
-  // list can be stepped through), the trailing "x" removes the entry —
-  // removing the playing one only re-points the queue, playback runs on.
-  // Header buttons: the two pickers (files, then a whole folder) and the
-  // loop/shuffle toggles; no keys are spent on them (L is the A-B loop,
-  // and mpv leaves shuffle unbound too). "Clear queue" wipes the list in
-  // two clicks: the first arms it, the second (inside the arm window)
-  // executes — one click at one button's width away from a destroyed
-  // queue is too little intent for a store with no undo.
-  // The full-page playlist (docs/public/prototypes/playlist.html): a 74px
-  // icon rail (logo + the four page links) over the queue column — the head
-  // (title/count/note pill/Loop segmented/Shuffle/Add/Clear), the rows, and
-  // the now-playing bar pinned to the bottom. The prototype's per-row
-  // duration and resolution/size meta need per-entry probing the queue
-  // store does not track, so rows carry the format (extension) only and no
-  // duration column — documented, not a silent shortfall.
-  void drawPlaylistOverlay() {
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
-    ImGui::SetNextWindowSize(io.DisplaySize);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kPageBg);
-    ImGui::Begin("##pl_page", nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                     ImGuiWindowFlags_NoScrollbar |
-                     ImGuiWindowFlags_NoSavedSettings);
-    {
-      // The arm expires: a user who armed it and walked away must not
-      // destroy the queue with their next visit's stray click.
-      if (playlist_clear_armed_ &&
-          nowMs() - playlist_clear_armed_at_ > std::chrono::seconds(4)) {
-        playlist_clear_armed_ = false;
-      }
-
-      // Left icon rail (.rail, 74px, --bg0, border-right).
-      ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
-      ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kNavBg);
-      ImGui::BeginChild("##pl_rail", ImVec2(74.0f, 0.0f), ImGuiChildFlags_None);
-      {
-        // The rail's logo (.rail .wing, 30x30, rounded 9).
-        ImGui::SetCursorPos(ImVec2(22.0f, 14.0f));
-        drawGradientMark(ImGui::GetWindowDrawList(),
-                         ImGui::GetCursorScreenPos(), 30.0f, 9.0f,
-                         ImGui::ColorConvertFloat4ToU32(theme::kNavBg));
-        ImGui::Dummy(ImVec2(30.0f, 30.0f));
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12.0f);
-        // The four page links; the playlist link is the active one. A click
-        // switches the overlay — the prototype's rail is the page navigator.
-        if (railButton("##pl_nav_main", RailIcon::Main, false))
-          st_.overlay = Overlay::None;
-        if (railButton("##pl_nav_playlist", RailIcon::Playlist, true))
-          st_.overlay = Overlay::Playlist;
-        if (railButton("##pl_nav_library", RailIcon::Library, false))
-          st_.overlay = Overlay::Library;
-        if (railButton("##pl_nav_settings", RailIcon::Settings, false))
-          st_.overlay = Overlay::Settings;
-        // .rail border-right: the hairline splitting rail from the queue.
-        const ImVec2 rp = ImGui::GetWindowPos();
-        const float rh = ImGui::GetWindowHeight();
-        ImGui::GetWindowDrawList()->AddLine(
-            ImVec2(rp.x + 73.5f, rp.y), ImVec2(rp.x + 73.5f, rp.y + rh),
-            ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
-      }
-      ImGui::EndChild();
-      ImGui::PopStyleColor();
-      ImGui::PopStyleVar();
-      ImGui::SameLine();
-
-      // Main: the head over the queue over the now-playing bar.
-      ImGui::BeginChild("##pl_main", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
-      {
-        drawPlaylistHead();
-        const std::vector<std::string> entries = playlist_.entries();
-        const std::vector<DirGroup> groups = groupByDirectory(entries);
-        playlist_rows_ = static_cast<int>(entries.size());
-        // The queue child leaves the now-bar's 62px at the bottom.
-        const float now_h = 62.0f;
-        ImGui::BeginChild("##pl_qlist", ImVec2(0.0f, -now_h),
-                          ImGuiChildFlags_None);
-        {
-          ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
-          if (playlist_.empty()) {
-            ImGui::TextDisabled("%s",
-                                "Playlist is empty — opened files queue here.");
-          } else if (groups.size() > 1) {
-            // Folder tree (v0.2.1): one node per parent directory, first
-            // occurrence order. "Play group" starts at the group's first
-            // queue entry, which walks the rest in order.
-            for (std::size_t g = 0; g < groups.size(); ++g) {
-              const DirGroup& group = groups[g];
-              ImGui::PushID(static_cast<int>(g));
-              const std::string title =
-                  (group.directory.empty() ? std::string("Other sources")
-                                           : baseName(group.directory)) +
-                  "  (" + std::to_string(group.indices.size()) + ")";
-              ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-              const bool opened = ImGui::TreeNode(title.c_str());
-              if (ImGui::IsItemHovered() && !group.directory.empty()) {
-                ImGui::SetTooltip("%s", group.directory.c_str());
-              }
-              if (opened) {
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Play group")) {
-                  openPlaylistEntry(group.indices[0], nowMs());
-                }
-                for (const std::size_t idx : group.indices) {
-                  drawPlaylistRow(entries, idx);
-                }
-                ImGui::TreePop();
-              }
-              ImGui::PopID();
-            }
-          } else {
-            // Zero or one folder: keep the flat list (no tree node between
-            // the user and the entries). This is the prototype's form.
-            for (std::size_t i = 0; i < entries.size(); ++i) {
-              drawPlaylistRow(entries, i);
-            }
-          }
-        }
-        ImGui::EndChild();
-        drawPlaylistNowBar();
-      }
-      ImGui::EndChild();
-    }
-    ImGui::End();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar(4);
-  }
-
-  // The rail's page links (playlist.html .rail a): a 44x44 rounded-12 face,
-  // --accent-soft when active, --bg3 on hover, 20px line icon centered.
-  enum class RailIcon { Main, Playlist, Library, Settings };
-  bool railButton(const char* id, RailIcon icon, bool active) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImGui::SetCursorPosX(15.0f);  // (74 - 44) / 2
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const bool clicked = ImGui::InvisibleButton(id, ImVec2(44.0f, 44.0f));
-    const bool hovered = ImGui::IsItemHovered();
-    if (active) {
-      ImVec4 a = theme::kAccent;
-      a.w = 0.14f;  // --accent-soft
-      dl->AddRectFilled(p, ImVec2(p.x + 44.0f, p.y + 44.0f),
-                        ImGui::ColorConvertFloat4ToU32(a), 12.0f);
-    } else if (hovered) {
-      dl->AddRectFilled(p, ImVec2(p.x + 44.0f, p.y + 44.0f),
-                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBg),
-                        12.0f);
-    }
-    const ImU32 fg = ImGui::ColorConvertFloat4ToU32(
-        active ? theme::kAccentHi
-               : (hovered ? theme::kText2 : theme::kText3));
-    drawRailIcon(dl, ImVec2(p.x + 22.0f, p.y + 22.0f), icon, fg);
-    return clicked;
-  }
-
-  void drawRailIcon(ImDrawList* dl, const ImVec2& c, RailIcon icon, ImU32 col) {
-    const float th = 1.6f;
-    switch (icon) {
-      case RailIcon::Main: {  // window: rounded rect + title line
-        dl->AddRect(ImVec2(c.x - 9.0f, c.y - 7.0f),
-                    ImVec2(c.x + 9.0f, c.y + 7.0f), col, 2.0f, 0, th);
-        dl->AddLine(ImVec2(c.x - 9.0f, c.y - 3.0f),
-                    ImVec2(c.x + 9.0f, c.y - 3.0f), col, th);
-        break;
-      }
-      case RailIcon::Playlist: {  // three lines + play triangle at right
-        dl->AddLine(ImVec2(c.x - 9.0f, c.y - 5.0f),
-                    ImVec2(c.x + 1.0f, c.y - 5.0f), col, th);
-        dl->AddLine(ImVec2(c.x - 9.0f, c.y),
-                    ImVec2(c.x + 1.0f, c.y), col, th);
-        dl->AddLine(ImVec2(c.x - 9.0f, c.y + 5.0f),
-                    ImVec2(c.x + 1.0f, c.y + 5.0f), col, th);
-        dl->AddTriangleFilled(ImVec2(c.x + 3.0f, c.y - 3.5f),
-                              ImVec2(c.x + 3.0f, c.y + 3.5f),
-                              ImVec2(c.x + 9.0f, c.y), col);
-        break;
-      }
-      case RailIcon::Library: {  // hexagon
-        const ImVec2 pts[6] = {
-            {c.x, c.y - 7.0f},     {c.x + 6.1f, c.y - 3.5f},
-            {c.x + 6.1f, c.y + 3.5f}, {c.x, c.y + 7.0f},
-            {c.x - 6.1f, c.y + 3.5f}, {c.x - 6.1f, c.y - 3.5f}};
-        dl->PathLineTo(pts[0]);
-        for (int i = 1; i < 6; ++i) dl->PathLineTo(pts[i]);
-        dl->PathStroke(col, 0, th);
-        break;
-      }
-      case RailIcon::Settings: {  // gear: circle + 8 spokes
-        dl->AddCircle(c, 3.4f, col, 0, th);
-        for (int k = 0; k < 8; ++k) {
-          const float a = k * 0.785398f;  // pi/4
-          dl->AddLine(ImVec2(c.x + 6.2f * std::cos(a), c.y + 6.2f * std::sin(a)),
-                      ImVec2(c.x + 9.0f * std::cos(a), c.y + 9.0f * std::sin(a)),
-                      col, th);
-        }
-        break;
-      }
-    }
-  }
-
-  // The head (playlist.html .head): title, count, the note pill, a spacer,
-  // then the Loop segmented / Shuffle / Add files / Clear cluster.
-  void drawPlaylistHead() {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImGui::SetCursorPos(ImVec2(20.0f, 14.0f));
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText);
-    ImGui::TextUnformatted("Playlist");
-    ImGui::PopStyleColor();
-    const std::string count = std::to_string(playlist_.size()) + " items";
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
-    ImGui::TextUnformatted(count.c_str());
-    ImGui::PopStyleColor();
-    ImGui::SameLine();
-    drawHeadPill("Auto-advance, queue end stops at Ended");
-    // Right cluster: Loop segmented + Shuffle + Add files + Clear. The
-    // prototype's .head has them clustered right; the offset reserves the
-    // measured cluster width so the Add/Clear land at the 20px edge.
-    ImGui::SameLine(ImGui::GetWindowWidth() - 20.0f - 335.0f);
-    loopSegmented();
-    ImGui::SameLine();
-    if (shuffleButton()) {
-      playlist_.setShuffle(!playlist_.shuffle());
-    }
-    ImGui::SameLine();
-    if (drawHeadBtn("##pl_add", "Add files O")) {
-      openDirPickerFiles();
-    }
-    ImGui::SameLine();
-    if (drawHeadBtn("##pl_clear",
-                    playlist_clear_armed_ ? "Clear: sure?" : "Clear")) {
-      if (playlist_clear_armed_) {
-        playlist_.clear();
-        playlist_clear_armed_ = false;
-        st_.toast.show("Playlist cleared", nowMs());
-      } else {
-        playlist_clear_armed_ = true;
-        playlist_clear_armed_at_ = nowMs();
-      }
-    }
-    // The head's bottom hairline (14 + 30 + 10 = 54px strip).
-    const ImVec2 hp = ImGui::GetWindowPos();
-    dl->AddLine(ImVec2(hp.x, hp.y + 54.0f),
-                ImVec2(hp.x + ImGui::GetWindowWidth(), hp.y + 54.0f),
-                ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
-  }
-
-  // The .head note pill (.pill, h22, rounded 999, --bg3, --line border).
-  void drawHeadPill(const char* text) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 ts = ImGui::CalcTextSize(text);
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float h = 22.0f;
-    const float w = ts.x + 18.0f;
-    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h),
-                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 99.0f);
-    dl->AddRect(p, ImVec2(p.x + w, p.y + h),
-                ImGui::ColorConvertFloat4ToU32(theme::kCardLine), 99.0f, 0,
-                1.0f);
-    dl->AddText(ImVec2(p.x + 9.0f, p.y + (h - ts.y) * 0.5f),
-                ImGui::ColorConvertFloat4ToU32(theme::kText2), text);
-    ImGui::Dummy(ImVec2(w, h));
-  }
-
-  // A .head .btn (h30, rounded 7, --bg3 face, --line border). Returns a click.
-  bool drawHeadBtn(const char* id, const char* label) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 ts = ImGui::CalcTextSize(label);
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float h = 30.0f;
-    const float w = ts.x + 24.0f;
-    const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
-    const bool hovered = ImGui::IsItemHovered();
-    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h),
-                      ImGui::ColorConvertFloat4ToU32(
-                          hovered ? theme::kFieldBgHi : theme::kFieldBg),
-                      7.0f);
-    dl->AddRect(p, ImVec2(p.x + w, p.y + h),
-                ImGui::ColorConvertFloat4ToU32(theme::kCardLine), 7.0f, 0,
-                1.0f);
-    dl->AddText(ImVec2(p.x + 12.0f, p.y + (h - ts.y) * 0.5f),
-                ImGui::ColorConvertFloat4ToU32(theme::kText), label);
-    return clicked;
-  }
-
-  // The .loop three-state segmented (playlist.html .head .loop): Off / All /
-  // One on a 999-pill container, the active state an accent pill.
-  void loopSegmented() {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    static const char* const kLabels[3] = {"Off", "All", "One"};
-    const PlaylistStore::Loop kModes[3] = {PlaylistStore::Loop::Off,
-                                           PlaylistStore::Loop::All,
-                                           PlaylistStore::Loop::One};
-    const float seg_h = 22.0f;
-    float widths[3] = {0, 0, 0};
-    float total = 0.0f;
-    for (int i = 0; i < 3; ++i) {
-      widths[i] = ImGui::CalcTextSize(kLabels[i]).x + 20.0f;
-      total += widths[i];
-    }
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const ImVec2 cpos(p.x - 2.0f, p.y - 2.0f);
-    dl->AddRectFilled(cpos, ImVec2(cpos.x + total + 8.0f, cpos.y + seg_h + 4.0f),
-                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 99.0f);
-    dl->AddRect(cpos, ImVec2(cpos.x + total + 8.0f, cpos.y + seg_h + 4.0f),
-                ImGui::ColorConvertFloat4ToU32(theme::kCardLine), 99.0f, 0,
-                1.0f);
-    float x = p.x;
-    for (int i = 0; i < 3; ++i) {
-      const bool on = playlist_.loop() == kModes[i];
-      const ImVec2 bp(x, p.y);
-      ImGui::SetCursorScreenPos(bp);
-      const bool clicked =
-          ImGui::InvisibleButton(("##pl_loop" + std::to_string(i)).c_str(),
-                                 ImVec2(widths[i], seg_h));
-      const bool hovered = ImGui::IsItemHovered();
-      if (on) {
-        dl->AddRectFilled(bp, ImVec2(bp.x + widths[i], bp.y + seg_h),
-                          ImGui::ColorConvertFloat4ToU32(theme::kAccent),
-                          99.0f);
-      }
-      const ImVec2 lts = ImGui::CalcTextSize(kLabels[i]);
-      const ImU32 ink = ImGui::ColorConvertFloat4ToU32(
-          on ? theme::kInkOnAccent
-             : (hovered ? theme::kText2 : theme::kText3));
-      dl->AddText(ImVec2(bp.x + (widths[i] - lts.x) * 0.5f,
-                         bp.y + (seg_h - lts.y) * 0.5f),
-                  ink, kLabels[i]);
-      if (clicked) playlist_.setLoop(kModes[i]);
-      x += widths[i];
-    }
-    ImGui::SetCursorScreenPos(ImVec2(p.x + total, p.y + seg_h));
-  }
-
-  // The Shuffle toggle (the prototype's .seg icon, accent when on).
-  bool shuffleButton() {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const bool clicked = ImGui::InvisibleButton("##pl_shuffle",
-                                                ImVec2(26.0f, 26.0f));
-    const bool hovered = ImGui::IsItemHovered();
-    const bool on = playlist_.shuffle();
-    const ImU32 ink = ImGui::ColorConvertFloat4ToU32(
-        on ? theme::kAccentHi : (hovered ? theme::kText2 : theme::kText3));
-    const float th = 1.6f;
-    // Two crossing paths + two arrowheads (the prototype's shuffle glyph).
-    dl->AddLine(ImVec2(p.x + 3.0f, p.y + 6.5f), ImVec2(p.x + 8.0f, p.y + 6.5f),
-                ink, th);
-    dl->AddLine(ImVec2(p.x + 3.0f, p.y + 19.5f), ImVec2(p.x + 8.0f, p.y + 19.5f),
-                ink, th);
-    dl->AddLine(ImVec2(p.x + 12.0f, p.y + 9.5f), ImVec2(p.x + 17.0f, p.y + 14.0f),
-                ink, th);
-    dl->AddLine(ImVec2(p.x + 12.0f, p.y + 16.5f), ImVec2(p.x + 17.0f, p.y + 12.0f),
-                ink, th);
-    dl->AddTriangleFilled(ImVec2(p.x + 6.0f, p.y + 4.5f),
-                          ImVec2(p.x + 6.0f, p.y + 8.5f),
-                          ImVec2(p.x + 2.5f, p.y + 6.5f), ink);
-    dl->AddTriangleFilled(ImVec2(p.x + 6.0f, p.y + 17.5f),
-                          ImVec2(p.x + 6.0f, p.y + 21.5f),
-                          ImVec2(p.x + 2.5f, p.y + 19.5f), ink);
-    dl->AddTriangleFilled(ImVec2(p.x + 19.0f, p.y + 9.0f),
-                          ImVec2(p.x + 19.0f, p.y + 17.0f),
-                          ImVec2(p.x + 23.0f, p.y + 13.0f), ink);
-    return clicked;
-  }
-
-  // One queue row (playlist.html .row): the index (or an EQ for the current
-  // entry), a 72x40 gradient thumb, the title + format meta, and the
-  // hover-revealed next-play / remove actions. A row click jumps to the
-  // entry (the overlay stays open so the list can be stepped through).
-  void drawPlaylistRow(const std::vector<std::string>& entries, std::size_t i) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const bool now = i == playlist_.current();
-    const std::string name = displayName(entries[i]);
-    const float row_h = 52.0f;
-    const float row_w = ImGui::GetWindowWidth() - 24.0f;
-    ImGui::SetCursorPosX(12.0f);
-    const float row_top = ImGui::GetCursorPosY();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    // The rightmost 70px is the action zone (next-play + remove, revealed
-    // on hover): it is not part of the jump button, so a click aimed at an
-    // action can never fall through to the row's jump (hover-claim order
-    // would give the row the press — measured on 1.91.9b, the later
-    // overlapping button loses the click even with AllowOverlap).
-    const float jump_w = row_w - 70.0f;
-    const bool row_clicked =
-        ImGui::InvisibleButton(("##plrow_" + std::to_string(i)).c_str(),
-                               ImVec2(jump_w, row_h));
-    const bool hovered =
-        ImGui::IsMouseHoveringRect(p, ImVec2(p.x + row_w, p.y + row_h));
-    if (now) {
-      dl->AddRectFilled(p, ImVec2(p.x + row_w, p.y + row_h),
-                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBg),
-                        10.0f);
-      ImVec4 b = theme::kAccent;
-      b.w = 0.28f;
-      dl->AddRect(p, ImVec2(p.x + row_w, p.y + row_h),
-                  ImGui::ColorConvertFloat4ToU32(b), 10.0f, 0, 1.0f);
-    } else if (hovered) {
-      dl->AddRectFilled(p, ImVec2(p.x + row_w, p.y + row_h),
-                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBg),
-                        10.0f);
-    }
-    if (row_clicked) openPlaylistEntry(i, nowMs());
-    // Index (or EQ bars on the current entry).
-    if (now) {
-      const float cx = p.x + 22.0f;
-      const float cy = p.y + row_h * 0.5f;
-      const float t = static_cast<float>(ImGui::GetTime());
-      const float hh[3] = {6.0f, 12.0f, 8.0f};
-      for (int k = 0; k < 3; ++k) {
-        const float ph =
-            hh[k] * (0.6f + 0.4f * std::sin(t * 5.0f + k * 1.3f));
-        dl->AddRectFilled(
-            ImVec2(cx - 6.0f + k * 4.5f, cy - ph * 0.5f),
-            ImVec2(cx - 6.0f + k * 4.5f + 2.5f, cy + ph * 0.5f),
-            ImGui::ColorConvertFloat4ToU32(theme::kAccent), 1.0f);
-      }
-    } else {
-      char idx[4];
-      std::snprintf(idx, sizeof(idx), "%02zu", i + 1);
-      const ImVec2 is = ImGui::CalcTextSize(idx);
-      dl->AddText(ImVec2(p.x + 22.0f - is.x, p.y + (row_h - is.y) * 0.5f),
-                  ImGui::ColorConvertFloat4ToU32(theme::kText4), idx);
-    }
-    // Thumb (72x40, rounded 6, the poster's dark gradient + cool radial).
-    const float ty = p.y + (row_h - 40.0f) * 0.5f;
-    const ImVec2 tp(p.x + 40.0f, ty);
-    const float th = 40.0f;
-    dl->AddRectFilled(tp, ImVec2(tp.x + 72.0f, tp.y + th),
-                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 6.0f);
-    dl->AddRectFilledMultiColor(tp, ImVec2(tp.x + 72.0f, tp.y + th),
-                                IM_COL32(13, 15, 18, 0xFF),   // TL
-                                IM_COL32(19, 24, 33, 0xFF),   // TR
-                                IM_COL32(14, 16, 19, 0xFF),   // BL
-                                IM_COL32(19, 22, 27, 0xFF));  // BR
-    dl->PushClipRect(tp, ImVec2(tp.x + 72.0f, tp.y + th), true);
-    dl->AddEllipseFilled(ImVec2(tp.x + 50.0f, tp.y + 24.0f),
-                         ImVec2(20.0f, 18.0f),
-                         IM_COL32(108, 177, 255, 16), 0.0f, 32);
-    dl->PopClipRect();
-    // Title + meta (the format/extension; the queue store tracks no
-    // per-entry duration or resolution).
-    const float bx = tp.x + 72.0f + 12.0f;
-    const float bw = row_w - (bx - p.x) - 70.0f;  // room for the actions
-    const ImVec2 ts = ImGui::CalcTextSize(name.c_str());
-    dl->AddText(ImVec2(bx, ty + 4.0f),
-                ImGui::ColorConvertFloat4ToU32(theme::kText),
-                ellipsize(name, bw).c_str());
-    const std::string meta = rowMeta(entries[i]);
-    dl->AddText(ImVec2(bx, ty + 4.0f + ts.y + 1.0f),
-                ImGui::ColorConvertFloat4ToU32(theme::kText3), meta.c_str());
-    // Hover actions: next-play + remove (prototype's .row .ra). Only the
-    // hovered row reveals them; the action zone is cut out of the jump
-    // button above, so the buttons own their clicks outright.
-    if (hovered) {
-      const float ax = p.x + row_w - 62.0f;
-      if (rowActionButton(dl, "##pl_next", ImVec2(ax, p.y + row_h * 0.5f - 13.0f),
-                          true)) {
-        const std::size_t ni = playlist_.next();
-        if (ni != PlaylistStore::kNone) openPlaylistEntry(ni, nowMs());
-      }
-      if (rowActionButton(dl, "##pl_rm", ImVec2(ax + 30.0f, p.y + row_h * 0.5f - 13.0f),
-                          false)) {
-        if (playlist_.remove(i)) {
-          st_.toast.show("Removed " + name, nowMs());
-        }
-      }
-    }
-    // The hover-only action buttons sit past the flow cursor's row walk;
-    // pin the next row's start so the pitch stays row_h + spacing whether
-    // or not this row revealed its actions.
-    ImGui::SetCursorPosY(row_top + row_h + ImGui::GetStyle().ItemSpacing.y);
-  }
-
-  // A 26x26 row action button (playlist.html .ra button): next-play (play
-  // glyph) or remove (x glyph), --bg4 on hover.
-  bool rowActionButton(ImDrawList* dl, const char* id, const ImVec2& p,
-                       bool next) {
-    // The hit rect must land on the drawn face: InvisibleButton submits at
-    // the flow cursor, so pin it to p explicitly (the faces draw at
-    // absolute screen coordinates and would otherwise decorate a rect the
-    // clicks never reach).
-    ImGui::SetCursorScreenPos(p);
-    const bool clicked = ImGui::InvisibleButton(id, ImVec2(26.0f, 26.0f));
-    const bool hovered = ImGui::IsItemHovered();
-    if (hovered) {
-      dl->AddRectFilled(p, ImVec2(p.x + 26.0f, p.y + 26.0f),
-                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBgHi),
-                        7.0f);
-    }
-    const ImU32 ink = ImGui::ColorConvertFloat4ToU32(
-        hovered ? theme::kText : theme::kText3);
-    const float th = 1.6f;
-    const ImVec2 c(p.x + 13.0f, p.y + 13.0f);
-    if (next) {
-      // Next-play: a bar + play triangle.
-      dl->AddLine(ImVec2(c.x + 5.0f, c.y - 6.0f), ImVec2(c.x + 5.0f, c.y + 6.0f),
-                  ink, th);
-      dl->AddTriangleFilled(ImVec2(c.x - 4.0f, c.y - 5.0f),
-                            ImVec2(c.x - 4.0f, c.y + 5.0f),
-                            ImVec2(c.x + 3.0f, c.y), ink);
-    } else {
-      // Remove: an x.
-      dl->AddLine(ImVec2(c.x - 5.0f, c.y - 5.0f), ImVec2(c.x + 5.0f, c.y + 5.0f),
-                  ink, th);
-      dl->AddLine(ImVec2(c.x + 5.0f, c.y - 5.0f), ImVec2(c.x - 5.0f, c.y + 5.0f),
-                  ink, th);
-    }
-    return clicked;
-  }
-
-  // The bottom now-playing bar (playlist.html .nowbar): thumb, title + meta,
-  // the mini progress rail, the timecode, the volume and the play/pause.
-  void drawPlaylistNowBar() {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 wpos = ImGui::GetWindowPos();
-    const float ww = ImGui::GetWindowWidth();
-    const float h = 62.0f;
-    const float top = ImGui::GetWindowHeight() - h;
-    const ImVec2 bar(wpos.x, wpos.y + top);
-    dl->AddRectFilled(bar, ImVec2(bar.x + ww, bar.y + h),
-                      ImGui::ColorConvertFloat4ToU32(theme::kCardBg));
-    dl->AddLine(bar, ImVec2(bar.x + ww, bar.y),
-                ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
-    // Thumb (64x36).
-    const ImVec2 tp(bar.x + 18.0f, bar.y + (h - 36.0f) * 0.5f);
-    dl->AddRectFilledMultiColor(tp, ImVec2(tp.x + 64.0f, tp.y + 36.0f),
-                                IM_COL32(13, 15, 18, 0xFF),   // TL
-                                IM_COL32(19, 24, 33, 0xFF),   // TR
-                                IM_COL32(14, 16, 19, 0xFF),   // BL
-                                IM_COL32(19, 22, 27, 0xFF));  // BR
-    dl->PushClipRect(tp, ImVec2(tp.x + 64.0f, tp.y + 36.0f), true);
-    dl->AddEllipseFilled(ImVec2(tp.x + 45.0f, tp.y + 22.0f),
-                         ImVec2(18.0f, 16.0f), IM_COL32(108, 177, 255, 16),
-                         0.0f, 32);
-    dl->PopClipRect();
-    // Title + meta.
-    const std::vector<std::string> entries = playlist_.entries();
-    const std::size_t cur = playlist_.current();
-    const std::string title =
-        cur == PlaylistStore::kNone ? "Nothing playing"
-                                    : displayName(entries[cur]);
-    const std::string meta = cur == PlaylistStore::kNone
-                                 ? std::string()
-                                 : rowMeta(entries[cur]);
-    const ImVec2 ts = ImGui::CalcTextSize(title.c_str());
-    dl->AddText(ImVec2(tp.x + 64.0f + 14.0f, bar.y + 12.0f),
-                ImGui::ColorConvertFloat4ToU32(theme::kText),
-                ellipsize(title, 260.0f).c_str());
-    if (!meta.empty()) {
-      dl->AddText(ImVec2(tp.x + 64.0f + 14.0f, bar.y + 12.0f + ts.y + 1.0f),
-                  ImGui::ColorConvertFloat4ToU32(theme::kText3), meta.c_str());
-    }
-    // Mini progress rail (62% prototype fill; live pos/dur).
-    const MediaInfo info = player_.mediaInfo();
-    const double dur = static_cast<double>(info.duration.count());
-    const double pos = static_cast<double>(player_.position().count());
-    const float frac = dur > 0.0 ? static_cast<float>(pos / dur) : 0.0f;
-    const float rail_w = 200.0f;
-    const ImVec2 rp(tp.x + 64.0f + 14.0f + 280.0f, bar.y + h * 0.5f - 2.0f);
-    dl->AddRectFilled(rp, ImVec2(rp.x + rail_w, rp.y + 4.0f),
-                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBgHi),
-                      99.0f);
-    dl->AddRectFilled(rp, ImVec2(rp.x + rail_w * frac, rp.y + 4.0f),
-                      ImGui::ColorConvertFloat4ToU32(theme::kAccent), 99.0f);
-    // Timecode.
-    const std::string tc = formatClock(player_.position()) + " / " +
-                           formatClock(info.duration);
-    dl->AddText(ImVec2(rp.x + rail_w + 14.0f, bar.y + (h - ts.y) * 0.5f),
-                ImGui::ColorConvertFloat4ToU32(theme::kText2), tc.c_str());
-    // Volume (a thin rail like the prototype's range input, draggable) +
-    // play/pause.
-    const float vol_x = rp.x + rail_w + 14.0f + 120.0f;
-    const float vw = 90.0f;
-    ImGui::SetCursorScreenPos(ImVec2(vol_x, bar.y + (h - 20.0f) * 0.5f));
-    if (ImGui::InvisibleButton("##pl_vol", ImVec2(vw, 20.0f)) ||
-        ImGui::IsItemActive()) {
-      const float vfrac = std::clamp(
-          (ImGui::GetIO().MousePos.x - vol_x) / vw, 0.0f, 1.0f);
-      st_.last_volume = vfrac;
-      player_.setVolume(vfrac);
-    }
-    dl->AddRectFilled(ImVec2(vol_x, bar.y + h * 0.5f - 1.5f),
-                      ImVec2(vol_x + vw, bar.y + h * 0.5f + 1.5f),
-                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBgHi),
-                      99.0f);
-    dl->AddRectFilled(
-        ImVec2(vol_x, bar.y + h * 0.5f - 1.5f),
-        ImVec2(vol_x + vw * static_cast<float>(st_.last_volume),
-               bar.y + h * 0.5f + 1.5f),
-        ImGui::ColorConvertFloat4ToU32(theme::kText2), 99.0f);
-    ImGui::SetCursorScreenPos(ImVec2(vol_x + 100.0f, bar.y + (h - 38.0f) * 0.5f));
-    const bool playing = player_.state() == PlaybackState::Playing;
-    if (ImGui::InvisibleButton("##pl_pp", ImVec2(38.0f, 38.0f))) {
-      togglePlayPause();
-    }
-    const ImVec2 bc(vol_x + 100.0f + 19.0f, bar.y + (h - 38.0f) * 0.5f + 19.0f);
-    dl->AddCircleFilled(bc, 19.0f,
-                        ImGui::ColorConvertFloat4ToU32(theme::kAccent), 48);
-    const ImU32 ink =
-        ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent);
-    if (playing) {
-      dl->AddRectFilled(ImVec2(bc.x - 5.0f, bc.y - 7.0f),
-                        ImVec2(bc.x - 1.5f, bc.y + 7.0f), ink, 1.0f);
-      dl->AddRectFilled(ImVec2(bc.x + 1.5f, bc.y - 7.0f),
-                        ImVec2(bc.x + 5.0f, bc.y + 7.0f), ink, 1.0f);
-    } else {
-      dl->AddTriangleFilled(ImVec2(bc.x - 4.0f, bc.y - 6.5f),
-                            ImVec2(bc.x - 4.0f, bc.y + 6.5f),
-                            ImVec2(bc.x + 7.0f, bc.y), ink);
-    }
-  }
-
-  // The row/now-bar meta: the format (upper-cased extension). The queue
-  // store is URI-only, so this is the one honest meta it can render.
-  static std::string rowMeta(const std::string& uri) {
-    const std::size_t dot = uri.find_last_of('.');
-    const std::size_t slash = uri.find_last_of('/');
-    if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
-      return "media";
-    std::string ext = uri.substr(dot + 1);
-    for (char& c : ext) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return ext.empty() ? "media" : ext;
-  }
-
-  // Ellipsize `s` to `maxw` px (the prototype's .tt text-overflow: ellipsis).
-  static std::string ellipsize(const std::string& s, float maxw) {
-    if (ImGui::CalcTextSize(s.c_str()).x <= maxw) return s;
-    std::string t = s;
-    while (!t.empty() &&
-           ImGui::CalcTextSize((t + "...").c_str()).x > maxw) {
-      t.pop_back();
-    }
-    return t + "...";
-  }
-
-  // The media library browse (docs/mvp.md §3): watched folders on top,
-  // then the category buckets beside the rows they select. A row click
-  // plays the source (openSource applies the resume jump); the trailing
-  // "x" forgets a source / unwatches a folder. Snapshots before
-  // iterating: a click rewrites the store (recordOpen re-sorts entries_,
-  // an unwatch mutates folders_) and the loop must not walk a vector
-  // being mutated — the Recent overlay learned this first.
-  // The sidebar row icons (library.html .side a svg, 16px, stroke ~1.6).
-  enum class LibIcon { All, Recent, Resume, Finished, Folder, Globe };
-  void drawLibIcon(ImDrawList* dl, const ImVec2& c, LibIcon icon, ImU32 col) {
-    const float th = 1.5f;
-    switch (icon) {
-      case LibIcon::All: {  // hexagon
-        const ImVec2 pts[6] = {
-            {c.x, c.y - 7.0f},     {c.x + 6.1f, c.y - 3.5f},
-            {c.x + 6.1f, c.y + 3.5f}, {c.x, c.y + 7.0f},
-            {c.x - 6.1f, c.y + 3.5f}, {c.x - 6.1f, c.y - 3.5f}};
-        dl->PathLineTo(pts[0]);
-        for (int i = 1; i < 6; ++i) dl->PathLineTo(pts[i]);
-        dl->PathStroke(col, 0, th);
-        break;
-      }
-      case LibIcon::Recent: {  // clock
-        dl->AddCircle(c, 7.0f, col, 0, th);
-        dl->AddLine(c, ImVec2(c.x, c.y - 4.0f), col, th);
-        dl->AddLine(c, ImVec2(c.x + 2.8f, c.y + 1.4f), col, th);
-        break;
-      }
-      case LibIcon::Resume: {  // circle + play
-        dl->AddCircle(c, 7.0f, col, 0, th);
-        dl->AddTriangleFilled(ImVec2(c.x - 1.6f, c.y - 3.4f),
-                              ImVec2(c.x - 1.6f, c.y + 3.4f),
-                              ImVec2(c.x + 3.4f, c.y), col);
-        break;
-      }
-      case LibIcon::Finished: {  // check
-        dl->AddLine(ImVec2(c.x - 6.0f, c.y + 0.6f), ImVec2(c.x - 1.4f, c.y + 4.8f),
-                    col, th);
-        dl->AddLine(ImVec2(c.x - 1.4f, c.y + 4.8f), ImVec2(c.x + 6.4f, c.y - 4.8f),
-                    col, th);
-        break;
-      }
-      case LibIcon::Folder: {  // folder outline
-        dl->PathLineTo(ImVec2(c.x - 7.0f, c.y - 4.0f));
-        dl->PathLineTo(ImVec2(c.x - 2.0f, c.y - 4.0f));
-        dl->PathLineTo(ImVec2(c.x, c.y - 1.4f));
-        dl->PathLineTo(ImVec2(c.x + 7.0f, c.y - 1.4f));
-        dl->PathLineTo(ImVec2(c.x + 7.0f, c.y + 5.0f));
-        dl->PathLineTo(ImVec2(c.x - 7.0f, c.y + 5.0f));
-        dl->PathLineTo(ImVec2(c.x - 7.0f, c.y - 4.0f));
-        dl->PathStroke(col, 0, th);
-        break;
-      }
-      case LibIcon::Globe: {  // globe
-        dl->AddCircle(c, 7.0f, col, 0, th);
-        dl->AddLine(ImVec2(c.x - 7.0f, c.y), ImVec2(c.x + 7.0f, c.y), col, th);
-        dl->AddEllipse(ImVec2(c.x, c.y), ImVec2(3.2f, 7.0f), col, 0, th);
-        break;
-      }
-    }
-  }
-
-  // The full-page library (docs/public/prototypes/library.html): a 224px
-  // sidebar (category + type groups with live counts) over a main column
-  // whose head holds the title/count/search and whose body is the card
-  // grid. The prototype's .side is 224px (wider than the settings nav's
-  // 196px) and its active row is the Recent bucket — the screenshot state.
-  void drawLibraryOverlay() {
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
-    ImGui::SetNextWindowSize(io.DisplaySize);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kPageBg);
-    ImGui::Begin("##lib_page", nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                     ImGuiWindowFlags_NoScrollbar |
-                     ImGuiWindowFlags_NoSavedSettings);
-    {
-      if (library_ == nullptr) {
-        ImGui::TextDisabled("%s", "No library in this session.");
-        ImGui::End();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar(4);
-        return;
-      }
-      const std::vector<LibraryEntry> entries = library_->entries();
-      const std::vector<std::string> folders = library_->folders();
-
-      // Sidebar (.side, 224px, --bg0, border-right).
-      ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
-      ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kNavBg);
-      ImGui::BeginChild("##lib_side", ImVec2(224.0f, 0.0f), ImGuiChildFlags_None);
-      {
-        ImGui::SetCursorPos(ImVec2(10.0f, 16.0f));
-        const ImVec2 libwing = ImGui::GetCursorScreenPos();
-        drawGradientMark(ImGui::GetWindowDrawList(),
-                         ImVec2(libwing.x + 8.0f, libwing.y), 26.0f, 8.0f,
-                         ImGui::ColorConvertFloat4ToU32(theme::kNavBg));
-        ImGui::Dummy(ImVec2(26.0f, 26.0f));
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 16.0f);
-        // .side .grp "媒体库" -> LIBRARY.
-        librarySideGrp("LIBRARY");
-        // The four state buckets (library.html's first group). The count is
-        // the live total over the same snapshot the grid renders.
-        static const char* const kCat[] = {"All", "Recent", "Resume", "Finished"};
-        for (int i = 0; i < 4; ++i) {
-          const LibraryCategory cat = static_cast<LibraryCategory>(i);
-          std::size_t n = 0;
-          for (const LibraryEntry& e : entries)
-            if (matchesCategory(e, cat)) ++n;
-          if (librarySideRow(("##libcat_" + std::string(kCat[i])).c_str(),
-                             kCat[i], n, st_.library_category == cat,
-                             static_cast<LibIcon>(i))) {
-            st_.library_category = cat;
-          }
-        }
-        // .side .grp "类型" -> TYPE.
-        librarySideGrp("TYPE");
-        static const char* const kSrc[] = {"Local", "Network"};
-        for (int i = 0; i < 2; ++i) {
-          // LibrarySource::All is index 0; the two pickable rows follow it.
-          const LibrarySource src = static_cast<LibrarySource>(i + 1);
-          std::size_t n = 0;
-          for (const LibraryEntry& e : entries)
-            if (matchesSource(e, src)) ++n;
-          if (librarySideRow(("##libsrc_" + std::string(kSrc[i])).c_str(),
-                             kSrc[i], n, st_.library_source == src,
-                             i == 0 ? LibIcon::Folder : LibIcon::Globe)) {
-            st_.library_source = src;
-          }
-        }
-        // The management group the prototype leaves implicit: watched
-        // folders and the scan/scrape actions. Sits below the browse rows so
-        // the category pins keep their measured pitch.
-        librarySideGrp("FOLDERS");
-        ImGui::SetCursorPosX(10.0f);
-        if (ImGui::SmallButton("Add folder...")) openDirPickerWatch();
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Rescan")) {
-          library_->scan();
-          library_->save();
-        }
-        // The network half of the scrape (docs/mvp.md §3): only offered
-        // with an endpoint configured, so an offline session never shows a
-        // button that could only fail.
-        if (meta_ready_) {
-          ImGui::SameLine();
-          if (ImGui::SmallButton("Scrape")) {
-            const std::size_t n =
-                library_->scrapeEntries(MediaLibrary::kScrapeBudget);
-            st_.toast.show(
-                n == 1 ? "Scraped 1 entry"
-                       : "Scraped " + std::to_string(n) + " entries",
-                nowMs());
-          }
-        }
-        if (folders.empty()) {
-          ImGui::TextDisabled("%s", "No folders watched yet.");
-        } else {
-          ImGui::TextDisabled("Watched: %zu", folders.size());
-          for (std::size_t i = 0; i < folders.size(); ++i) {
-            ImGui::PushID(static_cast<int>(1000 + i));
-            ImGui::Selectable(folders[i].c_str(), false,
-                              ImGuiSelectableFlags_AllowOverlap);
-            if (ImGui::IsItemHovered())
-              ImGui::SetTooltip("%s", folders[i].c_str());
-            // The remove affordance pins to the row's right edge: the
-            // watched path is the label, so trailing the text would push
-            // the button past the sidebar's clip on a long path and
-            // strand the unwatch action.
-            ImGui::SameLine(ImGui::GetWindowWidth() - 26.0f);
-            if (ImGui::SmallButton("x")) {
-              library_->removeFolder(folders[i]);
-              library_->save();
-            }
-            ImGui::PopID();
-          }
-        }
-        // .side border-right: the hairline splitting sidebar from content.
-        const ImVec2 sp = ImGui::GetWindowPos();
-        const float sh = ImGui::GetWindowHeight();
-        ImGui::GetWindowDrawList()->AddLine(
-            ImVec2(sp.x + 223.5f, sp.y), ImVec2(sp.x + 223.5f, sp.y + sh),
-            ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
-      }
-      ImGui::EndChild();
-      ImGui::PopStyleColor();
-      ImGui::PopStyleVar();
-      ImGui::SameLine();
-
-      // Main: the head (title/count/search) over the card-grid child.
-      ImGui::BeginChild("##lib_main", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
-      {
-        drawLibraryHead(entries);
-        drawLibraryEntries(entries, !folders.empty());
-      }
-      ImGui::EndChild();
-    }
-    ImGui::End();
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar(4);
-  }
-
-  // The .side .grp label (library.html .side .grp, margin 12px 8px 4px).
-  void librarySideGrp(const char* label) {
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12.0f);
-    ImGui::SetCursorPosX(18.0f);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
-    ImGui::TextUnformatted(label);
-    ImGui::PopStyleColor();
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
-  }
-
-  // A .side a row: 32px, icon + label + right-aligned count (.cnt, mono,
-  // --t4; --accent-hi when active). Returns true on a click.
-  bool librarySideRow(const char* id, const char* label, std::size_t count,
-                      bool active, LibIcon icon) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImGui::SetCursorPosX(10.0f);
-    const float w = ImGui::GetWindowWidth() - 20.0f;
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, 32.0f));
-    const bool hovered = ImGui::IsItemHovered();
-    if (active) {
-      ImVec4 a = theme::kAccent;
-      a.w = 0.14f;  // --accent-soft
-      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 32.0f),
-                        ImGui::ColorConvertFloat4ToU32(a), 8.0f);
-    } else if (hovered) {
-      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 32.0f),
-                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 8.0f);
-    }
-    const ImU32 fg = ImGui::ColorConvertFloat4ToU32(
-        active ? theme::kAccentHi : (hovered ? theme::kText2 : theme::kText3));
-    drawLibIcon(dl, ImVec2(p.x + 18.0f, p.y + 16.0f), icon, fg);
-    const ImVec2 ls = ImGui::CalcTextSize(label);
-    dl->AddText(ImVec2(p.x + 36.0f, p.y + (32.0f - ls.y) * 0.5f), fg, label);
-    // .cnt: the mono count right-aligned to the row's 10px padding.
-    const std::string cs = std::to_string(count);
-    const ImVec2 css = ImGui::CalcTextSize(cs.c_str());
-    dl->AddText(ImVec2(p.x + w - 10.0f - css.x, p.y + (32.0f - css.y) * 0.5f),
-                ImGui::ColorConvertFloat4ToU32(
-                    active ? theme::kAccentHi : theme::kText4),
-                cs.c_str());
-    return clicked;
-  }
-
-  // The .head: the active bucket's title, the count caption, the spacer,
-  // then the search box (icon + input + "/" kbd tip) — library.html .head.
-  void drawLibraryHead(const std::vector<LibraryEntry>& entries) {
-    static const char* const kCat[] = {"All", "Recent", "Resume", "Finished"};
-    static const char* const kCatDesc[] = {
-        "everything", "by time added", "in progress", "completed"};
-    const std::size_t shown_count = [&] {
-      std::size_t n = 0;
-      for (const LibraryEntry& e : entries) {
-        if (!matchesCategory(e, st_.library_category)) continue;
-        if (!matchesSource(e, st_.library_source)) continue;
-        const NfoInfo* nfo = library_->nfoFor(e.path);
-        if (!matchesLibraryFilter(e, nfo, st_.library_filter)) continue;
-        ++n;
-      }
-      return n;
-    }();
-    const int ci = static_cast<int>(st_.library_category);
-    const char* cat = kCat[ci < 4 ? ci : 0];
-    const char* cdesc = kCatDesc[ci < 4 ? ci : 0];
-    // The head is a fixed 44px strip with a bottom hairline, like the
-    // settings .chead.
-    ImGui::SetCursorPos(ImVec2(22.0f, 14.0f));
-    ImGui::TextUnformatted(cat);
-    const ImVec2 ts = ImGui::CalcTextSize(cat);
-    ImGui::SameLine();
-    ImGui::SetCursorPosY(14.0f);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
-    const std::string count_cap =
-        std::string(cdesc) + " · " + std::to_string(shown_count) + " items";
-    ImGui::TextUnformatted(count_cap.c_str());
-    ImGui::PopStyleColor();
-    // The spacer pushes the search box to the head's right edge.
-    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 22.0f - 240.0f);
-    ImGui::SetCursorPosY(11.0f);
-    // The search box (240x30, --line-strong border). The "/" kbd tip sits at
-    // its right; the icon at its left. The box is the focused item when the
-    // "/" action's one-shot flag is set.
-    const float box_h = 30.0f;
-    const ImVec2 bp(ImGui::GetCursorScreenPos());
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, theme::kFieldBg);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText);
-    if (st_.library_search_focus) {
-      st_.library_search_focus = false;
-      ImGui::SetKeyboardFocusHere(0);
-    }
-    if (blur_text_next_) {
-      // Tab moved the focus ring onto the rows (V7b): the caret leaves
-      // the box so the next key lands on the ring, not in the needle.
-      blur_text_next_ = false;
-      ImGui::ClearActiveID();
-    }
-    // The hint clears the magnifier icon (drawn over the frame's left), so
-    // the text origin is pushed right past it for this one input.
-    const ImVec2 fp = ImGui::GetStyle().FramePadding;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(26.0f, fp.y));
-    ImGui::SetNextItemWidth(240.0f);
-    ImGui::InputTextWithHint("##library-filter", "Search media...",
-                             st_.library_filter, sizeof(st_.library_filter));
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
-    const ImVec2 ep(bp.x + 240.0f, bp.y);
-    ImGui::GetWindowDrawList()->AddText(
-        ImVec2(ep.x + 8.0f, bp.y + (box_h - ImGui::CalcTextSize("/").y) * 0.5f),
-        ImGui::ColorConvertFloat4ToU32(theme::kText4), "/");
-    // The search icon at the box's left (drawn over the input).
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImU32 u_t4 = ImGui::ColorConvertFloat4ToU32(theme::kText4);
-    dl->AddCircle(ImVec2(bp.x + 16.0f, bp.y + 15.0f), 5.0f, u_t4, 0, 1.4f);
-    dl->AddLine(ImVec2(bp.x + 19.5f, bp.y + 18.5f),
-                ImVec2(bp.x + 23.0f, bp.y + 22.0f), u_t4, 1.4f);
-    // The bottom hairline of the head.
-    dl->AddLine(ImVec2(0.0f, bp.y + box_h + 9.0f),
-                ImVec2(ImGui::GetWindowWidth(), bp.y + box_h + 9.0f),
-                ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
-    ImGui::SetCursorPosY(bp.y + box_h + 10.0f);
-  }
-
-  // The row side of the split: the selected bucket's entries. Only Recent
-  // reorders (compareRecent — newest content first); the rest keep the
-  // store's path order. The remove button right-aligns to the column's
-  // edge, so one x fits every row regardless of the label's length (the
-  // X11 drive pins a single coordinate).
-  void drawLibraryEntries(const std::vector<LibraryEntry>& entries, bool watching) {
-    std::vector<const LibraryEntry*> shown;
-    shown.reserve(entries.size());
-    for (const LibraryEntry& e : entries) {
-      if (!matchesCategory(e, st_.library_category)) continue;
-      // The sidebar's Type group narrows by source kind; All is the
-      // no-op default, so the bucket view alone is exactly as before.
-      if (!matchesSource(e, st_.library_source)) continue;
-      // The search box narrows within the bucket: the bucket filters by
-      // state, the box by text, and the two compose (library.h owns the
-      // match rule).
-      const NfoInfo* nfo = library_->nfoFor(e.path);
-      if (!matchesLibraryFilter(e, nfo, st_.library_filter)) continue;
-      shown.push_back(&e);
-    }
-    if (st_.library_category == LibraryCategory::Recent) {
-      std::sort(shown.begin(), shown.end(),
-                [](const LibraryEntry* a, const LibraryEntry* b) {
-                  return compareRecent(*a, *b);
-                });
-    }
-    // V7b: the source rows are the library's focusable face (the category
-    // sidebar and folder rows stay mouse-only this batch).
-    library_rows_ = static_cast<int>(shown.size());
-    // The .grid body: the search box lives in the head (drawLibraryHead),
-    // so this child opens straight onto the card grid at the prototype's
-    // 16px 22px padding.
-    ImGui::BeginChild("library-entries", ImVec2(0, 0));
-    ImGui::SetCursorPos(ImVec2(22.0f, 16.0f));
-    if (shown.empty()) {
-      // The bucket's filter and the store's emptiness are different facts:
-      // a watched folder with no media says one thing, a filtered bucket
-      // with nothing left says the other.
-      if (!entries.empty()) {
-        ImGui::TextDisabled("%s", "No entries in this bucket.");
-      } else if (watching) {
-        ImGui::TextDisabled("%s", "No media files found.");
-      }
-    }
-    // Card grid (docs/public/prototypes/library.html .grid/.card, the v1
-    // library page). Auto-fill columns of ~196px cards, a 16px gutter, each
-    // card a 16:9 poster over a meta block. The poster is the placeholder
-    // thumb (kThumbBg/kThumbGlyph — the content layer stays deep in both
-    // themes) with a source-format pill top-left and a centre play badge on
-    // hover. The whole card is one hit target (open), with the remove
-    // affordance as a small x in the poster's top-right corner.
-    const float kGap = 16.0f;
-    const float kMinCardW = 196.0f;
-    const float pad_x = 12.0f, pad_t = 10.0f, pad_b = 12.0f;
-    const float line_h = ImGui::GetTextLineHeight();
-    const float meta_h = pad_t + line_h + 3.0f + line_h + 4.0f + line_h + pad_b;
-    float avail = ImGui::GetContentRegionAvail().x;
-    int cols = static_cast<int>((avail + kGap) / (kMinCardW + kGap));
-    if (cols < 1) cols = 1;
-    const float card_w = (avail - kGap * static_cast<float>(cols - 1)) /
-                         static_cast<float>(cols);
-    const float poster_h = card_w * 9.0f / 16.0f;  // 16:9 aspect
-    const float card_h = poster_h + meta_h;
-    const ImVec2 start = ImGui::GetCursorPos();
-    int focus_i = 0;  // V7b: the focus face's index over `shown` (row-major)
-    int idx = 0;
-    for (const LibraryEntry* ep : shown) {
-      const LibraryEntry& e = *ep;
-      const int col = idx % cols;
-      const int row = idx / cols;
-      ImGui::SetCursorPos(ImVec2(start.x + col * (card_w + kGap),
-                                 start.y + row * (card_h + kGap)));
-      ImGui::PushID(e.path.c_str());
-      // One hit target spanning the card: click/Enter opens, hover drives the
-      // badge + tooltip, and the focus ring wraps the card rect.
-      ImGui::InvisibleButton("##card", ImVec2(card_w, card_h));
-      const bool clicked = ImGui::IsItemClicked();
-      const bool hovered = ImGui::IsItemHovered();
-      const bool enter =
-          ui_focus_.takesActivation(UiFocus::Face::LibraryRows, focus_i);
-      const ImVec2 rmin = ImGui::GetItemRectMin();
-      const ImVec2 rmax = ImGui::GetItemRectMax();
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      const ImU32 u_line = ImGui::ColorConvertFloat4ToU32(theme::kBorder);
-      const ImU32 u_edge = ImGui::ColorConvertFloat4ToU32(theme::kLineStrong);
-      const ImU32 u_card = ImGui::ColorConvertFloat4ToU32(theme::kSurface2);
-      const ImU32 u_text = ImGui::ColorConvertFloat4ToU32(theme::kText);
-      const ImU32 u_text3 = ImGui::ColorConvertFloat4ToU32(theme::kTextMuted);
-      const ImU32 u_net = ImGui::ColorConvertFloat4ToU32(theme::kNet);
-      const ImU32 u_accent = ImGui::ColorConvertFloat4ToU32(theme::kAccent);
-      const ImU32 u_ink = ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent);
-      // Card frame: surface-2 fill (the 1px border is stroked after the
-      // poster so the poster doesn't sit on it). (proto.css .card :69-74)
-      const float rad = static_cast<float>(theme::kPanelRounding);
-      dl->AddRectFilled(rmin, rmax, u_card, rad);
-      // Poster: the prototype's 140deg diagonal gradient, #243047 -> #12161f
-      // (58%) -> #0c0e13 (library.html .card .poster), plus the two soft
-      // radial accents (cool 72%/62%, warm 20%/30% — .poster::after, clipped
-      // to the poster by the .poster overflow:hidden). ImGui's 4-corner
-      // bilinear fill reproduces the diagonal, with the corner values matched
-      // to the prototype PNG below (the HTML's bright-at-right direction is
-      // kept). The bilinear fill is square, so the card's r-md top corners are
-      // re-rounded: a window-bg mask square + a solid gradient circle restores
-      // each corner (the circle's inboard quarters blend into the surrounding
-      // gradient at 10px).
-      const ImVec2 pmin(rmin.x + 1.0f, rmin.y + 1.0f);
-      const ImVec2 pmax(rmax.x - 1.0f, rmin.y + poster_h);
-      const float pw = pmax.x - pmin.x;
-      const float ph = poster_h;
-      // The prototype PNG's poster renders darker than its own HTML
-      // gradient (#243047 -> #0c0e13): the card titles in the same PNG
-      // are full-brightness (--t1), so the dim is poster-only — a
-      // capture artifact. The acceptance target is the PNG, so the base
-      // is matched to the PNG's measured corners (TL 13,15,18 / TR
-      // 19,24,33 / BR 19,22,27 / BL 14,16,19) with the HTML's gradient
-      // direction (bright at the right) and the radial accents kept.
-      const ImU32 u_gl0 = IM_COL32(13, 15, 18, 0xFF);  // PNG TL
-      const ImU32 u_gl1 = IM_COL32(19, 24, 33, 0xFF);  // PNG TR
-      const ImU32 u_gl2 = IM_COL32(19, 22, 27, 0xFF);  // PNG BR
-      const ImU32 u_gl3 = IM_COL32(14, 16, 19, 0xFF);  // PNG BL
-      dl->AddRectFilledMultiColor(pmin, pmax, u_gl0, u_gl1, u_gl3, u_gl2);
-      // The two radial accents, faked as concentric low-alpha circles (the CSS
-      // fades each to transparent at ~55-60% of its radius). Clipped to the
-      // poster so no glow bleeds into the gutter/meta.
-      dl->PushClipRect(pmin, pmax, true);
-      // Warm accent: rgba(255,107,53,.10) fading to transparent at 60% of a
-      // 70%x60% ellipse at 20% 30% (.poster::after). One soft low-alpha
-      // ellipse stands in for the falloff — the prototype's glow is subtle.
-      dl->AddEllipseFilled(ImVec2(pmin.x + pw * 0.20f, pmin.y + ph * 0.30f),
-                           ImVec2(pw * 0.42f, ph * 0.36f),
-                           IM_COL32(255, 107, 53, 9), 0.0f, 48);
-      // Cool accent: rgba(108,177,255,.15), 55%x50% at 72% 62%.
-      dl->AddEllipseFilled(ImVec2(pmin.x + pw * 0.72f, pmin.y + ph * 0.62f),
-                           ImVec2(pw * 0.33f, ph * 0.30f),
-                           IM_COL32(108, 177, 255, 13), 0.0f, 48);
-      dl->PopClipRect();
-      // Re-round the top corners over the square gradient.
-      const ImU32 u_page = ImGui::ColorConvertFloat4ToU32(theme::kPageBg);
-      dl->AddRectFilled(ImVec2(pmin.x, pmin.y),
-                        ImVec2(pmin.x + rad + 2.0f, pmin.y + rad + 2.0f),
-                        u_page);
-      dl->AddRectFilled(ImVec2(pmax.x - rad - 2.0f, pmin.y),
-                        ImVec2(pmax.x, pmin.y + rad + 2.0f), u_page);
-      dl->AddCircleFilled(ImVec2(pmin.x + rad, pmin.y + rad), rad, u_gl0, 16);
-      dl->AddCircleFilled(ImVec2(pmax.x - rad, pmin.y + rad), rad, u_gl1, 16);
-      // The 1px border over the poster (line -> line-strong on hover).
-      dl->AddRect(rmin, rmax, hovered ? u_edge : u_line, rad, 0, 1.0f);
-      // Source-format pill, top-left (proto.css .card .poster .kind :76 —
-      // a .pill: --line border, --bg3 ground, --t2 ink; a network source
-      // takes the .pill.sky variant: net-soft ground, --sky ink).
-      const std::string fmt = fileFormatLabel(e.path);
-      if (!fmt.empty()) {
-        const float pill_h = 18.0f;
-        const ImVec2 tsize = ImGui::CalcTextSize(fmt.c_str());
-        const ImVec2 ppmin(pmin.x + 8.0f, pmin.y + 8.0f);
-        const ImVec2 ppmax(ppmin.x + tsize.x + 12.0f, ppmin.y + pill_h);
-        const bool net = matchesSource(e, LibrarySource::Network);
-        const ImU32 u_bg3 = ImGui::ColorConvertFloat4ToU32(theme::kFieldBg);
-        const ImU32 u_t2 = ImGui::ColorConvertFloat4ToU32(theme::kText2);
-        const ImU32 u_line = ImGui::ColorConvertFloat4ToU32(theme::kCardLine);
-        const ImU32 u_net_rgb = u_net & 0x00FFFFFF;
-        const ImU32 p_bg = net ? (u_net_rgb | 0x1F000000) : u_bg3;
-        const ImU32 p_edge = net ? (u_net_rgb | 0x66000000) : u_line;
-        const ImU32 p_ink = net ? u_net : u_t2;
-        dl->AddRectFilled(ppmin, ppmax, p_bg, pill_h * 0.5f);
-        dl->AddRect(ppmin, ppmax, p_edge, pill_h * 0.5f, 0, 1.0f);
-        dl->AddText(ImVec2(ppmin.x + 6.0f, ppmin.y + (pill_h - tsize.y) * 0.5f),
-                    p_ink, fmt.c_str());
-      }
-      // Remove affordance, top-right of the poster: a small x that reads as
-      // part of the poster chrome (click zones are resolved below).
-      dl->AddText(ImVec2(pmax.x - 18.0f, pmin.y + 6.0f), u_text3, "x");
-      // Centre play badge on hover (proto.css .card .play-badge :86-92).
-      if (hovered) {
-        const ImVec2 bc((pmin.x + pmax.x) * 0.5f, (pmin.y + pmax.y) * 0.5f);
-        dl->AddCircleFilled(bc, 20.0f, u_accent, 48);
-        dl->AddTriangleFilled(ImVec2(bc.x - 4.0f, bc.y - 6.0f),
-                              ImVec2(bc.x - 4.0f, bc.y + 6.0f),
-                              ImVec2(bc.x + 7.0f, bc.y), u_ink);
-      }
-      // Meta: title (ellipsis via clip rect), row2 (format + duration),
-      // sub line (resume/source) — proto.css .card .meta :77-84.
-      const NfoInfo* nfo = library_->nfoFor(e.path);
-      const std::string title =
-          (nfo != nullptr && !nfo->title.empty()) ? nfo->title
-                                                  : displayName(e.path);
-      const ImVec2 tpos(rmin.x + pad_x, pmax.y + pad_t);
-      const ImU32 clip_r = 0;
-      (void)clip_r;
-      dl->PushClipRect(ImVec2(tpos.x, tpos.y),
-                       ImVec2(rmax.x - pad_x, tpos.y + line_h), true);
-      dl->AddText(tpos, u_text, title.c_str());
-      dl->PopClipRect();
-      const float row2_y = tpos.y + line_h + 3.0f;
-      dl->AddText(ImVec2(tpos.x, row2_y), u_text3, fmt.c_str());
-      if (e.duration_ms > 0) {
-        const std::string dur =
-            formatClock(std::chrono::milliseconds(e.duration_ms));
-        const ImVec2 dsz = ImGui::CalcTextSize(dur.c_str());
-        dl->AddText(ImVec2(rmax.x - pad_x - dsz.x, row2_y), u_text3,
-                    dur.c_str());
-      }
-      const std::int64_t resume = resumePositionMs(e);
-      std::string sub;
-      if (resume > 0) {
-        sub = "at " + formatClock(std::chrono::milliseconds(resume));
-      } else {
-        sub = parentFolderLabel(e.path);
-      }
-      if (!sub.empty()) {
-        dl->AddText(ImVec2(tpos.x, row2_y + line_h + 4.0f), u_net, sub.c_str());
-      }
-      if (ui_focus_.holds(UiFocus::Face::LibraryRows, focus_i)) {
-        drawFocusRing();
-      }
-      if (hovered) {
-        std::string tip = e.path;
-        if (e.duration_ms > 0) {
-          tip += "\nduration " +
-                 formatClock(std::chrono::milliseconds(e.duration_ms));
-        }
-        if (e.play_count > 0) {
-          tip += "\nplayed " + std::to_string(e.play_count) + "x";
-        }
-        if (nfo != nullptr && !nfo->plot.empty()) {
-          tip += "\n" + nfo->plot;
-        }
-        ImGui::SetTooltip("%s", tip.c_str());
-      }
-      // Click zones: the poster's top-right x removes, anywhere else opens.
-      if ((clicked || enter)) {
-        const ImVec2 mouse = ImGui::GetIO().MousePos;
-        const bool in_x = mouse.x >= pmax.x - 22.0f && mouse.y <= pmin.y + 22.0f;
-        if (clicked && in_x) {
-          library_->removeEntry(e.path);
-          library_->save();
-        } else {
-          openSource(e.path);
-          st_.overlay = Overlay::None;
-        }
-      }
-      ImGui::PopID();
-      ++focus_i;
-      ++idx;
-    }
-    // Reserve the grid's full height so the child scrolls past the last row.
-    const int total_rows = (idx + cols - 1) / cols;
-    ImGui::SetCursorPos(
-        ImVec2(start.x, start.y + total_rows * (card_h + kGap)));
-    ImGui::EndChild();
-  }
-
-  void drawHelpOverlay() {
-    bool open = true;
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(380, 400), ImGuiCond_Appearing);
-    if (ImGui::Begin("Shortcuts", &open, ImGuiWindowFlags_NoSavedSettings)) {
-      // Rows mirror the shipped table; the key column renders from the
-      // live map, so a rebound config relabels the help (docs/ui-design.md
-      // §3.2). With the default config the column is byte-identical to the
-      // static strings that used to live here (the X11 drive tests pin
-      // this text via label hashing).
-      struct HelpRow {
-        ShortcutAction a;
-        ShortcutAction b;  // None = single-action row
-        const char* label;
-      };
-      static const HelpRow kRows[] = {
-          {ShortcutAction::PlayPause, ShortcutAction::None, "Play / pause"},
-          {ShortcutAction::OpenFile, ShortcutAction::None,
-           "Open a file (Windows dialog)"},
-          {ShortcutAction::OpenFolder, ShortcutAction::None,
-           "Open a folder into the queue"},
-          {ShortcutAction::SeekBack5, ShortcutAction::SeekFwd5,
-           "Seek -5s / +5s"},
-          {ShortcutAction::SeekBack1, ShortcutAction::SeekFwd1,
-           "Seek -1s / +1s"},
-          {ShortcutAction::SeekBack60, ShortcutAction::SeekFwd60,
-           "Seek -60s / +60s"},
-          {ShortcutAction::SeekStart, ShortcutAction::None, "Go to start"},
-          {ShortcutAction::PercentSeek, ShortcutAction::None,
-           "Jump to 0% - 90%"},
-          {ShortcutAction::VolumeUp, ShortcutAction::VolumeDown,
-           "Volume -5% / +5%"},
-          {ShortcutAction::Mute, ShortcutAction::None, "Mute"},
-          {ShortcutAction::RateDown, ShortcutAction::RateUp,
-           "Speed down / up"},
-          {ShortcutAction::CycleAudio, ShortcutAction::None,
-           "Cycle audio track"},
-          {ShortcutAction::CycleSubtitle, ShortcutAction::None,
-           "Cycle subtitles (incl. off)"},
-          {ShortcutAction::Screenshot, ShortcutAction::None,
-           "Screenshot (PNG)"},
-          {ShortcutAction::SubtitleVisibility, ShortcutAction::None,
-           "Toggle subtitles on/off"},
-          {ShortcutAction::SubtitleOffsetBack, ShortcutAction::SubtitleOffsetFwd,
-           "Subtitle offset -500ms / +500ms"},
-          {ShortcutAction::LoopAB, ShortcutAction::None,
-           "A-B loop (arm A, arm B, clear)"},
-          {ShortcutAction::Fullscreen, ShortcutAction::None, "Fullscreen"},
-          {ShortcutAction::Info, ShortcutAction::None, "Media info"},
-          {ShortcutAction::Recent, ShortcutAction::None, "Recent files"},
-          {ShortcutAction::Playlist, ShortcutAction::None, "Playlist queue"},
-          {ShortcutAction::Library, ShortcutAction::None, "Media library"},
-          {ShortcutAction::Cast, ShortcutAction::None,
-           "Cast to a DLNA renderer"},
-          {ShortcutAction::QueueNext, ShortcutAction::QueuePrev,
-           "Queue next / previous"},
-          {ShortcutAction::Help, ShortcutAction::None, "This help"},
-          {ShortcutAction::Escape, ShortcutAction::None,
-           "Leave fullscreen / quit"},
-          {ShortcutAction::Quit, ShortcutAction::None, "Quit"},
-          {ShortcutAction::SearchLibrary, ShortcutAction::None,
-           "Focus the library search"},
-      };
-      std::vector<std::string> keys;
-      keys.reserve(sizeof(kRows) / sizeof(kRows[0]));
-      for (const HelpRow& row : kRows) {
-        std::string key = shortcuts_.bindingNames(row.a);
-        if (row.b != ShortcutAction::None) {
-          key += " / ";
-          key += shortcuts_.bindingNames(row.b);
-        }
-        keys.push_back(std::move(key));
-      }
-      if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_RowBg)) {
-        std::size_t i = 0;
-        for (const HelpRow& row : kRows) {
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::TextUnformatted(keys[i].c_str());
-          ImGui::TableNextColumn();
-          ImGui::TextDisabled("%s", row.label);
-          ++i;
-        }
-        ImGui::EndTable();
-      }
-    }
-    ImGui::End();
-    if (!open) st_.overlay = Overlay::None;
-  }
-
-  void drawSubtitleOverlay() {
-    bool open = true;
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSizeConstraints(ImVec2(360, 240), ImVec2(480, 400));
-    if (ImGui::Begin("Subtitle Settings", &open,
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
-      const MediaInfo info = player_.mediaInfo();
-
-      // Subtitle track selection (mirror of the track combo)
-      std::vector<const TrackInfo*> sub_tracks;
-      for (const auto& t : info.tracks) {
-        if (t.type == TrackType::Subtitle) sub_tracks.push_back(&t);
-      }
-
-      if (sub_tracks.empty()) {
-        ImGui::TextDisabled("No subtitle tracks available");
-        // A media with no subtitle track of its own is exactly the case a
-        // sidecar is for, so they go in the open overlay body instead of
-        // behind a combo that has nothing to select.
-        drawSidecarEntries(info, nowMs());
-      } else {
-        ImGui::Text("Track:");
-        ImGui::SameLine();
-        const TrackId selected = info.selected_subtitle;
-        char label[40];
-        std::snprintf(label, sizeof(label), "Sub %d/%d",
-                      selected < 0 ? 0 : static_cast<int>(selected),
-                      static_cast<int>(sub_tracks.size()));
-        if (ImGui::BeginCombo("##sub_select", label)) {
-          menu_rows_ = 0;  // the open popup republishes its rows every frame
-          const bool enter = menuRowEnter();
-          if ((ImGui::Selectable("Off", selected < 0) || enter) && selected >= 0) {
-            player_.disableSubtitles();
-            st_.toast.show("Subtitles off", nowMs());
-          }
-          menuRowRing();
-          ImGui::Separator();
-          for (const auto* t : sub_tracks) {
-            std::string item = "#" + std::to_string(t->id) + " " + t->codec;
-            if (!t->language.empty()) item += " (" + t->language + ")";
-            if (!t->title.empty()) item += " - " + t->title;
-            const bool is_sel = t->id == selected;
-            const bool enter = menuRowEnter();
-            if ((ImGui::Selectable(item.c_str(), is_sel) || enter) && !is_sel) {
-              if (player_.selectTrack(TrackType::Subtitle, t->id)) {
-                st_.toast.show("Subtitle track " + std::to_string(t->id), nowMs());
-              } else {
-                st_.toast.show("Subtitle switch failed", nowMs());
-              }
-            }
-            menuRowRing();
-          }
-          // Sidecar files join the container's own tracks in the same
-          // popup; the open popup is what gates the directory walk.
-          drawSidecarEntries(info, nowMs());
-          menu_count_ = menu_rows_;
-          ImGui::EndCombo();
-        }
-      }
-
-      ImGui::Separator();
-
-      // Font size
-      ImGui::Text("Font Size:");
-      ImGui::SameLine();
-      float font_size = st_.subtitle_font_size;
-      if (ImGui::SliderFloat("##sub_font", &font_size, 12.0f, 48.0f, "%.0f px")) {
-        st_.subtitle_font_size = font_size;
-        if (cfg_.subtitle_font_size) {
-          cfg_.subtitle_font_size->store(font_size, std::memory_order_relaxed);
-        }
-      }
-
-      // Sync offset
-      ImGui::Text("Sync Offset:");
-      ImGui::SameLine();
-      int offset_ms = st_.subtitle_offset_ms;
-      if (ImGui::SliderInt("##sub_offset", &offset_ms, -5000, 5000, "%d ms")) {
-        st_.subtitle_offset_ms = offset_ms;
-        if (cfg_.subtitle_offset_ms) {
-          cfg_.subtitle_offset_ms->store(offset_ms, std::memory_order_relaxed);
-        }
-      }
-
-      // Visibility toggle
-      ImGui::Text("Visible:");
-      ImGui::SameLine();
-      bool visible = st_.subtitle_visible;
-      if (ImGui::Checkbox("##sub_visible", &visible)) {
-        st_.subtitle_visible = visible;
-        if (cfg_.subtitle_visible) {
-          cfg_.subtitle_visible->store(visible, std::memory_order_relaxed);
-        }
-      }
-
-      ImGui::Separator();
-      ImGui::TextDisabled("C: cycle  |  V: show/hide  |  [ / ]: offset  |  S: screenshot");
-    }
-    ImGui::End();
-    if (!open) st_.overlay = Overlay::None;
-  }
-
-  // UI-local mirrors of volume/rate/mute: the Player facade exposes setters
-  // only (no getters in v0.1), so the HUD tracks what it last set. Honest
-  // enough for a single-actor UI; core getters would be a v0.2 cleanup.
-  struct State {
-    HudVisibility hud{milliseconds(0)};
-    Toast toast;
-    Overlay overlay = Overlay::None;
-    bool fullscreen = false;
-    bool seek_dragging = false;
-    double seek_scrub = 0.0;
-    milliseconds last_click{0};
-    float hud_alpha = 1.0f;
-    // Trail edge latch for the OSC's logical visibility.
-    bool hud_was_shown = true;
-    double last_volume = 1.0;
-    double last_rate = 1.0;
-    bool last_muted = false;
-
-    // Subtitle rendering state (v0.2 basics)
-    float subtitle_font_size = 24.0f;
-    int subtitle_offset_ms = 0;
-    bool subtitle_visible = true;
-    // Runtime subtitle frame from backend
-    std::string current_subtitle;
-    std::chrono::milliseconds subtitle_pts{0};
-    std::chrono::milliseconds subtitle_duration{0};
-
-    // A-B loop arming state (v0.2): the backend only knows armed pairs,
-    // so point A waits here until the L press that supplies B.
-    bool loop_a_set = false;
-    std::chrono::milliseconds loop_a_ms{0};
-
-    // Playlist continuation edge flag: set when an Ended frame has been
-    // serviced, cleared on the first frame that is not Ended.
-    bool playlist_end_handled = false;
-
-    // Library browse bucket (docs/todo.md 原型对齐批): the sidebar keeps
-    // its selection across closing the overlay, so the list lands where
-    // the user left off.
-    LibraryCategory library_category = LibraryCategory::All;
-    // The sidebar's Type group (the prototype library page's second
-    // column group): All shows both halves, so the default changes no
-    // behaviour — the bucket view is exactly as before.
-    LibrarySource library_source = LibrarySource::All;
-    // The search box's needle, which survives closing the overlay too —
-    // the user's narrowed view comes back as they left it. A char buffer
-    // instead of a std::string on purpose: ImGui's string overload lives
-    // in imgui_stdlib.cpp, a translation unit this app does not build.
-    char library_filter[64] = {};
-    // The one-shot caret request the / action leaves behind; the draw
-    // consumes it on the frame the box is drawn.
-    bool library_search_focus = false;
-    // Settings panel (proto redesign/settings.html「通用」): live toggles the
-    // Settings overlay edits. esc_exits_fullscreen gates the Escape action's
-    // leave-fullscreen half; remember_last_media gates the resume-on-open jump.
-    bool esc_exits_fullscreen = true;
-    bool remember_last_media = true;
-    // Settings page (proto settings.html): the nav tab selection survives
-    // closing the overlay, so the panel reopens where the user left it.
-    SettingsTab settings_tab = SettingsTab::General;
-    // The MRU cap the settings stepper edits (RecentStore::kMaxEntries default).
-    int recent_cap = 15;
-    // Settings page Subtitles tab (proto settings.html): the two live
-    // fetch behaviours. autoshow turns the first selected track visible
-    // without a V press; autodl gates the remote download provider (an
-    // off switch reconfigures it offline — the zero-network default).
-    bool subtitle_autoshow = true;
-    bool subtitle_autodl = true;
-    // The previous frame's selected subtitle id: the -1 -> >=0 edge is
-    // the autoshow trigger (a track got selected by any path).
-    int prev_selected_subtitle = -1;
-  };
-
-  static constexpr milliseconds kProgressInterval{5000};
-
-  soar::Player& player_;
-  const WindowUiConfig& cfg_;
-  SDL_Window* window_ = nullptr;
-  SDL_Renderer* renderer_ = nullptr;  // thumb texture upload (docs §1.6-5)
-  // Seek-hover thumbnail (docs/ui-design.md §1.6-5): the worker decodes on a
-  // side thread (reopen-per-call grab), the UI uploads the latest ready
-  // frame into a dedicated SDL texture. Null when no FFmpeg backend.
-  std::unique_ptr<ThumbnailService> thumb_service_;
-  SDL_Texture* thumb_texture_ = nullptr;
-  int thumb_tex_w_ = 0;   // the texture's current size (recreated on change)
-  int thumb_tex_h_ = 0;
-  // The last quantized hover position requested, so a still pointer does not
-  // re-ask the service every frame (its own dedupe also gates, but this
-  // skips the lock round-trip).
-  std::chrono::milliseconds thumb_requested_{-1};
-  // The quantized position currently on screen (-1 = nothing shown yet):
-  // the preview hides while a new position decodes and appears once its
-  // frame is uploaded.
-  std::chrono::milliseconds thumb_shown_{-1};
-  // The source whose frames the cache holds (the URI recorded at the last
-  // open). Every cached frame is keyed by position only, so a source switch
-  // must clear the cache + texture — recordOpen does both.
-  std::string thumb_source_;
-  RecentStore recent_;
-  // Play queue (docs/mvp.md §2): CLI positionals seed it, user opens
-  // append to it, and Ended walks it. Pure model in ui_state.h.
-  PlaylistStore playlist_;
-  std::string current_uri_;
-  std::string source_label_;  // display-only override (P2P bridge sources)
-  // Async P2P (P4b-4): when WindowUiConfig::torrent is non-null, the HUD
-  // polls phase() each frame and opens the bridge URL on Serving.
-  soar::p2p::TorrentStream* torrent_ = nullptr;
-  bool torrent_pending_ = false;
-  // Casting (docs/mvp.md §3): the pre-armed --cast request, one attempt at
-  // a time (a fresh CastSession per start — the component cannot restart a
-  // failed session), the background discovery burst, and the position
-  // mirror the session's poll thread writes for the overlay.
-  std::string cast_location_;
-  bool cast_transcode_ = false;  // the cast overlay's transcode switch
-  bool cast_auto_done_ = false;
-  bool cast_discover_started_ = false;
-  std::string cast_iface_;
-  bool open_dialog_on_start_ = false;
-  std::unique_ptr<soar::cast::CastSession> cast_active_;
-  std::mutex cast_mu_;
-  std::vector<soar::cast::DiscoveredRenderer> cast_found_;
-  std::atomic<bool> cast_searching_{false};
-  std::atomic<std::int64_t> cast_pos_ms_{-1};
-  std::atomic<std::int64_t> cast_dur_ms_{-1};
-  std::thread cast_discover_thread_;
-  // Open-folder flow (v0.2.1): recent directories MRU (smaller cap than
-  // files), the picker's browse position, and the recursive-import choice
-  // (kept for the session so repeated imports share one setting).
-  RecentStore recent_dirs_;
-  // Rebindable keyboard shortcuts (docs/ui-design.md §3.2): defaults in
-  // the ctor, then the config file / CLI flags via WindowUiConfig.
-  ShortcutMap shortcuts_;
-  std::string dirpick_path_;
-  bool dirpick_recursive_ = false;
-  // Picker mode: false imports the picked folder into the queue, true
-  // watches it into the media library (the "Add folder..." entry).
-  bool dirpick_for_library_ = false;
-  // Third mode (todo.md 原型对齐批): file picking. Media rows gain
-  // checkboxes and the action button queues the checked set — click
-  // order kept, across directory changes too.
-  bool dirpick_files_ = false;
-  std::vector<std::string> dirpick_checked_;
-  // The clear button's two-click confirm (see drawPlaylistOverlay): armed
-  // on the first click, executed on the second, disarmed by the arm's
-  // own expiry.
-  bool playlist_clear_armed_ = false;
-  milliseconds playlist_clear_armed_at_{0};
-  // The library's once-per-session auto-scan (first overlay open).
-  bool library_scanned_ = false;
-  // Cached "how many media files are under the browsed folder" — re-walked
-  // only when the picker's path or recursive toggle changes, never per frame.
-  std::size_t dirpick_count_ = 0;
-  bool dirpick_count_valid_ = false;
-  std::string dirpick_counted_path_;
-  bool dirpick_counted_recursive_ = false;
-  // Media library (docs/mvp.md §3): the resume-point store, the throttle
-  // clock for its progress writes, and the watched-to-end edge flag.
-  MediaLibrary* library_ = nullptr;
-  milliseconds last_progress_write_{-kProgressInterval};
-  bool library_end_cleared_ = false;
-  SubtitleFonts subtitle_fonts_;
-  // Enumerates sidecar subtitle files next to the media (§6). Stateless and
-  // cheap, so it lives with the HUD rather than in the backend: the directory
-  // is only walked while a menu that offers sidecars is open.
-  SidecarSubtitleProvider sidecar_;
-  // Remote subtitle download (§6), env-configured; empty endpoint means it
-  // stays offline. The catalog is searched once per media item and cached,
-  // and downloaded titles are remembered so the menu stops offering them.
-  ExternalSubtitleProvider external_;
-  // The env-derived download config, kept so the settings page's "Auto
-  // download" switch can re-apply (or blank) it at runtime.
-  soar::HttpSubtitleConfig subtitle_env_cfg_;
-  std::string searched_uri_;
-  std::vector<SubtitleCandidate> remote_candidates_;
-  bool remote_searched_ = false;
-  std::vector<std::string> downloaded_titles_;
-  // Subtitle text translation (§6). loaded_external_paths_ carries the
-  // source path of every external track this window loaded (keyed by the
-  // track title the menu shows), so a [translate] row can read the text
-  // without the track list having to carry paths; translated_titles_
-  // keeps the menu from re-offering an external track it already
-  // translated, and translated_ids_ does the same for embedded tracks
-  // (their container titles can repeat, so they key by track id).
-  SubtitleTranslator translator_;
-  // Library network scraping (§3). The scraper is env-configured like the two
-  // subtitle providers; meta_ready_ false means no endpoint was configured and
-  // the library stays offline. metadata_source_ is the adapter the library
-  // holds - non-owning, pointing at the scraper above.
-  soar::HttpMetadataScraper metadata_;
-  LibraryMetadataSource metadata_source_{metadata_};
-  bool meta_ready_ = false;
-  std::map<std::string, std::string> loaded_external_paths_;
-  std::vector<std::string> translated_titles_;
-  std::vector<TrackId> translated_ids_;
-  std::string target_language_ = "English";
-  bool translate_ready_ = false;
-  State st_;
-};
+    return;
+  }
+  if (player_.state() != PlaybackState::Playing) return;
+  if (now - last_progress_write_ < kProgressInterval) return;
+  last_progress_write_ = now;
+  library_->recordProgress(current_uri_, player_.position().count(),
+                           player_.mediaInfo().duration.count());
+  library_->save();
+}
+
+std::string PlayerHud::displayName(const std::string& uri) const {
+  return (!source_label_.empty() && uri == current_uri_) ? source_label_
+                                                         : baseName(uri);
+}
+
+std::string PlayerHud::fileFormatLabel(const std::string& uri) {
+  const std::string name = baseName(uri);
+  const std::size_t dot = name.find_last_of('.');
+  if (dot == std::string::npos || dot + 1 >= name.size()) return "";
+  std::string ext = name.substr(dot + 1);
+  for (char& c : ext) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  return ext;
+}
+
+std::string PlayerHud::parentFolderLabel(const std::string& uri) {
+  const std::string name = baseName(uri);
+  const std::size_t slash = name.find_last_of("/\\");
+  if (slash == std::string::npos || slash == 0) return "";
+  return name.substr(0, slash);
+}
+
+bool PlayerHud::firstRunEmpty() const {
+  return current_uri_.empty() && !torrent_pending_;
+}
+
+bool PlayerHud::shiftHeld() const { return (SDL_GetModState() & KMOD_SHIFT) != 0; }
+
+bool PlayerHud::mouseOverHud() const {
+  const ImGuiIO& io = ImGui::GetIO();
+  const float bar_w = std::min(io.DisplaySize.x - 24.0f, 920.0f);
+  const float bar_h = 80.0f;
+  const float x0 = (io.DisplaySize.x - bar_w) * 0.5f;
+  const float y0 = io.DisplaySize.y - bar_h - 16.0f;
+  return io.MousePos.x >= x0 && io.MousePos.x < x0 + bar_w &&
+         io.MousePos.y >= y0 && io.MousePos.y < y0 + bar_h;
+}
 
 #endif  // SOAR_WITH_IMGUI
+
+namespace {
+
 
 // runPlayerWindow sits outside the unnamed namespace; the default-font
 // wiring for external ASS documents stays file-local through this shim.

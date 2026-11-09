@@ -210,6 +210,11 @@ if(SOAR_BUILD_APP)
     src/app/main.cpp
     src/app/startup_report.cpp
     src/app/ui/player_window.cpp
+    src/app/ui/player_hud_actions.cpp
+    src/app/ui/player_hud_settings.cpp
+    src/app/ui/player_hud_render.cpp
+    src/app/ui/player_hud_overlays.cpp
+    src/app/ui/player_hud_pages.cpp
   )
   target_compile_features(soar PRIVATE cxx_std_17)
   # soar --version prints this; install scripts use it as the post-install
@@ -324,6 +329,11 @@ if(SOAR_BUILD_APP)
           src/app/main.cpp
           src/app/startup_report.cpp
           src/app/ui/player_window.cpp
+          src/app/ui/player_hud_actions.cpp
+          src/app/ui/player_hud_settings.cpp
+          src/app/ui/player_hud_render.cpp
+          src/app/ui/player_hud_overlays.cpp
+          src/app/ui/player_hud_pages.cpp
         )
         target_compile_features(soarw PRIVATE cxx_std_17)
         target_compile_definitions(soarw PRIVATE
