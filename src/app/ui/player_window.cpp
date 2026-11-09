@@ -372,6 +372,24 @@ ImVec4 kHeaderHovered{1.0f, 1.0f, 1.0f, 0.14f};
 // line-strong on hover. surface-2 is opaque (it fully covers the panel).
 ImVec4 kSurface2{0.086f, 0.098f, 0.125f, 1.0f};         // #161920 surface-2 (dark)
 ImVec4 kLineStrong{0.212f, 0.243f, 0.294f, 1.0f};       // #363E4B line-strong (dark)
+// The v1 prototype pages (docs/public/prototypes/*.html, proto.css :root) —
+// the single visual baseline for the settings/library/playlist/translate
+// pages and the main-window recheck. v1 palette differs from the redesign
+// v2 surface tokens above in the page/card/text tiers, so the page draws
+// use these; the OSC keeps the v2 tokens it was pixel-probed against.
+ImVec4 kPageBg{0.055f, 0.063f, 0.075f, 1.0f};           // #0E1013 v1 --bg1
+ImVec4 kNavBg{0.031f, 0.035f, 0.043f, 1.0f};            // #08090B v1 --bg0
+ImVec4 kCardBg{0.075f, 0.086f, 0.106f, 1.0f};           // #13161B v1 --bg2
+ImVec4 kCardLine{0.141f, 0.169f, 0.208f, 1.0f};         // #242B35 v1 --line
+ImVec4 kText2{0.635f, 0.671f, 0.722f, 1.0f};            // #A2ABB8 v1 --t2
+ImVec4 kText3{0.431f, 0.471f, 0.525f, 1.0f};            // #6E7886 v1 --t3
+ImVec4 kText4{0.302f, 0.333f, 0.376f, 1.0f};            // #4D5560 v1 --t4
+ImVec4 kAccentHi{1.0f, 0.522f, 0.329f, 1.0f};           // #FF8554 v1 --accent-hi
+// Field faces (v1 --bg3 / --bg4): the select boxes, stepper buttons, the
+// nav hover fill and the switch's off state all sit one tier above the
+// card ground.
+ImVec4 kFieldBg{0.102f, 0.118f, 0.145f, 1.0f};          // #1A1E25 v1 --bg3
+ImVec4 kFieldBgHi{0.133f, 0.153f, 0.184f, 1.0f};        // #22272F v1 --bg4
 
 // Which palette is loaded. false = dark (the default the app ships with).
 inline bool g_light = false;
@@ -429,6 +447,18 @@ inline void applyPalette(bool light) {
   kHeaderHovered = {0.831f, 0.855f, 0.898f, 1.0f};  // --line-strong #C3CAD5
   kSurface2 = {1.0f, 1.0f, 1.0f, 1.0f};             // --surface-2 #FFFFFF
   kLineStrong = {0.765f, 0.792f, 0.835f, 1.0f};     // --line-strong #C3CAD5
+  // The v1 page tokens flip onto the same light ladder the v2 tokens use
+  // (#EEF0F4 / #F7F8FA / #FFFFFF); accents and accent-hi are theme-invariant.
+  kPageBg = {0.969f, 0.973f, 0.980f, 1.0f};         // #F7F8FA v1 --bg1 (light)
+  kNavBg = {0.933f, 0.941f, 0.957f, 1.0f};          // #EEF0F4 v1 --bg0 (light)
+  kCardBg = {1.0f, 1.0f, 1.0f, 1.0f};               // #FFFFFF v1 --bg2 (light)
+  kCardLine = {0.875f, 0.890f, 0.918f, 1.0f};       // #DFE3EA v1 --line (light)
+  kText2 = {0.271f, 0.306f, 0.361f, 1.0f};          // #454E5C v1 --t2 (light)
+  kText3 = {0.384f, 0.424f, 0.490f, 1.0f};          // #626C7D v1 --t3 (light)
+  kText4 = {0.596f, 0.631f, 0.686f, 1.0f};          // #98A1AF v1 --t4 (light)
+  kAccentHi = {1.0f, 0.522f, 0.329f, 1.0f};         // #FF8554 accent-hi (same)
+  kFieldBg = {0.906f, 0.918f, 0.941f, 1.0f};        // #E7EAF0 v1 --bg3 (light)
+  kFieldBgHi = {0.765f, 0.792f, 0.835f, 1.0f};      // #C3CAD5 v1 --bg4 (light)
 }
 // Radii live in ui_tokens.h (no ImGui dependency, so the suite can pin
 // them): the redesign v2 system is panel 10 / control 7 / badge pill.
@@ -793,7 +823,8 @@ class PlayerHud {
       const long ms = std::atol(t);
       if (ms > 0) sub.timeout = std::chrono::milliseconds(ms);
     }
-    external_.configure(std::move(sub));
+    subtitle_env_cfg_ = sub;
+    configureHttpSubtitles(st_.subtitle_autodl);
     // Subtitle text translation (docs/mvp.md §6), same env-injection
     // contract as the download provider above: no configured endpoint and
     // model means the menu never offers a [translate] row and nothing ever
@@ -1334,6 +1365,22 @@ class PlayerHud {
     }
     maybeRecordProgress(now);
     maybeAdvancePlaylist(now);
+    // "Auto-show first subtitle" (settings Subtitles tab): the first frame
+    // a track becomes selected turns visibility on — no V press needed.
+    // The -1 -> >=0 edge keeps it one-shot per selection; the detector
+    // never selects anything itself (a fresh open still starts with no
+    // track selected — the frozen core contract the walkthrough pins).
+    if (st_.subtitle_autoshow) {
+      const int sel = player_.mediaInfo().selected_subtitle;
+      if (st_.prev_selected_subtitle < 0 && sel >= 0 && !st_.subtitle_visible) {
+        st_.subtitle_visible = true;
+        if (cfg_.subtitle_visible) {
+          cfg_.subtitle_visible->store(true, std::memory_order_relaxed);
+        }
+        st_.toast.show("Subtitles on", now);
+      }
+      st_.prev_selected_subtitle = sel;
+    }
     const float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 0.016f;
     const float target = hud_shown ? 1.0f : 0.0f;
     st_.hud_alpha += (target - st_.hud_alpha) * std::min(1.0f, dt / 0.160f);
@@ -2231,54 +2278,70 @@ class PlayerHud {
     if (!open) st_.overlay = Overlay::None;
   }
 
-  // The prototype's .switch (settings.html): a 34x20 pill toggled by a click.
-  // Drawn on the draw list (accent when on, hairline surface when off, knob
-  // sliding between the ends); the hit area is an InvisibleButton. Returns
-  // true when the user flipped it.
+  // The prototype's .switch (settings.html): a 34x20 pill toggled by a
+  // click. Off = a --bg4 face with a line-strong border and a --t3 knob
+  // parked left; on = accent fill, no border, the warm ink knob parked
+  // right. Drawn on the draw list; the hit area is an InvisibleButton.
   bool settingsSwitch(const char* id, bool* on) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const bool clicked = ImGui::InvisibleButton(id, ImVec2(34.0f, 20.0f));
     const bool hovered = ImGui::IsItemHovered();
-    const ImU32 bg =
-        *on ? ImGui::ColorConvertFloat4ToU32(theme::kAccent)
-            : IM_COL32(255, 255, 255, hovered ? 40 : 26);
+    ImU32 bg;
+    ImU32 border;
+    if (*on) {
+      bg = ImGui::ColorConvertFloat4ToU32(theme::kAccent);
+      border = bg;
+    } else {
+      bg = ImGui::ColorConvertFloat4ToU32(hovered ? theme::kFieldBgHi
+                                                  : theme::kFieldBg);
+      border = ImGui::ColorConvertFloat4ToU32(theme::kLineStrong);
+    }
     dl->AddRectFilled(p, ImVec2(p.x + 34.0f, p.y + 20.0f), bg,
                       theme::kPillRounding);
+    dl->AddRect(p, ImVec2(p.x + 34.0f, p.y + 20.0f), border,
+                theme::kPillRounding);
     const float kx = *on ? p.x + 34.0f - 2.0f - 14.0f : p.x + 2.0f;
     dl->AddCircleFilled(
         ImVec2(kx + 7.0f, p.y + 10.0f), 7.0f,
         ImGui::ColorConvertFloat4ToU32(*on ? theme::kInkOnAccent
-                                           : theme::kTextMuted));
+                                           : theme::kText3));
     if (clicked) *on = !*on;
     return clicked;
   }
 
   // The prototype's .stepper: a -/+ pair around a 44px value field (the
-  // .val min-width keeps the control's width stable). Returns true when the
-  // value moved. Width is 24+8+44+8+24 = 108.
+  // .val min-width keeps the control's width stable). Buttons carry the
+  // --bg3 face with a --line border and --t2 glyphs; the value prints in
+  // --t1. Returns true when the value moved. Width is 24+2+44+2+24 = 96.
   bool settingsStepper(const char* id, int* val, int delta, int lo, int hi,
                        const char* fmt) {
     char buf[24];
     std::snprintf(buf, sizeof(buf), fmt, *val);
     const std::string key(id);
     bool changed = false;
-    if (ImGui::Button((key + "##m").c_str(), ImVec2(24.0f, 24.0f))) {
+    ImGui::PushStyleColor(ImGuiCol_Button, theme::kFieldBg);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::kFieldBgHi);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme::kFieldBgHi);
+    ImGui::PushStyleColor(ImGuiCol_Border, theme::kCardLine);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText2);
+    if (ImGui::Button((std::string("-") + key + "_m").c_str(), ImVec2(24.0f, 24.0f))) {
       if (*val - delta >= lo) {
         *val -= delta;
         changed = true;
       }
     }
-    ImGui::SameLine();
+    ImGui::SameLine(0.0f, 2.0f);
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::Dummy(ImVec2(44.0f, 24.0f));  // .val field
-    ImGui::SameLine();
-    if (ImGui::Button((key + "##p").c_str(), ImVec2(24.0f, 24.0f))) {
+    ImGui::SameLine(0.0f, 2.0f);
+    if (ImGui::Button((std::string("+") + key + "_p").c_str(), ImVec2(24.0f, 24.0f))) {
       if (*val + delta <= hi) {
         *val += delta;
         changed = true;
       }
     }
+    ImGui::PopStyleColor(5);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 ts = ImGui::CalcTextSize(buf);
     dl->AddText(ImVec2(p.x + (44.0f - ts.x) * 0.5f, p.y + (24.0f - ts.y) * 0.5f),
@@ -2286,13 +2349,131 @@ class PlayerHud {
     return changed;
   }
 
-  // A nav tab row: a 32px strip with a letter glyph (the bitmap font has no
-  // icon set) + label, an accent-soft face when active, white .08 on hover.
+  // Runtime switch for the remote download provider (the settings page's
+  // "Auto download" row): on = the env-configured endpoint (an empty one
+  // stays offline — the provider never dials without a URL); off =
+  // reconfigured with an empty endpoint so findCandidates()/fetch() go
+  // inert immediately (docs/mvp.md §6 zero-network default).
+  void configureHttpSubtitles(bool enabled) {
+    soar::HttpSubtitleConfig sub = subtitle_env_cfg_;
+    if (!enabled) sub.endpoint.clear();
+    external_.configure(std::move(sub));
+  }
+
+  // The chead's Reset defaults: every live session setting returns to its
+  // factory value; the persisted ones (recent cap, theme) rewrite their
+  // files too, so the choice survives a restart.
+  void resetSettingsDefaults() {
+    st_.remember_last_media = true;
+    st_.esc_exits_fullscreen = true;
+    st_.subtitle_visible = true;
+    st_.subtitle_font_size = 24.0f;
+    st_.subtitle_offset_ms = 0;
+    st_.subtitle_autoshow = true;
+    st_.subtitle_autodl = true;
+    configureHttpSubtitles(true);
+    st_.recent_cap = 15;
+    recent_.setMaxEntries(15);
+    recent_.save();
+    saveRecentCap(15);
+    if (cfg_.subtitle_visible) {
+      cfg_.subtitle_visible->store(true, std::memory_order_relaxed);
+    }
+    if (cfg_.subtitle_font_size) {
+      cfg_.subtitle_font_size->store(24.0f, std::memory_order_relaxed);
+    }
+    if (cfg_.subtitle_offset_ms) {
+      cfg_.subtitle_offset_ms->store(0, std::memory_order_relaxed);
+    }
+    if (theme::g_light) {
+      theme::applyPalette(false);
+      applyTheme();
+      saveThemePref();
+    }
+    st_.last_rate = 1.0;
+    player_.setRate(1.0);
+    playlist_.setLoop(PlaylistStore::Loop::Off);
+    if (playlist_.shuffle()) playlist_.setShuffle(false);
+  }
+
+  // The nav's 16px line icons (settings.html inlines the same five SVGs,
+  // stroke-width 1.6 on a 24px grid — rescaled here to 16px). Drawn with
+  // the draw list: the bitmap font carries no icon set.
+  void settingsNavIcon(ImDrawList* dl, const ImVec2 c, SettingsTab tab,
+                       ImU32 col) {
+    const float th = 1.5f;
+    switch (tab) {
+      case SettingsTab::General: {  // sun: a small disc + eight rays
+        dl->AddCircleFilled(c, 2.5f, col);
+        for (int i = 0; i < 8; ++i) {
+          const float a = i * 0.7853981634f;  // pi/4
+          dl->AddLine(ImVec2(c.x + std::cos(a) * 4.5f, c.y + std::sin(a) * 4.5f),
+                      ImVec2(c.x + std::cos(a) * 7.0f, c.y + std::sin(a) * 7.0f),
+                      col, th);
+        }
+        break;
+      }
+      case SettingsTab::Playback: {  // play outline + the leading bar
+        dl->AddTriangle(ImVec2(c.x + 5.3f, c.y + 3.7f),
+                        ImVec2(c.x + 5.3f, c.y + 12.3f),
+                        ImVec2(c.x + 12.7f, c.y + 8.0f), col, th);
+        dl->AddLine(ImVec2(c.x + 2.7f, c.y + 3.3f),
+                    ImVec2(c.x + 2.7f, c.y + 12.7f), col, th);
+        break;
+      }
+      case SettingsTab::Subtitles: {  // rounded screen + two line pairs
+        dl->AddRect(ImVec2(c.x + 1.3f, c.y + 2.0f),
+                    ImVec2(c.x + 14.7f, c.y + 11.3f), col, 2.0f, 0, th);
+        dl->AddLine(ImVec2(c.x + 3.3f, c.y + 5.8f), ImVec2(c.x + 6.0f, c.y + 5.8f),
+                    col, th);
+        dl->AddLine(ImVec2(c.x + 8.7f, c.y + 5.8f),
+                    ImVec2(c.x + 11.3f, c.y + 5.8f), col, th);
+        dl->AddLine(ImVec2(c.x + 3.3f, c.y + 8.5f), ImVec2(c.x + 8.0f, c.y + 8.5f),
+                    col, th);
+        break;
+      }
+      case SettingsTab::Network: {  // globe: disc + equator + two meridians
+        dl->AddCircle(c, 6.0f, col, 0, th);
+        dl->AddLine(ImVec2(c.x - 6.0f, c.y), ImVec2(c.x + 6.0f, c.y), col, th);
+        dl->AddEllipse(c, ImVec2(2.7f, 6.0f), col, 0.0f, 0, th);
+        dl->AddEllipse(c, ImVec2(1.0f, 6.0f), col, 0.0f, 0, th);
+        break;
+      }
+      case SettingsTab::About: {  // info: circle + stem + dot
+        dl->AddCircle(c, 6.0f, col, 0, th);
+        dl->AddLine(ImVec2(c.x, c.y + 2.2f), ImVec2(c.x, c.y + 4.6f), col, th);
+        dl->AddCircleFilled(ImVec2(c.x, c.y - 2.6f), 0.8f, col);
+        break;
+      }
+    }
+  }
+
+  // The prototype's orange rounded square with the "S" initial
+  // (settings.html .nav .wing and .about .logo). The face is the accent
+  // (the prototype's 140deg #FF8F5F->#FF5A2A gradient reads as one orange
+  // at these sizes); the bitmap font's "S" is the ink.
+  void drawGradientMark(ImDrawList* dl, const ImVec2& p, float size, float r,
+                        ImU32) {
+    dl->AddRectFilled(p, ImVec2(p.x + size, p.y + size),
+                      ImGui::ColorConvertFloat4ToU32(theme::kAccent), r);
+    const ImU32 ink = ImGui::ColorConvertFloat4ToU32(
+        ImVec4(0.078f, 0.039f, 0.016f, 1.0f));  // #140A04
+    const ImVec2 ss = ImGui::CalcTextSize("S");
+    dl->AddText(ImVec2(p.x + (size - ss.x) * 0.5f, p.y + (size - ss.y) * 0.5f),
+                ink, "S");
+  }
+
+  // A nav tab row: a 32px strip with the tab's line icon + label, an
+  // accent-soft face when active, a --bg3 fill on hover. Ink follows the
+  // prototype tiering: --t3 idle, --t2 hover, --accent-hi active.
   // Returns true on a click.
-  bool settingsNavRow(const char* id, const char* glyph, const char* label,
+  bool settingsNavRow(const char* id, SettingsTab tab, const char* label,
                       bool active) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float w = ImGui::GetContentRegionAvail().x;
+    // .nav padding 10px on each side: the row fills the nav's content box,
+    // whatever the previous item left the cursor at.
+    ImGui::SetCursorPosX(10.0f);
+    const float w = ImGui::GetWindowWidth() - 20.0f;
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, 32.0f));
     const bool hovered = ImGui::IsItemHovered();
@@ -2302,15 +2483,15 @@ class PlayerHud {
       dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 32.0f),
                         ImGui::ColorConvertFloat4ToU32(a), 8.0f);
     } else if (hovered) {
-      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 32.0f), IM_COL32(255, 255, 255, 20),
-                        8.0f);
+      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 32.0f),
+                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 8.0f);
     }
     const ImU32 fg = ImGui::ColorConvertFloat4ToU32(
-        active ? theme::kAccent : theme::kTextDim);
+        active ? theme::kAccentHi : (hovered ? theme::kText2 : theme::kText3));
+    // icon 16px at the row's 10px padding, then the 10px gap -> text at 36
+    settingsNavIcon(dl, ImVec2(p.x + 10.0f, p.y + 16.0f), tab, fg);
     const ImVec2 ls = ImGui::CalcTextSize(label);
-    const ImVec2 gs = ImGui::CalcTextSize(glyph);
-    dl->AddText(ImVec2(p.x + 10.0f, p.y + (32.0f - gs.y) * 0.5f), fg, glyph);
-    dl->AddText(ImVec2(p.x + 34.0f, p.y + (32.0f - ls.y) * 0.5f), fg, label);
+    dl->AddText(ImVec2(p.x + 36.0f, p.y + (32.0f - ls.y) * 0.5f), fg, label);
     return clicked;
   }
 
@@ -2318,31 +2499,163 @@ class PlayerHud {
   // it heads (the prototype's 10px letter-spaced label, rendered at the
   // bitmap font's single size).
   void settingsGrp(const char* label) {
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
-    ImGui::TextDisabled("%s", label);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f);
+    // .nav .grp margin-left 8 on the nav's 10px padding.
+    ImGui::SetCursorPosX(18.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
   }
 
-  // A prototype .set row: a bordered rounded card with the label block
-  // (title + description) on the left and a fixed-width control on the
-  // right, vertically centred.
+  // A prototype .set row: a bordered rounded card (--bg2 face, --line
+  // border, r-md 10) with the label block (title + description) on the
+  // left and a fixed-width control on the right, vertically centred.
   void settingCard(const char* id, const char* title, const char* desc,
-                   float control_w, const std::function<void()>& control) {
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kControlRounding);
-    ImGui::PushStyleColor(
-        ImGuiCol_ChildBg,
-        ImGui::ColorConvertFloat4ToU32(ImVec4(theme::kSurface2.x,
-                                              theme::kSurface2.y,
-                                              theme::kSurface2.z, 0.55f)));
-    ImGui::PushStyleColor(ImGuiCol_Border,
-                          ImGui::ColorConvertFloat4ToU32(theme::kBorder));
-    if (ImGui::BeginChild(id, ImVec2(-1.0f, 52.0f), ImGuiChildFlags_Borders)) {
+                   float control_w, float control_h,
+                   const std::function<void()>& control) {
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kPanelRounding);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kCardBg);
+    ImGui::PushStyleColor(ImGuiCol_Border, theme::kCardLine);
+    if (ImGui::BeginChild(id, ImVec2(-1.0f, 52.0f),
+                          ImGuiChildFlags_Borders,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
       ImGui::SetCursorPos(ImVec2(12.0f, 8.0f));
       ImGui::TextUnformatted(title);
       ImGui::SetCursorPos(ImVec2(12.0f, 28.0f));
-      ImGui::TextDisabled("%s", desc);
+      ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
+      ImGui::TextUnformatted(desc);
+      ImGui::PopStyleColor();
       ImGui::SetCursorPos(
-          ImVec2(ImGui::GetContentRegionAvail().x - control_w - 10.0f, 14.0f));
+          ImVec2(ImGui::GetContentRegionAvail().x - control_w - 10.0f,
+                 (52.0f - control_h) * 0.5f));
       control();
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar();
+  }
+
+  // The prototype's .dangerbtn: a danger-outline button (red at .4 border
+  // / .1 face / full ink text; hover raises the face to .18).
+  bool dangerButton(const char* label, ImVec2 size) {
+    ImGui::PushStyleColor(
+        ImGuiCol_Button, ImGui::ColorConvertFloat4ToU32(ImVec4(
+                             theme::kDanger.x, theme::kDanger.y,
+                             theme::kDanger.z, 0.10f)));
+    ImGui::PushStyleColor(
+        ImGuiCol_ButtonHovered, ImGui::ColorConvertFloat4ToU32(ImVec4(
+                                    theme::kDanger.x, theme::kDanger.y,
+                                    theme::kDanger.z, 0.18f)));
+    ImGui::PushStyleColor(
+        ImGuiCol_ButtonActive, ImGui::ColorConvertFloat4ToU32(ImVec4(
+                                   theme::kDanger.x, theme::kDanger.y,
+                                   theme::kDanger.z, 0.18f)));
+    ImGui::PushStyleColor(
+        ImGuiCol_Border, ImGui::ColorConvertFloat4ToU32(ImVec4(
+                             theme::kDanger.x, theme::kDanger.y,
+                             theme::kDanger.z, 0.40f)));
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kDanger);
+    const bool clicked = ImGui::Button(label, size);
+    ImGui::PopStyleColor(5);
+    return clicked;
+  }
+
+  // The prototype's .select: a 26px box with a line-strong border and a
+  // --bg3 face. Live = clicking cycles through the caller's options (the
+  // bitmap font cannot unfold a dropdown cleanly, so the box shows the
+  // current value); disabled = an honest static box for the options the
+  // app does not implement yet.
+  bool settingsSelectBox(const char* id, const char* label, float w,
+                         bool disabled) {
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    bool clicked = false;
+    if (disabled) {
+      ImGui::Dummy(ImVec2(w, 26.0f));
+    } else {
+      clicked = ImGui::InvisibleButton(id, ImVec2(w, 26.0f));
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const bool hov = !disabled && ImGui::IsItemHovered();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 26.0f),
+                      ImGui::ColorConvertFloat4ToU32(hov ? theme::kFieldBgHi
+                                                         : theme::kFieldBg),
+                      kControlRounding);
+    dl->AddRect(p, ImVec2(p.x + w, p.y + 26.0f),
+                ImGui::ColorConvertFloat4ToU32(theme::kLineStrong),
+                kControlRounding);
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(p.x + 8.0f, p.y + (26.0f - ts.y) * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(disabled ? theme::kText2
+                                                        : theme::kText),
+                label);
+    return clicked;
+  }
+
+  // The prototype's .pill: a rounded badge with a soft tinted face and the
+  // matching ink (settings.html uses sky for the tracker count and ok for
+  // the offline summary).
+  void settingsPill(const char* label, const ImVec4& ink) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    const float w = ts.x + 16.0f;
+    const float h = ts.y + 6.0f;
+    ImVec4 face = ink;
+    face.w = 0.14f;
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h),
+                      ImGui::ColorConvertFloat4ToU32(face), 99.0f);
+    dl->AddText(ImVec2(p.x + 8.0f, p.y + 3.0f),
+                ImGui::ColorConvertFloat4ToU32(ink), label);
+    ImGui::Dummy(ImVec2(w, h));
+  }
+
+  // The prototype's .textinput: a 26px mono box (line-strong border, --bg3
+  // face). Rendered read-only — the sidecar directory comes from the state
+  // layout, not a per-run edit.
+  void settingsTextInput(const char* value, float w) {
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(w, 26.0f));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 26.0f),
+                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBg),
+                      kControlRounding);
+    dl->AddRect(p, ImVec2(p.x + w, p.y + 26.0f),
+                ImGui::ColorConvertFloat4ToU32(theme::kLineStrong),
+                kControlRounding);
+    const int max_chars = std::max(4, static_cast<int>((w - 18.0f) / 8.0f));
+    const std::string text = clipEllipsis(value, max_chars);
+    const ImVec2 ts = ImGui::CalcTextSize(text.c_str());
+    dl->AddText(ImVec2(p.x + 9.0f, p.y + (26.0f - ts.y) * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(theme::kText2), text.c_str());
+  }
+
+  // The .sect h2: a muted uppercase tier heading (--t4).
+  void settingsSect(const char* label) {
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+  }
+
+  // The prototype's .version-row: a bordered k/v strip (r-md, --line).
+  void versionRow(const char* id, const char* k, const char* v) {
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kPanelRounding);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kPageBg);
+    ImGui::PushStyleColor(ImGuiCol_Border, theme::kCardLine);
+    if (ImGui::BeginChild(id, ImVec2(-1.0f, 32.0f),
+                          ImGuiChildFlags_Borders,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+      ImGui::SetCursorPos(ImVec2(12.0f, 7.0f));
+      ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
+      ImGui::TextUnformatted(k);
+      ImGui::PopStyleColor();
+      const float w = ImGui::GetContentRegionAvail().x;
+      const ImVec2 vs = ImGui::CalcTextSize(v);
+      ImGui::SetCursorPos(ImVec2(w - vs.x - 10.0f, 7.0f));
+      ImGui::TextUnformatted(v);
     }
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
@@ -2353,18 +2666,18 @@ class PlayerHud {
   // and an Edit button (the settings page's honest unconfigured state).
   void endpointRow(const char* id, const char* tag, const char* value,
                    milliseconds now) {
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kControlRounding);
-    ImGui::PushStyleColor(
-        ImGuiCol_ChildBg,
-        ImGui::ColorConvertFloat4ToU32(ImVec4(theme::kSurface2.x,
-                                              theme::kSurface2.y,
-                                              theme::kSurface2.z, 0.55f)));
-    ImGui::PushStyleColor(ImGuiCol_Border,
-                          ImGui::ColorConvertFloat4ToU32(theme::kBorder));
-    if (ImGui::BeginChild(id, ImVec2(-1.0f, 40.0f), ImGuiChildFlags_Borders)) {
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kPanelRounding);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kCardBg);
+    ImGui::PushStyleColor(ImGuiCol_Border, theme::kCardLine);
+    if (ImGui::BeginChild(id, ImVec2(-1.0f, 40.0f),
+                          ImGuiChildFlags_Borders,
+                          ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
       const float avail = ImGui::GetContentRegionAvail().x;
       ImGui::SetCursorPos(ImVec2(12.0f, 11.0f));
-      ImGui::TextDisabled("%s", tag);
+      ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
+      ImGui::TextUnformatted(tag);
+      ImGui::PopStyleColor();
       // The tag column tracks the label's real width (the 16px bitmap font
       // is wider than the prototype's 10px .tag, so the fixed 52px column
       // would overlap the value).
@@ -2372,196 +2685,194 @@ class PlayerHud {
       const float value_w = avail - (12.0f + tag_w + 16.0f) - 68.0f;
       const int max_chars = std::max(8, static_cast<int>(value_w / 8.0f));
       ImGui::SetCursorPos(ImVec2(12.0f + tag_w + 16.0f, 11.0f));
-      ImGui::TextDisabled("%s", clipEllipsis(value, max_chars).c_str());  // .val dim
+      ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
+      ImGui::TextUnformatted(clipEllipsis(value, max_chars).c_str());
+      ImGui::PopStyleColor();
       ImGui::SetCursorPos(ImVec2(avail - 58.0f, 8.0f));
-      ImGui::PushStyleColor(ImGuiCol_Border,
-                            ImGui::ColorConvertFloat4ToU32(
-                                ImVec4(theme::kDanger.x, theme::kDanger.y,
-                                       theme::kDanger.z, 0.40f)));
-      if (ImGui::Button("Edit", ImVec2(48.0f, 24.0f))) {
+      if (dangerButton("Edit##ep", ImVec2(48.0f, 24.0f))) {
         st_.toast.show("Endpoint not configured", now);
       }
-      ImGui::PopStyleColor();
     }
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar();
   }
 
-  // The full settings page (docs/public/prototypes/settings.html, v1):
-  // a 180px nav sidebar (General / Playback / Subtitles, then .grp NETWORK /
-  // ABOUT) and a per-tab body of .set rows. Playback/About have no content
-  // in the v1 prototype, so they render a minimal placeholder. Live state:
-  // the General switches (esc_exits_fullscreen / remember_last_media), the
-  // recent-cap stepper (RecentStore::setMaxEntries) and the Subtitles rows
-  // (visible / font size / offset) edit the same state the shortcuts do;
-  // controls the app does not implement yet render disabled — visible per
-  // the prototype, honestly inert.
+  // The full settings page (docs/public/prototypes/settings.html, v1): a
+  // full-window layout — a 196px nav (--bg0, General / Playback /
+  // Subtitles, then .grp NETWORK / ABOUT) beside a content column (--bg1)
+  // with its chead (title + Reset defaults / Done) and a per-tab body of
+  // .set rows. Every tab renders real content: the General startup rows,
+  // Playback's rate/loop/shuffle, the Subtitles render/timing/fetch grid
+  // + endpoints, Network's local-first rows + zero-external summary, and
+  // About's mark + version rows. Controls the app does not implement yet
+  // render disabled — visible per the prototype, honestly inert.
   void drawSettingsOverlay() {
     bool open = true;
     const ImGuiIO& io = ImGui::GetIO();
-    const float w = std::min(io.DisplaySize.x * 0.86f, 780.0f);
-    const float h = std::min(io.DisplaySize.y * 0.86f, 540.0f);
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Appearing);
-    // The full-height page must sit above the top bar / state chip (both live
-    // in the strip the page covers); the focus request puts the page at the
-    // front of the z-order every frame it is open.
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(io.DisplaySize);
+    // The full-height page must sit above the video/pause layers; the
+    // focus request puts the page at the front of the z-order every frame
+    // it is open.
     ImGui::SetNextWindowFocus();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 14.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kPageBg);
+    ImGui::PushStyleColor(ImGuiCol_Border, 0);
     if (ImGui::Begin("Settings", &open,
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
-      // ---- nav sidebar (settings.html .nav) ----
-      ImGui::BeginChild("##set_nav", ImVec2(180.0f, 0.0f), ImGuiChildFlags_None);
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoCollapse |
+                         ImGuiWindowFlags_NoScrollbar |
+                         ImGuiWindowFlags_NoSavedSettings)) {
+      // ---- nav sidebar (settings.html .nav: 196px --bg0) ----
+      ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kNavBg);
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 16.0f));
+      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+      ImGui::BeginChild("##set_nav", ImVec2(196.0f, 0.0f), ImGuiChildFlags_None);
       {
+        // .nav padding 16px 10px, set explicitly (a child window's content
+        // origin does not track the pushed WindowPadding the way a top
+        // window's does, so the wing/rows would otherwise start at the
+        // child's corner).
+        ImGui::SetCursorPos(ImVec2(10.0f, 16.0f));
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        // The 26px wing mark: the orange-gradient rounded square + chevron
-        // (the bitmap font carries no wing glyph).
+        // .nav .wing: the 26px rounded gradient mark, indented 8px more than
+        // the rows (.wing margin-left 8 on the nav's 10px padding).
         const ImVec2 lp = ImGui::GetCursorScreenPos();
-        const ImU32 acc = ImGui::ColorConvertFloat4ToU32(theme::kAccent);
-        const ImU32 accHi = ImGui::ColorConvertFloat4ToU32(theme::kAccentHover);
-        dl->AddRectFilledMultiColor(lp, ImVec2(lp.x + 26.0f, lp.y + 26.0f),
-                                    acc, accHi, accHi, acc);
-        dl->AddTriangleFilled(
-            ImVec2(lp.x + 8.0f, lp.y + 8.0f), ImVec2(lp.x + 8.0f, lp.y + 18.0f),
-            ImVec2(lp.x + 18.0f, lp.y + 13.0f),
-            ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent));
+        drawGradientMark(dl, ImVec2(lp.x + 8.0f, lp.y), 26.0f, 8.0f,
+                         ImGui::ColorConvertFloat4ToU32(theme::kNavBg));
         ImGui::Dummy(ImVec2(26.0f, 26.0f));
-        ImGui::Dummy(ImVec2(0.0f, 12.0f));
-        if (settingsNavRow("##st_general", "G", "General",
+        // .wing margin-bottom: 16px below the mark before the first tab.
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 16.0f);
+        if (settingsNavRow("##st_general", SettingsTab::General, "General",
                            st_.settings_tab == SettingsTab::General)) {
           st_.settings_tab = SettingsTab::General;
         }
-        if (settingsNavRow("##st_playback", "P", "Playback",
+        if (settingsNavRow("##st_playback", SettingsTab::Playback, "Playback",
                            st_.settings_tab == SettingsTab::Playback)) {
           st_.settings_tab = SettingsTab::Playback;
         }
-        if (settingsNavRow("##st_subtitles", "S", "Subtitles",
+        if (settingsNavRow("##st_subtitles", SettingsTab::Subtitles, "Subtitles",
                            st_.settings_tab == SettingsTab::Subtitles)) {
           st_.settings_tab = SettingsTab::Subtitles;
         }
         settingsGrp("NETWORK");
-        if (settingsNavRow("##st_network", "N", "Network",
+        if (settingsNavRow("##st_network", SettingsTab::Network,
+                           "Network & Download",
                            st_.settings_tab == SettingsTab::Network)) {
           st_.settings_tab = SettingsTab::Network;
         }
         settingsGrp("ABOUT");
-        if (settingsNavRow("##st_about", "A", "About",
+        if (settingsNavRow("##st_about", SettingsTab::About, "About",
                            st_.settings_tab == SettingsTab::About)) {
           st_.settings_tab = SettingsTab::About;
         }
+        // .nav border-right: the hairline splitting nav from content.
+        const ImVec2 np = ImGui::GetWindowPos();
+        const float nh = ImGui::GetWindowHeight();
+        dl->AddLine(ImVec2(np.x + 195.5f, np.y), ImVec2(np.x + 195.5f, np.y + nh),
+                    ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
       }
       ImGui::EndChild();
+      ImGui::PopStyleVar(2);
+      ImGui::PopStyleColor();
       ImGui::SameLine();
 
-      // ---- content column (.main) ----
-      ImGui::BeginChild("##set_body", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
-      const float avail = ImGui::GetContentRegionAvail().x;
+      // ---- content column (.main: chead + body) ----
+      ImGui::BeginChild("##set_main", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoScrollbar);
       const char* title = "General";
       const char* desc = "Startup & interface";
       switch (st_.settings_tab) {
         case SettingsTab::General: title = "General"; desc = "Startup & interface"; break;
-        case SettingsTab::Playback: title = "Playback"; desc = "Rate & loop behaviour"; break;
-        case SettingsTab::Subtitles: title = "Subtitles"; desc = "Rendering, sync & fetch"; break;
+        case SettingsTab::Playback: title = "Playback"; desc = "Transport, loop & queue"; break;
+        case SettingsTab::Subtitles: title = "Subtitles"; desc = "Rendering, timing, download"; break;
         case SettingsTab::Network: title = "Network"; desc = "Local first, explicit endpoints"; break;
         case SettingsTab::About: title = "About"; desc = "soar"; break;
       }
-      // chead: title + desc + the Reset defaults and accent Done buttons
-      // right-aligned (the prototype settings page has both).
-      ImGui::TextUnformatted(title);
-      ImGui::SameLine();
-      ImGui::TextDisabled("%s", desc);
-      const float done_w =
-          ImGui::CalcTextSize("Done").x + 2 * ImGui::GetStyle().FramePadding.x + 14.0f;
-      const float reset_w =
-          ImGui::CalcTextSize("Reset defaults").x + 2 * ImGui::GetStyle().FramePadding.x;
-      const float chead_gap = 8.0f;
-      const float chead_h = ImGui::GetFrameHeight();
-      ImGui::SetCursorPosX(avail - done_w);
-      const ImVec2 done_min = ImGui::GetCursorScreenPos();
-      ImGui::InvisibleButton("##set_done", ImVec2(done_w, chead_h));
-      if (ImGui::IsItemClicked()) st_.overlay = Overlay::None;
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      dl->AddRectFilled(
-          done_min, ImVec2(done_min.x + done_w, done_min.y + chead_h),
-          ImGui::ColorConvertFloat4ToU32(ImGui::IsItemHovered() ? theme::kAccentHover
-                                                                : theme::kAccent),
-          theme::kPillRounding);
-      dl->AddText(
-          ImGui::GetFont(), ImGui::GetFontSize(),
-          ImVec2(done_min.x + 7.0f,
-                 done_min.y + (chead_h - ImGui::GetTextLineHeight()) * 0.5f),
-          ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent), "Done");
-      ImGui::SetCursorPosX(avail - done_w - chead_gap - reset_w);
-      if (ImGui::Button("Reset defaults")) {
-        st_.remember_last_media = true;
-        st_.esc_exits_fullscreen = true;
-        st_.subtitle_visible = true;
-        st_.subtitle_font_size = 24.0f;
-        st_.subtitle_offset_ms = 0;
-        st_.recent_cap = 15;
-        recent_.setMaxEntries(15);
-        recent_.save();
-        saveRecentCap(15);
-        if (cfg_.subtitle_visible) {
-          cfg_.subtitle_visible->store(true, std::memory_order_relaxed);
-        }
-        if (cfg_.subtitle_font_size) {
-          cfg_.subtitle_font_size->store(24.0f, std::memory_order_relaxed);
-        }
-        if (cfg_.subtitle_offset_ms) {
-          cfg_.subtitle_offset_ms->store(0, std::memory_order_relaxed);
-        }
-        if (theme::g_light) {
-          theme::applyPalette(false);
-          applyTheme();
-          saveThemePref();
-        }
+      // chead (settings.html .chead: 14/24/12 padding + bottom hairline):
+      // title + muted desc, the Reset defaults button (--bg3 face) and the
+      // accent Done button right-aligned.
+      {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 mp = ImGui::GetWindowPos();
+        const float mw = ImGui::GetWindowWidth();
+        const float chead_h = 44.0f;
+        const float btn_h = 28.0f;
+        ImGui::SetCursorPos(ImVec2(24.0f, 14.0f));
+        ImGui::TextUnformatted(title);
+        ImGui::SameLine(0.0f, 10.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
+        ImGui::TextUnformatted(desc);
+        ImGui::PopStyleColor();
+        const float done_w = ImGui::CalcTextSize("Done").x + 24.0f;
+        const float reset_w = ImGui::CalcTextSize("Reset defaults").x + 24.0f;
+        const ImVec2 done_p(mp.x + mw - 24.0f - done_w, mp.y + 14.0f);
+        ImGui::SetCursorScreenPos(done_p);
+        ImGui::InvisibleButton("##set_done", ImVec2(done_w, btn_h));
+        if (ImGui::IsItemClicked()) st_.overlay = Overlay::None;
+        dl->AddRectFilled(done_p, ImVec2(done_p.x + done_w, done_p.y + btn_h),
+                          ImGui::ColorConvertFloat4ToU32(
+                              ImGui::IsItemHovered() ? theme::kAccentHover
+                                                     : theme::kAccent),
+                          kControlRounding);
+        const ImVec2 dts = ImGui::CalcTextSize("Done");
+        dl->AddText(ImVec2(done_p.x + (done_w - dts.x) * 0.5f,
+                           done_p.y + (btn_h - dts.y) * 0.5f),
+                    ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent), "Done");
+        const ImVec2 rst_p(done_p.x - 10.0f - reset_w, mp.y + 14.0f);
+        ImGui::SetCursorScreenPos(rst_p);
+        ImGui::InvisibleButton("##set_reset", ImVec2(reset_w, btn_h));
+        if (ImGui::IsItemClicked()) resetSettingsDefaults();
+        const bool rst_hov = ImGui::IsItemHovered();
+        dl->AddRectFilled(rst_p, ImVec2(rst_p.x + reset_w, rst_p.y + btn_h),
+                          ImGui::ColorConvertFloat4ToU32(rst_hov ? theme::kFieldBgHi
+                                                                 : theme::kFieldBg),
+                          kControlRounding);
+        dl->AddRect(rst_p, ImVec2(rst_p.x + reset_w, rst_p.y + btn_h),
+                    ImGui::ColorConvertFloat4ToU32(theme::kCardLine),
+                    kControlRounding);
+        const ImVec2 rts = ImGui::CalcTextSize("Reset defaults");
+        dl->AddText(ImVec2(rst_p.x + (reset_w - rts.x) * 0.5f,
+                           rst_p.y + (btn_h - rts.y) * 0.5f),
+                    ImGui::ColorConvertFloat4ToU32(rst_hov ? theme::kText
+                                                           : theme::kText2),
+                    "Reset defaults");
+        // the chead's bottom hairline spans the whole column
+        dl->AddLine(ImVec2(mp.x, mp.y + chead_h),
+                    ImVec2(mp.x + mw, mp.y + chead_h),
+                    ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
       }
-      ImGui::Separator();
-      ImGui::Dummy(ImVec2(0.0f, 4.0f));
+      // body (.body: 18/24/24 padding) — the per-tab scroll region
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+      ImGui::SetCursorPos(ImVec2(24.0f, 62.0f));
+      ImGui::BeginChild("##set_scroll", ImVec2(-24.0f, -24.0f),
+                        ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
 
       switch (st_.settings_tab) {
         case SettingsTab::General: {
-          // sect h2 启动与界面
-          ImGui::TextDisabled("Startup & interface");
-          ImGui::Dummy(ImVec2(0.0f, 2.0f));
+          // sect h2 启动与界面 — the four prototype rows (theme stays on
+          // the y shortcut; the prototype page has no theme row either).
+          settingsSect("STARTUP & INTERFACE");
           settingCard(
               "##g_remember", "Remember last media",
-              "Restore the last file and position on startup", 34.0f, [&] {
-                settingsSwitch("##g_remember_sw", &st_.remember_last_media);
-              });
+              "Restore the last file and position on startup", 34.0f, 20.0f,
+              [&] { settingsSwitch("##g_remember_sw", &st_.remember_last_media); });
           settingCard(
               "##g_esc", "ESC exits fullscreen",
-              "Only in fullscreen; in-window ESC closes settings", 34.0f, [&] {
-                settingsSwitch("##g_esc_sw", &st_.esc_exits_fullscreen);
-              });
+              "Only in fullscreen; in-window ESC closes settings", 34.0f, 20.0f,
+              [&] { settingsSwitch("##g_esc_sw", &st_.esc_exits_fullscreen); });
           // 界面语言 — ASCII-only build: the shipped label set is English
           // (the bitmap font has no CJK), so the select has one honest row.
-          settingCard("##g_lang", "Interface language",
-                      "Follows the system; kept across restarts", 120.0f, [&] {
-                        ImGui::BeginDisabled(true);
-                        ImGui::SetNextItemWidth(120.0f);
-                        int lang = 0;
-                        ImGui::Combo("##g_lang_combo", &lang, "English");
-                        ImGui::EndDisabled();
-                      });
-          settingCard("##g_theme", "Theme", "Dark or light palette (y key)", 120.0f,
-                      [&] {
-                        ImGui::SetNextItemWidth(120.0f);
-                        const char* theme_items[] = {"Dark", "Light"};
-                        int theme_idx = theme::g_light ? 1 : 0;
-                        if (ImGui::Combo("##g_theme_combo", &theme_idx, theme_items,
-                                         2)) {
-                          theme::applyPalette(theme_idx == 1);
-                          applyTheme();
-                          saveThemePref();
-                        }
-                      });
+          settingCard(
+              "##g_lang", "Interface language",
+              "Follows the system; kept across restarts", 120.0f, 26.0f, [&] {
+                settingsSelectBox("##g_lang_sel", "English", 120.0f, true);
+              });
           settingCard("##g_recent", "Recent playback cap",
-                      "MRU list size (O key opens the list)", 108.0f, [&] {
+                      "MRU list size (O key opens the list)", 96.0f, 24.0f, [&] {
                         int cap = st_.recent_cap;
                         if (settingsStepper("##g_recent_step", &cap, 1, 5, 50, "%d")) {
                           st_.recent_cap = cap;
@@ -2573,18 +2884,69 @@ class PlayerHud {
           break;
         }
         case SettingsTab::Playback: {
-          // v1 settings.html defines no Playback rows; a placeholder keeps
-          // the tab navigable without inventing settings.
-          ImGui::TextDisabled("Playback options land with the v1 spec");
+          // Real transport rows: the rate select cycles the same kRates
+          // table the ,/. shortcuts do; loop mode walks off/all/one and
+          // shuffle flips the queue's round order — all live stores.
+          settingsSect("TRANSPORT & QUEUE");
+          settingCard("##p_rate", "Playback rate",
+                      "Cycles the transport speed (, and . keys)", 120.0f, 26.0f,
+                      [&] {
+                        static const double kRates[] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
+                        const std::size_t count = sizeof(kRates) / sizeof(kRates[0]);
+                        std::size_t idx = 2;
+                        for (std::size_t i = 0; i < count; ++i) {
+                          if (std::abs(kRates[i] - st_.last_rate) < 1e-9) idx = i;
+                        }
+                        char cur[16];
+                        std::snprintf(cur, sizeof(cur), "%.2gx", st_.last_rate);
+                        if (settingsSelectBox("##p_rate_sel", cur, 120.0f, false)) {
+                          const double next = kRates[(idx + 1) % count];
+                          st_.last_rate = next;
+                          player_.setRate(next);
+                          std::snprintf(cur, sizeof(cur), "Rate %.2gx", next);
+                          st_.toast.show(cur, nowMs());
+                        }
+                      });
+          settingCard("##p_loop", "Loop mode",
+                      "Off, all (whole queue) or one (this file)", 120.0f, 26.0f,
+                      [&] {
+                        const char* names[] = {"Off", "All", "One"};
+                        int idx = static_cast<int>(playlist_.loop());
+                        if (settingsSelectBox("##p_loop_sel", names[idx], 120.0f,
+                                              false)) {
+                          const auto next =
+                              static_cast<PlaylistStore::Loop>((idx + 1) % 3);
+                          playlist_.setLoop(next);
+                          st_.toast.show(next == PlaylistStore::Loop::Off ? "Loop off"
+                                         : next == PlaylistStore::Loop::All
+                                             ? "Loop all"
+                                             : "Loop one",
+                                         nowMs());
+                        }
+                      });
+          settingCard("##p_shuffle", "Shuffle queue",
+                      "Random round order (P overlay honours it)", 34.0f, 20.0f,
+                      [&] {
+                        bool sh = playlist_.shuffle();
+                        if (settingsSwitch("##p_shuffle_sw", &sh)) {
+                          playlist_.setShuffle(sh);
+                        }
+                      });
           break;
         }
         case SettingsTab::Subtitles: {
+          // The prototype's primary frame: a 2-column grid (渲染 / 时长对齐
+          // + 获取) with the endpoints section full-width below.
+          ImGui::BeginChild("##s_grid", ImVec2(-1.0f, 316.0f),
+                            ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+          const float col_w = (ImGui::GetContentRegionAvail().x - 14.0f) * 0.5f;
+          ImGui::BeginChild("##s_cl", ImVec2(col_w, 0.0f), ImGuiChildFlags_None);
           // sect h2 渲染
-          ImGui::TextDisabled("Rendering");
-          ImGui::Dummy(ImVec2(0.0f, 2.0f));
+          settingsSect("RENDERING");
           settingCard(
               "##s_show", "Show subtitles",
-              "Render at the bottom edge; fullscreen and window alike", 34.0f, [&] {
+              "Render at the bottom edge", 34.0f,
+              20.0f, [&] {
                 if (settingsSwitch("##s_show_sw", &st_.subtitle_visible)) {
                   if (cfg_.subtitle_visible) {
                     cfg_.subtitle_visible->store(st_.subtitle_visible,
@@ -2592,16 +2954,19 @@ class PlayerHud {
                   }
                 }
               });
-          settingCard("##s_font", "Subtitle font",
-                      "System font fallback; bitmap font in v0.2", 120.0f, [&] {
-                        ImGui::BeginDisabled(true);
-                        ImGui::SetNextItemWidth(120.0f);
-                        int font = 0;
-                        ImGui::Combo("##s_font_combo", &font, "Noto Sans SC");
-                        ImGui::EndDisabled();
-                      });
+          settingCard(
+              "##s_autoshow", "Auto-show first subtitle",
+              "Shows the first selected track", 34.0f, 20.0f, [&] {
+                settingsSwitch("##s_autoshow_sw", &st_.subtitle_autoshow);
+              });
+          settingCard(
+              "##s_font", "Subtitle font",
+              "System font fallback", 120.0f, 26.0f, [&] {
+                settingsSelectBox("##s_font_sel", "Noto Sans SC", 120.0f, true);
+              });
           settingCard("##s_size", "Font size",
-                      "Scales with the window height (12-48 px)", 108.0f, [&] {
+                      "Scales with window height", 96.0f, 24.0f,
+                      [&] {
                         int px = static_cast<int>(st_.subtitle_font_size);
                         if (settingsStepper("##s_size_step", &px, 1, 12, 48, "%d px")) {
                           st_.subtitle_font_size = static_cast<float>(px);
@@ -2611,12 +2976,13 @@ class PlayerHud {
                           }
                         }
                       });
-          ImGui::Dummy(ImVec2(0.0f, 6.0f));
+          ImGui::EndChild();
+          ImGui::SameLine(0.0f, 14.0f);
+          ImGui::BeginChild("##s_cr", ImVec2(col_w, 0.0f), ImGuiChildFlags_None);
           // sect h2 时长对齐
-          ImGui::TextDisabled("Timing");
-          ImGui::Dummy(ImVec2(0.0f, 2.0f));
+          settingsSect("TIMING");
           settingCard("##s_offset", "Global sync offset",
-                      "+ leads / - lags; previewed live", 108.0f, [&] {
+                      "+ leads / - lags", 96.0f, 24.0f, [&] {
                         int ms = st_.subtitle_offset_ms;
                         if (settingsStepper("##s_offset_step", &ms, 100, -5000, 5000,
                                             "%d ms")) {
@@ -2627,105 +2993,144 @@ class PlayerHud {
                           }
                         }
                       });
-          settingCard("##s_style", "Render style",
-                      "Plain text first; ass effects degrade as needed", 120.0f,
-                      [&] {
-                        ImGui::BeginDisabled(true);
-                        ImGui::SetNextItemWidth(120.0f);
-                        int style = 0;
-                        ImGui::Combo("##s_style_combo", &style, "Plain text");
-                        ImGui::EndDisabled();
-                      });
+          settingCard(
+              "##s_style", "Render style",
+              "Plain text first", 120.0f, 26.0f,
+              [&] { settingsSelectBox("##s_style_sel", "Plain text", 120.0f, true); });
           ImGui::Dummy(ImVec2(0.0f, 6.0f));
           // sect h2 获取
-          ImGui::TextDisabled("Fetch");
-          ImGui::Dummy(ImVec2(0.0f, 2.0f));
-          settingCard("##s_dir", "External subtitle directory",
-                      "Scans .srt / .ass / .vtt by name", 120.0f, [&] {
-                        ImGui::BeginDisabled(true);
-                        ImGui::SetNextItemWidth(120.0f);
-                        char dir[64] = "~/.local/share/soar/subtitles";
-                        ImGui::InputText("##s_dir_input", dir, sizeof(dir),
-                                         ImGuiInputTextFlags_ReadOnly);
-                        ImGui::EndDisabled();
+          settingsSect("FETCH");
+          settingCard("##s_dir", "Subtitle directory",
+                      "Scans .srt/.ass/.vtt", 150.0f, 26.0f, [&] {
+                        settingsTextInput("~/.local/share/soar/subtitles", 150.0f);
                       });
-          settingCard("##s_auto", "Auto download",
-                      "Matched by edition + language; silent when nothing fits",
-                      34.0f, [&] {
-                        bool on = false;
-                        ImGui::BeginDisabled(true);
-                        settingsSwitch("##s_auto_sw", &on);
-                        ImGui::EndDisabled();
-                      });
-          ImGui::Dummy(ImVec2(0.0f, 6.0f));
-          // sect h2 端点
-          ImGui::TextDisabled("Endpoints (defaults stay empty)");
-          ImGui::Dummy(ImVec2(0.0f, 2.0f));
+          settingCard(
+              "##s_auto", "Auto download",
+              "Matched by hash + name", 34.0f, 20.0f,
+              [&] {
+                if (settingsSwitch("##s_auto_sw", &st_.subtitle_autodl)) {
+                  configureHttpSubtitles(st_.subtitle_autodl);
+                }
+              });
+          ImGui::EndChild();
+          ImGui::EndChild();
+          // sect h2 端点 — full width below the grid
+          ImGui::Dummy(ImVec2(0.0f, 8.0f));
+          settingsSect("ENDPOINTS");
           endpointRow("##ep_download", "Download",
                       "Not configured - no automatic subtitle fetch", nowMs());
           endpointRow("##ep_translate", "Translate",
                       "Not configured - no translated track", nowMs());
+          ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
+          ImGui::TextUnformatted(
+              "Translate endpoint is optional: offline beats overreach; keys stay local");
+          ImGui::PopStyleColor();
           break;
         }
         case SettingsTab::Network: {
-          ImGui::TextDisabled("Local first (the default has no dependencies)");
-          ImGui::Dummy(ImVec2(0.0f, 2.0f));
+          // sect h2 本地优先（默认态，无任何外部依赖）
+          settingsSect("LOCAL FIRST (THE DEFAULT HAS NO DEPENDENCIES)");
           settingCard("##n_trackers", "P2P / DHT trackers",
-                      "Empty = local files and direct URLs only", 108.0f, [&] {
-                        int trackers = 0;
-                        ImGui::BeginDisabled(true);
-                        settingsStepper("##n_tracker_step", &trackers, 1, 0, 64,
-                                        "%d");
-                        ImGui::EndDisabled();
+                      "Empty = local files and direct URLs only", 150.0f, 24.0f,
+                      [&] {
+                        settingsPill("0 trackers", theme::kNet);
+                        ImGui::SameLine(0.0f, 8.0f);
+                        if (dangerButton("Add##n_add", ImVec2(44.0f, 24.0f))) {
+                          st_.toast.show("No tracker list yet", nowMs());
+                        }
                       });
           settingCard("##n_port", "Inbound port",
-                      "Default 0 = random high port", 108.0f, [&] {
+                      "Default 0 = random high port", 96.0f, 24.0f, [&] {
                         int port = 0;
                         ImGui::BeginDisabled(true);
                         settingsStepper("##n_port_step", &port, 1, 0, 65535, "%d");
                         ImGui::EndDisabled();
                       });
-          ImGui::Dummy(ImVec2(0.0f, 6.0f));
-          ImGui::TextDisabled("Endpoints (nothing calls out by default)");
-          ImGui::Dummy(ImVec2(0.0f, 2.0f));
+          ImGui::Dummy(ImVec2(0.0f, 8.0f));
+          settingsSect("ENDPOINTS (NOTHING CALLS OUT BY DEFAULT)");
           endpointRow("##n_ep_sub", "Subtitles", "Not configured - no subtitle fetch",
                       nowMs());
           endpointRow("##n_ep_translate", "Translate", "Not configured - no translated track",
                       nowMs());
           endpointRow("##n_ep_stats", "Stats", "Not configured - no telemetry, all local",
                       nowMs());
+          // The green zero-external summary row (border/face tinted with
+          // ok, the title in the ok ink, an ok pill on the right).
+          ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kPanelRounding);
+          ImGui::PushStyleColor(
+              ImGuiCol_ChildBg,
+              ImGui::ColorConvertFloat4ToU32(ImVec4(
+                  theme::kOk.x, theme::kOk.y, theme::kOk.z, 0.06f)));
+          ImGui::PushStyleColor(
+              ImGuiCol_Border,
+              ImGui::ColorConvertFloat4ToU32(ImVec4(
+                  theme::kOk.x, theme::kOk.y, theme::kOk.z, 0.35f)));
+          if (ImGui::BeginChild("##n_zero", ImVec2(-1.0f, 52.0f),
+                                ImGuiChildFlags_Borders,
+                                ImGuiWindowFlags_NoScrollbar |
+                                    ImGuiWindowFlags_NoScrollWithMouse)) {
+            ImGui::SetCursorPos(ImVec2(12.0f, 8.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::kOk);
+            ImGui::TextUnformatted("* Currently zero-external");
+            ImGui::PopStyleColor();
+            ImGui::SetCursorPos(ImVec2(12.0f, 28.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
+            ImGui::TextUnformatted(
+                "The only network is the URL you opened; no background requests");
+            ImGui::PopStyleColor();
+            ImGui::SetCursorPos(
+                ImVec2(ImGui::GetContentRegionAvail().x - 10.0f -
+                           ImGui::CalcTextSize("Offline capable").x - 16.0f,
+                       (52.0f - ImGui::CalcTextSize("Offline capable").y - 6.0f) *
+                           0.5f));
+            settingsPill("Offline capable", theme::kOk);
+          }
+          ImGui::EndChild();
+          ImGui::PopStyleColor(2);
+          ImGui::PopStyleVar();
           break;
         }
         case SettingsTab::About: {
-          // The prototype's .about block: mark, name, version, description.
+          // The prototype's .about block: centered mark, name, version,
+          // description, then the version rows. All positions derive from
+          // the column's own origin so the block stays centred on any
+          // window size.
           ImDrawList* dl = ImGui::GetWindowDrawList();
-          const ImVec2 c(avail * 0.5f, 90.0f);
-          const ImU32 acc = ImGui::ColorConvertFloat4ToU32(theme::kAccent);
-          const ImU32 accHi = ImGui::ColorConvertFloat4ToU32(theme::kAccentHover);
-          dl->AddRectFilledMultiColor(ImVec2(c.x - 28.0f, 62.0f),
-                                      ImVec2(c.x + 28.0f, 118.0f), acc, accHi,
-                                      accHi, acc);
-          dl->AddTriangleFilled(
-              ImVec2(c.x - 9.0f, 74.0f), ImVec2(c.x - 9.0f, 106.0f),
-              ImVec2(c.x + 10.0f, 90.0f),
-              ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent));
+          const float cw = ImGui::GetContentRegionAvail().x;
+          const ImVec2 sp = ImGui::GetCursorScreenPos();
+          const float cx = sp.x + cw * 0.5f;
+          const float top = sp.y + 20.0f;
+          // .about .logo: 56px rounded gradient mark with the "S" initial.
+          drawGradientMark(dl, ImVec2(cx - 28.0f, top), 56.0f, 16.0f,
+                           ImGui::ColorConvertFloat4ToU32(theme::kPageBg));
           const ImVec2 ns = ImGui::CalcTextSize("soar");
-          dl->AddText(ImVec2(c.x - ns.x * 0.5f, 128.0f),
+          dl->AddText(ImVec2(cx - ns.x * 0.5f, top + 66.0f),
                       ImGui::ColorConvertFloat4ToU32(theme::kText), "soar");
           const std::string ver = std::string("v") + SOAR_APP_VERSION;
           const ImVec2 vs = ImGui::CalcTextSize(ver.c_str());
-          dl->AddText(ImVec2(c.x - vs.x * 0.5f, 152.0f),
-                      ImGui::ColorConvertFloat4ToU32(theme::kTextMuted),
-                      ver.c_str());
-          ImGui::Dummy(ImVec2(0.0f, 180.0f));
-          settingCard(
-              "##about_version", "Version", ver.c_str(), 0.0f, [] {});
+          dl->AddText(ImVec2(cx - vs.x * 0.5f, top + 90.0f),
+                      ImGui::ColorConvertFloat4ToU32(theme::kText3), ver.c_str());
+          const char* d1 = "Universal media player on FFmpeg + SDL2.";
+          const char* d2 = "Local first; nothing dials out unconfigured.";
+          const ImVec2 s1 = ImGui::CalcTextSize(d1);
+          const ImVec2 s2 = ImGui::CalcTextSize(d2);
+          dl->AddText(ImVec2(cx - s1.x * 0.5f, top + 116.0f),
+                      ImGui::ColorConvertFloat4ToU32(theme::kText3), d1);
+          dl->AddText(ImVec2(cx - s2.x * 0.5f, top + 136.0f),
+                      ImGui::ColorConvertFloat4ToU32(theme::kText3), d2);
+          ImGui::SetCursorScreenPos(ImVec2(sp.x, top + 170.0f));
+          versionRow("##about_version", "Version", ver.c_str());
+          versionRow("##about_backend", "Backend", "FFmpeg + SDL2 (libass / libtorrent)");
+          versionRow("##about_ui", "Interface", "Dear ImGui + SDL2 renderer");
           break;
         }
       }
-      ImGui::EndChild();
+      ImGui::EndChild();  // ##set_scroll
+      ImGui::PopStyleVar();
+      ImGui::EndChild();  // ##set_main
     }
     ImGui::End();
+    ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(2);
     if (!open) st_.overlay = Overlay::None;
   }
@@ -4946,6 +5351,15 @@ class PlayerHud {
     SettingsTab settings_tab = SettingsTab::General;
     // The MRU cap the settings stepper edits (RecentStore::kMaxEntries default).
     int recent_cap = 15;
+    // Settings page Subtitles tab (proto settings.html): the two live
+    // fetch behaviours. autoshow turns the first selected track visible
+    // without a V press; autodl gates the remote download provider (an
+    // off switch reconfigures it offline — the zero-network default).
+    bool subtitle_autoshow = true;
+    bool subtitle_autodl = true;
+    // The previous frame's selected subtitle id: the -1 -> >=0 edge is
+    // the autoshow trigger (a track got selected by any path).
+    int prev_selected_subtitle = -1;
   };
 
   static constexpr milliseconds kProgressInterval{5000};
@@ -5044,6 +5458,9 @@ class PlayerHud {
   // stays offline. The catalog is searched once per media item and cached,
   // and downloaded titles are remembered so the menu stops offering them.
   ExternalSubtitleProvider external_;
+  // The env-derived download config, kept so the settings page's "Auto
+  // download" switch can re-apply (or blank) it at runtime.
+  soar::HttpSubtitleConfig subtitle_env_cfg_;
   std::string searched_uri_;
   std::vector<SubtitleCandidate> remote_candidates_;
   bool remote_searched_ = false;
