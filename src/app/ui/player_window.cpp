@@ -4606,139 +4606,637 @@ class PlayerHud {
   // two clicks: the first arms it, the second (inside the arm window)
   // executes — one click at one button's width away from a destroyed
   // queue is too little intent for a store with no undo.
+  // The full-page playlist (docs/public/prototypes/playlist.html): a 74px
+  // icon rail (logo + the four page links) over the queue column — the head
+  // (title/count/note pill/Loop segmented/Shuffle/Add/Clear), the rows, and
+  // the now-playing bar pinned to the bottom. The prototype's per-row
+  // duration and resolution/size meta need per-entry probing the queue
+  // store does not track, so rows carry the format (extension) only and no
+  // duration column — documented, not a silent shortfall.
   void drawPlaylistOverlay() {
-    bool open = true;
     const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(560, 340), ImGuiCond_Appearing);
-    if (ImGui::Begin("Playlist", &open, ImGuiWindowFlags_NoSavedSettings)) {
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowSize(io.DisplaySize);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kPageBg);
+    ImGui::Begin("##pl_page", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoSavedSettings);
+    {
       // The arm expires: a user who armed it and walked away must not
       // destroy the queue with their next visit's stray click.
       if (playlist_clear_armed_ &&
           nowMs() - playlist_clear_armed_at_ > std::chrono::seconds(4)) {
         playlist_clear_armed_ = false;
       }
-      if (ImGui::SmallButton("Add files...")) {
-        openDirPickerFiles();
+
+      // Left icon rail (.rail, 74px, --bg0, border-right).
+      ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
+      ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kNavBg);
+      ImGui::BeginChild("##pl_rail", ImVec2(74.0f, 0.0f), ImGuiChildFlags_None);
+      {
+        // The rail's logo (.rail .wing, 30x30, rounded 9).
+        ImGui::SetCursorPos(ImVec2(22.0f, 14.0f));
+        drawGradientMark(ImGui::GetWindowDrawList(),
+                         ImGui::GetCursorScreenPos(), 30.0f, 9.0f,
+                         ImGui::ColorConvertFloat4ToU32(theme::kNavBg));
+        ImGui::Dummy(ImVec2(30.0f, 30.0f));
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12.0f);
+        // The four page links; the playlist link is the active one. A click
+        // switches the overlay — the prototype's rail is the page navigator.
+        if (railButton("##pl_nav_main", RailIcon::Main, false))
+          st_.overlay = Overlay::None;
+        if (railButton("##pl_nav_playlist", RailIcon::Playlist, true))
+          st_.overlay = Overlay::Playlist;
+        if (railButton("##pl_nav_library", RailIcon::Library, false))
+          st_.overlay = Overlay::Library;
+        if (railButton("##pl_nav_settings", RailIcon::Settings, false))
+          st_.overlay = Overlay::Settings;
+        // .rail border-right: the hairline splitting rail from the queue.
+        const ImVec2 rp = ImGui::GetWindowPos();
+        const float rh = ImGui::GetWindowHeight();
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(rp.x + 73.5f, rp.y), ImVec2(rp.x + 73.5f, rp.y + rh),
+            ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
       }
+      ImGui::EndChild();
+      ImGui::PopStyleColor();
+      ImGui::PopStyleVar();
       ImGui::SameLine();
-      if (ImGui::SmallButton("Open folder...")) {
-        openDirPicker();
-      }
-      ImGui::SameLine();
-      const char* loop_label = playlist_.loop() == PlaylistStore::Loop::Off
-                                   ? "Loop: off"
-                                   : playlist_.loop() == PlaylistStore::Loop::All
-                                       ? "Loop: all"
-                                       : "Loop: one";
-      if (ImGui::SmallButton(loop_label)) {
-        playlist_.cycleLoop();
-      }
-      ImGui::SameLine();
-      if (ImGui::SmallButton(playlist_.shuffle() ? "Shuffle: on"
-                                                 : "Shuffle: off")) {
-        playlist_.setShuffle(!playlist_.shuffle());
-      }
-      ImGui::SameLine();
-      ImGui::BeginDisabled(playlist_.empty());
-      if (ImGui::SmallButton(playlist_clear_armed_ ? "Clear: sure?"
-                                                   : "Clear queue")) {
-        if (playlist_clear_armed_) {
-          playlist_.clear();
-          playlist_clear_armed_ = false;
-          st_.toast.show("Playlist cleared", nowMs());
-        } else {
-          playlist_clear_armed_ = true;
-          playlist_clear_armed_at_ = nowMs();
-        }
-      }
-      ImGui::EndDisabled();
-      ImGui::Separator();
-      if (playlist_.empty()) {
-        ImGui::TextDisabled("%s", "Playlist is empty — opened files queue here.");
-      }
-      // Snapshot before iterating: a pick or a remove rewrites the store's
-      // vectors, and iterating the very vectors those calls mutate leaves
-      // the loop's index dangling (the Recent overlay learned this first).
-      const std::vector<std::string> entries = playlist_.entries();
-      const std::vector<DirGroup> groups = groupByDirectory(entries);
-      // V7b: the focus face indexes every queue entry exactly once (tree
-      // leaves included), so the cycle covers the same rows a mouse sees.
-      playlist_rows_ = static_cast<int>(entries.size());
-      if (groups.size() > 1) {
-        // Folder tree (v0.2.1): one node per parent directory, first
-        // occurrence order, expanded on first sight (Cond_Once — the user
-        // can collapse nodes and the choice sticks for the session). A
-        // node title shows the folder name with its queue count; the full
-        // path is the tooltip. "Play group" starts at the group's first
-        // queue entry, which walks the rest of the group in order.
-        for (std::size_t g = 0; g < groups.size(); ++g) {
-          const DirGroup& group = groups[g];
-          ImGui::PushID(static_cast<int>(g));
-          const std::string title =
-              (group.directory.empty() ? std::string("Other sources")
-                                       : baseName(group.directory)) +
-              "  (" + std::to_string(group.indices.size()) + ")";
-          ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-          const bool opened = ImGui::TreeNode(title.c_str());
-          if (ImGui::IsItemHovered() && !group.directory.empty()) {
-            ImGui::SetTooltip("%s", group.directory.c_str());
-          }
-          if (opened) {
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Play group")) {
-              openPlaylistEntry(group.indices[0], nowMs());
+
+      // Main: the head over the queue over the now-playing bar.
+      ImGui::BeginChild("##pl_main", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
+      {
+        drawPlaylistHead();
+        const std::vector<std::string> entries = playlist_.entries();
+        const std::vector<DirGroup> groups = groupByDirectory(entries);
+        playlist_rows_ = static_cast<int>(entries.size());
+        // The queue child leaves the now-bar's 62px at the bottom.
+        const float now_h = 62.0f;
+        ImGui::BeginChild("##pl_qlist", ImVec2(0.0f, -now_h),
+                          ImGuiChildFlags_None);
+        {
+          ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
+          if (playlist_.empty()) {
+            ImGui::TextDisabled("%s",
+                                "Playlist is empty — opened files queue here.");
+          } else if (groups.size() > 1) {
+            // Folder tree (v0.2.1): one node per parent directory, first
+            // occurrence order. "Play group" starts at the group's first
+            // queue entry, which walks the rest in order.
+            for (std::size_t g = 0; g < groups.size(); ++g) {
+              const DirGroup& group = groups[g];
+              ImGui::PushID(static_cast<int>(g));
+              const std::string title =
+                  (group.directory.empty() ? std::string("Other sources")
+                                           : baseName(group.directory)) +
+                  "  (" + std::to_string(group.indices.size()) + ")";
+              ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+              const bool opened = ImGui::TreeNode(title.c_str());
+              if (ImGui::IsItemHovered() && !group.directory.empty()) {
+                ImGui::SetTooltip("%s", group.directory.c_str());
+              }
+              if (opened) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Play group")) {
+                  openPlaylistEntry(group.indices[0], nowMs());
+                }
+                for (const std::size_t idx : group.indices) {
+                  drawPlaylistRow(entries, idx);
+                }
+                ImGui::TreePop();
+              }
+              ImGui::PopID();
             }
-            for (const std::size_t idx : group.indices) {
-              drawPlaylistRow(entries, idx);
+          } else {
+            // Zero or one folder: keep the flat list (no tree node between
+            // the user and the entries). This is the prototype's form.
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+              drawPlaylistRow(entries, i);
             }
-            ImGui::TreePop();
           }
-          ImGui::PopID();
         }
-      } else {
-        // Zero or one folder: a tree node would only add a click between
-        // the user and the single run of entries, so keep the flat list.
-        for (std::size_t i = 0; i < entries.size(); ++i) {
-          drawPlaylistRow(entries, i);
-        }
+        ImGui::EndChild();
+        drawPlaylistNowBar();
       }
+      ImGui::EndChild();
     }
     ImGui::End();
-    if (!open) st_.overlay = Overlay::None;
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(4);
   }
 
-  // One queue row: current marker, display name, full-source tooltip, and
-  // the trailing remove button. A row click jumps to the entry (the
-  // overlay stays open so the list can be stepped through).
-  void drawPlaylistRow(const std::vector<std::string>& entries, std::size_t i) {
-    std::string label = i == playlist_.current() ? "> " : "   ";
-    label += displayName(entries[i]);
-    // AllowOverlap: the Selectable fills the row width and would otherwise
-    // hold the hover over the SameLine "x" button, whose clicks would never
-    // land (hover goes to the first claimant).
-    // Enter replays on the focused row (V7b); the ring reads the row's
-    // rect before the tooltip can steal the last-item pointer.
-    const bool enter = ui_focus_.takesActivation(
-        UiFocus::Face::PlaylistRows, static_cast<int>(i));
-    if (ImGui::Selectable(label.c_str(), i == playlist_.current(),
-                          ImGuiSelectableFlags_AllowOverlap) ||
-        enter) {
-      openPlaylistEntry(i, nowMs());
+  // The rail's page links (playlist.html .rail a): a 44x44 rounded-12 face,
+  // --accent-soft when active, --bg3 on hover, 20px line icon centered.
+  enum class RailIcon { Main, Playlist, Library, Settings };
+  bool railButton(const char* id, RailIcon icon, bool active) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGui::SetCursorPosX(15.0f);  // (74 - 44) / 2
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(44.0f, 44.0f));
+    const bool hovered = ImGui::IsItemHovered();
+    if (active) {
+      ImVec4 a = theme::kAccent;
+      a.w = 0.14f;  // --accent-soft
+      dl->AddRectFilled(p, ImVec2(p.x + 44.0f, p.y + 44.0f),
+                        ImGui::ColorConvertFloat4ToU32(a), 12.0f);
+    } else if (hovered) {
+      dl->AddRectFilled(p, ImVec2(p.x + 44.0f, p.y + 44.0f),
+                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBg),
+                        12.0f);
     }
-    if (ui_focus_.holds(UiFocus::Face::PlaylistRows, static_cast<int>(i))) {
-      drawFocusRing();
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", entries[i].c_str());
-    ImGui::SameLine();
-    ImGui::PushID(static_cast<int>(i));
-    if (ImGui::SmallButton("x")) {
-      if (playlist_.remove(i)) {
-        st_.toast.show("Removed " + displayName(entries[i]), nowMs());
+    const ImU32 fg = ImGui::ColorConvertFloat4ToU32(
+        active ? theme::kAccentHi
+               : (hovered ? theme::kText2 : theme::kText3));
+    drawRailIcon(dl, ImVec2(p.x + 22.0f, p.y + 22.0f), icon, fg);
+    return clicked;
+  }
+
+  void drawRailIcon(ImDrawList* dl, const ImVec2& c, RailIcon icon, ImU32 col) {
+    const float th = 1.6f;
+    switch (icon) {
+      case RailIcon::Main: {  // window: rounded rect + title line
+        dl->AddRect(ImVec2(c.x - 9.0f, c.y - 7.0f),
+                    ImVec2(c.x + 9.0f, c.y + 7.0f), col, 2.0f, 0, th);
+        dl->AddLine(ImVec2(c.x - 9.0f, c.y - 3.0f),
+                    ImVec2(c.x + 9.0f, c.y - 3.0f), col, th);
+        break;
+      }
+      case RailIcon::Playlist: {  // three lines + play triangle at right
+        dl->AddLine(ImVec2(c.x - 9.0f, c.y - 5.0f),
+                    ImVec2(c.x + 1.0f, c.y - 5.0f), col, th);
+        dl->AddLine(ImVec2(c.x - 9.0f, c.y),
+                    ImVec2(c.x + 1.0f, c.y), col, th);
+        dl->AddLine(ImVec2(c.x - 9.0f, c.y + 5.0f),
+                    ImVec2(c.x + 1.0f, c.y + 5.0f), col, th);
+        dl->AddTriangleFilled(ImVec2(c.x + 3.0f, c.y - 3.5f),
+                              ImVec2(c.x + 3.0f, c.y + 3.5f),
+                              ImVec2(c.x + 9.0f, c.y), col);
+        break;
+      }
+      case RailIcon::Library: {  // hexagon
+        const ImVec2 pts[6] = {
+            {c.x, c.y - 7.0f},     {c.x + 6.1f, c.y - 3.5f},
+            {c.x + 6.1f, c.y + 3.5f}, {c.x, c.y + 7.0f},
+            {c.x - 6.1f, c.y + 3.5f}, {c.x - 6.1f, c.y - 3.5f}};
+        dl->PathLineTo(pts[0]);
+        for (int i = 1; i < 6; ++i) dl->PathLineTo(pts[i]);
+        dl->PathStroke(col, 0, th);
+        break;
+      }
+      case RailIcon::Settings: {  // gear: circle + 8 spokes
+        dl->AddCircle(c, 3.4f, col, 0, th);
+        for (int k = 0; k < 8; ++k) {
+          const float a = k * 0.785398f;  // pi/4
+          dl->AddLine(ImVec2(c.x + 6.2f * std::cos(a), c.y + 6.2f * std::sin(a)),
+                      ImVec2(c.x + 9.0f * std::cos(a), c.y + 9.0f * std::sin(a)),
+                      col, th);
+        }
+        break;
       }
     }
-    ImGui::PopID();
+  }
+
+  // The head (playlist.html .head): title, count, the note pill, a spacer,
+  // then the Loop segmented / Shuffle / Add files / Clear cluster.
+  void drawPlaylistHead() {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGui::SetCursorPos(ImVec2(20.0f, 14.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText);
+    ImGui::TextUnformatted("Playlist");
+    ImGui::PopStyleColor();
+    const std::string count = std::to_string(playlist_.size()) + " items";
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
+    ImGui::TextUnformatted(count.c_str());
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    drawHeadPill("Auto-advance, queue end stops at Ended");
+    // Right cluster: Loop segmented + Shuffle + Add files + Clear. The
+    // prototype's .head has them clustered right; the offset reserves the
+    // measured cluster width so the Add/Clear land at the 20px edge.
+    ImGui::SameLine(ImGui::GetWindowWidth() - 20.0f - 335.0f);
+    loopSegmented();
+    ImGui::SameLine();
+    if (shuffleButton()) {
+      playlist_.setShuffle(!playlist_.shuffle());
+    }
+    ImGui::SameLine();
+    if (drawHeadBtn("##pl_add", "Add files O")) {
+      openDirPickerFiles();
+    }
+    ImGui::SameLine();
+    if (drawHeadBtn("##pl_clear",
+                    playlist_clear_armed_ ? "Clear: sure?" : "Clear")) {
+      if (playlist_clear_armed_) {
+        playlist_.clear();
+        playlist_clear_armed_ = false;
+        st_.toast.show("Playlist cleared", nowMs());
+      } else {
+        playlist_clear_armed_ = true;
+        playlist_clear_armed_at_ = nowMs();
+      }
+    }
+    // The head's bottom hairline (14 + 30 + 10 = 54px strip).
+    const ImVec2 hp = ImGui::GetWindowPos();
+    dl->AddLine(ImVec2(hp.x, hp.y + 54.0f),
+                ImVec2(hp.x + ImGui::GetWindowWidth(), hp.y + 54.0f),
+                ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
+  }
+
+  // The .head note pill (.pill, h22, rounded 999, --bg3, --line border).
+  void drawHeadPill(const char* text) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 ts = ImGui::CalcTextSize(text);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float h = 22.0f;
+    const float w = ts.x + 18.0f;
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h),
+                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 99.0f);
+    dl->AddRect(p, ImVec2(p.x + w, p.y + h),
+                ImGui::ColorConvertFloat4ToU32(theme::kCardLine), 99.0f, 0,
+                1.0f);
+    dl->AddText(ImVec2(p.x + 9.0f, p.y + (h - ts.y) * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(theme::kText2), text);
+    ImGui::Dummy(ImVec2(w, h));
+  }
+
+  // A .head .btn (h30, rounded 7, --bg3 face, --line border). Returns a click.
+  bool drawHeadBtn(const char* id, const char* label) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float h = 30.0f;
+    const float w = ts.x + 24.0f;
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+    const bool hovered = ImGui::IsItemHovered();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h),
+                      ImGui::ColorConvertFloat4ToU32(
+                          hovered ? theme::kFieldBgHi : theme::kFieldBg),
+                      7.0f);
+    dl->AddRect(p, ImVec2(p.x + w, p.y + h),
+                ImGui::ColorConvertFloat4ToU32(theme::kCardLine), 7.0f, 0,
+                1.0f);
+    dl->AddText(ImVec2(p.x + 12.0f, p.y + (h - ts.y) * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(theme::kText), label);
+    return clicked;
+  }
+
+  // The .loop three-state segmented (playlist.html .head .loop): Off / All /
+  // One on a 999-pill container, the active state an accent pill.
+  void loopSegmented() {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    static const char* const kLabels[3] = {"Off", "All", "One"};
+    const PlaylistStore::Loop kModes[3] = {PlaylistStore::Loop::Off,
+                                           PlaylistStore::Loop::All,
+                                           PlaylistStore::Loop::One};
+    const float seg_h = 22.0f;
+    float widths[3] = {0, 0, 0};
+    float total = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+      widths[i] = ImGui::CalcTextSize(kLabels[i]).x + 20.0f;
+      total += widths[i];
+    }
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const ImVec2 cpos(p.x - 2.0f, p.y - 2.0f);
+    dl->AddRectFilled(cpos, ImVec2(cpos.x + total + 8.0f, cpos.y + seg_h + 4.0f),
+                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 99.0f);
+    dl->AddRect(cpos, ImVec2(cpos.x + total + 8.0f, cpos.y + seg_h + 4.0f),
+                ImGui::ColorConvertFloat4ToU32(theme::kCardLine), 99.0f, 0,
+                1.0f);
+    float x = p.x;
+    for (int i = 0; i < 3; ++i) {
+      const bool on = playlist_.loop() == kModes[i];
+      const ImVec2 bp(x, p.y);
+      ImGui::SetCursorScreenPos(bp);
+      const bool clicked =
+          ImGui::InvisibleButton(("##pl_loop" + std::to_string(i)).c_str(),
+                                 ImVec2(widths[i], seg_h));
+      const bool hovered = ImGui::IsItemHovered();
+      if (on) {
+        dl->AddRectFilled(bp, ImVec2(bp.x + widths[i], bp.y + seg_h),
+                          ImGui::ColorConvertFloat4ToU32(theme::kAccent),
+                          99.0f);
+      }
+      const ImVec2 lts = ImGui::CalcTextSize(kLabels[i]);
+      const ImU32 ink = ImGui::ColorConvertFloat4ToU32(
+          on ? theme::kInkOnAccent
+             : (hovered ? theme::kText2 : theme::kText3));
+      dl->AddText(ImVec2(bp.x + (widths[i] - lts.x) * 0.5f,
+                         bp.y + (seg_h - lts.y) * 0.5f),
+                  ink, kLabels[i]);
+      if (clicked) playlist_.setLoop(kModes[i]);
+      x += widths[i];
+    }
+    ImGui::SetCursorScreenPos(ImVec2(p.x + total, p.y + seg_h));
+  }
+
+  // The Shuffle toggle (the prototype's .seg icon, accent when on).
+  bool shuffleButton() {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton("##pl_shuffle",
+                                                ImVec2(26.0f, 26.0f));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool on = playlist_.shuffle();
+    const ImU32 ink = ImGui::ColorConvertFloat4ToU32(
+        on ? theme::kAccentHi : (hovered ? theme::kText2 : theme::kText3));
+    const float th = 1.6f;
+    // Two crossing paths + two arrowheads (the prototype's shuffle glyph).
+    dl->AddLine(ImVec2(p.x + 3.0f, p.y + 6.5f), ImVec2(p.x + 8.0f, p.y + 6.5f),
+                ink, th);
+    dl->AddLine(ImVec2(p.x + 3.0f, p.y + 19.5f), ImVec2(p.x + 8.0f, p.y + 19.5f),
+                ink, th);
+    dl->AddLine(ImVec2(p.x + 12.0f, p.y + 9.5f), ImVec2(p.x + 17.0f, p.y + 14.0f),
+                ink, th);
+    dl->AddLine(ImVec2(p.x + 12.0f, p.y + 16.5f), ImVec2(p.x + 17.0f, p.y + 12.0f),
+                ink, th);
+    dl->AddTriangleFilled(ImVec2(p.x + 6.0f, p.y + 4.5f),
+                          ImVec2(p.x + 6.0f, p.y + 8.5f),
+                          ImVec2(p.x + 2.5f, p.y + 6.5f), ink);
+    dl->AddTriangleFilled(ImVec2(p.x + 6.0f, p.y + 17.5f),
+                          ImVec2(p.x + 6.0f, p.y + 21.5f),
+                          ImVec2(p.x + 2.5f, p.y + 19.5f), ink);
+    dl->AddTriangleFilled(ImVec2(p.x + 19.0f, p.y + 9.0f),
+                          ImVec2(p.x + 19.0f, p.y + 17.0f),
+                          ImVec2(p.x + 23.0f, p.y + 13.0f), ink);
+    return clicked;
+  }
+
+  // One queue row (playlist.html .row): the index (or an EQ for the current
+  // entry), a 72x40 gradient thumb, the title + format meta, and the
+  // hover-revealed next-play / remove actions. A row click jumps to the
+  // entry (the overlay stays open so the list can be stepped through).
+  void drawPlaylistRow(const std::vector<std::string>& entries, std::size_t i) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const bool now = i == playlist_.current();
+    const std::string name = displayName(entries[i]);
+    const float row_h = 52.0f;
+    const float row_w = ImGui::GetWindowWidth() - 24.0f;
+    ImGui::SetCursorPosX(12.0f);
+    const float row_top = ImGui::GetCursorPosY();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    // The rightmost 70px is the action zone (next-play + remove, revealed
+    // on hover): it is not part of the jump button, so a click aimed at an
+    // action can never fall through to the row's jump (hover-claim order
+    // would give the row the press — measured on 1.91.9b, the later
+    // overlapping button loses the click even with AllowOverlap).
+    const float jump_w = row_w - 70.0f;
+    const bool row_clicked =
+        ImGui::InvisibleButton(("##plrow_" + std::to_string(i)).c_str(),
+                               ImVec2(jump_w, row_h));
+    const bool hovered =
+        ImGui::IsMouseHoveringRect(p, ImVec2(p.x + row_w, p.y + row_h));
+    if (now) {
+      dl->AddRectFilled(p, ImVec2(p.x + row_w, p.y + row_h),
+                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBg),
+                        10.0f);
+      ImVec4 b = theme::kAccent;
+      b.w = 0.28f;
+      dl->AddRect(p, ImVec2(p.x + row_w, p.y + row_h),
+                  ImGui::ColorConvertFloat4ToU32(b), 10.0f, 0, 1.0f);
+    } else if (hovered) {
+      dl->AddRectFilled(p, ImVec2(p.x + row_w, p.y + row_h),
+                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBg),
+                        10.0f);
+    }
+    if (row_clicked) openPlaylistEntry(i, nowMs());
+    // Index (or EQ bars on the current entry).
+    if (now) {
+      const float cx = p.x + 22.0f;
+      const float cy = p.y + row_h * 0.5f;
+      const float t = static_cast<float>(ImGui::GetTime());
+      const float hh[3] = {6.0f, 12.0f, 8.0f};
+      for (int k = 0; k < 3; ++k) {
+        const float ph =
+            hh[k] * (0.6f + 0.4f * std::sin(t * 5.0f + k * 1.3f));
+        dl->AddRectFilled(
+            ImVec2(cx - 6.0f + k * 4.5f, cy - ph * 0.5f),
+            ImVec2(cx - 6.0f + k * 4.5f + 2.5f, cy + ph * 0.5f),
+            ImGui::ColorConvertFloat4ToU32(theme::kAccent), 1.0f);
+      }
+    } else {
+      char idx[4];
+      std::snprintf(idx, sizeof(idx), "%02zu", i + 1);
+      const ImVec2 is = ImGui::CalcTextSize(idx);
+      dl->AddText(ImVec2(p.x + 22.0f - is.x, p.y + (row_h - is.y) * 0.5f),
+                  ImGui::ColorConvertFloat4ToU32(theme::kText4), idx);
+    }
+    // Thumb (72x40, rounded 6, the poster's dark gradient + cool radial).
+    const float ty = p.y + (row_h - 40.0f) * 0.5f;
+    const ImVec2 tp(p.x + 40.0f, ty);
+    const float th = 40.0f;
+    dl->AddRectFilled(tp, ImVec2(tp.x + 72.0f, tp.y + th),
+                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 6.0f);
+    dl->AddRectFilledMultiColor(tp, ImVec2(tp.x + 72.0f, tp.y + th),
+                                IM_COL32(13, 15, 18, 0xFF),   // TL
+                                IM_COL32(19, 24, 33, 0xFF),   // TR
+                                IM_COL32(14, 16, 19, 0xFF),   // BL
+                                IM_COL32(19, 22, 27, 0xFF));  // BR
+    dl->PushClipRect(tp, ImVec2(tp.x + 72.0f, tp.y + th), true);
+    dl->AddEllipseFilled(ImVec2(tp.x + 50.0f, tp.y + 24.0f),
+                         ImVec2(20.0f, 18.0f),
+                         IM_COL32(108, 177, 255, 16), 0.0f, 32);
+    dl->PopClipRect();
+    // Title + meta (the format/extension; the queue store tracks no
+    // per-entry duration or resolution).
+    const float bx = tp.x + 72.0f + 12.0f;
+    const float bw = row_w - (bx - p.x) - 70.0f;  // room for the actions
+    const ImVec2 ts = ImGui::CalcTextSize(name.c_str());
+    dl->AddText(ImVec2(bx, ty + 4.0f),
+                ImGui::ColorConvertFloat4ToU32(theme::kText),
+                ellipsize(name, bw).c_str());
+    const std::string meta = rowMeta(entries[i]);
+    dl->AddText(ImVec2(bx, ty + 4.0f + ts.y + 1.0f),
+                ImGui::ColorConvertFloat4ToU32(theme::kText3), meta.c_str());
+    // Hover actions: next-play + remove (prototype's .row .ra). Only the
+    // hovered row reveals them; the action zone is cut out of the jump
+    // button above, so the buttons own their clicks outright.
+    if (hovered) {
+      const float ax = p.x + row_w - 62.0f;
+      if (rowActionButton(dl, "##pl_next", ImVec2(ax, p.y + row_h * 0.5f - 13.0f),
+                          true)) {
+        const std::size_t ni = playlist_.next();
+        if (ni != PlaylistStore::kNone) openPlaylistEntry(ni, nowMs());
+      }
+      if (rowActionButton(dl, "##pl_rm", ImVec2(ax + 30.0f, p.y + row_h * 0.5f - 13.0f),
+                          false)) {
+        if (playlist_.remove(i)) {
+          st_.toast.show("Removed " + name, nowMs());
+        }
+      }
+    }
+    // The hover-only action buttons sit past the flow cursor's row walk;
+    // pin the next row's start so the pitch stays row_h + spacing whether
+    // or not this row revealed its actions.
+    ImGui::SetCursorPosY(row_top + row_h + ImGui::GetStyle().ItemSpacing.y);
+  }
+
+  // A 26x26 row action button (playlist.html .ra button): next-play (play
+  // glyph) or remove (x glyph), --bg4 on hover.
+  bool rowActionButton(ImDrawList* dl, const char* id, const ImVec2& p,
+                       bool next) {
+    // The hit rect must land on the drawn face: InvisibleButton submits at
+    // the flow cursor, so pin it to p explicitly (the faces draw at
+    // absolute screen coordinates and would otherwise decorate a rect the
+    // clicks never reach).
+    ImGui::SetCursorScreenPos(p);
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(26.0f, 26.0f));
+    const bool hovered = ImGui::IsItemHovered();
+    if (hovered) {
+      dl->AddRectFilled(p, ImVec2(p.x + 26.0f, p.y + 26.0f),
+                        ImGui::ColorConvertFloat4ToU32(theme::kFieldBgHi),
+                        7.0f);
+    }
+    const ImU32 ink = ImGui::ColorConvertFloat4ToU32(
+        hovered ? theme::kText : theme::kText3);
+    const float th = 1.6f;
+    const ImVec2 c(p.x + 13.0f, p.y + 13.0f);
+    if (next) {
+      // Next-play: a bar + play triangle.
+      dl->AddLine(ImVec2(c.x + 5.0f, c.y - 6.0f), ImVec2(c.x + 5.0f, c.y + 6.0f),
+                  ink, th);
+      dl->AddTriangleFilled(ImVec2(c.x - 4.0f, c.y - 5.0f),
+                            ImVec2(c.x - 4.0f, c.y + 5.0f),
+                            ImVec2(c.x + 3.0f, c.y), ink);
+    } else {
+      // Remove: an x.
+      dl->AddLine(ImVec2(c.x - 5.0f, c.y - 5.0f), ImVec2(c.x + 5.0f, c.y + 5.0f),
+                  ink, th);
+      dl->AddLine(ImVec2(c.x + 5.0f, c.y - 5.0f), ImVec2(c.x - 5.0f, c.y + 5.0f),
+                  ink, th);
+    }
+    return clicked;
+  }
+
+  // The bottom now-playing bar (playlist.html .nowbar): thumb, title + meta,
+  // the mini progress rail, the timecode, the volume and the play/pause.
+  void drawPlaylistNowBar() {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 wpos = ImGui::GetWindowPos();
+    const float ww = ImGui::GetWindowWidth();
+    const float h = 62.0f;
+    const float top = ImGui::GetWindowHeight() - h;
+    const ImVec2 bar(wpos.x, wpos.y + top);
+    dl->AddRectFilled(bar, ImVec2(bar.x + ww, bar.y + h),
+                      ImGui::ColorConvertFloat4ToU32(theme::kCardBg));
+    dl->AddLine(bar, ImVec2(bar.x + ww, bar.y),
+                ImGui::ColorConvertFloat4ToU32(theme::kCardLine));
+    // Thumb (64x36).
+    const ImVec2 tp(bar.x + 18.0f, bar.y + (h - 36.0f) * 0.5f);
+    dl->AddRectFilledMultiColor(tp, ImVec2(tp.x + 64.0f, tp.y + 36.0f),
+                                IM_COL32(13, 15, 18, 0xFF),   // TL
+                                IM_COL32(19, 24, 33, 0xFF),   // TR
+                                IM_COL32(14, 16, 19, 0xFF),   // BL
+                                IM_COL32(19, 22, 27, 0xFF));  // BR
+    dl->PushClipRect(tp, ImVec2(tp.x + 64.0f, tp.y + 36.0f), true);
+    dl->AddEllipseFilled(ImVec2(tp.x + 45.0f, tp.y + 22.0f),
+                         ImVec2(18.0f, 16.0f), IM_COL32(108, 177, 255, 16),
+                         0.0f, 32);
+    dl->PopClipRect();
+    // Title + meta.
+    const std::vector<std::string> entries = playlist_.entries();
+    const std::size_t cur = playlist_.current();
+    const std::string title =
+        cur == PlaylistStore::kNone ? "Nothing playing"
+                                    : displayName(entries[cur]);
+    const std::string meta = cur == PlaylistStore::kNone
+                                 ? std::string()
+                                 : rowMeta(entries[cur]);
+    const ImVec2 ts = ImGui::CalcTextSize(title.c_str());
+    dl->AddText(ImVec2(tp.x + 64.0f + 14.0f, bar.y + 12.0f),
+                ImGui::ColorConvertFloat4ToU32(theme::kText),
+                ellipsize(title, 260.0f).c_str());
+    if (!meta.empty()) {
+      dl->AddText(ImVec2(tp.x + 64.0f + 14.0f, bar.y + 12.0f + ts.y + 1.0f),
+                  ImGui::ColorConvertFloat4ToU32(theme::kText3), meta.c_str());
+    }
+    // Mini progress rail (62% prototype fill; live pos/dur).
+    const MediaInfo info = player_.mediaInfo();
+    const double dur = static_cast<double>(info.duration.count());
+    const double pos = static_cast<double>(player_.position().count());
+    const float frac = dur > 0.0 ? static_cast<float>(pos / dur) : 0.0f;
+    const float rail_w = 200.0f;
+    const ImVec2 rp(tp.x + 64.0f + 14.0f + 280.0f, bar.y + h * 0.5f - 2.0f);
+    dl->AddRectFilled(rp, ImVec2(rp.x + rail_w, rp.y + 4.0f),
+                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBgHi),
+                      99.0f);
+    dl->AddRectFilled(rp, ImVec2(rp.x + rail_w * frac, rp.y + 4.0f),
+                      ImGui::ColorConvertFloat4ToU32(theme::kAccent), 99.0f);
+    // Timecode.
+    const std::string tc = formatClock(player_.position()) + " / " +
+                           formatClock(info.duration);
+    dl->AddText(ImVec2(rp.x + rail_w + 14.0f, bar.y + (h - ts.y) * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(theme::kText2), tc.c_str());
+    // Volume (a thin rail like the prototype's range input, draggable) +
+    // play/pause.
+    const float vol_x = rp.x + rail_w + 14.0f + 120.0f;
+    const float vw = 90.0f;
+    ImGui::SetCursorScreenPos(ImVec2(vol_x, bar.y + (h - 20.0f) * 0.5f));
+    if (ImGui::InvisibleButton("##pl_vol", ImVec2(vw, 20.0f)) ||
+        ImGui::IsItemActive()) {
+      const float vfrac = std::clamp(
+          (ImGui::GetIO().MousePos.x - vol_x) / vw, 0.0f, 1.0f);
+      st_.last_volume = vfrac;
+      player_.setVolume(vfrac);
+    }
+    dl->AddRectFilled(ImVec2(vol_x, bar.y + h * 0.5f - 1.5f),
+                      ImVec2(vol_x + vw, bar.y + h * 0.5f + 1.5f),
+                      ImGui::ColorConvertFloat4ToU32(theme::kFieldBgHi),
+                      99.0f);
+    dl->AddRectFilled(
+        ImVec2(vol_x, bar.y + h * 0.5f - 1.5f),
+        ImVec2(vol_x + vw * static_cast<float>(st_.last_volume),
+               bar.y + h * 0.5f + 1.5f),
+        ImGui::ColorConvertFloat4ToU32(theme::kText2), 99.0f);
+    ImGui::SetCursorScreenPos(ImVec2(vol_x + 100.0f, bar.y + (h - 38.0f) * 0.5f));
+    const bool playing = player_.state() == PlaybackState::Playing;
+    if (ImGui::InvisibleButton("##pl_pp", ImVec2(38.0f, 38.0f))) {
+      togglePlayPause();
+    }
+    const ImVec2 bc(vol_x + 100.0f + 19.0f, bar.y + (h - 38.0f) * 0.5f + 19.0f);
+    dl->AddCircleFilled(bc, 19.0f,
+                        ImGui::ColorConvertFloat4ToU32(theme::kAccent), 48);
+    const ImU32 ink =
+        ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent);
+    if (playing) {
+      dl->AddRectFilled(ImVec2(bc.x - 5.0f, bc.y - 7.0f),
+                        ImVec2(bc.x - 1.5f, bc.y + 7.0f), ink, 1.0f);
+      dl->AddRectFilled(ImVec2(bc.x + 1.5f, bc.y - 7.0f),
+                        ImVec2(bc.x + 5.0f, bc.y + 7.0f), ink, 1.0f);
+    } else {
+      dl->AddTriangleFilled(ImVec2(bc.x - 4.0f, bc.y - 6.5f),
+                            ImVec2(bc.x - 4.0f, bc.y + 6.5f),
+                            ImVec2(bc.x + 7.0f, bc.y), ink);
+    }
+  }
+
+  // The row/now-bar meta: the format (upper-cased extension). The queue
+  // store is URI-only, so this is the one honest meta it can render.
+  static std::string rowMeta(const std::string& uri) {
+    const std::size_t dot = uri.find_last_of('.');
+    const std::size_t slash = uri.find_last_of('/');
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+      return "media";
+    std::string ext = uri.substr(dot + 1);
+    for (char& c : ext) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return ext.empty() ? "media" : ext;
+  }
+
+  // Ellipsize `s` to `maxw` px (the prototype's .tt text-overflow: ellipsis).
+  static std::string ellipsize(const std::string& s, float maxw) {
+    if (ImGui::CalcTextSize(s.c_str()).x <= maxw) return s;
+    std::string t = s;
+    while (!t.empty() &&
+           ImGui::CalcTextSize((t + "...").c_str()).x > maxw) {
+      t.pop_back();
+    }
+    return t + "...";
   }
 
   // The media library browse (docs/mvp.md §3): watched folders on top,

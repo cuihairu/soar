@@ -1208,19 +1208,18 @@ if mode == "playlist":
     # queue and the current entry untouched. Keys only until the overlay
     # buttons are needed; the Playlist overlay (P) stays open the whole
     # run — overlay windows do not swallow keys, only combo popups do.
-    # Coordinates probed under SOAR_UI_BITMAP_FONT=1, re-probed for v0.2.1
-    # with hover-band scans and label-hash click checks on a live Xvfb:
-    # the header is [Add files...][Open folder...][Loop][Shuffle][Clear
-    # queue] (todo.md 原型对齐批) with the button band at y~131-148, centers
-    # (262/377/482/581/683, 140) — anything above y~130 is the overlay
-    # title bar, which eats clicks. The window widened 460->560, so every
-    # row-anchored pin moved -50 in x. Each row's trailing "x" button
-    # follows the row text (SameLine), so its x moves with the entry name
-    # and with the "> " current marker (one character narrower): for these
-    # siblings it sits at ~(293/302/329, 165/182/203). A click landing just
-    # right of the button hits the row Selectable instead (jump semantics),
-    # which is why the x is probed per row.
-    # The file picker ("Add files...") opens at $HOME = the queue scratch
+    # Coordinates probed under SOAR_UI_BITMAP_FONT=1, re-probed when the
+    # playlist became a full page (proto-002 batch) with pixel-band scans
+    # on a live Xvfb: the page is a 74px icon rail over a main column
+    # (window 960x540, window-relative pins). The head band is y14-44:
+    # loop segmented control x603-733 ("All" pill x646-689, "One" x689-732),
+    # shuffle at x745-771, "Add files O" x770-870, "Clear" x879-937 — all
+    # at y28. Queue rows are 52px with a 7px gap (row pitch 59): row bands
+    # y67-118 / 119-168 / 171-222, measured centers y85/144/203; each
+    # row's hover actions sit at the row's right edge (next-play x886-912,
+    # remove x916-942, center x929) and are only created while the row is
+    # hovered, so the pointer move must land before the click.
+    # The file picker ("Add files O") opens at $HOME = the queue scratch
     # dir: rows ..//.cache//one.mkv/two.mkv at y~137/154/171/188 (the
     # recursive toggle is hidden in file mode, one pitch above the
     # watch-mode picker), checkboxes at x~240, "Add N files" bottom-left at
@@ -1287,13 +1286,14 @@ if mode == "playlist":
     key(n)                          # Shift+N: back to the first entry
     xtest.fake_input(d, X.KeyRelease, sh); d.sync()
     time.sleep(0.8)
-    moved(329, 203); time.sleep(0.15)
+    moved(929, 203); time.sleep(0.15)
     holdclick(1); time.sleep(0.5)   # "x" on row 3 ("   missing.mp4"):
                                     # drop the dead entry from the queue
     if not wait_marker("tracks=3 selected", 2):
         sys.exit(5)                 # one EOF auto-advanced into two
-    moved(482, 140); time.sleep(0.15)
-    holdclick(1); time.sleep(0.5)   # Loop button: off -> all (two mid-play)
+    moved(667, 28); time.sleep(0.15)
+    holdclick(1); time.sleep(0.5)   # Loop "All" segment: off -> all
+                                    # (two mid-play)
     if not wait_marker("tracks=1 selected", 3):
         sys.exit(5)                 # two EOF wrapped into one under All
     key(i)                          # i: info overlay reads "Loop all"
@@ -1302,13 +1302,14 @@ if mode == "playlist":
     time.sleep(0.4)                 # single-valued, so re-open the queue)
     key(p)                          # p: Playlist overlay again
     time.sleep(0.6)
-    moved(482, 140); time.sleep(0.15)
-    holdclick(1); time.sleep(0.5)   # Loop button: all -> one (one mid-play)
+    moved(710, 28); time.sleep(0.15)
+    holdclick(1); time.sleep(0.5)   # Loop "One" segment: all -> one
+                                    # (one mid-play)
     if not wait_marker("tracks=1 selected", 4):
         sys.exit(5)                 # one EOF replayed under One
-    moved(302, 182); time.sleep(0.15)
+    moved(929, 144); time.sleep(0.15)
     holdclick(1); time.sleep(0.7)   # "x" on row 2: drop the queued entry
-    moved(293, 165); time.sleep(0.15)
+    moved(929, 85); time.sleep(0.15)
     holdclick(1); time.sleep(0.7)   # "x" on row 1: queue is empty, hint
                                     # shows (removing the playing entry
                                     # only re-points, playback runs on)
@@ -1322,8 +1323,8 @@ if mode == "playlist":
     # first arms (the label flips to "Clear: sure?"), the second executes —
     # one click at one button's width from a destroyed queue is too little
     # intent for a store with no undo.
-    moved(262, 140); time.sleep(0.15)
-    holdclick(1); time.sleep(0.8)   # "Add files...": picker in file mode
+    moved(820, 28); time.sleep(0.15)
+    holdclick(1); time.sleep(0.8)   # "Add files O": picker in file mode
     moved(240, 171); time.sleep(0.15)
     holdclick(1); time.sleep(0.5)   # tick one.mkv
     moved(240, 188); time.sleep(0.15)
@@ -1332,11 +1333,11 @@ if mode == "playlist":
     holdclick(1); time.sleep(0.9)   # "Add 2 files": first auto-plays
     if not wait_marker("event: toast=Imported 2 files", 1):
         sys.exit(5)                 # the file pick did not import
-    moved(683, 140); time.sleep(0.15)
-    holdclick(1); time.sleep(0.6)   # "Clear queue": arms only
+    moved(908, 28); time.sleep(0.15)
+    holdclick(1); time.sleep(0.6)   # "Clear": arms only
     if marker_count("event: toast=Playlist cleared") != 0:
         sys.exit(6)                 # one click destroyed the queue
-    moved(683, 140); time.sleep(0.15)
+    moved(908, 28); time.sleep(0.15)
     holdclick(1); time.sleep(0.6)   # "Clear: sure?": executes
     if not wait_marker("event: toast=Playlist cleared", 1):
         sys.exit(5)                 # the confirm click did not clear
@@ -1394,12 +1395,13 @@ if mode == "dirpick":
     # reopen the collapsed Recent folders header sits at (240,162) and
     # pushes the rows to ".." ~188, .cache ~205, media_a ~223, media_b
     # ~243; expanded, its first entry is at (259,187) regardless of entry
-    # count. In the playlist tree view the group headers are at y~164
-    # (media_a) and ~222 (media_b) with "Play group" at x~378, member rows
-    # ~20.5 below their header; clicking the folder-node label (260,164)
-    # collapses the group. (The tree lives in the playlist window, which
-    # the add/clear batch widened 460->560: centered, so every x here
-    # shifted -50 from the first probes.)
+    # count. The playlist tree view is the full page (proto-002 batch):
+    # group headers are TreeNode rows at y~59-71 (media_a), ~138-150
+    # (deep) and ~217-229 (media_b); "Play group" sits SameLine after the
+    # label — x203-288 on the media_a/media_b headers (x182-267 on the
+    # shorter "deep"), label-width dependent, so the pin is per header.
+    # Clicking the folder-node label (x111-192, center ~150) collapses
+    # the group.
     # The trail tells the fixtures apart by track count, so every step is
     # asserted from the teed media-info lines alone:
     #   1 (recursive import auto-plays a1) 3 (a1 EOF advanced into the
@@ -1467,10 +1469,10 @@ if mode == "dirpick":
                                      # current — jump arm, no-op here)
     key(d.keysym_to_keycode(0x70))   # P: two directories -> tree view
     time.sleep(0.9)
-    pick(378, 222)                   # media_b "Play group": b1 opens
+    pick(246, 223)                   # media_b "Play group": b1 opens
     if not wait_marker("tracks=1 selected", 2):
         sys.exit(5)
-    pick(260, 164)                   # collapse the media_a folder node
+    pick(150, 65)                    # collapse the media_a folder node
     time.sleep(0.8)
 
     # Wheel dial tour (IINA scroll-action defaults): the playlist overlay
