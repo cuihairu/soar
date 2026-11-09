@@ -170,3 +170,4 @@
 ## 全界面按原型重做（2026-11-08 用户令：几十次强调按原型做）
 
 - [ ] SOAR-UI-PROTO-002 [P0] 全界面视觉对齐原型：10-13 对齐批只覆盖了播放器 OSC（像素探针层），settings/library/playlist/translate-panel 等界面仍是 v1 占位实现（evidence/prototype-alignment-2026-11-01/after_m4_playback.png 实证：设置面板内容区是占位文本）。要求：以 docs/public/prototypes/*.html 四份原型为唯一视觉基准，逐界面（settings/library/playlist/translate-panel + 主播放窗全态）重做实现；验收口径改死：**每个界面渲染截图与原型 PNG 并排对比、逐项一致（布局/间距/圆角/字号/颜色/控件形态），vision 比对通过才算完**——测试断言绿不算完成；完成后并排对比图入 docs/review/，用户亲眼确认后勾账。
+  - settings 已出对比图待用户确认（ec6c4c5，全量 15 套件绿，全页面布局+导航+5 个真实 Tab）：`docs/review/ui-proto-002/after/settings_{general,playback,subtitles,network,about}.png`、`docs/review/ui-proto-002/compare/settings_*.png`（compare/settings_subtitles.png 为原型 PNG 并排；其余 Tab 原型 PNG 只定义 Subtitles，compare 为通用版式）。**确认前保持未勾。**
