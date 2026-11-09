@@ -24,6 +24,7 @@ target_sources(soar_core PRIVATE
   src/core/null_backend.cpp
   src/core/player.cpp
   src/core/subtitle_provider.cpp
+  src/core/subtitle_provider_translate.cpp
   src/core/subtitle_text.cpp
 )
 
