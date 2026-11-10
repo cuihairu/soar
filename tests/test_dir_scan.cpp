@@ -204,6 +204,42 @@ TEST_CASE("a broken file symlink with a media name is skipped") {
   fs::remove(tree.root + "/dangling.m4v");
 }
 
+TEST_CASE("a file symlink's name decides, its target only needs to exist") {
+  // Symlinked *files* resolve through is_regular_file, but the media
+  // filter reads the link's own filename: a media-named link onto a
+  // non-media target still queues, a document-named link onto a media
+  // target still does not.
+  ScratchTree tree(scratchBase());
+  fs::create_symlink(tree.root + "/c.txt", tree.root + "/alias.mp4");
+  fs::create_symlink(tree.root + "/b.MKV", tree.root + "/alias.txt");
+  const std::vector<std::string> got = listMediaFiles(tree.root, true);
+  REQUIRE(got.size() == 6);  // the five real files plus alias.mp4
+  bool saw_alias = false;
+  for (const std::string& p : got) {
+    if (p.find("alias.mp4") != std::string::npos) saw_alias = true;
+    CHECK(p.find("alias.txt") == std::string::npos);
+  }
+  CHECK(saw_alias);
+  fs::remove(tree.root + "/alias.mp4");
+  fs::remove(tree.root + "/alias.txt");
+}
+
+TEST_CASE("fifo entries are neither media nor directories") {
+  // A named pipe is neither a regular file nor a directory: the walk's
+  // kind checks must drop it on both counts, with no error set, and the
+  // subdirectory listing must leave it out too.
+  ScratchTree tree(scratchBase());
+  REQUIRE(::mkfifo((tree.root + "/pipe.m4v").c_str(), 0644) == 0);
+  const std::vector<std::string> got = listMediaFiles(tree.root, true);
+  REQUIRE(got.size() == 5);  // the five real files, no pipe entry
+  for (const std::string& p : got) {
+    CHECK(p.find("pipe.m4v") == std::string::npos);
+  }
+  const std::vector<std::string> subs = listSubdirectories(tree.root);
+  CHECK(subs == std::vector<std::string>{"sub1", "sub2", "sub3"});
+  fs::remove(tree.root + "/pipe.m4v");
+}
+
 TEST_CASE("listMediaFiles flat mode stays at the top level only") {
   ScratchTree tree(scratchBase());
   // sub1/d.mp4 and sub1/deep/e.avi exist but must not surface without
