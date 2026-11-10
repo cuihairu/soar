@@ -161,11 +161,11 @@ slider; the rail's played/buffer split and thumb are not drawn as separate primi
 
 | # | Missing component | Prototype | Implementation | Nature |
 |---|---|---|---|---|
-| M1 | Top bar | `desktop-main.html:165-193` | None | Intentional deviation |
+| M1 | Top bar | `desktop-main.html:165-193` | `drawTopBar()` `player_hud_render.cpp:811` — **landed 2026-11-01** (`fea5ecc`) | Was "intentional deviation" (no bar); the prototype-alignment batch then **added the bar against the (a) proxy decision below** — open user decision, spec still has no top bar |
 | M2 | Status chip (including the P2P download percentage) | `:189-193` | `drawChips()` `:2199-2225` (Paused/Buffering/Downloading/Casting) | Implemented, form difference (corrected in revision) |
 | M3 | Resolution/codec pill | `:202` | None | Decided by proxy not to do it (core interface frozen, MK_R2A) |
 | M4 | General settings page | `settings.html` | None (only Subtitle Settings `:2997`) | Intentionally deferred (v0.2) — **landed 2026-11-02** (`0d07d89`, G key, General/Playback/Subtitles/Network/About tabs, `drawSettingsOverlay` `player_window.cpp:2299`) |
-| M5 | Library card grid / thumbnails / source chips | `library.html` | List-style `:2725` | Prototype ahead (v0.3) |
+| M5 | Library card grid / thumbnails / source chips | `library.html` | Full-page card grid + sidebar (`drawLibraryEntries` `player_hud_pages.cpp:924`) — **landed 2026-11-09** (`ad60122`; TYPE filter `0d07d89` 2026-11-02) | Was prototype-ahead (v0.3); landed |
 | M6 | Mini mode / music mode (auto-switch to a mini window for pure audio) | `ui-design.md:17` §1.1 research | None | Intentionally deferred (§7 future boundary) |
 | M7 | Seek hover thumbnail preview | `ui-design.md:55` §1.6-5 | None | Intentionally deferred (v0.2) — **landed 2026-11-02** (`0d07d89`, ThumbnailService worker + `drawThumbPreview`, `player_window.cpp:747`/`:2968`) |
 | M8 | Translation panel | v1 `translate-panel.html` | None | Deprecated with v1 |
@@ -252,6 +252,12 @@ as differences).**
    v0.2 candidates, not the v0.1 baseline (`ui-design.md` §2/§4, `prototypes.md` synced); the two
    main-player-window PNGs are the finalized pre-removal frames and were not re-shot (this repo has no rendering
    environment), with the difference annotated.
+   **Post-decision note (2026-11-10):** the prototype-alignment batch landed the top bar anyway
+   (`fea5ecc` 2026-11-01, `drawTopBar`), so the running build now has the bar the (a) decision dropped —
+   the walkthroughs even depend on it (the Fullscreen tool click). Recorded in the §3.4 M1 row; the item
+   stays open for the user to either endorse the bar or have it removed per (a). The compare shots at
+   `docs/review/ui-proto-002/compare/main_*.png` show both sides (the prototype PNG is a pre-removal
+   frame: its top bar is not spec).
 
 8. ~~**Focus visibility ring** (V7b): the spec lists "focus visibility" as a mitigation for ImGui's accessibility
    shortfalls (`ui-design.md:216`), but there is currently **no keyboard focus model** (no `ImGuiConfigFlags`

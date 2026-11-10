@@ -131,11 +131,11 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
 
 | # | 缺失组件 | 原型 | 实现 | 性质 |
 |---|---|---|---|---|
-| M1 | 顶栏 | `desktop-main.html:165-193` | 无 | 有意偏离 |
+| M1 | 顶栏 | `desktop-main.html:165-193` | `drawTopBar()` `player_hud_render.cpp:811`——**2026-11-01 已落地**（`fea5ecc`） | 原为「有意偏离」（无栏）；原型对齐批**违背下文 (a) 代决加了顶栏**——待用户拍板，规格仍无顶栏 |
 | M2 | 状态徽标（含 P2P 下载百分比） | `:189-193` | `drawChips()` `:2199-2225`（Paused/Buffering/Downloading/Casting） | 已实现，形态差异（修订改正） |
 | M3 | 分辨率/编码 pill | `:202` | 无 | 已代决不做（核心接口冻结，MK_R2A） |
 | M4 | 通用设置页 | `settings.html` | 无（仅 Subtitle Settings `:2997`） | 有意延后（v0.2）——**2026-11-02 已落地**（`0d07d89`，G 键，General/Playback/Subtitles/Network/About 五页签，`drawSettingsOverlay` `player_window.cpp:2299`） |
-| M5 | 媒体库卡片网格 / 缩略图 / 来源徽标 | `library.html` | 列表式 `:2725` | 原型超前（v0.3） |
+| M5 | 媒体库卡片网格 / 缩略图 / 来源徽标 | `library.html` | 整页卡片网格 + 侧栏（`drawLibraryEntries` `player_hud_pages.cpp:924`）——**2026-11-09 已落地**（`ad60122`；TYPE 过滤 `0d07d89` 2026-11-02） | 原为原型超前（v0.3）；已落地 |
 | M6 | 迷你模式 / 音乐模式（纯音频自动切迷你窗） | `ui-design.md:17` §1.1 调研 | 无 | 有意延后（§7 后续边界） |
 | M7 | seek 悬停缩略图预览 | `ui-design.md:55` §1.6-5 | 无 | 有意延后（v0.2）——**2026-11-02 已落地**（`0d07d89`，ThumbnailService 工作线程 + `drawThumbPreview`，`player_window.cpp:747`/`:2968`） |
 | M8 | 翻译面板 | v1 `translate-panel.html` | 无 | 随 v1 废弃 |
@@ -206,6 +206,11 @@ v2 已删除该页（`redesign/` 下无对应文件），实现亦无。**v1 独
    窗口标题 `player_window.cpp:855`，I/R/H/F 均在 §3.2 合同）；顶栏/亮色写为 v0.2 候选
    非 v0.1 基准（`ui-design.md` §2/§4、`prototypes.md` 同步）；主播放窗两版 PNG 为
    移除前定稿帧，未重摄（本仓无渲染环境），差异已注记。
+   **决议后补记（2026-11-10）：**原型对齐批仍把顶栏落地了（`fea5ecc` 2026-11-01，
+   `drawTopBar`），现行构建带着 (a) 决议去掉的栏——走查甚至依赖它（全屏工具点击）。
+   已记入 §3.4 M1 行；该项保持 open，等用户拍板「留栏」还是「按 (a) 拆栏」。
+   对比图见 `docs/review/ui-proto-002/compare/main_*.png`（原型 PNG 为移除前帧，
+   其顶栏不是规格）。
 
 8. ~~**焦点可见环**（V7b）：规格把「焦点可见」列为 ImGui 无障碍短板的缓解（`ui-design.md:216`），
    但当前**无键盘焦点模型**（全仓无 `ImGuiConfigFlags` 设置，`NavEnableKeyboard` 默认关），环无处可画。
