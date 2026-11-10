@@ -4,6 +4,15 @@
 
 #include "player_hud.h"
 
+#ifdef _WIN32
+// The open-file entry (BUGS.md #3): SDL_syswm.h brings windows.h for the
+// HWND, commdlg.h declares GetOpenFileNameW (comdlg32, linked in
+// CMakeLists.txt). Split out of player_window.cpp together with
+// openFilePicker, which is the only consumer of these types.
+#  include <SDL_syswm.h>
+#  include <commdlg.h>
+#endif
+
 namespace soar::app {
 
 void PlayerHud::togglePlayPause() {
