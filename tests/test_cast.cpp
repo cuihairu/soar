@@ -2716,6 +2716,83 @@ TEST_CASE("a silent event client hits the head timeout and still gets the 200") 
   es.stop();
 }
 
+TEST_CASE("event server survives half-delivered bodies in both endings") {
+  cast::EventServer es;
+  std::string err;
+  std::vector<std::string> bodies;
+  REQUIRE(es.start([&bodies](std::string_view body) {
+            bodies.emplace_back(body);
+          }, &err));
+  const int port = es.port();
+
+  // A promised remainder that never comes because the client hung up:
+  // the read fails, the wait ends, and whatever arrived still reaches the
+  // callback (the poll path covers any loss). The body rides in a segment
+  // of its own so the server's body loop does real appending work, and
+  // the follow-up connection doubles as the proof the accept loop moved
+  // on.
+  {
+    const int fd = dial(port);
+    const std::string head =
+        "NOTIFY /cast/events HTTP/1.1\r\nHOST: x\r\nCONTENT-LENGTH: 100\r\n\r\n";
+    size_t off = 0;
+    while (off < head.size()) {
+      const ssize_t w = ::send(fd, head.data() + off, head.size() - off, 0);
+      REQUIRE(w > 0);
+      off += static_cast<size_t>(w);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const std::string body = "abc";
+    off = 0;
+    while (off < body.size()) {
+      const ssize_t w = ::send(fd, body.data() + off, body.size() - off, 0);
+      REQUIRE(w > 0);
+      off += static_cast<size_t>(w);
+    }
+    ::close(fd);  // FIN with 97 bytes still promised
+    const int fd2 = dial(port);
+    CHECK(replyIsBare200(talk(fd2, "BLAH\r\n\r\n")));
+    ::close(fd2);
+    // The serve thread is serial: by the time the probe above got its
+    // reply, the half body has fired.
+    REQUIRE(bodies.size() == 1);
+    CHECK(bodies.back() == "abc");
+  }
+
+  // Same shape, but the client merely stalls past a CONTENT-LENGTH far
+  // past the 64 KiB cap: the clamp bounds the wait, the read timeout (5 s)
+  // ends it, the body still fires and the reply still goes out. A fast
+  // reply here would mean the timeout arm died.
+  {
+    const int fd = dial(port);
+    const std::string body = "<e>clamped</e>";
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::string reply =
+        talk(fd, "NOTIFY /cast/events HTTP/1.1\r\nHOST: x\r\nCONTENT-LENGTH: "
+                 "99999999\r\n\r\n" +
+                     body);
+    CHECK(replyIsBare200(reply));
+    CHECK(std::chrono::steady_clock::now() - t0 > std::chrono::seconds(4));
+    REQUIRE(bodies.size() == 2);
+    CHECK(bodies.back() == body);
+    ::close(fd);
+  }
+
+  es.stop();
+}
+
+TEST_CASE("the callback url needs a resolvable peer") {
+  cast::EventServer es;
+  std::string err;
+  REQUIRE(es.start(nullptr, &err));
+  // An empty peer has no interface to pick.
+  CHECK(es.callbackUrlFor("").empty());
+  // A name the resolver refuses outright (a single label past the 63-byte
+  // DNS limit) fails the lookup before any packet leaves the machine.
+  CHECK(es.callbackUrlFor(std::string(70, 'a')).empty());
+  es.stop();
+}
+
 // ---- sender-side transcoding (src/cast/transcode_server.cpp) -----------
 // The pump runs against the same tiny committed fixtures the player suite
 // uses: one H.264/AAC source the MPEG-TS pair accepts (copied through),
