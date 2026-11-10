@@ -312,6 +312,34 @@ if mode == "empty":
         if not button(1):
             sys.exit(4)
         time.sleep(0.4)
+    # The top-bar tools (M1) render on the poster too, so the Recent and
+    # Help overlays open from here, and fullscreen round-trips off the
+    # poster's own F click. The tools hug the window's right edge, and
+    # fullscreen widens the window: aim each click at width-40, which is
+    # the Full button in both the 960x540 and the fullscreen frame (the
+    # second press must land, or the final Escape below only leaves
+    # fullscreen, the window survives and the run times out). Overlay
+    # windows do not swallow keys, so nothing here blocks the presses.
+    def toolclick(x_off):
+        if not focus():
+            sys.exit(4)
+        try:
+            g = win.get_geometry()
+        except Exception:
+            g = None
+        x = (g.width - x_off) if g is not None else 920
+        if not moved(x, 31):
+            sys.exit(4)
+        time.sleep(0.3)
+        if not holdclick(1):
+            sys.exit(4)
+        time.sleep(0.9)
+    toolclick(114)   # Recent (R)
+    toolclick(75)    # Help (H)
+    toolclick(40)    # fullscreen on
+    time.sleep(1.2)  # let SDL apply the mode change before re-measuring
+    toolclick(40)    # fullscreen off
+    time.sleep(0.6)
     if not focus():
         sys.exit(4)
     if not key(d.keysym_to_keycode(0xFF1B)):  # Escape
@@ -342,6 +370,147 @@ if mode == "theme":
         sys.exit(4)
     time.sleep(0.4)
     if not focus() or not key(d.keysym_to_keycode(0xFF1B)):  # Escape
+        sys.exit(4)
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if find_window() is None:
+            sys.exit(0)  # the window died: the CLI exited
+        time.sleep(0.2)
+    sys.exit(5)
+
+if mode == "settings":
+    # The settings page drive: g opens the page, the five nav rows are
+    # clicked in order so every tab body renders, and each tab's live
+    # controls take clicks — switches flip, selects cycle (toast), the
+    # steppers step both ways, the endpoint Edit/Add buttons show their
+    # toasts. The recent-cap stepper's write is confirmed against the
+    # state file before the next step (the page's one persisted row,
+    # same store-confirmed contract as the library drive): one "+" lands
+    # recent_cap=16, one "-" lands recent_cap=15 again. Reset defaults
+    # then walks the whole reset body and Done closes the page; Escape
+    # quits. argv[4] is the state home; every persisted step is
+    # confirmed against it before the next click.
+    # Coordinates probed under SOAR_UI_BITMAP_FONT=1 on a 1280x800 Xvfb
+    # (the SDL window is 960x540; moved() is window-relative, and the
+    # settings page is a full-window ImGui window at the window origin,
+    # so injector coordinates are page coordinates).
+    time.sleep(2.2)
+    if not focus():
+        sys.exit(4)
+    state = sys.argv[4] if len(sys.argv) > 4 else ""
+
+    def cap_txt():
+        if not state:
+            return ""
+        try:
+            with open(state + "/soar/settings.txt") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    def wait_cap(want, timeout=8.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if ("recent_cap=" + want) in cap_txt():
+                return True
+            time.sleep(0.25)
+        return False
+
+    def sclick(x, y):
+        moved(x, y); time.sleep(0.15)
+        holdclick(1); time.sleep(0.5)
+
+    key(d.keysym_to_keycode(0x67))  # g -> the settings page
+    time.sleep(0.9)
+    # Pin table probed on this exact build (pixel edges, page coords):
+    # nav rows are 32px bands at x 10..186 (centers y 74/108/138/190/243);
+    # card rhythm is 59px (card tops 91/150/209/268, centers y
+    # 117/176/235/294); every control right-aligns to the card's inner
+    # right edge minus 10 (34px switch -> x 891..925 center 908; 120px
+    # select -> 805..925 center 865; 96px stepper -> "-"/"+" centers
+    # 841/913; the subtitles grid splits the width, its left column's
+    # right edge is 573 -> switch center 546, stepper centers 479/551;
+    # the right column's is 931 -> stepper centers 837/909; endpoint
+    # Edit buttons sit 48px wide at the 40px card's center).
+    # General tab (opens on it): hover the ON switch's face and the
+    # disabled language select (a Dummy, no click), then flip the ESC
+    # switch off.
+    moved(908, 117); time.sleep(0.5)
+    moved(865, 229); time.sleep(0.5)
+    sclick(908, 176)   # "ESC exits fullscreen" switch -> off
+    time.sleep(0.3)
+    # Playback tab: the rate select cycles 1.00x -> 1.25x (toast), the
+    # loop select cycles Off -> All (toast), the shuffle switch flips on.
+    sclick(98, 108)    # nav: Playback
+    time.sleep(0.6)
+    sclick(865, 117)   # rate select -> 1.25x
+    time.sleep(0.4)
+    sclick(865, 176)   # loop select -> All
+    time.sleep(0.4)
+    sclick(908, 235)   # shuffle switch -> on
+    time.sleep(0.4)
+    # Subtitles tab: show + autoshow switches off, the font-size stepper
+    # steps up and back down, the sync-offset stepper steps down and up
+    # (both cfg atomics take the write), auto download flips off (the
+    # HTTP subtitle configure arm), both endpoint Edit buttons show
+    # their toast. The font/style selects and the directory field are
+    # Dummies - hover only.
+    sclick(98, 138)    # nav: Subtitles
+    time.sleep(0.6)
+    moved(870, 285); time.sleep(0.3)   # directory field hover
+    sclick(546, 117)   # show subtitles switch -> off
+    time.sleep(0.3)
+    sclick(546, 176)   # auto-show switch -> off
+    time.sleep(0.3)
+    sclick(551, 294)   # font size "+" -> 25 px
+    time.sleep(0.3)
+    sclick(479, 294)   # font size "-" -> 24 px
+    time.sleep(0.3)
+    sclick(837, 117)   # sync offset "-" -> -100 ms
+    time.sleep(0.3)
+    sclick(909, 117)   # sync offset "+" -> 0 ms
+    time.sleep(0.3)
+    sclick(904, 336)   # auto download switch -> off
+    time.sleep(0.3)
+    sclick(898, 451)   # Download endpoint Edit (toast)
+    time.sleep(0.3)
+    sclick(898, 497)   # Translate endpoint Edit (toast)
+    time.sleep(0.3)
+    # Network tab: the Add button's toast + three endpoint Edit toasts.
+    sclick(98, 190)    # nav: Network & Download
+    time.sleep(0.6)
+    sclick(902, 117)   # trackers "Add" (toast: no tracker list yet)
+    time.sleep(0.3)
+    sclick(898, 273)   # Subtitles endpoint Edit
+    time.sleep(0.3)
+    sclick(898, 320)   # Translate endpoint Edit
+    time.sleep(0.3)
+    sclick(898, 367)   # Stats endpoint Edit
+    time.sleep(0.3)
+    # About tab: draw-only body (mark, name, version rows) - a hover
+    # pass is enough.
+    sclick(98, 243)    # nav: About
+    time.sleep(0.6)
+    moved(500, 300); time.sleep(0.5)
+    # General again: the recent-cap stepper's writes are the drive's
+    # store-confirmed steps.
+    sclick(98, 74)     # nav: General
+    time.sleep(0.6)
+    sclick(913, 294)   # recent cap "+" -> 15 -> 16
+    if state and not wait_cap("16"):
+        sys.exit(6)    # the stepper write never landed
+    sclick(841, 294)   # recent cap "-" -> 16 -> 15
+    if state and not wait_cap("15"):
+        sys.exit(7)    # the "-" write never landed
+    # Reset defaults walks the whole reset body (switches, cap, rate,
+    # loop, shuffle, theme guard), then Done closes the page.
+    sclick(813, 28)    # chead: Reset defaults
+    time.sleep(0.6)
+    sclick(910, 28)    # chead: Done
+    time.sleep(0.6)
+    if not focus():
+        sys.exit(4)
+    if not key(d.keysym_to_keycode(0xFF1B)):  # Escape
         sys.exit(4)
     deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
@@ -686,6 +855,15 @@ if mode == "osc":
             rc = 7
         bclick(687, 495)   # Shot: no frames on the null backend
         if not wait_ge("event: toast=Screenshot needs the FFmpeg backend", 1, 5.0):
+            rc = 7
+        # The rate combo (2026-11-10 probe, page coords): the popup flips
+        # upward off the bottom edge — items 0.5x/0.75x/1x/1.2x/1.5x/2x at
+        # y 366/383/401/419/436/455, x center 346. Opening it covers the
+        # combo draw arm; picking 1.2x fires the toast named below.
+        bclick(345, 495)   # "1x" face: open the popup
+        time.sleep(0.6)
+        bclick(346, 419)   # popup item 1.2x
+        if not wait_ge("event: toast=1.2x speed", 1, 5.0):
             rc = 7
     except Exception:
         pass  # best effort: whatever ran before an error still counts
@@ -1220,10 +1398,11 @@ if mode == "playlist":
     # remove x916-942, center x929) and are only created while the row is
     # hovered, so the pointer move must land before the click.
     # The file picker ("Add files O") opens at $HOME = the queue scratch
-    # dir: rows ..//.cache//one.mkv/two.mkv at y~137/154/171/188 (the
-    # recursive toggle is hidden in file mode, one pitch above the
-    # watch-mode picker), checkboxes at x~240, "Add N files" bottom-left at
-    # (273,459).
+    # dir: rows ..//.cache//one.mkv/<the long two entry> at y~137/154/171/188
+    # (the recursive toggle is hidden in file mode, one pitch above the
+    # watch-mode picker; non-media files such as cli.log and the
+    # extension-less dead path are filtered out of the rows), checkboxes at
+    # x~240, "Add N files" bottom-left at (273,459).
     # Expected media-info
     # trail, launch included, each step tagged with the gesture that
     # produced it (the two fixtures are told apart by track count, so the
@@ -1287,8 +1466,8 @@ if mode == "playlist":
     xtest.fake_input(d, X.KeyRelease, sh); d.sync()
     time.sleep(0.8)
     moved(929, 203); time.sleep(0.15)
-    holdclick(1); time.sleep(0.5)   # "x" on row 3 ("   missing.mp4"):
-                                    # drop the dead entry from the queue
+    holdclick(1); time.sleep(0.5)   # "x" on row 3 ("missingfile", the
+                                    # extension-less dead path): drop it
     if not wait_marker("tracks=3 selected", 2):
         sys.exit(5)                 # one EOF auto-advanced into two
     moved(667, 28); time.sleep(0.15)
@@ -1341,6 +1520,14 @@ if mode == "playlist":
     holdclick(1); time.sleep(0.6)   # "Clear: sure?": executes
     if not wait_marker("event: toast=Playlist cleared", 1):
         sys.exit(5)                 # the confirm click did not clear
+    # The now-playing bar at the page's foot draws whether or not the
+    # queue holds entries (playback of the removed pick runs on under a
+    # cleared queue). A rail click jumps the volume to the click point;
+    # the round button toggles play/pause — both arms fire here.
+    moved(837, 508); time.sleep(0.15)
+    holdclick(1); time.sleep(0.6)   # volume rail: set from the click x
+    moved(911, 509); time.sleep(0.15)
+    holdclick(1); time.sleep(0.6)   # pp: toggle play/pause
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
@@ -1521,7 +1708,7 @@ if mode == "library":
     # "Add folder..." starts the picker in watch mode (no subfolders toggle
     # — a library watches a tree), the media_a row enters it, and "Watch
     # this folder" records + scans + saves, landing back on the Library
-    # overlay with the folder and its two files. Click order is
+    # overlay with the folder and its three files. Click order is
     # load-bearing: a row click navigates, only the bottom button watches
     # the ENTERED folder. The sidebar buckets then take over: Resume and
     # Finished must not leak entries (a click aimed at an empty slot is
@@ -1530,7 +1717,10 @@ if mode == "library":
     # bucket's rows, and the needle composes with the bucket — Recent plus
     # "a" still lists both files in Recent order (a2 first, its file is an
     # hour newer), so row 1's "x" forgets exactly a2 and a1 surviving is
-    # the filter-leak tripwire.
+    # the filter-leak tripwire. The TYPE rows (Local/Network) filter the
+    # whole store by source kind: Network drives the empty-grid arm, and
+    # card 2 under Local runs the open arm (openSource; the overlay
+    # closes and B brings the page back).
     # Coordinates probed under SOAR_UI_BITMAP_FONT=1 on a 1280x800 Xvfb
     # against the -O0 coverage build, in the injector's own frame: the
     # SDL window is 960x540 centred at (160,130), and moved() warps
@@ -1551,7 +1741,7 @@ if mode == "library":
     # slot is the deliberate no-op this drive relies on. The watch-mode
     # picker is unchanged by the relayout (checkbox hidden, rows one
     # pitch higher than the import layout): ".." ~127, ".cache/" ~144,
-    # "media_a/" ~161, with "Watch this folder (2 media files, with
+    # "media_a/" ~161, with "Watch this folder (3 media files, with
     # subfolders)" bottom-left anchored at (418,459). argv[4] is the
     # store path; every destructive click is confirmed against it before
     # the next step.
@@ -1628,6 +1818,26 @@ if mode == "library":
     if store and "a1.mkv" not in store_txt():
         sys.exit(6)
 
+    # The TYPE half of the sidebar (prototype layout): the source filter
+    # runs across every bucket. All three fixtures are local files, so
+    # Network drives the empty-grid arm and Local lists the cards again.
+    # The filter has no All row — it sticks for the rest of the drive,
+    # which the needle step below tolerates (the needle matches either
+    # way). Card 3 is a3 on purpose: its click runs the open arm
+    # (openSource + the overlay closes), and a3 keeps playing until
+    # quit — the quit path re-upserts a playing entry's row, so the open
+    # must never target a2, whose absence the store assertions prove.
+    sclick(112, 116)   # back to the All bucket (Finished is empty)
+    time.sleep(0.5)
+    sclick(112, 347)   # TYPE Network: empty grid
+    time.sleep(0.6)
+    sclick(112, 309)   # TYPE Local: the cards come back
+    time.sleep(0.6)
+    sclick(835, 166)   # card 3 (a3): openSource + overlay closes
+    time.sleep(1.2)
+    key(d.keysym_to_keycode(0x62))  # B -> the Library page again
+    time.sleep(0.9)
+
     # The search half (docs/todo.md 原型对齐批): the Recent bucket, then
     # "/" focuses the box and a typed needle narrows the bucket's cards.
     # The needle "a" matches both file paths, so the grid keeps the
@@ -1656,11 +1866,12 @@ if mode == "library":
     key(d.keysym_to_keycode(0xff08))  # backspace clears the lone "a"
     time.sleep(0.6)
 
-    # Recent keeps only a1 now; the second slot must be an empty no-op —
-    # a1 vanishing means a stale card landed where nothing should be.
+    # Recent keeps a1 and a3 now (a2 is gone, a3 still sorts last by its
+    # pinned mtime); the third slot must be an empty no-op — the second
+    # slot is a3's card, and a stale click there would just re-open it.
     sclick(112, 155)   # the Recent bucket
     time.sleep(0.5)
-    sclick(600, 166)
+    sclick(835, 166)
     time.sleep(0.5)
     if store and "a1.mkv" not in store_txt():
         sys.exit(6)
@@ -4786,8 +4997,8 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
 
   // Same staged-HOME scheme as the dir-picker case: ".cache" pins the
   // sorted row order (a dot-directory always sorts first), media_a holds
-  // one file at its top and one a level down — the watch-mode picker's
-  // recursive count ("2 media files, with subfolders") and the scan's
+  // one file at its top and two a level down — the watch-mode picker's
+  // recursive count ("3 media files, with subfolders") and the scan's
   // tree walk both read that layout. The files are bare 0-byte names:
   // the scan is extension-based, no media is opened, so the run needs no
   // fixtures and no FFmpeg (the backend stays null behind the poster).
@@ -4801,6 +5012,13 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
   REQUIRE(std::filesystem::create_directories(home_dir + "/media_a/deep", fs_ec));
   { std::ofstream(home_dir + "/media_a/a1.mkv").put('\n'); }
   { std::ofstream(home_dir + "/media_a/deep/a2.mkv").put('\n'); }
+  // a3 exists only to absorb the card-open arm: the drive opens it from
+  // its card (openSource + the overlay closes), and the opened entry
+  // keeps playing until quit — the quit path's recordProgress upserts
+  // its row back even if it were removed later, so the entry asserted
+  // absent at the end (a2) must never be the one that was opened. a3's
+  // final row presence is deliberately unchecked.
+  { std::ofstream(home_dir + "/media_a/deep/a3.mkv").put('\n'); }
   // a1 also carries an NFO sidecar: the scan picks it up and the overlay
   // shows the scraped title instead of the file name (its hover tooltip
   // gains the plot). Only a1 gets one — a2's row label must stay
@@ -4810,10 +5028,12 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
     nfo << "<movie><title>Sample Movie</title><plot>Calibration plot.</plot>"
           "</movie>\n";
   }
-  // The Recent bucket orders by the scan's change tokens: pin the files
-  // an hour apart so a2 (newer) sorts ahead of a1 and the drive's
-  // Recent-row click means the same thing on every run. The token's
-  // epoch is the platform's file_clock — only the spacing matters here.
+  // The Recent bucket orders by the scan's change tokens (mtime only —
+  // recordOpen's last_played never enters it): pin the files an hour
+  // apart so a2 (newest) sorts first and the drive's Recent-row click
+  // means the same thing on every run, with a3 (oldest) last. The
+  // token's epoch is the platform's file_clock — only the spacing
+  // matters here.
   std::error_code mt_ec;
   const auto ft_now = std::filesystem::file_time_type::clock::now();
   std::filesystem::last_write_time(home_dir + "/media_a/a1.mkv",
@@ -4821,6 +5041,9 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
   REQUIRE_FALSE(mt_ec);
   std::filesystem::last_write_time(home_dir + "/media_a/deep/a2.mkv",
                                    ft_now - std::chrono::hours(1), mt_ec);
+  REQUIRE_FALSE(mt_ec);
+  std::filesystem::last_write_time(home_dir + "/media_a/deep/a3.mkv",
+                                   ft_now - std::chrono::hours(3), mt_ec);
   REQUIRE_FALSE(mt_ec);
   const std::string store = state_home + "/soar/library.txt";
   // a1 carries seeded history (5:21 of a 10-minute file, played 3x): the
@@ -4885,16 +5108,20 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
 
   // The drive's tail end, asserted from the store it left behind: the
   // injector watched media_a, rescanned, walked the sidebar buckets
-  // (Resume and Finished proved leak-free by no-op clicks), focused the
-  // search box with "/" and removed a2 through a needle narrowed over
-  // the Recent bucket, then unwatched the folder row — each destructive
-  // step confirmed against the store before the next click. What remains
-  // proves the wiring end to end:
+  // (Resume and Finished proved leak-free by no-op clicks), filtered by
+  // the TYPE rows (Network's empty grid, then Local), opened a2 from its
+  // card, focused the search box with "/" and removed a2 through a
+  // needle narrowed over the Recent bucket, then unwatched the folder
+  // row — each destructive step confirmed against the store before the
+  // next click. What remains proves the wiring end to end:
   //   - a1 survives with its seeded history intact (the scan merge keeps
-  //     it, removeFolder must not touch non-watched entries, nothing
-  //     played so nothing re-recorded);
+  //     it, removeFolder must not touch non-watched entries, a1 was
+  //     never opened so nothing re-recorded it);
   //   - a2 is gone (removeEntry via the Recent bucket) and the folder
-  //     line is gone (removeFolder).
+  //     line is gone (removeFolder);
+  //   - a3 is exempt from the store checks: it was opened from its card
+  //     and kept playing until quit, and the quit path's recordProgress
+  //     upserts a playing entry's row whether or not it was removed.
   std::ifstream lib(store);
   if (!lib.good()) {
     FAIL("library.txt was not written under XDG_STATE_HOME");
@@ -4919,10 +5146,11 @@ TEST_CASE("windowed run watches a folder into the library through the overlay") 
                                   std::istreambuf_iterator<char>());
     CHECK(recents_txt.find("/media_a") != std::string::npos);
   }
-  // Nothing opened: the run never leaves the poster, so no media-info
-  // markers may appear (the store entries were written by the scan, not
-  // by playback).
-  CHECK(run.output.find("tracks=") == std::string::npos);
+  // The only open in the whole drive is the deliberate TYPE-Local card
+  // click on a3 (the null backend answers it with a media-info marker);
+  // a1's exact record below still proves nothing else ever opened. The
+  // visual stays the poster either way — the null backend never decodes.
+  CHECK(run.output.find("event: media-info") != std::string::npos);
 
   std::filesystem::remove_all(home_dir, fs_ec);
   std::filesystem::remove_all(state_home, fs_ec);
@@ -5109,6 +5337,121 @@ TEST_CASE("the window restores the saved palette and flips it from the y key") {
   std::getline(pref, saved);
   CHECK(saved == "light");
   std::filesystem::remove_all(state_home, ec);
+#endif
+}
+
+TEST_CASE("windowed UI run drives every settings tab through XTEST clicks") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  MESSAGE("app built without the ImGui overlay; skipping the settings drive");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the settings drive");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the settings drive");
+    return;
+  }
+
+  // A private state home: the drive's store-confirmed step reads the
+  // recent-cap row the stepper persists there, and the run's own theme
+  // / settings writes stay out of the developer's state.
+  std::error_code ec;
+  const std::string state_home =
+      (std::filesystem::temp_directory_path(ec) /
+       ("soar_settings_" + std::to_string(::getpid())))
+          .string();
+  std::filesystem::create_directories(state_home + "/soar", ec);
+
+  // Same private-display scheme as the other X11 cases (serial runs).
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    // Same size as the HUD tour: the nav rows and the per-tab control
+    // grid were probed on a 1280x800 screen.
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the settings drive");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    std::filesystem::remove_all(state_home, ec);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "settings", state_home.c_str(),
+             static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const ScopedEnv state_env("XDG_STATE_HOME", state_home.c_str());
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const auto run = runCli({"--gui", "--backend=null"}, 300);
+
+  int injector_status = 0;
+  ::waitpid(injector, &injector_status, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+  std::printf("x11 settings drive: cli exit=%d injector=%d, output:\n%s\n",
+              run.exit_code,
+              WIFEXITED(injector_status) ? WEXITSTATUS(injector_status) : -1,
+              run.output.c_str());
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(state_home, ec);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  // The drive's own verdict: 0 = every click landed and both stepper
+  // writes were confirmed from the state file; 6/7 = the "+" / "-" write
+  // never landed (geometry drift or a swallowed click); 4 = the injector
+  // could not reach the window.
+  REQUIRE(WIFEXITED(injector_status));
+  REQUIRE(WEXITSTATUS(injector_status) == 0);
+
+  // The persisted cap row is the file-level trace of the drive: the
+  // stepper's two writes and the reset's own save leave the default
+  // behind, and the row is well-formed (a whole number).
+  std::ifstream prefs(state_home + "/soar/settings.txt");
+  REQUIRE(prefs.good());
+  std::string row;
+  bool have_cap = false;
+  while (std::getline(prefs, row)) {
+    if (row.rfind("recent_cap=", 0) == 0) {
+      have_cap = true;
+      CHECK(row == "recent_cap=15");
+    }
+  }
+  CHECK(have_cap);
+  std::filesystem::remove_all(state_home, ec);
+#endif
 #endif
 }
 
@@ -6481,9 +6824,19 @@ TEST_CASE("windowed FFmpeg run walks the play queue end to end") {
   std::filesystem::remove_all(queue_dir, queue_ec);
   REQUIRE(std::filesystem::create_directories(queue_dir, queue_ec));
   REQUIRE(std::filesystem::create_directories(queue_dir + "/.cache", queue_ec));
+  // The second name is deliberately far longer than the queue row's
+  // label box: the row render ellipsizes it every frame (the truncation
+  // loop the walkthrough otherwise never reaches). It still sorts after
+  // one.mkv, so the picker's row order — and its tick pins — hold.
   const std::string first_q = queue_dir + "/one.mkv";
-  const std::string second_q = queue_dir + "/two.mkv";
-  const std::string dead_q = queue_dir + "/missing.mp4";
+  const std::string second_q =
+      queue_dir +
+      "/two_queue_entry_with_an_extremely_long_name_that_overflows_both_"
+      "the_row_label_and_the_head_title_boxes.mkv";
+  // The dead path has no extension: its row's meta column reads "media"
+  // (rowMeta's extension-less arm) instead of the uppercase extension a
+  // named extension would produce.
+  const std::string dead_q = queue_dir + "/missingfile";
   std::filesystem::create_symlink(first, first_q, queue_ec);
   REQUIRE(!queue_ec);
   std::filesystem::create_symlink(second, second_q, queue_ec);
