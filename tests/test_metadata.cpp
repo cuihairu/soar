@@ -604,3 +604,150 @@ TEST_CASE("metadata_scraper_decodes_json_escapes_it_will_read") {
   }
 #endif
 }
+
+// =========================================================================
+// The JSON walker and the length handling, at their edges: shapes a real
+// service or a corrupt cache can produce where the client must either
+// recurse to the answer, refuse the answer, or treat a bogus length as no
+// length at all.
+// =========================================================================
+
+TEST_CASE("metadata_scraper_survives_json_walker_edge_shapes") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping metadata tests");
+    return;
+  }
+
+  // Every shape here ends in "no title" - each one breaks the walk in a
+  // different way: a container closed by the wrong bracket, a key the
+  // reader cannot follow, a title string that never terminates, escapes
+  // truncated mid-sequence.
+  const char* modes[] = {"objclose", "arrclose",   "noColon",
+                         "badtitlestr", "shortu", "trailbs"};
+  for (const char* mode : modes) {
+    const TempDir root;
+    const test_servers::RangeServer srv =
+        test_servers::startMetadataServer(root.path, mode, "");
+    REQUIRE(srv.pid >= 0);
+    HttpMetadataScraper s;
+    HttpMetadataConfig cfg;
+    cfg.endpoint = srv.base_url;
+    cfg.timeout = 5000ms;
+    s.configure(cfg);
+    ScrapedMetadata out{"keep", "keep"};
+    std::string err;
+    CHECK_FALSE(s.scrape("Anything", &out, &err));
+    CHECK(err.find("no title") != std::string::npos);
+    CHECK(out.title == "keep");  // a failed scrape leaves the answer untouched
+    CHECK(out.plot == "keep");
+  }
+#endif
+}
+
+TEST_CASE("metadata_scraper_finds_the_title_nested_in_containers") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping metadata tests");
+    return;
+  }
+
+  // The first string-valued "title" anywhere in the document wins, at any
+  // depth - through an object and through an array member alike. Strings
+  // that merely mention the key ("title text, never a key") never match.
+  SUBCASE("through nested objects") {
+    const TempDir root;
+    const test_servers::RangeServer srv =
+        test_servers::startMetadataServer(root.path, "nestedobj", "");
+    REQUIRE(srv.pid >= 0);
+    HttpMetadataScraper s;
+    HttpMetadataConfig cfg;
+    cfg.endpoint = srv.base_url;
+    cfg.timeout = 5000ms;
+    s.configure(cfg);
+    ScrapedMetadata out;
+    REQUIRE(s.scrape("Deep", &out, nullptr));
+    CHECK(out.title == "FromObject");
+    CHECK(out.plot == "nested");
+  }
+
+  SUBCASE("through an array member") {
+    const TempDir root;
+    const test_servers::RangeServer srv =
+        test_servers::startMetadataServer(root.path, "nestedarr", "");
+    REQUIRE(srv.pid >= 0);
+    HttpMetadataScraper s;
+    HttpMetadataConfig cfg;
+    cfg.endpoint = srv.base_url;
+    cfg.timeout = 5000ms;
+    s.configure(cfg);
+    ScrapedMetadata out;
+    REQUIRE(s.scrape("Deep", &out, nullptr));
+    CHECK(out.title == "FromArray");
+    CHECK(out.plot == "nested");
+  }
+#endif
+}
+
+TEST_CASE("metadata_scraper_treats_a_negative_content_length_as_no_length") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping metadata tests");
+    return;
+  }
+  const TempDir root;
+  const test_servers::RangeServer srv =
+      test_servers::startMetadataServer(root.path, "neglen", "");
+  REQUIRE(srv.pid >= 0);
+  HttpMetadataScraper s;
+  HttpMetadataConfig cfg;
+  cfg.endpoint = srv.base_url;
+  cfg.timeout = 5000ms;
+  s.configure(cfg);
+  // A negative advertised length is not a length: the read-to-EOF path
+  // must take over and the answer still lands as a hit.
+  ScrapedMetadata out;
+  std::string err;
+  REQUIRE(s.scrape("NegLen", &out, &err));
+  CHECK(out.title == "NegLen");
+  CHECK(out.plot == "read to eof");
+#endif
+}
+
+TEST_CASE("metadata_scraper_reports_a_reset_connection_mid_body") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping metadata tests");
+    return;
+  }
+  const TempDir root;
+  const test_servers::RangeServer srv =
+      test_servers::startMetadataServer(root.path, "resetbody", "");
+  REQUIRE(srv.pid >= 0);
+  HttpMetadataScraper s;
+  HttpMetadataConfig cfg;
+  cfg.endpoint = srv.base_url;
+  cfg.timeout = 5000ms;
+  s.configure(cfg);
+  // The body ends in a TCP reset, not a clean close: only the error_code
+  // on the receive keeps a half-body from counting as complete.
+  ScrapedMetadata out{"keep", "keep"};
+  std::string err;
+  CHECK_FALSE(s.scrape("Anything", &out, &err));
+  CHECK(err.find("receive failed") != std::string::npos);
+  CHECK(out.title == "keep");
+  CHECK(out.plot == "keep");
+#endif
+}

@@ -728,8 +728,21 @@ srv.serve_forever()
 //   "stall"     accepts, then sleeps 40s before answering - the client's
 //               socket timeout is what must save it.
 //   "notfound"  a path other than /search/movie.
+//   "resetbody" a length-less 200 whose body ends in a TCP reset - the
+//               unbounded read must report a receive failure, not success.
+//   "neglen"    a negative Content-Length - not a length: the client falls
+//               back to reading to EOF and succeeds.
+//   "nestedobj"/"nestedarr" the first string-valued "title" lives inside a
+//               nested object / array member - the walker must recurse.
+//   "objclose"/"arrclose" a misplaced ']' in an object / '}' in an array -
+//               the container guards must end the walk without a title.
+//   "noColon"   a key with no colon after it - the object walk refuses.
+//   "badtitlestr" the "title" key is found but its string never terminates
+//               - the found-key arm still fails the answer.
+//   "shortu"/"trailbs" a \u escape truncated by end of body / a lone
+//               trailing backslash, both inside the title value.
 constexpr const char* kMetadataServerScript = R"PY(
-import json, os, socketserver, sys, time
+import json, os, socket, socketserver, struct, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -798,6 +811,23 @@ class MetaHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             time.sleep(40)
             return
+        if MODE == "resetbody":
+            # A length-less 200 whose body ends in a TCP reset instead of a
+            # close: the unbounded read must come back as a receive failure,
+            # not silently count as "server closed, body complete". The
+            # linger-zero close below sends the RST directly - the handler
+            # teardown path (shutdown-then-close) would send a clean FIN
+            # first and the client would read it as a complete body.
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b'{"results":[{"ti')
+            self.wfile.flush()
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                                       struct.pack("ii", 1, 0))
+            self.connection.close()
+            self.close_connection = True
+            return
         if MODE == "bigbody":
             # No Content-Length, then more than the 1 MiB download cap.
             self.send_response(200)
@@ -860,11 +890,60 @@ class MetaHandler(BaseHTTPRequestHandler):
             data = b'{"results":[{"title":"","overview":"a plot"}]}'
         elif MODE == "nonstring":
             data = b'{"results":[{"title":123,"overview":"a plot"}]}'
+        elif MODE == "nestedobj":
+            # The first string-valued "title" lives two objects deep: the
+            # object walk must recurse into values and keep searching.
+            data = (b'{"meta":{"generator":"t","deep":{"title":"FromObject",'
+                    b'"overview":"nested"}},"other":{"title":123}}')
+        elif MODE == "nestedarr":
+            # Same, one array level: the array walk hands members back to
+            # the value consumer, which finds the key inside them.
+            data = (b'{"rows":[{"intro":"title text, never a key"},'
+                    b'{"title":"FromArray","overview":"nested"}],'
+                    b'"alt":{"title":"TooLate"}}')
+        elif MODE == "objclose":
+            # An array bracket where the object loop expects a key or its
+            # own closer (the members deliberately carry no "title"): the
+            # walk must stop, not re-enter on that byte.
+            data = b'{"results":[1,2],}'
+        elif MODE == "arrclose":
+            # An object bracket where the array loop expects a value or its
+            # own closer (the members deliberately carry no "title").
+            data = b'{"results":[1,2}'
+        elif MODE == "noColon":
+            # A key followed by another string, no colon: not an object the
+            # reader can walk.
+            data = b'{"title" "The Matrix"}'
+        elif MODE == "badtitlestr":
+            # The key IS found, but its string value never terminates: the
+            # found-key arm must still fail the answer.
+            data = b'{"title":"cut off'
+        elif MODE == "shortu":
+            # A \\u escape truncated by the end of the body, inside the
+            # title the reader was about to accept.
+            data = b'{"results":[{"title":"x\\u00'
+        elif MODE == "trailbs":
+            # A lone backslash where an escape name should be, inside the
+            # title value.
+            data = b'{"results":[{"title":"x\\'
+        elif MODE == "neglen":
+            # The body is fine; only the advertised length is bogus (the
+            # send section below hands it out as "Content-Length: -1").
+            data = b'{"results":[{"title":"NegLen","overview":"read to eof"}]}'
         else:
             self.deny(500)
             return
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        if MODE == "neglen":
+            # A negative Content-Length is not a length: the client must
+            # fall back to reading to EOF (and succeed).
+            self.send_header("Content-Length", "-1")
+            self.send_header("Connection", "close")
+            self.close_connection = True
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if MODE == "nolength":
             # HTTP/1.1 without Content-Length: the client must read to EOF,
             # so the connection has to actually close.
