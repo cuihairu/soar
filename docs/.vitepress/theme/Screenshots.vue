@@ -100,7 +100,7 @@ const groups = [
       proto(
         'redesign/settings-dark.png',
         '设置面板原型稿（v2 定稿）',
-        '设置面板（v2 原型）—— v0.2 规划稿；v0.1 无设置页（ui-design §2）',
+        '设置面板（v2 原型）—— v0.2 规划稿；v0.1 无设置页（旧稿规定，旧稿已删）',
       ),
     ],
   },

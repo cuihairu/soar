@@ -46,7 +46,7 @@ Goal: build a “usable desktop player core + the thinnest possible UI” first,
 - Startup semantics (BUGS.md #3, merged with #2): the GUI front end `soarw.exe` and `--gui` started with no source show the empty main window (the “Open a file” poster) and do not print usage; the console `soar.exe` with no source still prints usage and exits 2; `--help/-h` prints usage and exits 0. With no explicit `--backend=`, the default backend is FFmpeg when it is compiled in (the old null default pretended to play any URI and showed a black screen — a file opened by a window session went silently black). File association: the Windows installer registers 18 extensions as “Open with → Soar” candidates (OpenWithProgids, does not take over the default, uninstalls without a trace); Linux uses `.desktop` with `Exec=soar --gui %U` + MimeType (%U hands the opened file or magnet URI over as an argument; the intake decodes a `file://` URI back to a path, src/app/uri_decode.*)
 - Status feedback: pause/buffering indicator, OSD toast, media-information overlay
 
-Design and technology choices (the comparison and trade-offs between SDL2 custom drawing / ImGui / Qt / a web shell) are in [UI design](/ui-design).
+Design and technology choices (the comparison and trade-offs between SDL2 custom drawing / ImGui / Qt / a web shell) are in the [redesign v2 prototypes](/prototypes).
 
 ## 2. v0.2 (fully landed)
 
