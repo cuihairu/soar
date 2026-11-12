@@ -496,14 +496,14 @@ if mode == "settings":
     # store-confirmed steps.
     sclick(98, 74)     # nav: General
     time.sleep(0.6)
-    sclick(913, 294)   # recent cap "+" -> 15 -> 16
+    sclick(913, 353)   # recent cap "+" -> 15 -> 16
     if state and not wait_cap("16"):
         sys.exit(6)    # the stepper write never landed
-    sclick(841, 294)   # recent cap "-" -> 16 -> 15
+    sclick(841, 353)   # recent cap "-" -> 16 -> 15
     if state and not wait_cap("15"):
         sys.exit(7)    # the "-" write never landed
     # Reset defaults walks the whole reset body (switches, cap, rate,
-    # loop, shuffle, theme guard), then Done closes the page.
+    # loop, shuffle) — never the appearance choice — then Done closes the page.
     sclick(813, 28)    # chead: Reset defaults
     time.sleep(0.6)
     sclick(910, 28)    # chead: Done
