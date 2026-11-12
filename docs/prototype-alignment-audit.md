@@ -1,6 +1,14 @@
 
 # Prototype Alignment Audit (2026-10-15)
 
+> **Baseline change (2026-11-11).** `docs/ui-design.md` — baseline "C" cited throughout this document — was
+> **deleted** in `58b9b57`: the written spec had drifted from the prototypes it claimed to serve, so it is gone
+> rather than reconciled. The **sole visual baseline is now the four pages under
+> `docs/public/prototypes/redesign/`** (main window / playlist / settings / library, each light and dark),
+> per the user's order on 2026-11-11; everywhere a conflict exists, the v2 prototype wins. Read the many
+> `ui-design.md:NN` line cites below as **historical record of the audit only** — they no longer point at a
+> live file. The top-bar item (L1/M1) was closed the same day by user order: the bar stays.
+
 Trigger: the user reported "soar looks nothing like the design prototypes". This round is **audit only — no
 implementation changes, no prototype changes**.
 Conclusion up front: **the main cause of "looks nothing like" is not missed implementation work, but the fact
@@ -104,7 +112,7 @@ v2 dropped this page (no corresponding file under `redesign/`), and the implemen
 
 | # | Difference | Prototype | Implementation | Nature |
 |---|---|---|---|---|
-| L1 | **No top bar** (brand/title/Info/Recent/Help/Fullscreen) | `desktop-main.html:165-193` | None; the four functions sit in the OSC `:2054-2071` | Intentional deviation (`ui-design.md:54`) |
+| L1 | **No top bar** (brand/title/Info/Recent/Help/Fullscreen) | `desktop-main.html:165-193` | **Landed** `drawTopBar()` `player_hud_render.cpp:811` (`fea5ecc`) | Superseded: the bar was added against the (a) proxy decision and **endorsed by the user 2026-11-11** (see M1) |
 | L2 | Status-chip form: v2 has a single chip containing a clock vs the implementation's four separate small chips (Paused/Buffering/Downloading N%/Casting) | `desktop-main.html:189-193` | `drawChips()` `:2199-2225` | Implemented, form difference (initially misjudged as "missed", corrected in revision) |
 | L3 | OSC row 1 lacks left/right timecodes | `:197`, `:201` | Row 2 text (old) `:2009-2016` | **Added** (39f7ed5, row 1 = left timecode | track | right -remaining, row 2 clock removed) |
 | L4 | **No resolution pill** (1080p 60) | `:202` | None | Decided by proxy not to do it (`MediaInfo` has no width/height, core interface frozen; the initial version missed the MK_R2A decision) |
@@ -161,7 +169,7 @@ slider; the rail's played/buffer split and thumb are not drawn as separate primi
 
 | # | Missing component | Prototype | Implementation | Nature |
 |---|---|---|---|---|
-| M1 | Top bar | `desktop-main.html:165-193` | `drawTopBar()` `player_hud_render.cpp:811` — **landed 2026-11-01** (`fea5ecc`) | Was "intentional deviation" (no bar); the prototype-alignment batch then **added the bar against the (a) proxy decision below** — open user decision, spec still has no top bar |
+| M1 | Top bar | `desktop-main.html:165-193` | `drawTopBar()` `player_hud_render.cpp:811` — **landed 2026-11-01** (`fea5ecc`) | Was "intentional deviation" (no bar); the prototype-alignment batch **added the bar against the (a) proxy decision below** — **closed 2026-11-11 by user order: the bar stays** (the §5-P2-7 P2 note carries the detail). Note: the audit's `ui-design.md` cites are historical — that spec was deleted in `58b9b57` (2026-11-11) and `redesign/*.html` is the sole visual baseline |
 | M2 | Status chip (including the P2P download percentage) | `:189-193` | `drawChips()` `:2199-2225` (Paused/Buffering/Downloading/Casting) | Implemented, form difference (corrected in revision) |
 | M3 | Resolution/codec pill | `:202` | None | Decided by proxy not to do it (core interface frozen, MK_R2A) |
 | M4 | General settings page | `settings.html` | None (only Subtitle Settings `:2997`) | Intentionally deferred (v0.2) — **landed 2026-11-02** (`0d07d89`, G key, General/Playback/Subtitles/Network/About tabs, `drawSettingsOverlay` `player_window.cpp:2299`) |
@@ -176,12 +184,14 @@ V3/V4 d7e7bf6, V7b focus ring 2026-10-15 proxy decision b; reclassified: V6 inte
 prototype ahead of the spec; V7 split into V7a/V7b with V7a an intentional deviation = explicitly deferred by
 the spec. All missed items have landed or been reclassified; there are no open items)
 
-**Intentional deviation/deferral total: L1, L4, L5, V1, V2, V6, V7a, I1, I2, M1, M3, M4, M5, M6, M7, M8 =
-16 items.** (V6/V7a reclassified in R1015E)
+**Intentional deviation/deferral total: L4, L5, V1, V2, V6, V7a, I1, I2, M3, M4, M5, M6, M7, M8 =
+14 items.** (V6/V7a reclassified in R1015E)
 
 **Implemented with form differences: L2, M2 = 2 items (misjudged as missed in the initial version, corrected in
 revision). Implementation ahead: L6 = 1 item. Verified-aligned items: I3, I4, I5, I6 = 4 items (not counted
-as differences).**
+as differences). Ratified structural change, no longer a deviation: L1/M1 (top bar) = 1 item —
+the bar landed against the (a) proxy decision and the user endorsed it on 2026-11-11, so the implementation
+now matches the v2.1 light-theme prototype frames that render the bar.**
 
 ---
 
@@ -254,10 +264,14 @@ as differences).**
    environment), with the difference annotated.
    **Post-decision note (2026-11-10):** the prototype-alignment batch landed the top bar anyway
    (`fea5ecc` 2026-11-01, `drawTopBar`), so the running build now has the bar the (a) decision dropped —
-   the walkthroughs even depend on it (the Fullscreen tool click). Recorded in the §3.4 M1 row; the item
-   stays open for the user to either endorse the bar or have it removed per (a). The compare shots at
-   `docs/review/ui-proto-002/compare/main_*.png` show both sides (the prototype PNG is a pre-removal
-   frame: its top bar is not spec).
+   the walkthroughs even depend on it (the Fullscreen tool click). Recorded in the §3.4 M1 row.
+   **User decision (2026-11-11, closes this item): the top bar stays.** Option (a) is withdrawn and
+   (b) is what the running build already is; the v2.1 light-theme prototype frames already render the bar,
+   so the app now matches the frames the user reviews against. The (a) removal note in
+   `prototypes.md` §"Top bar removed" is kept as history with an update line pointing here. Evidence:
+   `docs/review/ui-proto-002/after/{page}_{theme}.png` (app, 4 pages × light/dark) and
+   `docs/review/ui-proto-002/compare/{page}_{theme}.png` (prototype on top, app below).
+   Visual match of the bar's placement is **待用户亲验**.
 
 8. ~~**Focus visibility ring** (V7b): the spec lists "focus visibility" as a mitigation for ImGui's accessibility
    shortfalls (`ui-design.md:216`), but there is currently **no keyboard focus model** (no `ImGuiConfigFlags`
