@@ -771,7 +771,10 @@ float PlayerHud::topPill(ImDrawList* dl, float x, float cy, const char* text,
   if (tinted) {
     bg = ImGui::ColorConvertFloat4ToU32(ImVec4(fg.x, fg.y, fg.z, 0.14f));
   } else {
-    bg = IM_COL32(255, 255, 255, 20);  // rgba(255,255,255,.08) .pill ground
+    // .pill ground: surface-2 in both themes. The white .08 the dark draft
+    // used would be invisible on the light panel (it only reads over a dark
+    // video canvas), so the token carries it.
+    bg = ImGui::ColorConvertFloat4ToU32(theme::kSurface2);
   }
   const ImU32 fgU32 = ImGui::ColorConvertFloat4ToU32(fg);
   dl->AddRectFilled(ImVec2(x, py), ImVec2(x + pw, py + ph), bg,
@@ -796,9 +799,16 @@ bool PlayerHud::topTool(const char* id, char glyph, const char* tip, const ImVec
   if (hovered && tip) ImGui::SetTooltip("%s", tip);
   ImDrawList* dl = ImGui::GetWindowDrawList();
   if (hovered || ImGui::IsItemActive()) {
-    const float a = ImGui::IsItemActive() ? 0.16f : 0.08f;
-    dl->AddRectFilled(pos, ImVec2(pos.x + 30.0f, pos.y + 30.0f),
-                      IM_COL32(255, 255, 255, static_cast<int>(a * 255)),
+    // .toolbtn:hover — white .08 over the dark draft; the token flips to the
+    // light ladder's line-strong so the hover square keeps contrast there.
+    const float a = ImGui::IsItemActive() ? 1.0f : 0.55f;
+    ImU32 hover = IM_COL32(255, 255, 255, static_cast<int>(a * 0.16f * 255));
+    if (theme::g_light) {
+      const ImVec4& c = theme::kLineStrong;
+      hover = ImGui::ColorConvertFloat4ToU32(
+          ImVec4(c.x, c.y, c.z, ImGui::IsItemActive() ? 0.9f : 0.45f));
+    }
+    dl->AddRectFilled(pos, ImVec2(pos.x + 30.0f, pos.y + 30.0f), hover,
                       theme::kControlRounding);
   }
   const char g[2] = {glyph, 0};
@@ -835,14 +845,14 @@ void PlayerHud::drawTopBar() {
     const float cy = h * 0.5f;
     float x = 22.0f;  // .topbar padding-left
 
-    // .app-title: the 22px wing mark — an orange-gradient rounded square
-    // (the bitmap font has no wing glyph, so the face is drawn; the ink
-    // is a small chevron suggesting the wing).
+    // .app-title: the 22px wing mark — a flat orange block (v2's "渐变清零"
+    // rule; the dark draft's linear-gradient wing was ugly-list item #1).
+    // The bitmap font has no wing glyph, so the face is drawn; the ink is a
+    // small chevron suggesting the wing.
     const ImVec2 logo(x, cy - 11.0f);
-    const ImU32 acc = ImGui::ColorConvertFloat4ToU32(theme::kAccent);
-    const ImU32 accHi = ImGui::ColorConvertFloat4ToU32(theme::kAccentHover);
-    dl->AddRectFilledMultiColor(logo, ImVec2(x + 22.0f, cy + 11.0f), acc,
-                                accHi, accHi, acc);
+    dl->AddRectFilled(logo, ImVec2(x + 22.0f, cy + 11.0f),
+                      ImGui::ColorConvertFloat4ToU32(theme::kAccent),
+                      theme::kControlRounding);
     dl->AddTriangleFilled(ImVec2(x + 6.0f, cy - 5.0f), ImVec2(x + 6.0f, cy + 5.0f),
                           ImVec2(x + 15.0f, cy),
                           ImGui::ColorConvertFloat4ToU32(theme::kInkOnAccent));

@@ -934,10 +934,15 @@ class PlayerHud {
                    const std::function<void()>& control);
 
 
-  // The prototype's .dangerbtn: a danger-outline button (red at .4 border
-  // / .1 face / full ink text; hover raises the face to .18).
-  bool dangerButton(const char* label, ImVec2 size);
+  // The prototype's .ghostbtn: a 24px bordered neutral button (field
+  // ground, hairline border, normal text, hover raises the face).
+  bool settingsGhostButton(const char* id, const char* label, float w);
 
+
+  // The General tab's appearance row: a two-option segmented control
+  // (Dark / Light) bound to the theme palette — the in-app half of the
+  // prototype's `?theme=` switch.
+  void themeSegmented();
 
   // The prototype's .select: a 26px box with a line-strong border and a
   // --bg3 face. Live = clicking cycles through the caller's options (the

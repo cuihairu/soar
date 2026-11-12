@@ -97,11 +97,8 @@ void PlayerHud::resetSettingsDefaults() {
   if (cfg_.subtitle_offset_ms) {
     cfg_.subtitle_offset_ms->store(0, std::memory_order_relaxed);
   }
-  if (theme::g_light) {
-    theme::applyPalette(false);
-    applyTheme();
-    saveThemePref();
-  }
+  // Appearance is the user's: reset restores settings values only, never the
+  // theme choice.
   st_.last_rate = 1.0;
   player_.setRate(1.0);
   playlist_.setLoop(PlaylistStore::Loop::Off);
@@ -159,6 +156,9 @@ void PlayerHud::settingsNavIcon(ImDrawList* dl, const ImVec2 c, SettingsTab tab,
 
 void PlayerHud::drawGradientMark(ImDrawList* dl, const ImVec2& p, float size, float r,
                       ImU32) {
+  // The name is a leftover from the dark draft's gradient wing; v2's
+  // "渐变清零" made the mark a flat orange block, so the draw is flat —
+  // only the callers' shape parameter lives on.
   dl->AddRectFilled(p, ImVec2(p.x + size, p.y + size),
                     ImGui::ColorConvertFloat4ToU32(theme::kAccent), r);
   const ImU32 ink = ImGui::ColorConvertFloat4ToU32(
@@ -232,27 +232,74 @@ void PlayerHud::settingCard(const char* id, const char* title, const char* desc,
   ImGui::PopStyleVar();
 }
 
-bool PlayerHud::dangerButton(const char* label, ImVec2 size) {
-  ImGui::PushStyleColor(
-      ImGuiCol_Button, ImGui::ColorConvertFloat4ToU32(ImVec4(
-                           theme::kDanger.x, theme::kDanger.y,
-                           theme::kDanger.z, 0.10f)));
-  ImGui::PushStyleColor(
-      ImGuiCol_ButtonHovered, ImGui::ColorConvertFloat4ToU32(ImVec4(
-                                  theme::kDanger.x, theme::kDanger.y,
-                                  theme::kDanger.z, 0.18f)));
-  ImGui::PushStyleColor(
-      ImGuiCol_ButtonActive, ImGui::ColorConvertFloat4ToU32(ImVec4(
-                                 theme::kDanger.x, theme::kDanger.y,
-                                 theme::kDanger.z, 0.18f)));
-  ImGui::PushStyleColor(
-      ImGuiCol_Border, ImGui::ColorConvertFloat4ToU32(ImVec4(
-                           theme::kDanger.x, theme::kDanger.y,
-                           theme::kDanger.z, 0.40f)));
-  ImGui::PushStyleColor(ImGuiCol_Text, theme::kDanger);
-  const bool clicked = ImGui::Button(label, size);
-  ImGui::PopStyleColor(5);
+// v2 .ghostbtn: a bordered neutral card button (field ground, hairline
+// border, normal text). v2's settings rule — edit/add are neutral, red is
+// reserved for destructive actions.
+bool PlayerHud::settingsGhostButton(const char* id, const char* label,
+                                    float w) {
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, 24.0f));
+  const bool hov = ImGui::IsItemHovered();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 24.0f),
+                    ImGui::ColorConvertFloat4ToU32(hov ? theme::kFieldBgHi
+                                                       : theme::kFieldBg),
+                    kControlRounding);
+  dl->AddRect(p, ImVec2(p.x + w, p.y + 24.0f),
+              ImGui::ColorConvertFloat4ToU32(theme::kCardLine),
+              kControlRounding);
+  const ImVec2 ts = ImGui::CalcTextSize(label);
+  dl->AddText(ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (24.0f - ts.y) * 0.5f),
+              ImGui::ColorConvertFloat4ToU32(hov ? theme::kText : theme::kText2),
+              label);
   return clicked;
+}
+
+void PlayerHud::themeSegmented() {
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  static const char* const kLabels[2] = {"Dark", "Light"};
+  const bool light_on = theme::g_light;
+  const float seg_h = 22.0f;
+  float widths[2] = {0, 0};
+  float total = 0.0f;
+  for (int i = 0; i < 2; ++i) {
+    widths[i] = ImGui::CalcTextSize(kLabels[i]).x + 20.0f;
+    total += widths[i];
+  }
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  const ImVec2 cpos(p.x - 2.0f, p.y - 2.0f);
+  dl->AddRectFilled(cpos, ImVec2(cpos.x + total + 8.0f, cpos.y + seg_h + 4.0f),
+                    ImGui::ColorConvertFloat4ToU32(theme::kFieldBg), 99.0f);
+  dl->AddRect(cpos, ImVec2(cpos.x + total + 8.0f, cpos.y + seg_h + 4.0f),
+              ImGui::ColorConvertFloat4ToU32(theme::kCardLine), 99.0f);
+  float x = p.x;
+  for (int i = 0; i < 2; ++i) {
+    const bool on = light_on == (i == 1);
+    const ImVec2 bp(x, p.y);
+    ImGui::SetCursorScreenPos(bp);
+    const bool clicked =
+        ImGui::InvisibleButton(("##set_theme" + std::to_string(i)).c_str(),
+                               ImVec2(widths[i], seg_h));
+    const bool hovered = ImGui::IsItemHovered();
+    if (on) {
+      dl->AddRectFilled(bp, ImVec2(bp.x + widths[i], bp.y + seg_h),
+                        ImGui::ColorConvertFloat4ToU32(theme::kAccent), 99.0f);
+    }
+    const ImVec2 lts = ImGui::CalcTextSize(kLabels[i]);
+    dl->AddText(ImVec2(bp.x + (widths[i] - lts.x) * 0.5f,
+                       bp.y + (seg_h - lts.y) * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(
+                    on ? theme::kInkOnAccent
+                       : (hovered ? theme::kText2 : theme::kText3)),
+                kLabels[i]);
+    if (clicked && !on) {
+      theme::applyPalette(i == 1);
+      applyTheme();
+      saveThemePref();
+    }
+    x += widths[i];
+  }
+  ImGui::SetCursorScreenPos(ImVec2(p.x + total, p.y + seg_h));
 }
 
 bool PlayerHud::settingsSelectBox(const char* id, const char* label, float w,
@@ -366,8 +413,10 @@ void PlayerHud::endpointRow(const char* id, const char* tag, const char* value,
     ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
     ImGui::TextUnformatted(clipEllipsis(value, max_chars).c_str());
     ImGui::PopStyleColor();
+    // v2 settings rule: edit/add are neutral ghost buttons; red is
+    // reserved for destructive actions (redesign index.html ugly-list #8).
     ImGui::SetCursorPos(ImVec2(avail - 58.0f, 8.0f));
-    if (dangerButton("Edit##ep", ImVec2(48.0f, 24.0f))) {
+    if (settingsGhostButton("Edit##ep", "Edit", 48.0f)) {
       st_.toast.show("Endpoint not configured", now);
     }
   }
@@ -533,6 +582,12 @@ void PlayerHud::drawSettingsOverlay() {
             "##g_esc", "ESC exits fullscreen",
             "Only in fullscreen; in-window ESC closes settings", 34.0f, 20.0f,
             [&] { settingsSwitch("##g_esc_sw", &st_.esc_exits_fullscreen); });
+        // 外观 — the prototype's `?theme=light|dark` switch, in the app.
+        // v2 makes the light shell part of the baseline (v2.1 review), so
+        // the choice needs a home beside the startup rows; `y` still works.
+        settingCard("##g_theme", "Appearance",
+                    "Shell theme; the video canvas stays dark in both", 110.0f,
+                    22.0f, [&] { themeSegmented(); });
         // 界面语言 — ASCII-only build: the shipped label set is English
         // (the bitmap font has no CJK), so the select has one honest row.
         settingCard(
@@ -704,7 +759,7 @@ void PlayerHud::drawSettingsOverlay() {
                     [&] {
                       settingsPill("0 trackers", theme::kNet);
                       ImGui::SameLine(0.0f, 8.0f);
-                      if (dangerButton("Add##n_add", ImVec2(44.0f, 24.0f))) {
+                      if (settingsGhostButton("Add##n_add", "Add", 44.0f)) {
                         st_.toast.show("No tracker list yet", nowMs());
                       }
                     });
