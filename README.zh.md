@@ -26,7 +26,7 @@ v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/�
 - **媒体输入**：本地文件、多文件入队（`soar <a> <b> …`，首个即播其余排队）、网络流 URL（`http(s)`/HLS/DASH/RTSP 等 FFmpeg 支持的一切协议）、`.torrent` 文件与 `magnet:` 链接；打开失败时错误原因可见；
 - **播放控制**：播放 / 暂停 / 停止 / Seek（跳转）/ 倍速（Rate）/ 音量与静音；
 - **播放列表**：`N`/`Shift+N` 下一首/上一首（越界只 Toast 不绕回），自然播完自动步进（走到队尾停在 Ended，空格可重播），`P` 浮层点选即播、`x` 删除，Loop 三态（off/all/one）与 Shuffle；
-- **媒体库**：监视文件夹（递归扫描、缺失文件剪除；直接打开的条目——URL、不在任何监视文件夹内的文件——永不剪除），按源记录播放历史与续播（重开时位置过 5s 且距结尾至少 5s 才提供续播，播完即清，`--no-resume` 继续记录但永不回跳），`B` 开媒体库浮层（点选带续播播放、经目录选择器的监视模式添加监视文件夹、重新扫描），离线 NFO sidecar 刮削（`<name>.nfo` 同名旁文件的标题/简介填入媒体库行）。历史仅由窗口会话记录——headless 保持无状态——原始 magnet/.torrent URI 不入历史，桥接 URL 会记录（本地端口每会话变化）；
+- **媒体库**：监视文件夹（递归扫描、缺失文件剪除；直接打开的条目——URL、不在任何监视文件夹内的文件——永不剪除），按源记录播放历史与续播（重开时位置过 5s 且距结尾至少 5s 才提供续播，播完即清，`--no-resume` 继续记录但永不回跳），`B` 开媒体库浮层（点选带续播播放、经目录选择器的监视模式添加监视文件夹、重新扫描），离线 NFO sidecar 刮削（`<name>.nfo` 同名旁文件的标题/简介填入媒体库行），以及可选的网络刮削（`SOAR_META_ENDPOINT`/`_API_KEY`/`_TIMEOUT_MS` 下的 TMDB 形状检索端点，配置后才出现 `Scrape` 钮，每次点击有上限，边车永远优先——默认零网络，未配置不发起任何请求）。历史仅由窗口会话记录——headless 保持无状态——原始 magnet/.torrent URI 不入历史，桥接 URL 会记录（本地端口每会话变化）；
 - **截图与 A-B 循环**：`S` 把最近呈现的帧保存为 `screenshot.png`；`L` 三段循环（定 A → 定 B → 清除，到文件尾也回跳，手动 seek 解除）；
 - **媒体信息**：时长、是否可 Seek、轨道（Track）列表（视频 / 音频 / 字幕，含编码、语言、标题）；
 - **轨道选择**：音频轨运行时切换（播放中/暂停中无感续播）；视频轨切换不支持；字幕轨运行时切换——选中内嵌轨时解码线程在安全点换字幕解码器、cue 从新轨续流（切换点之前的历史 cue 需一次倒退 seek 重扫，无自动重扫），选中外挂轨或关闭时内嵌字幕解码门关闭（细节与边界见 [docs/zh/mvp.md](docs/zh/mvp.md) §6）；
@@ -35,7 +35,7 @@ v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/�
 - **视频渲染**：后端解码为 YUV420P 帧并导出，应用层用 SDL2 Texture 直接上屏；`--hwdec=` 请求硬解、失败回退软解、hwaccel 帧回传 YUV420P；
 - **音频输出**：SDL2 音频设备，重采样（Resample）到设备参数，支持音量/静音/倍速，输出端点可在音轨菜单中枚举与切换（下一个音频帧生效）；
 - **网络与下载**：HTTP(S) 顺序播放即边下边看；`--cache-dir=` 磁盘缓存——同一 URL 离线可重播、断点续播、seek 进未下载段只补目标块，`Downloading N%` 进度徽标（http:// 走缓存，https 直通；见 docs/zh/mvp.md §5 P3）；`.torrent`/`magnet:` 经 vendored libtorrent 内核顺序下载、以本地 `http://127.0.0.1:<port>/` 桥进同一播放链路（`--torrent-store=`/`--torrent-peer=`/`--torrent-index=`/`--torrent-list`，窗口期「connecting to swarm - N peers」状态与下载徽标可见；P2P 边界见 docs/zh/mvp.md §5 P4）；
-- **投屏**：DLNA/UPnP AV 控制点已落地——自实现 SSDP/SOAP/GENA，零新依赖；`t` 开合窗口投屏浮层，CLI `--cast=<location|auto>` 把 .torrent/magnet: 源投给指定设备描述 URL 或 auto 发现的渲染器（`--cast-iface=` 指定 SSDP 发现广播的出口网卡），构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码（docs/zh/mvp.md §3）；
+- **投屏**：DLNA/UPnP AV 控制点已落地——自实现 SSDP/SOAP/GENA，零新依赖；`t` 开合窗口投屏浮层，CLI `--cast=<location|auto>` 把 .torrent/magnet: 源投给指定设备描述 URL 或 auto 发现的渲染器（`--cast-iface=` 指定 SSDP 发现广播的出口网卡、`--cast-transcode` 在构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码；docs/zh/mvp.md §3）；
 - **桌面 UI**：底部悬浮 OSC（2.5s 无输入自动隐藏，悬停/拖动/浮层/暂停时钉住），整宽 seek 条（悬停时间提示、拖动预览、松手提交）+ 按钮行（传输控制含上一首/下一首、时钟含剩余时间、音量、倍速、音轨/字幕轨菜单、Sub/Info/全屏、A-B 循环、CC 字幕开关、截图）；
 - **设置浮层**：`G` 打开，五个页签——General（记住上次媒体、ESC 退出全屏、外观、界面语言、最近播放上限、重置）、Playback（倍速、循环模式、随机）、Subtitles（字幕字体、字号、全局同步偏移、渲染样式、字幕目录）、Network & Download（P2P/DHT trackers、入站端口）、About（版本与构建信息）；外观行切换明暗外壳配色（`y` 键任意位置同效，出厂默认暗色，视频画面两种配色下都保持暗色，选择跨重启保留）；
 - **键鼠交互**：单击切换 OSC、双击全屏、垂直滚轮调音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开（MRU×15，持久化）；GUI 版（`soarw.exe`/`--gui`）无源启动直接进空主界面——「Open a file」海报，`O` 键或点海报打开文件（Windows 弹文件对话框，其他平台降级为拖放提示 toast）；`--open-dialog` 窗口出现后立即弹出文件选择器）；
@@ -47,12 +47,12 @@ v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/�
 ```mermaid
 flowchart TB
     subgraph APP["应用层 soar（可执行）"]
-        UI["ImGui 叠加层：浮动 OSC + 信息/最近/帮助浮层"]
+        UI["ImGui 叠加层：浮动 OSC + 信息/最近/帮助/播放列表/媒体库浮层"]
         WIN["SDL2 窗口：YUV 帧 → Texture 上屏"]
         HEADLESS["CLI 冒烟模式 --headless"]
     end
 
-    subgraph CORE["核心库 soar_core（纯抽象，Apache-2.0 本体）"]
+    subgraph CORE["核心库 soar_core（接口为纯抽象；检测到 FFmpeg 时后端编入）"]
         PLAYER["Player 播放门面：统一 API + 事件回调"]
         IBACKEND["IBackend 后端接口"]
     end
@@ -158,7 +158,7 @@ cmake --preset default && cmake --build --preset default   # Debug
 
 - **v0.1（MVP，已收口）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）——验收清单全数完成（见 [原型（redesign v2）](docs/zh/prototypes.md) §6）；
 - **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP 冒烟、字幕体验（字体/大小/同步偏移）——均已落地；
-- **v1.0**：硬解（首接线已落地：`--hwdec=`，失败回退软解）与 HDR（首接线已落地：HDR10/HLG 识别、逐帧 zscale 转到 SDR、不可用时诚实直通——docs/zh/mvp.md §3、coverage-notes.md §3.26）、投屏（DLNA/UPnP）、媒体库与离线 NFO 刮削（已落地；网络刮削与多设备同步待定——docs/zh/mvp.md §3）、插件体系。
+- **v1.0**：硬解（首接线已落地：`--hwdec=`，失败回退软解）与 HDR（首接线已落地：HDR10/HLG 识别、逐帧 zscale 转到 SDR、不可用时诚实直通——docs/zh/mvp.md §3、coverage-notes.md §3.26）、投屏（DLNA/UPnP AV 控制点已落地：自实现 SSDP 发现、设备 XML、SOAP 控制、GENA 事件、暂停、会话期桥 LAN 改绑，含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码；窗口投屏浮层（`t`）与 CLI `--cast`/`--cast-transcode` 开关 2026-10-12 接线；真机发现矩阵仍未验证——docs/zh/mvp.md §3、todo.md）、媒体库与离线 NFO 刮削（已落地；网络刮削 2026-10-16 以用户自配的 TMDB 形状端点落地，多设备同步仍在等协议决策——docs/zh/mvp.md §3）、插件体系。
 - **iOS 切片（骨架已落地）**：`ios/SoarKit` 是纯 Swift 包——播放控制门面、状态/事件模型，以及 `MediaEngine` 协议与镜像桌面 `NullBackend` 状态机的 `NullEngine`；CI 在 macOS runner 上做 iOS 构建并跑 XCTest（`.github/workflows/ios.yml`，`ios/**` 变更触发）。C 桥头文件（`ios/Bridge/soar_bridge.h`）仅为评审用设计稿、未接线；C++ 核心交叉编译成 xcframework 与 SwiftUI App 壳均未开始（如实状态表见 [ios/README.md](ios/README.md)）。
 
 完整边界与"明确不做"清单见 [docs/zh/mvp.md](docs/zh/mvp.md)。
