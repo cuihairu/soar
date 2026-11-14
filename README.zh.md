@@ -9,17 +9,17 @@
 <a href="https://cuihairu.github.io/soar/zh/"><img alt="docs" src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-blue"></a> <a href="https://github.com/cuihairu/soar/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a> <a href="https://github.com/cuihairu/soar/actions/workflows/ci.yml"><img alt="ci" src="https://github.com/cuihairu/soar/actions/workflows/ci.yml/badge.svg"></a> <a href="https://en.cppreference.com/w/cpp/17"><img alt="C++" src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white"></a> <a href="LICENSE"><img alt="license" src="https://img.shields.io/github/license/cuihairu/soar"></a> <a href="https://github.com/cuihairu/soar/actions/workflows/ci.yml"><img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue"></a> <a href="https://cmake.org"><img alt="cmake" src="https://img.shields.io/badge/CMake-3.20%2B-064F8C?logo=cmake&logoColor=white"></a> <a href="https://ffmpeg.org"><img alt="ffmpeg" src="https://img.shields.io/badge/FFmpeg-decode%20%2B%20demux-007808?logo=ffmpeg&logoColor=white"></a> <a href="https://wiki.libsdl.org"><img alt="sdl2" src="https://img.shields.io/badge/SDL2-render%20%2B%20audio-173353"></a>
 </p>
 
-[文档](https://github.com/cuihairu/soar/tree/main/docs) · [构建指南](docs/build.zh.md) · [路线图](docs/mvp.zh.md)
+[文档](https://github.com/cuihairu/soar/tree/main/docs) · [构建指南](docs/zh/build.md) · [路线图](docs/zh/mvp.md)
 
 ## 为什么做 Soar
 
 我们过去在播放器项目里反复踩同样的坑：播放内核和 UI 纠缠不清，依赖许可证（License）把分发卡死，想在移动端复用时才发现核心绑死在某个平台框架上。Soar 把这三条教训写成了设计约束。
 
-播放 API 与事件模型不依赖任何具体多媒体库，UI 换掉、内核不动。后端可插拔：FFmpeg、系统框架、测试用的假后端实现同一个 `IBackend` 接口。项目本体是 Apache-2.0，依赖选型守住 LGPL/GPL 边界（见 [docs/licensing.md](docs/licensing.zh.md)）。
+播放 API 与事件模型不依赖任何具体多媒体库，UI 换掉、内核不动。后端可插拔：FFmpeg、系统框架、测试用的假后端实现同一个 `IBackend` 接口。项目本体是 Apache-2.0，依赖选型守住 LGPL/GPL 边界（见 [docs/zh/licensing.md](docs/zh/licensing.md)）。
 
 ## 当前状态
 
-v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载，见下文路线图与 [docs/mvp.md](docs/mvp.zh.md)）。桌面端是 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC），配快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [原型（redesign v2）](docs/zh/prototypes.md)）；播放中、暂停中，音频轨与字幕轨都能运行时切换，播放不中断（细节见下文及 docs/mvp.md §6）。v1.0 有三个切片已落地：本地媒体库（监视文件夹、播放历史与续播、`B` 浮层、离线 NFO sidecar 刮削——docs/mvp.md §3）、硬解首接线（`--hwdec=`，任何失败都静默回退软解——docs/mvp.md §3）与 HDR→SDR 首接线（open 路径识别 HDR10/HLG，含 libzimg 的构建逐帧 zscale 转到 SDR，不可用时诚实直通——docs/mvp.md §3、coverage-notes.md §3.26）；真机 GPU 帧路径与真机 HDR 矩阵仍未开始；DLNA 投屏已落地为 UPnP AV 控制点，配窗口浮层与 CLI `--cast=<location|auto>` 开关（自实现 SSDP/SOAP/GENA，零新依赖；构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码——docs/mvp.md §3）；插件体系尚未开始。
+v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/出声）已在 FFmpeg + SDL2 后端跑通，CLI 冒烟入口可用；v0.2 的能力已全部落地（播放列表、截图、A-B 循环、音频端点切换、HLS/DASH/RTSP 冒烟、字幕渲染与字幕体验、边下边看与 P2P 下载，见下文路线图与 [docs/zh/mvp.md](docs/zh/mvp.md)）。桌面端是 SDL2 窗口 + Dear ImGui 叠加的浮动控制栏（OSC），配快捷键与信息/最近/帮助/播放列表浮层（设计与取舍见 [原型（redesign v2）](docs/zh/prototypes.md)）；播放中、暂停中，音频轨与字幕轨都能运行时切换，播放不中断（细节见下文及 docs/zh/mvp.md §6）。v1.0 有三个切片已落地：本地媒体库（监视文件夹、播放历史与续播、`B` 浮层、离线 NFO sidecar 刮削——docs/zh/mvp.md §3）、硬解首接线（`--hwdec=`，任何失败都静默回退软解——docs/zh/mvp.md §3）与 HDR→SDR 首接线（open 路径识别 HDR10/HLG，含 libzimg 的构建逐帧 zscale 转到 SDR，不可用时诚实直通——docs/zh/mvp.md §3、coverage-notes.md §3.26）；真机 GPU 帧路径与真机 HDR 矩阵仍未开始；DLNA 投屏已落地为 UPnP AV 控制点，配窗口浮层与 CLI `--cast=<location|auto>` 开关（自实现 SSDP/SOAP/GENA，零新依赖；构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码——docs/zh/mvp.md §3）；插件体系尚未开始。
 
 ## 功能特性（当前已实现）
 
@@ -29,16 +29,17 @@ v0.1 的核心播放链路（打开 → 解码 → 音视频同步 → 渲染/�
 - **媒体库**：监视文件夹（递归扫描、缺失文件剪除；直接打开的条目——URL、不在任何监视文件夹内的文件——永不剪除），按源记录播放历史与续播（重开时位置过 5s 且距结尾至少 5s 才提供续播，播完即清，`--no-resume` 继续记录但永不回跳），`B` 开媒体库浮层（点选带续播播放、经目录选择器的监视模式添加监视文件夹、重新扫描），离线 NFO sidecar 刮削（`<name>.nfo` 同名旁文件的标题/简介填入媒体库行）。历史仅由窗口会话记录——headless 保持无状态——原始 magnet/.torrent URI 不入历史，桥接 URL 会记录（本地端口每会话变化）；
 - **截图与 A-B 循环**：`S` 把最近呈现的帧保存为 `screenshot.png`；`L` 三段循环（定 A → 定 B → 清除，到文件尾也回跳，手动 seek 解除）；
 - **媒体信息**：时长、是否可 Seek、轨道（Track）列表（视频 / 音频 / 字幕，含编码、语言、标题）；
-- **轨道选择**：音频轨运行时切换（播放中/暂停中无感续播）；视频轨切换不支持；字幕轨运行时切换——选中内嵌轨时解码线程在安全点换字幕解码器、cue 从新轨续流（切换点之前的历史 cue 需一次倒退 seek 重扫，无自动重扫），选中外挂轨或关闭时内嵌字幕解码门关闭（细节与边界见 [docs/mvp.md](docs/mvp.zh.md) §6）；
-- **字幕渲染**：内嵌 ASS/SSA 经 [libass](https://github.com/libass/libass) 样式渲染（字体/颜色/定位/特效随脚本，容器附件字体即装即用），外挂 .ass/.ssa 同样式渲染、外挂 SRT/WebVTT 按仓库默认样式走同一画布（无 libass 的构建降级为纯文本），内嵌 SRT/WebVTT 文本字幕实时提取显示；`V` 显隐、`[`/`]` ±0.5s 同步偏移、字幕设置浮层（字号/同步偏移/可见性）；可选的字幕下载（`SOAR_SUBTITLE_ENDPOINT`/`_API_KEY`）与字幕翻译（`SOAR_TRANSLATE_ENDPOINT` 等，OpenAI 兼容端点）服务——零默认网络，未配置即不发起任何请求（见 docs/mvp.md §6）；
+- **轨道选择**：音频轨运行时切换（播放中/暂停中无感续播）；视频轨切换不支持；字幕轨运行时切换——选中内嵌轨时解码线程在安全点换字幕解码器、cue 从新轨续流（切换点之前的历史 cue 需一次倒退 seek 重扫，无自动重扫），选中外挂轨或关闭时内嵌字幕解码门关闭（细节与边界见 [docs/zh/mvp.md](docs/zh/mvp.md) §6）；
+- **字幕渲染**：内嵌 ASS/SSA 经 [libass](https://github.com/libass/libass) 样式渲染（字体/颜色/定位/特效随脚本，容器附件字体即装即用），外挂 .ass/.ssa 同样式渲染、外挂 SRT/WebVTT 按仓库默认样式走同一画布（无 libass 的构建降级为纯文本），内嵌 SRT/WebVTT 文本字幕实时提取显示；`V` 显隐、`[`/`]` ±0.5s 同步偏移、字幕设置浮层（字号/同步偏移/可见性）；可选的字幕下载（`SOAR_SUBTITLE_ENDPOINT`/`_API_KEY`）与字幕翻译（`SOAR_TRANSLATE_ENDPOINT` 等，OpenAI 兼容端点）服务——零默认网络，未配置即不发起任何请求（见 docs/zh/mvp.md §6）；
 - **事件驱动**：状态变化、进度更新、媒体信息变化、错误四类事件，UI 只需订阅回调；
 - **视频渲染**：后端解码为 YUV420P 帧并导出，应用层用 SDL2 Texture 直接上屏；`--hwdec=` 请求硬解、失败回退软解、hwaccel 帧回传 YUV420P；
 - **音频输出**：SDL2 音频设备，重采样（Resample）到设备参数，支持音量/静音/倍速，输出端点可在音轨菜单中枚举与切换（下一个音频帧生效）；
-- **网络与下载**：HTTP(S) 顺序播放即边下边看；`--cache-dir=` 磁盘缓存——同一 URL 离线可重播、断点续播、seek 进未下载段只补目标块，`Downloading N%` 进度徽标（http:// 走缓存，https 直通；见 docs/mvp.md §5 P3）；`.torrent`/`magnet:` 经 vendored libtorrent 内核顺序下载、以本地 `http://127.0.0.1:<port>/` 桥进同一播放链路（`--torrent-store=`/`--torrent-peer=`/`--torrent-index=`/`--torrent-list`，窗口期「connecting to swarm - N peers」状态与下载徽标可见；P2P 边界见 docs/mvp.md §5 P4）；
-- **投屏**：DLNA/UPnP AV 控制点已落地——自实现 SSDP/SOAP/GENA，零新依赖；`t` 开合窗口投屏浮层，CLI `--cast=<location|auto>` 把 .torrent/magnet: 源投给指定设备描述 URL 或 auto 发现的渲染器，构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码（docs/mvp.md §3）；
+- **网络与下载**：HTTP(S) 顺序播放即边下边看；`--cache-dir=` 磁盘缓存——同一 URL 离线可重播、断点续播、seek 进未下载段只补目标块，`Downloading N%` 进度徽标（http:// 走缓存，https 直通；见 docs/zh/mvp.md §5 P3）；`.torrent`/`magnet:` 经 vendored libtorrent 内核顺序下载、以本地 `http://127.0.0.1:<port>/` 桥进同一播放链路（`--torrent-store=`/`--torrent-peer=`/`--torrent-index=`/`--torrent-list`，窗口期「connecting to swarm - N peers」状态与下载徽标可见；P2P 边界见 docs/zh/mvp.md §5 P4）；
+- **投屏**：DLNA/UPnP AV 控制点已落地——自实现 SSDP/SOAP/GENA，零新依赖；`t` 开合窗口投屏浮层，CLI `--cast=<location|auto>` 把 .torrent/magnet: 源投给指定设备描述 URL 或 auto 发现的渲染器（`--cast-iface=` 指定 SSDP 发现广播的出口网卡），构建含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码（docs/zh/mvp.md §3）；
 - **桌面 UI**：底部悬浮 OSC（2.5s 无输入自动隐藏，悬停/拖动/浮层/暂停时钉住），整宽 seek 条（悬停时间提示、拖动预览、松手提交）+ 按钮行（传输控制含上一首/下一首、时钟含剩余时间、音量、倍速、音轨/字幕轨菜单、Sub/Info/全屏、A-B 循环、CC 字幕开关、截图）；
-- **键鼠交互**：单击切换 OSC、双击全屏、垂直滚轮调音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开（MRU×15，持久化）；GUI 版（`soarw.exe`/`--gui`）无源启动直接进空主界面——「Open a file」海报，`O` 键或点海报打开文件（Windows 弹文件对话框，其他平台降级为拖放提示 toast）；
-- **快捷键**：`Space/K` 播放暂停、`←/→ ±5s`、`Shift+←/→ ±1s`、`PgUp/PgDn ±60s`、`Home`、`0–9` 百分比、`↑/↓` 音量、`M` 静音、`,/.` 倍速、`F` 全屏、`A/C` 循环音轨/字幕、`L` A-B 循环（定 A → 定 B → 清除）、`V` 字幕显隐、`[/]` 字幕前后偏移、`S` 截图（PNG）、`P` 播放队列浮层、`N/Shift+N` 下一首/上一首、`B` 媒体库浮层、`O` 打开文件、`I/R/H` 信息/最近/帮助、`Q` 退出、`Esc` 退全屏或退出——全部可经状态目录下的 `soar/shortcuts.txt` 重绑（`--shortcuts=FILE` 移动该文件、`--no-shortcuts` 整个禁用键位表；docs/ui-design.md §3.2）；
+- **设置浮层**：`G` 打开，五个页签——General（记住上次媒体、ESC 退出全屏、外观、界面语言、最近播放上限、重置）、Playback（倍速、循环模式、随机）、Subtitles（字幕字体、字号、全局同步偏移、渲染样式、字幕目录）、Network & Download（P2P/DHT trackers、入站端口）、About（版本与构建信息）；外观行切换明暗外壳配色（`y` 键任意位置同效，出厂默认暗色，视频画面两种配色下都保持暗色，选择跨重启保留）；
+- **键鼠交互**：单击切换 OSC、双击全屏、垂直滚轮调音量 / 水平（或 Shift）滚轮 seek、拖放文件打开、最近打开（MRU×15，持久化）；GUI 版（`soarw.exe`/`--gui`）无源启动直接进空主界面——「Open a file」海报，`O` 键或点海报打开文件（Windows 弹文件对话框，其他平台降级为拖放提示 toast）；`--open-dialog` 窗口出现后立即弹出文件选择器）；
+- **快捷键**：`Space/K` 播放暂停、`←/→ ±5s`、`Shift+←/→ ±1s`、`PgUp/PgDn ±60s`、`Home`、`0–9` 百分比、`↑/↓` 音量、`M` 静音、`,/.` 倍速、`F` 全屏、`A/C` 循环音轨/字幕、`L` A-B 循环（定 A → 定 B → 清除）、`V` 字幕显隐、`[/]` 字幕前后偏移、`S` 截图（PNG）、`P` 播放队列浮层、`N/Shift+N` 下一首/上一首、`B` 媒体库浮层、`t` 投屏浮层、`O` 打开文件、`I/R/H` 信息/最近/帮助、`G` 设置浮层、`y` 明暗配色切换、`/` 聚焦媒体库搜索框、`Ctrl+O` 打开文件夹、`Q` 退出、`Esc` 退全屏或退出——全部可经状态目录下的 `soar/shortcuts.txt` 重绑（`--shortcuts=FILE` 移动该文件、`--no-shortcuts` 整个禁用键位表）；
 - **状态提示**：暂停/缓冲指示、OSD Toast 反馈操作结果、媒体信息浮层（含错误行与轨道清单）。
 
 ## 架构
@@ -121,7 +122,7 @@ cmake --preset default && cmake --build --preset default   # Debug
 # 或：cmake --preset release && cmake --build --preset release
 ```
 
-可选能力自动探测：找到 FFmpeg（pkg-config）则启用 FFmpeg 后端，找到 SDL2（≥ 2.0.18）则启用窗口渲染与音频输出；都找不到时仍可构建纯核心 + CLI（Null 后端）。窗口上的控制层是 Dear ImGui（`SOAR_ENABLE_IMGUI`，默认 ON，配置阶段浅克隆到构建目录），拉不到就退化成裸视频窗口；`-DSOAR_ENABLE_IMGUI=OFF` 可完全跳过。细节见 [docs/build.md](docs/build.zh.md)。
+可选能力自动探测：找到 FFmpeg（pkg-config）则启用 FFmpeg 后端，找到 SDL2（≥ 2.0.18）则启用窗口渲染与音频输出；都找不到时仍可构建纯核心 + CLI（Null 后端）。窗口上的控制层是 Dear ImGui（`SOAR_ENABLE_IMGUI`，默认 ON，配置阶段浅克隆到构建目录），拉不到就退化成裸视频窗口；`-DSOAR_ENABLE_IMGUI=OFF` 可完全跳过。细节见 [docs/zh/build.md](docs/zh/build.md)。
 
 ## 使用
 
@@ -157,9 +158,10 @@ cmake --preset default && cmake --build --preset default   # Debug
 
 - **v0.1（MVP，已收口）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）——验收清单全数完成（见 [原型（redesign v2）](docs/zh/prototypes.md) §6）；
 - **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP 冒烟、字幕体验（字体/大小/同步偏移）——均已落地；
-- **v1.0**：硬解（首接线已落地：`--hwdec=`，失败回退软解）与 HDR（首接线已落地：HDR10/HLG 识别、逐帧 zscale 转到 SDR、不可用时诚实直通——docs/mvp.md §3、coverage-notes.md §3.26）、投屏（DLNA/UPnP）、媒体库与离线 NFO 刮削（已落地；网络刮削与多设备同步待定——docs/mvp.md §3）、插件体系。
+- **v1.0**：硬解（首接线已落地：`--hwdec=`，失败回退软解）与 HDR（首接线已落地：HDR10/HLG 识别、逐帧 zscale 转到 SDR、不可用时诚实直通——docs/zh/mvp.md §3、coverage-notes.md §3.26）、投屏（DLNA/UPnP）、媒体库与离线 NFO 刮削（已落地；网络刮削与多设备同步待定——docs/zh/mvp.md §3）、插件体系。
+- **iOS 切片（骨架已落地）**：`ios/SoarKit` 是纯 Swift 包——播放控制门面、状态/事件模型，以及 `MediaEngine` 协议与镜像桌面 `NullBackend` 状态机的 `NullEngine`；CI 在 macOS runner 上做 iOS 构建并跑 XCTest（`.github/workflows/ios.yml`，`ios/**` 变更触发）。C 桥头文件（`ios/Bridge/soar_bridge.h`）仅为评审用设计稿、未接线；C++ 核心交叉编译成 xcframework 与 SwiftUI App 壳均未开始（如实状态表见 [ios/README.md](ios/README.md)）。
 
-完整边界与"明确不做"清单见 [docs/mvp.md](docs/mvp.zh.md)。
+完整边界与"明确不做"清单见 [docs/zh/mvp.md](docs/zh/mvp.md)。
 
 ## 测试
 
@@ -188,10 +190,12 @@ ctest --preset default
 | `soar_ui_tests` | 窗口 UI 的纯逻辑（OSC 自动隐藏状态机、最近打开存储、Toast、时间格式化） | 无需显示器 |
 | `soar_dir_scan_tests` | 目录扫描辅助：媒体扩展名过滤、扁平/递归列举（精确路径用例仅 POSIX 钉住）、队列分组 | 纯 `std::filesystem`，无需媒体与显示器 |
 | `soar_library_tests` | 媒体库存储：监视文件夹、扫描合并/剪除、续播策略、历史 API、持久化行格式、NFO sidecar 解析 | 纯 `std::filesystem`，无需媒体与显示器 |
+| `soar_metadata_tests` | 网络元数据刮削：离线契约与本地夹具 HTTP 服务器上的线路用例（路径、Key 头、百分号编码、不可读应答、body 上限、死端点） | POSIX + python3；夹具为 fork 出的本地服务，不触真实网络 |
 | `soar_shortcut_tests` | 键位表：出厂默认、配置语法（重绑/解绑/区间/kill 开关）、查找优先级、帮助浮层命名 | 纯逻辑，基于内存文本，无需显示器与媒体 |
 | `soar_p2p_tests` | P2P 桥接：TorrentStream 启停契约、本地 HTTP 服务（Range/多文件/超时） | 进程内建种自足（libtorrent 哈希校验预填充），无 swarm；POSIX socket，Windows 跳过 |
 | `soar_cast_tests` | DLNA 投屏控制点：SSDP/设备 XML/SOAP 纯字符串逻辑全平台可跑；POSIX 用例经真实 socket 驱动进程内最小 MediaRenderer（环回发现、描述拉取、动作交换、网桥 LAN 改绑） | POSIX socket 用例 Windows 跳过；转码用例需 FFmpeg 后端 |
 | `soar_cli_tests` | `soar` 子进程冒烟（`--headless` 退出码与报错路径） | 仅当应用目标被构建时注册；Xvfb 用例额外需 `SOAR_TEST_X11=1` |
+| `soar_uri_tests` | 启动器 URI 接收：`file://` 还原为本地路径（百分号解码还原），其余逐字节原样返回 | 纯 `std::string`，无需显示器、媒体与文件系统 |
 
 FFmpeg 媒体测试的媒体文件全部由 `scripts/generate_test_media.sh` 现场合成（纯 lavfi，无网络、无外部素材），脚本打印 `KEY=VALUE` 形式的环境变量供测试定位文件：
 
@@ -200,10 +204,10 @@ export $(bash scripts/generate_test_media.sh build-system/testmedia)
 ctest --preset linux-system   # FFmpeg 后端需要系统 FFmpeg 开发库
 ```
 
-环境变量未设置时相关用例自动跳过，因此没有媒体 fixture 的平台（如 macOS/Windows CI）套件依然全绿。行覆盖率与分支覆盖率由 CI 的 coverage job（gcovr，过滤异常处理边与内联噪声）统计，报告输出到该 job 的 summary，并可在构建产物 `coverage-report` 中下载；该 job 同时是回归门禁——覆盖率跌破锁定阈值（`--fail-under-line` / `--fail-under-branch`）时直接失败。统计口径与未覆盖项的如实定性（版本依赖行为、防御性代码、结构性不可达）见 [docs/coverage-notes.md](docs/coverage-notes.zh.md)。
+环境变量未设置时相关用例自动跳过，因此没有媒体 fixture 的平台（如 macOS/Windows CI）套件依然全绿。行覆盖率与分支覆盖率由 CI 的 coverage job（gcovr，过滤异常处理边与内联噪声）统计，报告输出到该 job 的 summary，并可在构建产物 `coverage-report` 中下载；该 job 同时是回归门禁——覆盖率跌破锁定阈值（`--fail-under-line` / `--fail-under-branch`）时直接失败。统计口径与未覆盖项的如实定性（版本依赖行为、防御性代码、结构性不可达）见 [docs/zh/coverage-notes.md](docs/zh/coverage-notes.md)。
 
 ## 许可与合规
 
 - 项目本体以 [Apache-2.0](LICENSE) 分发；
-- FFmpeg 以 LGPL 构建方式动态链接，我们不分发任何 GPL 组件；集成第三方多媒体库的选型原则与 LGPL 合规清单见 [docs/licensing.md](docs/licensing.zh.md)；
+- FFmpeg 以 LGPL 构建方式动态链接，我们不分发任何 GPL 组件；集成第三方多媒体库的选型原则与 LGPL 合规清单见 [docs/zh/licensing.md](docs/zh/licensing.md)；
 - 发行包需附 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 并按其中模板补齐实际捆绑的组件清单。

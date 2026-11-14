@@ -118,3 +118,39 @@ prev/next、A-B、Shot、剩余时间）在审计时未提交，凡涉及该批�
 本增量三桶计数：码超前于文档 **3**（G1–G3）· 文档超前于码 **0** · 描述不符 **0**。P0：无。全部仅改文档；该发现由 2026-11-02 审核批先登记进 `todo.md`，本轮收口（勾账留给台账归属会话）。
 
 文案去味（同轮）：README.md 轨道切换句「seamless while playing or paused」→「works while playing or paused, without interrupting playback」；`docs/zh/coverage-notes.md` ⭐ 装饰标记改粗体导语、「（必读…）」标题软化。历史快照节（alignment-audit-2026-10-13.md、prototypes.md 审计叙述）按收口惯例保留为带日期记录，不回改。
+
+
+## 增量 G2（2026-11-14，舰队文档审计）
+
+范围：六个高漂移面——功能清单、CLI 参数、快捷键表、平台/产物矩阵、套件表、徽章
+与 About 行——对照 `9552d62` 的代码逐条核对，两个 README 版本与文档站一并覆盖。
+严重度按规范：文档超前于码 = P0，产物/清单漂移 = P1，措辞/链接 = P2。
+
+| ID | 页 | 主张 | 源码证据 | 类别 | 严重度 | 修法 |
+|---|---|---|---|---|---|---|
+| G2-1 | README.md 功能节、README.zh.md:38 | 英文功能清单缺投屏条（zh 版本有）；`--cast-iface=` 与 `--open-dialog` 命令行接受却无任何文档 | 两者同批落地于 `599ec4e`；`src/app/main.cpp:257` 与 `:264` 解析，`:66`、`:84` 出现在 `--help`，`player_window.cpp:821` 消费 | 码超前于文档 | P1 | 英文功能清单补 **投屏** 条（对齐 zh）并载 `--cast-iface=`；`--open-dialog` 写入两版键鼠交互条 |
+| G2-2 | README.md、README.zh.md 功能节 | 设置浮层（`G`）与明暗外观行（`y`）两版功能清单皆无 | `OpenSettings`→`kKeyG` `src/app/ui/shortcuts.cpp:202`、`ToggleTheme`→`kKeyY` `:200`、`shortcuts.h:142`；五页签 `player_hud_settings.cpp:467-487`，外观卡 `:588`、Dark/Light 分段 `:260`；`loadThemePref` `player_window.cpp:1077` | 码超前于文档 | P1 | 两版各补 **设置浮层** 条，列五页签与可持久化的外观选择 |
+| G2-3 | README.md:41、README.zh.md:42 快捷键行 | `G`、`y`、`/`、`Ctrl+O` 四键未列 | `shortcuts.cpp:198`（`SearchLibrary`→`kKeySlash`）、`:200`（`ToggleTheme`→`kKeyY`）、`:202`（`OpenSettings`→`kKeyG`）、`:188`（`OpenFolder`→`Ctrl+O`）；`/` 处理见 `player_window.cpp:656` | 码超前于文档 | P1 | 两版快捷键行各补四键 |
+| G2-4 | README.md、README.zh.md 套件表 | 英文表 13 行、zh 表 13 行，而构建实际注册 15 个套件 | `tests/CMakeLists.txt:117`（`soar_p2p_tests`）、`:82`（`soar_metadata_tests`）、`:206`（`soar_uri_tests`）；英文表缺 `soar_p2p_tests`，zh 表缺 `soar_metadata_tests` | 码超前于文档 | P1 | 两表补齐至 15 个注册套件；新行按各自 CMake 头注描述（进程内自建的 P2P、fork 夹具 HTTP 服务的元数据、`file://` 解码的 uri） |
+| G2-5 | README.md、README.zh.md | iOS 切片（`ios/SoarKit`、`ios/Bridge/soar_bridge.h`、`ios.yml`）两版 README 全无 | `ios/SoarKit/{Package.swift,Sources,Tests}`、`.github/workflows/ios.yml:22-33` 的 `xcodebuild` 构建与测试（`ios/**` 推送触发）、`ios/README.md` 状态表（SoarKit CI 已验证；桥未接线；核心交叉编译与 App 壳未开始） | 码超前于文档 | P1 | 两版路线图各补 **iOS 切片** 条，写明已 CI 验证的范围与两项未开始 |
+| G2-6 | README.zh.md 链接 | 四个 zh 链接目标 `docs/{build,mvp,licensing,coverage-notes}.zh.md` 从未存在（8 处：4 链接 + 4 提及） | `f0f2c33` 把 zh 页移入 `docs/zh/`；`ls docs/zh/` 四项均可解析 | 文档超前于码（死链） | P1 | 8 处全部改指 `docs/zh/<name>.md`，逐个验证可解析 |
+| G2-7 | docs/prototypes.md:63、docs/zh/prototypes.md:67 | 「未实现 2 屏（设置面板、翻译浮层）」 | 设置面板 2026-11-02 已交付（`0d07d89`）；翻译面板经 v2 契约取消，入口移入字幕菜单的 `[translate]` 行（`todo.md:180`） | 描述不符 | P1 | 就地补注现状；带日期的原判定按 G3 惯例保留为历史记录 |
+
+文案与指针修（同轮）：README.md:40 失效的 `docs/ui-design.md §3.2` 引用删除（P2，该文件已于 2026-11-11 的 `58b9b57` 删除）；README.zh.md 同处引用一并删除；`docs/prototypes.md` 的 `ui-design §2` 字样作为历史归属保留（它记录的是被取代的旧稿当时怎么写的），不作指针。
+
+本增量三桶计数：文档超前于码 **0** · 码超前于文档 **6**（G2-1…G2-6）· 描述不符 **1**（G2-7）。P0：无——文档声称的每个功能都核实存在（`--cast-transcode` 见 `src/app/main.cpp:195,255`；插件体系确实未开始；夜间构建产物清单与 `nightly.yml:522-540` 及 README:112 相符；preset 与 README:107/111 的平台边界与 workflow 矩阵一致）。全部仅改文档，未为迁就文档改动任何代码。
+
+### 浏览器语言自动识别（同轮）
+
+形态：成对文件（`README.md`/`README.zh.md`）**且** vitepress locale 路由——`docs/.vitepress/config.mts:37-40` 声明 `locales.root` 为 `lang: 'en'`（英文在站点根），`:86` 为 `zh/` 声明 `lang: 'zh-CN'`，`base: '/soar/'`；英文 12 页对中文 12 页，完全对称。
+
+自动识别：**已具备**。`docs/index.md`（根落地页）带一段 `<script setup lang="ts">`：先查 `localStorage`，再查 `navigator.languages`/`navigator.language`，任一 locale 以 `zh` 开头即把 URL 换成 `/soar/zh/`；zh 落地页带同样脚本指回根。点击选择会被记录，后续自动检查让位。两个落地页都有。
+
+线上 URL 契约探针（2026-11-14 实测）：
+
+| URL | HTTP | `<html lang>` | 首屏 CJK |
+|---|---|---|---|
+| `https://cuihairu.github.io/soar/` | 200 | `en` | 223 |
+| `https://cuihairu.github.io/soar/zh/` | 200 | `zh-CN` | 447 |
+
+根页出 `en` 与本地配置一致，是正确的；英文落地页上那 223 个 CJK 字符来自语言切换器标签与原型预览的导航名，不是部署产物滞后。舰队层面「本仓根页出中文」的说法未复现，无需重新部署，也未改动任何配置。无需 todo：自动切换增强项本仓已存在。
