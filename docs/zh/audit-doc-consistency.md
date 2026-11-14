@@ -133,12 +133,12 @@ prev/next、A-B、Shot、剩余时间）在审计时未提交，凡涉及该批�
 | G2-3 | README.md:41、README.zh.md:42 快捷键行 | `G`、`y`、`/`、`Ctrl+O` 四键未列 | `shortcuts.cpp:198`（`SearchLibrary`→`kKeySlash`）、`:200`（`ToggleTheme`→`kKeyY`）、`:202`（`OpenSettings`→`kKeyG`）、`:188`（`OpenFolder`→`Ctrl+O`）；`/` 处理见 `player_window.cpp:656` | 码超前于文档 | P1 | 两版快捷键行各补四键 |
 | G2-4 | README.md、README.zh.md 套件表 | 英文表 13 行、zh 表 13 行，而构建实际注册 15 个套件 | `tests/CMakeLists.txt:117`（`soar_p2p_tests`）、`:82`（`soar_metadata_tests`）、`:206`（`soar_uri_tests`）；英文表缺 `soar_p2p_tests`，zh 表缺 `soar_metadata_tests` | 码超前于文档 | P1 | 两表补齐至 15 个注册套件；新行按各自 CMake 头注描述（进程内自建的 P2P、fork 夹具 HTTP 服务的元数据、`file://` 解码的 uri） |
 | G2-5 | README.md、README.zh.md | iOS 切片（`ios/SoarKit`、`ios/Bridge/soar_bridge.h`、`ios.yml`）两版 README 全无 | `ios/SoarKit/{Package.swift,Sources,Tests}`、`.github/workflows/ios.yml:22-33` 的 `xcodebuild` 构建与测试（`ios/**` 推送触发）、`ios/README.md` 状态表（SoarKit CI 已验证；桥未接线；核心交叉编译与 App 壳未开始） | 码超前于文档 | P1 | 两版路线图各补 **iOS 切片** 条，写明已 CI 验证的范围与两项未开始 |
-| G2-6 | README.zh.md 链接 | 四个 zh 链接目标 `docs/{build,mvp,licensing,coverage-notes}.zh.md` 从未存在（8 处：4 链接 + 4 提及） | `f0f2c33` 把 zh 页移入 `docs/zh/`；`ls docs/zh/` 四项均可解析 | 文档超前于码（死链） | P1 | 8 处全部改指 `docs/zh/<name>.md`，逐个验证可解析 |
-| G2-7 | docs/prototypes.md:63、docs/zh/prototypes.md:67 | 「未实现 2 屏（设置面板、翻译浮层）」 | 设置面板 2026-11-02 已交付（`0d07d89`）；翻译面板经 v2 契约取消，入口移入字幕菜单的 `[translate]` 行（`todo.md:180`） | 描述不符 | P1 | 就地补注现状；带日期的原判定按 G3 惯例保留为历史记录 |
+| G2-6 | README.zh.md 链接 | 四个 zh 链接目标 `docs/{build,mvp,licensing,coverage-notes}.zh.md` 从未存在（8 处：4 链接 + 4 提及） | `f0f2c33` 把 zh 页移入 `docs/zh/`；`ls docs/zh/` 四项均可解析 | 描述不符（指针失效） | P2 | 8 处全部改指 `docs/zh/<name>.md`，逐个验证可解析 |
+| G2-7 | docs/prototypes.md:63、docs/zh/prototypes.md:67 | 「未实现 2 屏（设置面板、翻译浮层）」 | 设置面板 2026-11-02 已交付（`0d07d89`）；翻译面板经 v2 契约取消，入口移入字幕菜单的 `[translate]` 行（`todo.md:180`） | 描述不符 | P2 | 就地补注现状；带日期的原判定按 G3 惯例保留为历史记录 |
 
 文案与指针修（同轮）：README.md:40 失效的 `docs/ui-design.md §3.2` 引用删除（P2，该文件已于 2026-11-11 的 `58b9b57` 删除）；README.zh.md 同处引用一并删除；`docs/prototypes.md` 的 `ui-design §2` 字样作为历史归属保留（它记录的是被取代的旧稿当时怎么写的），不作指针。
 
-本增量三桶计数：文档超前于码 **0** · 码超前于文档 **6**（G2-1…G2-6）· 描述不符 **1**（G2-7）。P0：无——文档声称的每个功能都核实存在（`--cast-transcode` 见 `src/app/main.cpp:195,255`；插件体系确实未开始；夜间构建产物清单与 `nightly.yml:522-540` 及 README:112 相符；preset 与 README:107/111 的平台边界与 workflow 矩阵一致）。全部仅改文档，未为迁就文档改动任何代码。
+本增量的桶与严重度分开处理，且是刻意的：死链属链接修、过期陈述属措辞修，规范二者都归 P2——既非幽灵功能也非产物漂移。三桶计数：文档超前于码 **0** · 码超前于文档 **5**（G2-1…G2-5）· 描述不符 **2**（G2-6、G2-7）。严重度：P0 **0**、P1 **5**、P2 **4**（G2-6、G2-7 与下方两处 `ui-design.md` 死引用）。P0：无——文档声称的每个功能都核实存在（`--cast-transcode` 见 `src/app/main.cpp:195,255`；插件体系确实未开始；夜间构建产物清单与 `nightly.yml:522-540` 及 README:112 相符；preset 与 README:107/111 的平台边界与 workflow 矩阵一致）。全部仅改文档，未为迁就文档改动任何代码。
 
 ### 浏览器语言自动识别（同轮）
 

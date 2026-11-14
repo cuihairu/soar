@@ -134,8 +134,8 @@ doc ahead of code = P0, artifact/manifest drift = P1, wording/links = P2.
 | G2-3 | README.md:41, README.zh.md:42 shortcut lines | `G`, `y`, `/` and `Ctrl+O` absent from the shortcut lists | `shortcuts.cpp:198` (`SearchLibrary`→`kKeySlash`), `:200` (`ToggleTheme`→`kKeyY`), `:202` (`OpenSettings`→`kKeyG`), `:188` (`OpenFolder`→`kKeyO` with Ctrl); `/` handling at `player_window.cpp:656` | code ahead of doc | P1 | All four keys added to both editions' shortcut lines |
 | G2-4 | README.md, README.zh.md suite tables | En table listed 13 suites, zh 13 — the build registers 15 | `tests/CMakeLists.txt:117` (`soar_p2p_tests`), `:82` (`soar_metadata_tests`), `:206` (`soar_uri_tests`); the en table had `soar_metadata_tests` but not `soar_p2p_tests`, the zh table the opposite | code ahead of doc | P1 | Both tables now carry all 15 registered suites; the new rows describe the suites from their CMake headers (self-seeding in-process P2P, forked fixture HTTP server for metadata, `file://` decoding for uri) |
 | G2-5 | README.md, README.zh.md | The iOS slice (`ios/SoarKit`, `ios/Bridge/soar_bridge.h`, `ios.yml`) appears nowhere in either README | `ios/SoarKit/{Package.swift,Sources,Tests}`, `xcodebuild` build + test in `.github/workflows/ios.yml:22-33` on `ios/**` pushes, the status table in `ios/README.md` (SoarKit CI-verified; bridge un-wired; core cross-compile and the app shell not started) | code ahead of doc | P1 | **iOS slice** bullet added to both editions' roadmap, stating the CI-verified scope and the two not-started parts |
-| G2-6 | README.zh.md links | Four zh link targets `docs/{build,mvp,licensing,coverage-notes}.zh.md` never existed (8 occurrences: 4 links + 4 bare mentions) | `f0f2c33` moved zh pages into `docs/zh/`; `ls docs/zh/` resolves all four | doc ahead of code (broken link) | P1 | All 8 repointed to `docs/zh/<name>.md`; every target verified to resolve |
-| G2-7 | docs/prototypes.md:63, docs/zh/prototypes.md:67 | "2 screens not implemented (settings panel, translate overlay)" | Settings panel shipped 2026-11-02 (`0d07d89`); the translate panel was retired by the v2 contract, its entry moving to the `[translate]` row of the subtitle menu (`todo.md:180`) | description mismatch | P1 | Annotated in place with the current state; the dated verdict kept as a historical record, matching the G3 convention |
+| G2-6 | README.zh.md links | Four zh link targets `docs/{build,mvp,licensing,coverage-notes}.zh.md` never existed (8 occurrences: 4 links + 4 bare mentions) | `f0f2c33` moved zh pages into `docs/zh/`; `ls docs/zh/` resolves all four | description mismatch (stale pointer) | P2 | All 8 repointed to `docs/zh/<name>.md`; every target verified to resolve |
+| G2-7 | docs/prototypes.md:63, docs/zh/prototypes.md:67 | "2 screens not implemented (settings panel, translate overlay)" | Settings panel shipped 2026-11-02 (`0d07d89`); the translate panel was retired by the v2 contract, its entry moving to the `[translate]` row of the subtitle menu (`todo.md:180`) | description mismatch | P2 | Annotated in place with the current state; the dated verdict kept as a historical record, matching the G3 convention |
 
 Copy/pointer fixes (same round): the dead `docs/ui-design.md §3.2` citation in
 README.md:40 dropped (P2, the file went away in `58b9b57` on 2026-11-11); the
@@ -143,8 +143,12 @@ same citation in README.zh.md dropped; the `ui-design §2` phrase in
 `docs/prototypes.md` is retained as a historical attribution (it records what the
 superseded spec said) rather than as a pointer.
 
-Three-bucket count for this increment: doc ahead of code **0** · code ahead of
-doc **6** (G2-1…G2-6) · description mismatch **1** (G2-7). P0: none — every
+Bucket and severity differ here, and deliberately: a dead pointer is a link fix,
+and a stale verdict is a wording fix, both of which the standard maps to P2 —
+they are not ghost features and not artifact drift. Three-bucket count for this
+increment: doc ahead of code **0** · code ahead of doc **5** (G2-1…G2-5) ·
+description mismatch **2** (G2-6, G2-7). Severity: P0 **0**, P1 **5**, P2 **4**
+(G2-6, G2-7 and the two dead `ui-design.md` citations below). P0: none — every
 feature the docs claim was verified present (`--cast-transcode`
 `src/app/main.cpp:195,255`; the plugin system is genuinely absent; the nightly
 artifact list matches `nightly.yml:522-540` and README:112; presets and the
