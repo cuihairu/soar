@@ -10,7 +10,8 @@ Terms are defined in [Glossary](/glossary); state and channels are in
 1. **Entry and UI are separated from playback because the UI is already
    compiled and run without a real decoder.** `runPlayerWindow` still exists
    and can present a bare fallback when ImGui is absent
-   (`src/app/ui/player_window.cpp:5099`, `player_window.cpp:5205`), and
+   (`src/app/ui/player_window.cpp:1019`, and the bare
+    no-ImGui loop at `player_window.cpp:1142`), and
    `NullBackend` supplies the same `Player` contract without threads
    (`src/core/null_backend.cpp:12`). Keeping actions behind
    `Player` therefore has an executable payoff, not only a stylistic one.
@@ -26,7 +27,7 @@ Terms are defined in [Glossary](/glossary); state and channels are in
    custom `AVIOContext`, and its file format has no FFmpeg dependency.** The
    cache contract states that it knows nothing about FFmpeg
    (`include/soar/core/http_cache.h:6`); the sole construction site wires it
-   into the backend at `src/core/ffmpeg_backend.cpp:2576`. That split is why
+   into the backend at `src/core/ffmpeg_backend_open.cpp:161`. That split is why
    cache files can be diagnosed or replayed without instantiating the decode
    path.
 4. **Subtitle discovery is split into three providers because their failure
@@ -48,7 +49,7 @@ Terms are defined in [Glossary](/glossary); state and channels are in
 6. **Casting is a separate control point because its remote peer speaks
    UPnP, not the in-process playback contract.** `CastSession`’s start
    sequence composes discovery, XML, bridge exposure, SOAP, optional GENA,
-   and polling (`src/cast/cast_session.cpp:80`–`cast_session.cpp:150`);
+   and polling (`src/cast/cast_session.cpp:40`–`cast_session.cpp:150`);
    each protocol has a standalone parser/builder (`src/cast/ssdp.cpp:10`,
    `src/cast/device_xml.h:37`, `src/cast/soap.h:37`,
    `src/cast/eventing.cpp:44`). The media path is still the bridge’s HTTP
@@ -59,6 +60,6 @@ Terms are defined in [Glossary](/glossary); state and channels are in
    (`src/app/main.cpp:353`), and declares cast after it so the session can
    stop first and restore the bridge (`main.cpp:473`). The HUD destructor
    repeats the cast-before-store teardown order
-   (`src/app/ui/player_window.cpp:879`). Preferences are separate, best-effort
+   (`src/app/ui/player_window.cpp:419`). Preferences are separate, best-effort
    text stores (`ui_state.cpp:173`, `library.cpp:540`,
    `shortcuts.cpp:448`).

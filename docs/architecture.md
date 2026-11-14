@@ -69,16 +69,18 @@ state stores and channels as the boundaries where ownership changes.
 `src/app/main.cpp:190` parses the CLI schema and `src/app/main.cpp:600`
 assembles `WindowUiConfig`; the runtime schema itself is declared at
 `src/app/ui/player_window.h:27`. `runPlayerWindow` owns SDL2/ImGui startup
-and teardown at `src/app/ui/player_window.cpp:5099`, while `PlayerHud` at
-`src/app/ui/player_window.cpp:727` owns application-level routing. Theme
-and font literals live in the runtime token table at
-`src/app/ui/player_window.cpp:336`; action labels and help text are drawn in
-`PlayerHud`, and shortcut names/defaults live beside their parser in
-`src/app/ui/shortcuts.cpp:111` and `src/app/ui/shortcuts.cpp:157`. Window
-preference files are `theme.txt` (`player_window.cpp:487`) and
-`settings.txt` (`player_window.cpp:525`); path construction and startup
-output use `SOAR_UI_BITMAP_FONT`, `SOAR_STARTUP_LOG`, and `SOAR_NO_DIALOG`
-(`player_window.cpp:651`, `src/app/startup_report.cpp:26`, and
+and teardown at `src/app/ui/player_window.cpp:1019`; `PlayerHud` is
+constructed at `player_window.cpp:278` and owns application-level routing
+through `handleEvent` at `player_window.cpp:504` — the HUD itself is split
+across `player_hud_*.cpp`, one file per concern. Theme and font literals
+live in the `theme` namespace at `src/app/ui/player_hud.h:133` (geometry
+tokens in `src/app/ui/ui_tokens.h:19`); action labels and help text are
+drawn in `PlayerHud`, and shortcut names/defaults live beside their parser
+in `src/app/ui/shortcuts.cpp:111` and `src/app/ui/shortcuts.cpp:157`.
+Window preference files are `theme.txt` (`player_hud.h:311`) and
+`settings.txt` (`player_hud.h:348`); path construction and startup output
+use `SOAR_UI_BITMAP_FONT`, `SOAR_STARTUP_LOG`, and `SOAR_NO_DIALOG`
+(`player_hud.h:478`, `src/app/startup_report.cpp:26`, and
 `src/app/startup_report.cpp:60`).
 
 This layer's files are the recent lists (`ui_state.cpp:158`), media library
@@ -94,7 +96,9 @@ the config as opaque pointers (`player_window.h:16`, `player_window.h:63`).
 request (`backend.h:13`), and `Event` is the callback vocabulary
 (`backend.h:73`). The schema for a concrete backend's internal configuration
 is its private state, declared in `include/soar/core/ffmpeg_backend.h:70`;
-`decodeLoop` is the thread boundary at `src/core/ffmpeg_backend.cpp:3005`.
+`decodeLoop` is the thread boundary at
+`src/core/ffmpeg_backend_decode.cpp:15`, spawned from
+`src/core/ffmpeg_backend.cpp:417`.
 `src/core/null_backend.cpp:12` supplies the no-FFmpeg state machine. There
 is no separate protocol file: this layer's "protocol" is the virtual ABI in
 `backend.h`.
@@ -104,7 +108,8 @@ is no separate protocol file: this layer's "protocol" is the virtual ABI in
 `HttpCache` owns the `.meta`/`.data` file pair and HTTP Range client
 (`include/soar/core/http_cache.h:37`; filenames at
 `src/core/http_cache.cpp:545`). It is deliberately injected only by
-`FFmpegBackend` through `AVIOContext` (`ffmpeg_backend.cpp:2576`).
+`FFmpegBackend` through `AVIOContext`
+(`src/core/ffmpeg_backend_open.cpp:161`).
 `SidecarSubtitleProvider`, `ExternalSubtitleProvider`, and
 `SubtitleTranslator` share the provider abstraction
 (`include/soar/core/subtitle_provider.h:37`) but own separate wire schemas:
@@ -114,10 +119,10 @@ sidecar/local layout at `subtitle_provider.h:60`, HTTP search/fetch at
 wire contract in comments (`include/soar/core/metadata_scraper.h:35`).
 `AssRenderer` is the single libass boundary (`ass_renderer.h:48`), and
 `storeExternalSubtitle` turns remote payloads into sanitized local files
-(`src/core/subtitle_provider.cpp:609`). The UI reads endpoint/key/timeout
+(`src/core/subtitle_provider.cpp:424`). The UI reads endpoint/key/timeout
 from `SOAR_SUBTITLE_*`, `SOAR_TRANSLATE_*`, and `SOAR_META_*`
-(`player_window.cpp:786`, `player_window.cpp:804`,
-`player_window.cpp:828`).
+(`player_window.cpp:335`, `player_window.cpp:354`,
+`player_window.cpp:378`).
 
 ### L4 — P2P bridge
 
@@ -138,15 +143,16 @@ output are owned in the entry schema (`main.cpp:213`,
 `CastSession` orchestrates the DLNA workflow and state machine
 (`src/cast/cast_session.h:39`); its start order—discover, parse, expose
 bridge, optionally transcode, SOAP commands, optional GENA, poll—is visible
-from `src/cast/cast_session.cpp:80` through `cast_session.cpp:150`. The
+from `src/cast/cast_session.cpp:40` through `cast_session.cpp:150`. The
 wire protocols are separated by file: SSDP (`src/cast/ssdp.cpp:10`),
 device XML (`src/cast/device_xml.h:37`), SOAP
 (`src/cast/soap.h:37`), and GENA (`src/cast/eventing.cpp:44`). The local
 callback and media endpoints are `EventServer`
 (`src/cast/event_server.h:16`) and `TranscodeServer`
 (`src/cast/transcode_server.h:37`). UI cast state, discovery, and per-frame
-auto-cast remain in `PlayerHud` (`player_window.cpp:2035`,
-`player_window.cpp:2115`), while headless casting is assembled in
+auto-cast remain in `PlayerHud`: discovery and the per-frame send sit in
+`player_hud_actions.cpp:502` and `:520`, the overlay in
+`player_hud_actions.cpp:590`, and headless casting is assembled in
 `main.cpp:566`. User-visible cast feedback comes from `PlayerHud` toasts;
 no centralized copy file exists.
 
