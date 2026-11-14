@@ -188,3 +188,60 @@ characters on the English landing page are the language-switcher label and the
 prototype-preview nav names, not a stale deployment. The fleet-level note that
 this repo's root serves Chinese was not reproduced; no redeploy is needed and no
 config change was made. No todo: the auto-switch enhancement already exists here.
+
+## Increment G2 re-audit (2026-11-15)
+
+Same fleet round, re-run against `eda4ddc`. Scope: the six high-drift surfaces
+(feature list, CLI flag tables, platform/artifact matrix, install/build,
+README badges and the GitHub About line, nightly artifact lists) plus a full
+mechanical re-verification of every `file:line` citation in the live doc pages
+— the last round verified the *content* of the citations but not whether the
+lines still existed. Baseline for this increment: `eda4ddc`; the tree was clean
+and matched `origin/main` at start.
+
+| ID | Page | Claim | Source evidence | Class | Severity | Fix |
+|---|---|---|---|---|---|---|
+| G2R-1 | docs/index.md:28, docs/zh/index.md:28, README.zh.md:18 | "FFmpeg, a system framework, or the fake backend … implement the same IBackend interface" (en hero card, zh hero card, zh README) | `IBackend` has exactly two implementations in the tree: `src/core/ffmpeg_backend*.cpp` and `src/core/null_backend.cpp`; `ls src/core/` shows no other backend file, and `grep -riE 'avfoundation\|media3\|exoplayer' src/ include/ tools/` is empty. `docs/architecture.md:28` already says "two implementations" | doc ahead of code | **P0** | Reworded all three to "FFmpeg and the fake backend for tests implement the same `IBackend`". `docs/mvp.md:10` ("prefer a system framework") and `docs/licensing.md:79` (`backend_avfoundation`) were **left alone** — both are stated as forward-looking design guidance, not as shipped code |
+| G2R-2 | docs/architecture.md (6), docs/glossary.md (4), docs/rationale.md (4) + the zh twins | 24 `file:line` citations pointed past the end of their target files | The UI monolith was split on 2026-11-10 (`51ae7fe`, *refactor(ui): split PlayerHud into header and per-concern files*): `player_window.cpp` is now 1193 lines but docs cited 5099/5205/2035/2115; the FFmpeg backend was split the same way (916 lines) but docs cited `ffmpeg_backend.cpp:3005`/`:2576`; `subtitle_provider.cpp` is 474 lines but docs cited 609. Every citation now resolves: `runPlayerWindow` → `player_window.cpp:1019`, bare no-ImGui loop → `:1142`, `PlayerHud` ctor → `:278`, `handleEvent` → `:504`, HUD dtor → `:419`, theme namespace → `player_hud.h:133`, geometry tokens → `ui_tokens.h:19`, `theme.txt`/`settings.txt` → `player_hud.h:311`/`:348`, `SOAR_UI_BITMAP_FONT` → `player_hud.h:478`, endpoint env reads → `player_window.cpp:335/354/378`, cast discovery/per-frame/overlay → `player_hud_actions.cpp:502`/`:520`/`:590`, `decodeLoop` → `ffmpeg_backend_decode.cpp:15` (spawned from `ffmpeg_backend.cpp:417`), `HttpCache` construction → `ffmpeg_backend_open.cpp:161`, `storeExternalSubtitle` → `subtitle_provider.cpp:424`, `CastSession::start` → `cast_session.cpp:40` | description mismatch | P1 | All 24 re-anchored in both languages; a script re-verifies that every citation resolves — 0 stale |
+| G2R-3 | README.zh.md:29, :38, :161 | The zh edition had gone behind the en one on three landed features | Network scraping (`src/core/metadata_scraper.cpp`, `HttpMetadataScraper` wired through `MetadataSource`; env `SOAR_META_ENDPOINT`/`_API_KEY`/`_TIMEOUT_MS` read at `player_window.cpp:378`) was in the en feature bullet and absent from zh; `--cast-transcode` (`src/app/main.cpp:195`, printed by `--help` at `:81`) was in the en casting bullet and absent from zh; the v1.0 casting status (SSDP/SOAP/GENA, pause, bridge LAN rebind, transcode, `t` overlay, real-device matrix unverified) was a single clause "投屏（DLNA/UPnP）" in zh against the full en paragraph | code ahead of doc | P1 | zh feature/roadmap bullets brought to parity with the en ones |
+| G2R-4 | README.md:113, README.zh.md:113 | The download section listed the per-platform artifacts but not the aggregate bundle or its two text files | `gh release view nightly --repo cuihairu/soar --json assets` returns 15 assets including `soar-daily-20261114-9552d62f.zip` (787 MB), `BUILD_INFO.txt` and `VERIFY.md`; produced at `.github/workflows/nightly.yml:803,745,746` | code ahead of doc | P1 | Both editions now name the aggregate bundle and the two text files |
+| G2R-5 | README.md:195-196 | `soar_p2p_tests` appeared twice in the en suite table (16 rows, 15 unique) while the zh table had 15 | `tests/CMakeLists.txt` registers each suite once; the zh table already matched | description mismatch | P2 | Duplicate row removed; both tables now carry the same 15 suites |
+| G2R-6 | README.zh.md:50, :55 | Mermaid node labels drifted from the en diagram | `README.md:50` lists "info/recent/help/playlist/library overlays" and `README.md:55` says "pure abstraction; FFmpeg backend compiled in when detected" (`CMakeLists.txt:63-74` compiles the FFmpeg backend into `soar_core` when detected); the zh twins said "信息/最近/帮助浮层" (three overlays) and "纯抽象，Apache-2.0 本体" | description mismatch | P2 | Both zh labels aligned with the en ones |
+| G2R-7 | docs/audit-doc-consistency.md:186-188 (the previous round's own table) | The live probe table mislabelled its CJK column | `https://cuihairu.github.io/soar/` is 19 109 bytes with its **first** CJK character at byte 4021 (the `简体中文` switcher label), so "first-screen CJK = 223" was really the whole-page count and the true first-2000-byte count is 0; `/soar/zh/` is 447 whole-page / 18 first-2000-bytes (the `<meta name="description">` at byte 216) | description mismatch | P2 | The probe triple is re-recorded below with the whole-page and first-screen columns kept apart |
+
+Three-bucket count for this increment: doc ahead of code **1** (G2R-1) ·
+code ahead of doc **2** (G2R-3, G2R-4) · description mismatch **4**
+(G2R-2, G2R-5, G2R-6, G2R-7). Severity: P0 **1**, P1 **3**, P2 **3**. All
+fixes were docs-only; no code was moved to fit the text.
+
+Verified consistent this round (spot checks, no fix needed): the feature and
+shortcut lists against `src/app/ui/shortcuts.cpp`; every CLI flag in
+`README.md:129-155` against `src/app/main.cpp:66-97` (`--open-dialog`,
+`--hwdec=`, `--cast-transcode`, `--cast-iface=` all parse) and against
+`--help`; the environment variables `SOAR_SUBTITLE_ENDPOINT`/
+`SOAR_TRANSLATE_ENDPOINT`/`SOAR_META_ENDPOINT` at
+`player_window.cpp:335/354/378`; the OSC 2.5 s auto-hide and MRU×15 claims at
+`ui_state.h:46` and `:205`; the 256 KiB cache block at
+`http_cache.cpp:32`; `packaging/linux/soar.desktop.in:6` (`Exec=soar --gui %U`)
+and `:10` (the four MimeType entries); `SOAR_BUILD_APP`/`SOAR_BUILD_TESTS` at
+`CMakeLists.txt:9,10`; the nightly artifact matrix against
+`.github/workflows/nightly.yml:792-803` (14 per-platform artifacts + the
+aggregate, matching the 15 release assets above); and the GitHub About line
+("Cross-platform open source media player built with FFmpeg, SDL2 and libass
+(C++17)") against `vcpkg.json` and the built targets. No dead internal doc
+links: every `[text](/page)` and `[text](./file.md)` in the audited pages
+resolves to a real page or file, and the two links from `docs/prototypes.md`
+to `/alignment-audit-2026-10-13` and `/prototype-alignment-audit` resolve to
+pages that exist even though they are not in the sidebar (not unlinked — they
+are reachable and intentional).
+
+### Live URL contract probe (re-run 2026-11-15)
+
+| URL | HTTP | `<html lang>` | CJK, whole page | CJK, first 2000 bytes |
+|---|---|---|---|---|
+| `https://cuihairu.github.io/soar/` | 200 | `en` | 223 | **0** (first CJK byte at 4021 — the `简体中文` switcher label) |
+| `https://cuihairu.github.io/soar/zh/` | 200 | `zh-CN` | 447 | **18** (the `<meta name="description">` at byte 216) |
+
+The previous round's table reported 223 and 447 under a "first-screen" header;
+both numbers are whole-page counts. The corrected reading changes nothing about
+the verdict (the root correctly serves `en`), only about the label.

@@ -154,3 +154,52 @@ prev/next、A-B、Shot、剩余时间）在审计时未提交，凡涉及该批�
 | `https://cuihairu.github.io/soar/zh/` | 200 | `zh-CN` | 447 |
 
 根页出 `en` 与本地配置一致，是正确的；英文落地页上那 223 个 CJK 字符来自语言切换器标签与原型预览的导航名，不是部署产物滞后。舰队层面「本仓根页出中文」的说法未复现，无需重新部署，也未改动任何配置。无需 todo：自动切换增强项本仓已存在。
+
+## 增量 G2 再审计（2026-11-15，舰队文档复审）
+
+同轮舰队复审，基线 `eda4ddc`：开工时树干净且与 `origin/main` 一致。范围：六个高漂移面
+（功能清单、CLI 参数、平台/产物矩阵、安装与构建、README 徽章与 About 行、nightly 产物清单）
+之外，本轮把全部文档页里**每一条** `file:line` 引用做了机械复验——上一轮只核对了引用
+*内容*，没有核对引用的*行号是否仍然存在*。
+
+| ID | 页 | 主张 | 源码证据 | 类别 | 严重度 | 修法 |
+|---|---|---|---|---|---|---|
+| G2R-1 | docs/index.md:28、docs/zh/index.md:28、README.zh.md:18 | 「FFmpeg、系统框架、测试用的假后端实现同一个 IBackend 接口」（en 首屏卡、zh 首屏卡、zh README）——代码里不存在第三个后端 | 树内 `IBackend` 恰好两个实现：`src/core/ffmpeg_backend*.cpp` 与 `src/core/null_backend.cpp`；`ls src/core/` 无其他后端文件，`grep -riE 'avfoundation\|media3\|exoplayer' src/ include/ tools/` 为空；`docs/architecture.md:28` 本就写「两个实现」 | 文档超前于码 | **P0** | 三处改写为「FFmpeg 与测试用的假后端实现同一个 `IBackend`」。`docs/mvp.md:10`（「优先系统框架」）与 `docs/licensing.md:79`（`backend_avfoundation`）**不动**——二者均以前瞻设计口径表述，非已交付代码 |
+| G2R-2 | docs/architecture.md（6 处）、docs/glossary.md（4 处）、docs/rationale.md（4 处）及各自 zh 孪生 | 24 条 `file:line` 引用指向目标文件末尾之后 | UI 单体于 2026-11-10 拆分（`51ae7fe`，*refactor(ui): split PlayerHud into header and per-concern files*）：`player_window.cpp` 现为 1193 行而文档引 5099/5205/2035/2115；FFmpeg 后端同样拆分（916 行）而文档引 `ffmpeg_backend.cpp:3005`/`:2576`；`subtitle_provider.cpp` 为 474 行而文档引 609。复锚后逐条可解析：`runPlayerWindow` → `player_window.cpp:1019`，无 ImGui 裸循环 → `:1142`，`PlayerHud` 构造 → `:278`，`handleEvent` → `:504`，HUD 析构 → `:419`，theme 命名空间 → `player_hud.h:133`，几何令牌 → `ui_tokens.h:19`，`theme.txt`/`settings.txt` → `player_hud.h:311`/`:348`，`SOAR_UI_BITMAP_FONT` → `player_hud.h:478`，端点环境变量 → `player_window.cpp:335/354/378`，投屏发现/逐帧/浮层 → `player_hud_actions.cpp:502`/`:520`/`:590`，`decodeLoop` → `ffmpeg_backend_decode.cpp:15`（由 `ffmpeg_backend.cpp:417` 派生），`HttpCache` 注入 → `ffmpeg_backend_open.cpp:161`，`storeExternalSubtitle` → `subtitle_provider.cpp:424`，`CastSession::start` → `cast_session.cpp:40` | 描述不符 | P1 | 24 条双语全部复锚；脚本复验每条引用可解析——过期 **0** 条 |
+| G2R-3 | README.zh.md:29、:38、:161 | zh 版三个已落地特性落后于 en 版 | 网络刮削（`src/core/metadata_scraper.cpp`，`HttpMetadataScraper` 经 `MetadataSource` 接线；环境变量 `SOAR_META_ENDPOINT`/`_API_KEY`/`_TIMEOUT_MS` 在 `player_window.cpp:378` 读取）en 功能条已有而 zh 缺；`--cast-transcode`（`src/app/main.cpp:195`，`:81` 出现在 `--help`）en 投屏条已有而 zh 缺；v1.0 投屏状态（SSDP/SOAP/GENA、暂停、桥 LAN 改绑、转码、`t` 浮层、真机矩阵未验证）zh 仅一句「投屏（DLNA/UPnP）」对 en 全段 | 码超前于文档 | P1 | zh 功能/路线图条与 en 对齐 |
+| G2R-4 | README.md:113、README.zh.md:113 | 下载节列了各平台产物，未列聚合包及其两个文本文件 | `gh release view nightly --repo cuihairu/soar --json assets` 返回 15 个资产，含 `soar-daily-20261114-9552d62f.zip`（787 MB）、`BUILD_INFO.txt` 与 `VERIFY.md`；产出点 `.github/workflows/nightly.yml:803,745,746` | 码超前于文档 | P1 | 两版补聚合包与两个文本文件 |
+| G2R-5 | README.md:195-196 | en 套件表 `soar_p2p_tests` 出现两次（16 行、15 个唯一），zh 表 15 行正确 | `tests/CMakeLists.txt` 每套件只注册一次；zh 表本就一致 | 描述不符 | P2 | 删重复行；两表同为 15 个套件 |
+| G2R-6 | README.zh.md:50、:55 | zh mermaid 节点标签偏离 en 图 | `README.md:50` 列「信息/最近/帮助/播放列表/媒体库浮层」，`README.md:55` 写「纯抽象；检测到 FFmpeg 时后端编入」（`CMakeLists.txt:63-74` 在检测到时把 FFmpeg 后端编入 `soar_core`）；zh 侧写「信息/最近/帮助浮层」（三个）与「纯抽象，Apache-2.0 本体」 | 描述不符 | P2 | 两处 zh 标签对齐 en |
+| G2R-7 | docs/audit-doc-consistency.md:186-188（上一轮自己的表） | 线上探针表的「首屏 CJK」列名失实 | `https://cuihairu.github.io/soar/` 共 19 109 字节，**首个** CJK 字符在第 4021 字节（语言切换器标签`简体中文`），故「首屏 CJK = 223」实为整页计数，前 2000 字节真值为 0；`/soar/zh/` 整页 447 / 前 2000 字节 18（`<meta name="description">` 在第 216 字节） | 描述不符 | P2 | 探针三元组在下表按整页与首屏分列重录 |
+
+本增量三桶计数：文档超前于码 **1**（G2R-1）· 码超前于文档 **2**（G2R-3、G2R-4）·
+描述不符 **4**（G2R-2、G2R-5、G2R-6、G2R-7）。严重度：P0 **1**、P1 **3**、P2 **3**。
+全部仅改文档；未为迁就文档改动任何代码。
+
+本轮核实一致（抽查，无需修）：功能与快捷键清单对照 `src/app/ui/shortcuts.cpp`；
+`README.md:129-155` 每条 CLI 参数对照 `src/app/main.cpp:66-97`（`--open-dialog`、
+`--hwdec=`、`--cast-transcode`、`--cast-iface=` 均解析）并对照 `--help`；环境变量
+`SOAR_SUBTITLE_ENDPOINT`/`SOAR_TRANSLATE_ENDPOINT`/`SOAR_META_ENDPOINT` 于
+`player_window.cpp:335/354/378`；OSC 2.5s 自动隐藏与 MRU×15 于 `ui_state.h:46`、`:205`；
+256 KiB 缓存块于 `http_cache.cpp:32`；`packaging/linux/soar.desktop.in:6`
+（`Exec=soar --gui %U`）与 `:10`（四个 MimeType）；`SOAR_BUILD_APP`/`SOAR_BUILD_TESTS`
+于 `CMakeLists.txt:9,10`；nightly 产物矩阵对照 `.github/workflows/nightly.yml:792-803`
+（14 个平台产物 + 聚合包，与上述 15 个 Release 资产吻合）；GitHub About 行
+（「Cross-platform open source media player built with FFmpeg, SDL2 and libass
+(C++17)」）对照 `vcpkg.json` 与构建目标。无失效内部文档链接：受审页面的每条
+`[text](/page)` 与 `[text](./file.md)` 均解析到真实页面或文件；`docs/prototypes.md`
+指向 `/alignment-audit-2026-10-13` 与 `/prototype-alignment-audit` 的两条链接目标
+存在、只是不在侧栏（不摘除——可达且有意为之）。
+
+### 线上 URL 契约探针（2026-11-15 复测）
+
+| URL | HTTP | `<html lang>` | 整页 CJK | 前 2000 字节 CJK |
+|---|---|---|---|---|
+| `https://cuihairu.github.io/soar/` | 200 | `en` | 223 | **0**（首个 CJK 在第 4021 字节——`简体中文` 切换器标签） |
+| `https://cuihairu.github.io/soar/zh/` | 200 | `zh-CN` | 447 | **18**（`<meta name="description">` 在第 216 字节） |
+
+上一轮的表在「首屏」表头下报 223/447，两个数字实为整页计数。更正只动标签，不动结论：
+根页正确出 `en`。浏览器语言自动识别的复核结论与上轮一致——形态为成对文件 **且**
+vitepress locale 路由（`docs/.vitepress/config.mts:37-40` root=`en`、`:86` zh=`zh-CN`），
+自动切换脚本只在根落地页（`docs/index.md:43-68`），zh 落地页无镜像；镜像增强项已于
+上轮登记进 `todo.md:58`（I18N-AUTO-MIRROR · P2 · docs），本轮**不重复添加**。
