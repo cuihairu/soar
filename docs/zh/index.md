@@ -25,7 +25,7 @@ features:
     details: 播放 API 与事件模型不依赖任何具体多媒体库，UI 与播放内核解耦。
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24"><path d="M9 3v5"/><path d="M15 3v5"/><path d="M6 8h12v3a6 6 0 0 1-6 6 6 6 0 0 1-6-6V8z"/><path d="M12 17v4"/></svg>'
     title: 后端可插拔
-    details: FFmpeg、系统框架、还是测试用的假后端，都实现同一个 IBackend 接口。
+    details: FFmpeg 与测试用的假后端实现同一个 IBackend 接口，核心从不感知自己对接的是哪个。
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 14l2 2 4-4"/></svg>'
     title: 合规先行
     details: 项目本体保持 Apache-2.0，依赖选型守住 LGPL/GPL 边界。

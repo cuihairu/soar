@@ -15,7 +15,7 @@
 
 我们过去在播放器项目里反复踩同样的坑：播放内核和 UI 纠缠不清，依赖许可证（License）把分发卡死，想在移动端复用时才发现核心绑死在某个平台框架上。Soar 把这三条教训写成了设计约束。
 
-播放 API 与事件模型不依赖任何具体多媒体库，UI 换掉、内核不动。后端可插拔：FFmpeg、系统框架、测试用的假后端实现同一个 `IBackend` 接口。项目本体是 Apache-2.0，依赖选型守住 LGPL/GPL 边界（见 [docs/zh/licensing.md](docs/zh/licensing.md)）。
+播放 API 与事件模型不依赖任何具体多媒体库，UI 换掉、内核不动。后端可插拔：FFmpeg 与测试用的假后端实现同一个 `IBackend` 接口。项目本体是 Apache-2.0，依赖选型守住 LGPL/GPL 边界（见 [docs/zh/licensing.md](docs/zh/licensing.md)）。
 
 ## 当前状态
 

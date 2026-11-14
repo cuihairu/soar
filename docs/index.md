@@ -25,7 +25,7 @@ features:
     details: The playback API and event model depend on no specific multimedia library; the UI is decoupled from the playback core.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24"><path d="M9 3v5"/><path d="M15 3v5"/><path d="M6 8h12v3a6 6 0 0 1-6 6 6 6 0 0 1-6-6V8z"/><path d="M12 17v4"/></svg>'
     title: Pluggable backends
-    details: FFmpeg, a system framework, or the fake backend used for tests — they all implement the same IBackend interface.
+    details: FFmpeg and the fake backend used for tests implement the same IBackend interface, so the core never learns which one it talks to.
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 14l2 2 4-4"/></svg>'
     title: Compliance first
     details: The project itself stays Apache-2.0; dependency choices respect the LGPL/GPL boundary.
