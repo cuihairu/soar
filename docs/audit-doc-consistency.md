@@ -162,12 +162,19 @@ Form: paired files (`README.md`/`README.zh.md`) **and** vitepress locale routing
 (English at the site root) and `:86` `lang: 'zh-CN'` for `zh/`, under
 `base: '/soar/'`; 12 English pages against 12 Chinese pages, exact parity.
 
-Auto-detection: **present**. `docs/index.md` (the root landing page) carries a
-`<script setup lang="ts">` block that checks `localStorage` first, then
+Auto-detection: **present, on the root landing page only**. `docs/index.md`
+carries a `<script setup lang="ts">` block that, behind a root-path guard
+(`p !== ROOT_PATH && p !== ROOT_PATH.slice(0, -1)` returns early — the script
+never acts outside `/soar/`), checks `localStorage` first, then
 `navigator.languages`/`navigator.language`, and replaces the URL with
-`/soar/zh/` when any locale starts with `zh`; the same script ships in the zh
-landing page pointing back at the root, and a click listener records manual
-choices so a later auto-check yields. Both landing pages carry it.
+`/soar/zh/` when any locale starts with `zh`; a capture-phase click listener on
+the same page records manual choices so a later auto-check yields. The zh
+landing page carries **no** mirror script (`grep script docs/zh/index.md` is
+empty; `soar-lang-auto-picked` appears only in `docs/index.md` site-wide), so a
+browser landing directly on `/zh/` is never auto-switched back — filed as a P2
+todo (mirroring the script or folding detection into the theme waits for the
+user). Corrected 2026-11-15: an earlier version of this paragraph said both
+landing pages carry the script; only the root page does.
 
 Live URL contract probe (fetched 2026-11-14):
 

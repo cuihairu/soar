@@ -55,6 +55,7 @@
 
 - [x] docs 子目录补双语：`docs/public/prototypes/README.md` 翻为英文裸名 + 中文 `README.zh.md` 配对（2026-10-16）
 - [x] docs 双语缺口补齐：`mvp` 与 `ui-design` 补英文裸名版（`docs/mvp.md`、`docs/ui-design.md`，与中文稿逐项结构对齐——标题/表格行/代码块计数相同：mvp 13/13·7/7·0/0，ui-design 24/24·35/35·8/8；中文稿 `mvp.zh.md`/`ui-design.zh.md` 补语言切换器（行号 +2，审计注记口径已覆盖）；英文侧 `docs/prototypes.md` 的 UI 规格链接改指 `/ui-design`；docs-only → `npm run docs:build` 4.87s 绿，`mvp`/`ui-design` 与 `/zh/` 两页均出产物）
+- [ ] **I18N-AUTO-MIRROR · P2 · docs**：语言自动识别只有根落地页一份，zh 侧无镜像。实况：`docs/index.md` 的 `<script setup>` 带根路径守卫（`p !== ROOT_PATH && …` 早退），`localStorage` 手动选择 > `navigator.languages` > 保持当前 locale，中文浏览器首次访问 `/` 跳 `/soar/zh/`，捕获阶段点击监听记录手动选择；`docs/zh/index.md` 无任何 script（41 行纯 home layout），`docs/.vitepress/theme/` 也无探测，全站 `soar-lang-auto-picked` 只在 `docs/index.md`。后果：直达 `/zh/` 的英文浏览器不会被自动切回。候选修法（择一）：①zh/index.md 镜像一段指回根的脚本 ②收进 theme 全局增强，一处覆盖两页。是否全舰队铺开自动切换等用户拍板；本仓不改实现。（2026-11-15 G2 审计轮补记）
 
 ## 架构总览图
 

@@ -144,7 +144,7 @@ prev/next、A-B、Shot、剩余时间）在审计时未提交，凡涉及该批�
 
 形态：成对文件（`README.md`/`README.zh.md`）**且** vitepress locale 路由——`docs/.vitepress/config.mts:37-40` 声明 `locales.root` 为 `lang: 'en'`（英文在站点根），`:86` 为 `zh/` 声明 `lang: 'zh-CN'`，`base: '/soar/'`；英文 12 页对中文 12 页，完全对称。
 
-自动识别：**已具备**。`docs/index.md`（根落地页）带一段 `<script setup lang="ts">`：先查 `localStorage`，再查 `navigator.languages`/`navigator.language`，任一 locale 以 `zh` 开头即把 URL 换成 `/soar/zh/`；zh 落地页带同样脚本指回根。点击选择会被记录，后续自动检查让位。两个落地页都有。
+自动识别：**已具备，仅在根落地页**。`docs/index.md` 带一段 `<script setup lang="ts">`：先过根路径守卫（`p !== ROOT_PATH && p !== ROOT_PATH.slice(0, -1)` 即早退——脚本在 `/soar/` 之外永不生效），再查 `localStorage` 优先、`navigator.languages`/`navigator.language`，任一 locale 以 `zh` 开头即把 URL 换成 `/soar/zh/`；同页捕获阶段点击监听记录手动选择、后续自动检查让位。zh 落地页**没有**镜像脚本（`grep script docs/zh/index.md` 为空；`soar-lang-auto-picked` 全站只出现在 `docs/index.md`），直达 `/zh/` 的浏览器不会被自动切回——已落 P2 todo（镜像脚本或收进 theme 等用户拍板）。2026-11-15 更正：本段初稿写「两个落地页都有」，实际只有根页有。
 
 线上 URL 契约探针（2026-11-14 实测）：
 
