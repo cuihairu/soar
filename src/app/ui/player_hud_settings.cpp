@@ -293,9 +293,14 @@ void PlayerHud::themeSegmented() {
                        : (hovered ? theme::kText2 : theme::kText3)),
                 kLabels[i]);
     if (clicked && !on) {
-      theme::applyPalette(i == 1);
-      applyTheme();
-      saveThemePref();
+      // Defer: applyPalette() touches the shared style slots that
+      // drawSettingsOverlay's PushStyleColor calls already backed up, so
+      // writing them now would have the page's closing pops restore the
+      // old palette on top of the new one (the shell mixed two themes
+      // until the next full applyTheme). The row only arms the pending
+      // flags; drawSettingsOverlay applies them after its own pops.
+      appearance_light_ = (i == 1);
+      appearance_pending_ = true;
     }
     x += widths[i];
   }
@@ -856,6 +861,16 @@ void PlayerHud::drawSettingsOverlay() {
   ImGui::End();
   ImGui::PopStyleColor(2);
   ImGui::PopStyleVar(2);
+  if (appearance_pending_) {
+    // Armed by the Appearance row's click. Only now that both style
+    // stacks are off the stack does the write stay put: ImGuiStyleCol
+    // restores the value pushed at its own depth, which was still the old
+    // palette while this page was open.
+    appearance_pending_ = false;
+    theme::applyPalette(appearance_light_);
+    applyTheme();
+    saveThemePref();
+  }
   if (!open) st_.overlay = Overlay::None;
 }
 

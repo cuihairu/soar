@@ -340,9 +340,22 @@ inline void saveThemePref() {
   std::error_code ec;
   std::filesystem::path p(path);
   if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) return;
-  out << (theme::g_light ? "light" : "dark") << "\n";
+  // Atomic write (tmp + rename), the same convention as RecentStore::save,
+  // HttpCache's meta and saveSettingsInt below: a crash or power loss
+  // between the truncate and the final flush leaves the *old* file intact,
+  // never an empty theme.txt the next launch would read as "dark" and
+  // silently undo a light choice.
+  const std::string tmp = path + ".tmp";
+  {
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    out << (theme::g_light ? "light" : "dark") << "\n";
+    if (!out) return;
+  }
+#ifdef _WIN32
+  std::remove(path.c_str());  // rename() fails when the target exists
+#endif
+  std::rename(tmp.c_str(), path.c_str());
 }
 
 // <state>/soar/settings.txt — the settings page's persisted rows beyond the
@@ -1516,6 +1529,11 @@ class PlayerHud {
   std::string target_language_ = "English";
   bool translate_ready_ = false;
   State st_;
+  // The Appearance row's click sets these inside the page's own style
+  // pushes, and drawSettingsOverlay applies them only after its pops (see
+  // appearance_pending_ there) so the whole shell flips in one pass.
+  bool appearance_pending_ = false;
+  bool appearance_light_ = false;
 };
 
 #endif  // SOAR_WITH_IMGUI

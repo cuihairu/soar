@@ -378,6 +378,80 @@ if mode == "theme":
         time.sleep(0.2)
     sys.exit(5)
 
+if mode == "theme_click":
+    # The settings Appearance row's palette route, pinned against the
+    # click path only (the y-key case above covers the global shortcut).
+    # applyTheme() used to run while the page's own style pushes were
+    # still on ImGui's stack, so the page's closing pops restored the
+    # old palette into the default slots while the widgets inside it
+    # already drew with the new one — a mixed shell that lasted until
+    # the next full apply. i opens the media info overlay, which uses
+    # the untouched default WindowBg, so the panel's own brightness is
+    # the visible tell: dark panel on a light window means the pop
+    # won. The run is windowed with no source: the empty state still
+    # draws the panel, and the probe reads it directly from the window.
+    time.sleep(2.2)
+    if not focus():
+        sys.exit(4)
+
+    def grab():
+        g = win.get_geometry()
+        return win.get_image(0, 0, g.width, g.height, X.ZPixmap,
+                             0xFFFFFFFF).data, g.width, g.height
+
+    key(d.keysym_to_keycode(0x67))  # g -> the settings page
+    time.sleep(0.9)
+    # Pin probed on this build (page coordinates under
+    # SOAR_UI_BITMAP_FONT=1): the Appearance row's segmented control
+    # sits on the third card (center y 235), the ON segment spans
+    # x 815..862, the Light segment is the next 56px to its right.
+    if not moved(891, 234):
+        sys.exit(4)
+    time.sleep(0.15)
+    if not holdclick(1):
+        sys.exit(4)
+    time.sleep(0.5)
+    if not key(d.keysym_to_keycode(0x67)):  # close the page again
+        sys.exit(4)
+    time.sleep(0.5)
+    if not key(d.keysym_to_keycode(0x69)):  # i -> the media info overlay
+        sys.exit(4)
+    time.sleep(1.0)
+    try:
+        data, wd, ht = grab()
+    except Exception:
+        sys.exit(5)
+
+    def psum(x, y):
+        off = (y * wd + x) * 4
+        return data[off] + data[off + 1] + data[off + 2]
+
+    # The panel's own band (measured on this build: x 281..659, well
+    # inside the 330..630 scan). Only its background colour is the
+    # tell — the text glyphs are a small minority of the area either
+    # way — so the share of near-black pixels decides.
+    x0, x1, y0, y1 = 330, 630, 220, 330
+    total = (x1 - x0) * (y1 - y0)
+    dark = sum(1 for y in range(y0, y1) for x in range(x0, x1)
+               if psum(x, y) < 150)
+    sys.stderr.write("theme_click probe: dark %d/%d (%.0f%%)\n"
+                     % (dark, total, 100.0 * dark / total))
+    verdict = 8 if 100.0 * dark / total > 40.0 else 0
+    # Quit through Escape so the CLI's own exit code is what the C++
+    # side reads, not a killed process. The info overlay still swallows
+    # the first Escape, so it has to close itself first.
+    if not key(d.keysym_to_keycode(0x69)):  # close the overlay
+        sys.exit(4)
+    time.sleep(0.4)
+    if not key(d.keysym_to_keycode(0xFF1B)):
+        sys.exit(4)
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if find_window() is None:
+            sys.exit(0 if verdict == 0 else verdict)
+        time.sleep(0.2)
+    sys.exit(5)
+
 if mode == "settings":
     # The settings page drive: g opens the page, the five nav rows are
     # clicked in order so every tab body renders, and each tab's live
@@ -5450,6 +5524,136 @@ TEST_CASE("windowed UI run drives every settings tab through XTEST clicks") {
     }
   }
   CHECK(have_cap);
+  std::filesystem::remove_all(state_home, ec);
+#endif
+#endif
+}
+
+TEST_CASE("windowed UI run keeps one palette after the appearance click") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  MESSAGE("app built without the ImGui overlay; skipping the appearance click");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the appearance click");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the appearance click");
+    return;
+  }
+
+  // A private state home seeded with the shipped palette: the run starts
+  // dark, the settings page's Appearance row flips it to light, and the
+  // state file the next launch reads must carry that choice.
+  std::error_code ec;
+  const std::string state_home =
+      (std::filesystem::temp_directory_path(ec) /
+       ("soar_appearance_" + std::to_string(::getpid())))
+          .string();
+  std::filesystem::create_directories(state_home + "/soar", ec);
+  {
+    std::ofstream pref(state_home + "/soar/theme.txt",
+                       std::ios::binary | std::ios::trunc);
+    pref << "dark";
+  }
+  const std::string theme_file = state_home + "/soar/theme.txt";
+
+  // Same private-display scheme as the other X11 cases (serial runs).
+  const std::string suffix = std::to_string(70 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    // Same size as the settings drive: the page's card grid was probed
+    // on a 1280x800 screen.
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  int xvfb_status = 0;
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  // A shared host can hand this pid to another session, whose leftover
+  // Xvfb already holds the socket: the probe below would then succeed
+  // against a display this run cannot own. Reap our own child first.
+  bool xvfb_dead = false;
+  for (int i = 0; i < 10 && !xvfb_dead; ++i) {
+    ::usleep(100 * 1000);
+    xvfb_dead = ::waitpid(xvfb, &xvfb_status, WNOHANG) == xvfb;
+  }
+  if (xvfb_dead) {
+    MESSAGE("Xvfb failed to start; skipping the appearance click");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    std::filesystem::remove_all(state_home, ec);
+    return;
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the appearance click");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    std::filesystem::remove_all(state_home, ec);
+    return;
+  }
+
+  // The injector clicks the page's Light segment, then reads the media
+  // info overlay's own background — the one control the page's style
+  // pushes never touched.
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "theme_click", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const ScopedEnv state_env("XDG_STATE_HOME", state_home.c_str());
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const auto run = runCli({"--gui"}, 300);
+
+  int injector_status = 0;
+  ::waitpid(injector, &injector_status, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+  std::printf("x11 appearance click: cli exit=%d injector=%d, output:\n%s\n",
+              run.exit_code,
+              WIFEXITED(injector_status) ? WEXITSTATUS(injector_status) : -1,
+              run.output.c_str());
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(state_home, ec);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  // The injector's verdict: 0 = the panel drew with the new palette; 4 =
+  // the click never landed or the window could not be reached; 5 = the
+  // window could not be read; 8 = the page's own style pops restored
+  // the old palette, so the shell mixed two themes.
+  REQUIRE(WIFEXITED(injector_status));
+  REQUIRE(WEXITSTATUS(injector_status) == 0);
+
+  // The click's write landed in the file the next launch reads.
+  std::ifstream pref(theme_file, std::ios::binary);
+  std::string saved;
+  std::getline(pref, saved);
+  CHECK(saved == "light");
   std::filesystem::remove_all(state_home, ec);
 #endif
 #endif

@@ -156,7 +156,7 @@ cmake --preset default && cmake --build --preset default   # Debug
 
 ## 路线图
 
-- **v0.1（MVP，已收口）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）——验收清单全数完成（见 [原型（redesign v2）](docs/zh/prototypes.md) §6）；
+- **v0.1（MVP，已收口）**：播放控制、Seek、倍速、音量、轨道信息与选择、事件与进度回调、桌面 UI（浮动 OSC + 快捷键 + 信息/最近/帮助浮层）——验收清单全数完成（见 [MVP 能力清单](docs/zh/mvp.md) §1）；
 - **v0.2**：播放列表、截图、A-B 循环、音频设备选择、HLS/DASH/RTSP 冒烟、字幕体验（字体/大小/同步偏移）——均已落地；
 - **v1.0**：硬解（首接线已落地：`--hwdec=`，失败回退软解）与 HDR（首接线已落地：HDR10/HLG 识别、逐帧 zscale 转到 SDR、不可用时诚实直通——docs/zh/mvp.md §3、coverage-notes.md §3.26）、投屏（DLNA/UPnP AV 控制点已落地：自实现 SSDP 发现、设备 XML、SOAP 控制、GENA 事件、暂停、会话期桥 LAN 改绑，含 FFmpeg 时可选发送侧 H.264/AAC MPEG-TS 转码；窗口投屏浮层（`t`）与 CLI `--cast`/`--cast-transcode` 开关 2026-10-12 接线；真机发现矩阵仍未验证——docs/zh/mvp.md §3、todo.md）、媒体库与离线 NFO 刮削（已落地；网络刮削 2026-10-16 以用户自配的 TMDB 形状端点落地，多设备同步仍在等协议决策——docs/zh/mvp.md §3）、插件体系。
 - **iOS 切片（骨架已落地）**：`ios/SoarKit` 是纯 Swift 包——播放控制门面、状态/事件模型，以及 `MediaEngine` 协议与镜像桌面 `NullBackend` 状态机的 `NullEngine`；CI 在 macOS runner 上做 iOS 构建并跑 XCTest（`.github/workflows/ios.yml`，`ios/**` 变更触发）。C 桥头文件（`ios/Bridge/soar_bridge.h`）仅为评审用设计稿、未接线；C++ 核心交叉编译成 xcframework 与 SwiftUI App 壳均未开始（如实状态表见 [ios/README.md](ios/README.md)）。
