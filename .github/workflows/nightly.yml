@@ -39,7 +39,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # 2026-11-17：构建钉 ubuntu-24.04。ubuntu-latest 已迁 26.04
+          # （glibc 2.43），产物在裸容器 ubuntu:24.04（glibc 2.39）里
+          # --version 起不来；verify-linux 的 24.04 同代基线就是构建
+          # 同代口径，构建漂到 26.04 即自毁该前提（11-16 起红）。
+          # arm64 用 ubuntu-24.04-arm，天然不受迁移影响。
+          - os: ubuntu-24.04
             name: linux-x64
           # Linux arm64 on the free public ARM runner (no cost for public
           # repos); install.sh targets it, so the matrix must ship it.
