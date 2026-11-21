@@ -404,7 +404,7 @@ void PlayerHud::drawPlaylistRow(const std::vector<std::string>& entries, std::si
     std::snprintf(idx, sizeof(idx), "%02zu", i + 1);
     const ImVec2 is = ImGui::CalcTextSize(idx);
     dl->AddText(ImVec2(p.x + 22.0f - is.x, p.y + (row_h - is.y) * 0.5f),
-                ImGui::ColorConvertFloat4ToU32(theme::kText4), idx);
+                ImGui::ColorConvertFloat4ToU32(theme::kText3), idx);
   }
   // Thumb (72x40, rounded 6, the poster's dark gradient + cool radial).
   const float ty = p.y + (row_h - 40.0f) * 0.5f;
@@ -805,9 +805,10 @@ void PlayerHud::drawLibraryOverlay() {
 }
 
 void PlayerHud::librarySideGrp(const char* label) {
+  // Prototype `.side .grp` is --text-3 (library.html:29), not the dimmest tier.
   ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12.0f);
   ImGui::SetCursorPosX(18.0f);
-  ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
+  ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
   ImGui::TextUnformatted(label);
   ImGui::PopStyleColor();
   ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
@@ -840,7 +841,7 @@ bool PlayerHud::librarySideRow(const char* id, const char* label, std::size_t co
   const ImVec2 css = ImGui::CalcTextSize(cs.c_str());
   dl->AddText(ImVec2(p.x + w - 10.0f - css.x, p.y + (32.0f - css.y) * 0.5f),
               ImGui::ColorConvertFloat4ToU32(
-                  active ? theme::kAccentHi : theme::kText4),
+                  active ? theme::kAccentHi : theme::kText3),
               cs.c_str());
   return clicked;
 }
@@ -907,13 +908,13 @@ void PlayerHud::drawLibraryHead(const std::vector<LibraryEntry>& entries) {
   const ImVec2 ep(bp.x + 240.0f, bp.y);
   ImGui::GetWindowDrawList()->AddText(
       ImVec2(ep.x + 8.0f, bp.y + (box_h - ImGui::CalcTextSize("/").y) * 0.5f),
-      ImGui::ColorConvertFloat4ToU32(theme::kText4), "/");
+      ImGui::ColorConvertFloat4ToU32(theme::kText3), "/");
   // The search icon at the box's left (drawn over the input).
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  const ImU32 u_t4 = ImGui::ColorConvertFloat4ToU32(theme::kText4);
-  dl->AddCircle(ImVec2(bp.x + 16.0f, bp.y + 15.0f), 5.0f, u_t4, 0, 1.4f);
+  const ImU32 u_t3 = ImGui::ColorConvertFloat4ToU32(theme::kText3);
+  dl->AddCircle(ImVec2(bp.x + 16.0f, bp.y + 15.0f), 5.0f, u_t3, 0, 1.4f);
   dl->AddLine(ImVec2(bp.x + 19.5f, bp.y + 18.5f),
-              ImVec2(bp.x + 23.0f, bp.y + 22.0f), u_t4, 1.4f);
+              ImVec2(bp.x + 23.0f, bp.y + 22.0f), u_t3, 1.4f);
   // The bottom hairline of the head.
   dl->AddLine(ImVec2(0.0f, bp.y + box_h + 9.0f),
               ImVec2(ImGui::GetWindowWidth(), bp.y + box_h + 9.0f),

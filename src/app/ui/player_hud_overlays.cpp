@@ -311,7 +311,10 @@ void PlayerHud::drawHelpOverlay() {
       }
       keys.push_back(std::move(key));
     }
-    if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_RowBg)) {
+    // ScrollY: the 28 rows (≈582px) do not fit the 540px default window,
+    // so the last entries must scroll into view rather than clip away.
+    if (ImGui::BeginTable("keys", 2,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
       std::size_t i = 0;
       for (const HelpRow& row : kRows) {
         ImGui::TableNextRow();

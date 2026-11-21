@@ -180,7 +180,6 @@ inline ImVec4 kCardBg{0.075f, 0.086f, 0.106f, 1.0f};           // #13161B v1 --b
 inline ImVec4 kCardLine{0.141f, 0.169f, 0.208f, 1.0f};         // #242B35 v1 --line
 inline ImVec4 kText2{0.635f, 0.671f, 0.722f, 1.0f};            // #A2ABB8 v1 --t2
 inline ImVec4 kText3{0.431f, 0.471f, 0.525f, 1.0f};            // #6E7886 v1 --t3
-inline ImVec4 kText4{0.302f, 0.333f, 0.376f, 1.0f};            // #4D5560 v1 --t4
 inline ImVec4 kAccentHi{1.0f, 0.522f, 0.329f, 1.0f};           // #FF8554 v1 --accent-hi
 // Field faces (v1 --bg3 / --bg4): the select boxes, stepper buttons, the
 // nav hover fill and the switch's off state all sit one tier above the
@@ -252,7 +251,6 @@ inline void applyPalette(bool light) {
   kCardLine = {0.875f, 0.890f, 0.918f, 1.0f};       // #DFE3EA v1 --line (light)
   kText2 = {0.271f, 0.306f, 0.361f, 1.0f};          // #454E5C v1 --t2 (light)
   kText3 = {0.384f, 0.424f, 0.490f, 1.0f};          // #626C7D v1 --t3 (light)
-  kText4 = {0.596f, 0.631f, 0.686f, 1.0f};          // #98A1AF v1 --t4 (light)
   kAccentHi = {1.0f, 0.522f, 0.329f, 1.0f};         // #FF8554 accent-hi (same)
   kFieldBg = {0.906f, 0.918f, 0.941f, 1.0f};        // #E7EAF0 v1 --bg3 (light)
   kFieldBgHi = {0.765f, 0.792f, 0.835f, 1.0f};      // #C3CAD5 v1 --bg4 (light)

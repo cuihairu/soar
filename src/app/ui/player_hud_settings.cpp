@@ -200,7 +200,7 @@ void PlayerHud::settingsGrp(const char* label) {
   ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f);
   // .nav .grp margin-left 8 on the nav's 10px padding.
   ImGui::SetCursorPosX(18.0f);
-  ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
+  ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
   ImGui::TextUnformatted(label);
   ImGui::PopStyleColor();
   ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
@@ -366,7 +366,8 @@ void PlayerHud::settingsTextInput(const char* value, float w) {
 }
 
 void PlayerHud::settingsSect(const char* label) {
-  ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
+  // Prototype `.sect h2` is --text-2 (settings.html:57), not the dimmest tier.
+  ImGui::PushStyleColor(ImGuiCol_Text, theme::kText2);
   ImGui::TextUnformatted(label);
   ImGui::PopStyleColor();
   ImGui::Dummy(ImVec2(0.0f, 2.0f));
@@ -415,7 +416,8 @@ void PlayerHud::endpointRow(const char* id, const char* tag, const char* value,
     const float value_w = avail - (12.0f + tag_w + 16.0f) - 68.0f;
     const int max_chars = std::max(8, static_cast<int>(value_w / 8.0f));
     ImGui::SetCursorPos(ImVec2(12.0f + tag_w + 16.0f, 11.0f));
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
+    // Prototype `.ep .val.dim` is --text-3 (settings.html:116).
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
     ImGui::TextUnformatted(clipEllipsis(value, max_chars).c_str());
     ImGui::PopStyleColor();
     // v2 settings rule: edit/add are neutral ghost buttons; red is
@@ -585,7 +587,8 @@ void PlayerHud::drawSettingsOverlay() {
             [&] { settingsSwitch("##g_remember_sw", &st_.remember_last_media); });
         settingCard(
             "##g_esc", "ESC exits fullscreen",
-            "Only in fullscreen; in-window ESC closes settings", 34.0f, 20.0f,
+            "In fullscreen, ESC returns to the window; otherwise ESC quits",
+            34.0f, 20.0f,
             [&] { settingsSwitch("##g_esc_sw", &st_.esc_exits_fullscreen); });
         // 外观 — the prototype's `?theme=light|dark` switch, in the app.
         // v2 makes the light shell part of the baseline (v2.1 review), so
@@ -750,7 +753,7 @@ void PlayerHud::drawSettingsOverlay() {
                     "Not configured - no automatic subtitle fetch", nowMs());
         endpointRow("##ep_translate", "Translate",
                     "Not configured - no translated track", nowMs());
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::kText4);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::kText3);
         ImGui::TextUnformatted(
             "Translate endpoint is optional: offline beats overreach; keys stay local");
         ImGui::PopStyleColor();
