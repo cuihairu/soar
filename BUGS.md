@@ -189,6 +189,28 @@
   需前台）；③ 断言播放开始（窗口标题变媒体名/画面出现/`--backend=null`
   时 CLI 事件流出 media-info）。对话框本体是否在非前台会话里立起、点选后
   openSource 是否吃进路径，是仅剩的两处待观测点（真机 openclaw/imac/.5 在位，待在其上观测）。
+  **真机复测（2026-11-21，双机：openclaw 10.147.19.49 + imac 192.168.5.117，安装介质=
+  夜构建 `soar-windows-x64.zip` 解压直跑）**：观测点 (a) 对话框在非前台会话里是否立起
+  **已证伪「立不起」——它立得起来**：以计划任务（`LogonType Interactive`，全程无人碰机器、
+  无前台焦点）拉起 `soarw.exe --open-dialog --backend=null`，SDL 主窗（`SDL_app`/「soar」）
+  1s 内立起，对话框「Open media file」**t=5s 立起并全程可见**（EnumWindows 逐 5s 枚举 95s
+  恒在列；两张全屏实拍 `evidence/bug3-retest-2026-11-21/dialog-up-openclaw-0811.png` /
+  `-0826.png` 实照出：面包屑 `Administrator > soar-nightly`、文件表列出 `sample.mp4`
+  12KB、`Media files` 过滤器、文件名框空、右下「打开(O)/取消」齐全；`--open-dialog` 首帧
+  唤起路径在真机成立，不依赖前台焦点）。
+  观测点 (b) 点选后 openSource 是否吃进路径**本会话未闭环，属自动化会话注入限制而非产品
+  缺陷**，四重交叉证据：① **对照排除 soar 侧**——同一任务会话里 PowerShell 直接
+  P/Invoke 调 `GetOpenFileNameW`（同结构同标题）也挂起不返回、20s 无窗口可见，即
+  comdlg 基础设施本身在该会话里不成立；② **检测面漏判**——诊断曲线（逐 5s 同时截屏 +
+  窗口枚举）里 `EnumWindows` 全程见「Open media file」而 `FindWindowW(null, title)` 全程
+  False（同一轮、同一进程内两法对读，非跨轮拼接），据此判存在与否一律走 EnumWindows；③ **注入不触发**——post 进
+  `SDL_app` 窗的 `WM_LBUTTONDOWN/UP`（480,270）与 `WM_KEYDOWN 'O'` 共 20 轮，均不唤出
+  对话框（SDL/ImGui 输入面不吃 posted 事件），imac 同形复现 3 轮（96GB 内存，排除内存
+  假设）；④ **非确定**——同机同脚本，对话框只在少数轮次立起：三轮立起（两轮有全屏
+  实拍，诊断轮由 EnumWindows 逐 5s 记录 95s 恒在列），其后 openclaw 6+3 轮 + 40 轮
+  重试环、imac 3 轮 + 40 轮重试环全部不立起。
+  故剩余半需**真人在真桌面点选**（对话框本体、过滤器、目录初值均已实拍实证，点选后
+  `openSource` 的下游路径由 CLI argv / SDL drop 两条同源入口的用例覆盖）。
   Linux 文件管理器的实际打开链路（desktop MimeType 声明面已接线）未在真桌面
   环境走查；`.desktop` 已收敛单一来源 `packaging/linux/soar.desktop.in`
   （deb/rpm 与 AppImage 两脚本原本各写一份 heredoc，会漂移），打包时
