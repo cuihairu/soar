@@ -39,3 +39,30 @@ features:
 分层跟着代码走：应用层调用 Player 门面，IBackend 接口分发到 FFmpegBackend 或 NullBackend 测试替身，网络组件置于流水线之侧：
 
 ![Soar 分层架构](/images/architecture-zh.svg)
+
+<script setup lang="ts">
+// 镜像 docs/index.md 的反向探测：直达 /zh/ 的非中文浏览器自动切回根页
+// 优先级：localStorage 手动选择 > navigator.language > 保持当前 locale
+import { onBeforeMount } from 'vue'
+const KEY = 'soar-lang-auto-picked'
+const BASE = '/soar/'
+const ROOT_PATH = BASE
+const ZH_PATH = BASE + 'zh/'
+onBeforeMount(() => {{
+  if (typeof window === 'undefined') return
+  const p = window.location.pathname
+  if (p !== ZH_PATH && p !== ZH_PATH.slice(0, -1)) return
+  const picked = localStorage.getItem(KEY)
+  if (picked) {{ if (picked !== p) window.location.replace(picked); return }}
+  const langs = (navigator.languages?.length ? navigator.languages : [navigator.language]).map(l => l.toLowerCase())
+  if (!langs.some(l => l.startsWith('zh'))) window.location.replace(ROOT_PATH)
+}})
+if (typeof window !== 'undefined') {{
+  window.addEventListener('click', (e) => {{
+    const a = (e.target as HTMLElement)?.closest?.('a') as HTMLAnchorElement | null
+    const href = a?.getAttribute('href') || ''
+    if (href.startsWith(ZH_PATH) || href.startsWith('zh/')) localStorage.setItem(KEY, ZH_PATH)
+    else if (href === ROOT_PATH || href === ROOT_PATH.slice(0, -1)) localStorage.setItem(KEY, ROOT_PATH)
+  }}, true)
+}}
+</script>
