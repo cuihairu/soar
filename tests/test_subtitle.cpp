@@ -14,6 +14,7 @@
 #include "soar/core/ass_dialogue.h"
 #include "soar/core/subtitle_provider.h"
 #include "soar/core/subtitle_text.h"
+#include "soar/core/subtitle_translate_session.h"
 
 #include "test_http_servers.h"
 
@@ -21,7 +22,10 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #ifndef _WIN32
@@ -50,6 +54,7 @@ using soar::SubtitleCandidate;
 using soar::SubtitleCue;
 using soar::SubtitleFormat;
 using soar::SubtitleTranslateConfig;
+using soar::SubtitleTranslateSession;
 using soar::SubtitleTranslator;
 
 #ifndef _WIN32
@@ -2657,6 +2662,104 @@ TEST_CASE("translate_progress_reports_each_batch_and_its_lines") {
   REQUIRE(cues.size() == 3);
   CHECK(cues[0].text == "[tr] First cue");
   CHECK(cues[2].text == "[tr] Third cue");
+#endif
+}
+
+TEST_CASE("translate_session_runs_off_thread_and_delivers_a_result_once") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "ok", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  cfg.batch_cues = 1;  // three cues, three batches, three progress reports
+  const std::string kIn =
+      "1\n00:00:01,000 --> 00:00:02,000\nFirst cue\n\n"
+      "2\n00:00:02,000 --> 00:00:03,000\nSecond cue\n\n"
+      "3\n00:00:03,000 --> 00:00:04,000\nThird cue\n\n";
+
+  // The session starts, runs on its own thread, and a poller sees the
+  // progress counts advance to total before the result is taken once.
+  SubtitleTranslateSession session;
+  std::mutex pmu;
+  std::vector<std::pair<size_t, size_t>> counts;
+  std::vector<std::pair<std::string, std::string>> pairs;
+  REQUIRE(session.start(cfg, kIn, "French",
+                        [&](size_t done, size_t total,
+                            const std::vector<std::string>& originals,
+                            const std::vector<std::string>& translated) {
+                          std::lock_guard<std::mutex> lock(pmu);
+                          counts.push_back({done, total});
+                          for (size_t i = 0; i < originals.size(); ++i) {
+                            pairs.push_back({originals[i], translated[i]});
+                          }
+                        }));
+  CHECK(session.running());
+
+  bool ok = false;
+  std::string out, err;
+  bool got = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (!session.running() && session.takeResult(&ok, &out, &err)) {
+      got = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  REQUIRE(got);
+  CHECK(ok);
+  CHECK(err.empty());
+  CHECK_FALSE(session.takeResult(&ok, &out, &err));  // consumed exactly once
+
+  // Progress: one report per batch, counts running up to the cue total.
+  const std::vector<ChatRequest> reqs = readChatRequests(root);
+  REQUIRE(reqs.size() == 3);
+  {
+    std::lock_guard<std::mutex> lock(pmu);
+    REQUIRE(counts.size() == 3);
+    for (size_t i = 0; i < counts.size(); ++i) {
+      CHECK(counts[i].first == i + 1);
+      CHECK(counts[i].second == 3);
+    }
+    REQUIRE(pairs.size() == 3);
+    CHECK(pairs[0].first == "First cue");
+    CHECK(pairs[0].second == "[tr] First cue");
+    CHECK(pairs[2].first == "Third cue");
+    CHECK(pairs[2].second == "[tr] Third cue");
+  }
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+  REQUIRE(cues.size() == 3);
+  CHECK(cues[2].text == "[tr] Third cue");
+
+  // Reuse: a finished translation is reaped and the result slot cleared, so
+  // the same session can translate again.
+  REQUIRE(session.start(cfg, kIn, "German"));
+  bool ok2 = false;
+  std::string out2, err2;
+  got = false;
+  const auto deadline2 = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (std::chrono::steady_clock::now() < deadline2) {
+    if (!session.running() && session.takeResult(&ok2, &out2, &err2)) {
+      got = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  REQUIRE(got);
+  CHECK(ok2);
+  const std::vector<SubtitleCue> cues2 = parseSubtitleText(out2, SubtitleFormat::SubRip);
+  REQUIRE(cues2.size() == 3);
+  CHECK(cues2[1].text == "[tr] Second cue");
 #endif
 }
 
