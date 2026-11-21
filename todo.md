@@ -103,7 +103,7 @@
 
 - [x] **UI-AUDIT · P2 · 界面审核(impeccable 流程)**:原生桌面界面此前不在 web 界面审核范围,补审——按 impeccable 审计(层级/排版/对比度 a11y/布局/边界态),报告+截图入 docs/review/,坏损当场修。｜完成（b9e649b）：vision 审核 28 态×亮暗，报告 `docs/review/ui-audit-2026-11-21/report.md`+截图 `shots/`；坏损当场修 3 项——① 设置页「ESC 退出全屏」描述错称「in-window ESC closes settings」，实际 in-window ESC **quit**（player_window.cpp:550），文案改正；② 全部 8 处 `kText4`（暗 2.2:1/亮 2.3:1 低于 AA、原型两主题皆无 `--text-4`）映射到原型钉级——`kText3`（`.grp`/`.cnt`/`.idx`/`.search .kbd`/`.ep .val.dim`，4.8:1 过 AA）、body 小节头 `kText2`（`.sect h2`），`kText4` 令牌删除；③ Shortcuts 表 28 行≈582px 放不进 540px 默认窗、末行被裁无滚动条，加 `ImGuiTableFlags_ScrollY`（fix_help_dark.png 见滚动条）。报告不改 2 项（均探针/重校成本）——Recent 460x340 死空间（走查点 Recent 行用绝对窗口相对坐标 test_cli.cpp:668-679，auto-fit 会脱靶）、Cast 无 torrent 态死空间（cast 探针 520x420 裁剪不变式）；P3 3 项未修（Sub 预览截断、库 watched-path 无省略号、搜索空焦点无指示）；观察记暗色 text-2/3 比原型暗一档（过 AA，未改）。本地 15/15 全绿（含 X11 走查 soar_cli_tests 763s）；**CI 终判 run 44891906676 七腿全绿**（行 94.6%（11498/12160）/支 84.1%（12065/14343）双过 94.0/83.0）
 
-- [ ] **DOC-GIF · P2 · 文档 · 配置开关效果动态图(每个开关 off→on 对比+GIF)**｜通道不支持图像输入，BLOCKED 等支持视觉的通道（2026-11-04）
+- [x] **DOC-GIF · P2 · 文档 · 配置开关效果动态图(每个开关 off→on 对比+GIF)**｜13 个开关 off/on 帧+切换 GIF 已入 `docs/public/config-effects/`（39 文件），双语页 `docs/config-effects.md` + `docs/zh/config-effects.md`，流水线 `scripts/gen_config_gifs.sh [toggle|all]` 可重跑并含 verify 回归检查（每个 on/off 对必须仍不同）；4 个参数无 GIF 已在页上注明理由（--cast-transcode/--open-dialog/--no-resume/--gui）；本地 `ctest --preset linux-system`（含 X11 走查腿）15/15 绿、1085.71s，soar_cli_tests 681.84s；提交 `2016ab5`
   - 交付:枚举本仓全部「开启后有效果」的开关/配置项;自动流水线生成证据——GUI 类用 @vscode/test-electron 或应用截图(off 一张/on 一张+切换过程录屏),CLI 类用终端录屏(asciinema→GIF 或 ffmpeg);ffmpeg 缝合动态 GIF。
   - 文档:docs「配置效果」页(双语)逐开关嵌入:说明+off 图+on 图+GIF。
   - 验收:清单内每个开关都有 off/on+GIF;流水线可重跑(配置变更随时再生成);兼作配置效果回归测试。
