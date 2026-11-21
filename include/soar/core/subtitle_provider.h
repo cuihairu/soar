@@ -4,6 +4,7 @@
 #include "soar/core/subtitle_text.h"
 
 #include <chrono>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -166,6 +167,18 @@ struct SubtitleTranslateConfig {
   size_t batch_cues{16};
 };
 
+// Progress hook for SubtitleTranslator::translate(): invoked after each
+// batch is translated and committed. `done`/`total` count subtitle cues
+// (`total` is the cue count, constant across calls); `batch_originals`
+// and `batch_translated` carry this batch's input lines and their
+// translations (equal lengths, in order) — the per-batch feed a live
+// progress/preview panel consumes. Fires once per batch, at least once;
+// the final call reports done == total. The empty default is a no-op.
+using TranslateProgress =
+    std::function<void(std::size_t done, std::size_t total,
+                       const std::vector<std::string>& batch_originals,
+                       const std::vector<std::string>& batch_translated)>;
+
 // Batch-translates SubRip/WebVTT subtitle text through a user-configured
 // OpenAI-compatible chat endpoint (docs/mvp.md §6 "字幕文本翻译", the
 // lightweight path: timed cues go out as numbered plain-text lines, the
@@ -222,10 +235,13 @@ class SubtitleTranslator {
   // and returns true. On failure returns false, leaves `*out_text`
   // untouched and puts a short reason into `*err` (either pointer may be
   // null). Cues keep their original numbering and timing; the text of
-  // each cue is its translation.
+  // each cue is its translation. `progress`, when set, is called after
+  // each translated batch (see TranslateProgress); the default empty
+  // callback keeps the call shape identical to a plain translate.
   bool translate(const std::string& subtitle_text,
                  const std::string& target_language,
-                 std::string* out_text, std::string* err) const;
+                 std::string* out_text, std::string* err,
+                 const TranslateProgress& progress = {}) const;
 
  private:
   SubtitleTranslateConfig config_;

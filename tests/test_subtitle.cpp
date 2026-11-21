@@ -2593,6 +2593,73 @@ TEST_CASE("translate_batches_cues_and_renumbers_each_request") {
 #endif
 }
 
+TEST_CASE("translate_progress_reports_each_batch_and_its_lines") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "ok", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  cfg.batch_cues = 1;  // one cue per request: three batches, three reports
+  tr.configure(cfg);
+
+  const std::string kIn =
+      "1\n00:00:01,000 --> 00:00:02,000\nFirst cue\n\n"
+      "2\n00:00:02,000 --> 00:00:03,000\nSecond cue\n\n"
+      "3\n00:00:03,000 --> 00:00:04,000\nThird cue\n\n";
+
+  // One entry per fired callback: the reported counts plus the batch's own
+  // input lines and their translations — the feed a progress/preview panel
+  // consumes.
+  struct Report {
+    size_t done;
+    size_t total;
+    std::vector<std::string> originals;
+    std::vector<std::string> translated;
+  };
+  std::vector<Report> reports;
+  std::string out, err;
+  REQUIRE(tr.translate(kIn, "French", &out, &err,
+                       [&](size_t done, size_t total,
+                           const std::vector<std::string>& originals,
+                           const std::vector<std::string>& translated) {
+                         reports.push_back(Report{done, total, originals, translated});
+                       }));
+
+  // batch_cues=1 forces one request per cue, so the callback fires once per
+  // batch: the running count advances by one and lands exactly on total.
+  const std::vector<ChatRequest> reqs = readChatRequests(root);
+  REQUIRE(reqs.size() == 3);
+  REQUIRE(reports.size() == 3);
+  const char* const kCues[] = {"First cue", "Second cue", "Third cue"};
+  for (size_t i = 0; i < reports.size(); ++i) {
+    CHECK(reports[i].done == i + 1);
+    CHECK(reports[i].total == 3);
+    REQUIRE(reports[i].originals.size() == 1);
+    REQUIRE(reports[i].translated.size() == 1);
+    CHECK(reports[i].originals[0] == kCues[i]);
+    CHECK(reports[i].translated[0] == "[tr] " + std::string(kCues[i]));
+  }
+
+  // Reporting is an observation, not a side channel: the track still maps
+  // every cue back by position.
+  const std::vector<SubtitleCue> cues = parseSubtitleText(out, SubtitleFormat::SubRip);
+  REQUIRE(cues.size() == 3);
+  CHECK(cues[0].text == "[tr] First cue");
+  CHECK(cues[2].text == "[tr] Third cue");
+#endif
+}
+
 TEST_CASE("translate_collapses_a_multiline_cue_to_one_wire_line") {
 #ifdef _WIN32
   MESSAGE("POSIX-only test; skipping");

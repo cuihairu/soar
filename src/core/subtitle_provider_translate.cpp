@@ -425,7 +425,8 @@ void SubtitleTranslator::configure(SubtitleTranslateConfig config) {
 bool SubtitleTranslator::translate(const std::string& subtitle_text,
                                    const std::string& target_language,
                                    std::string* out_text,
-                                   std::string* err) const {
+                                   std::string* err,
+                                   const TranslateProgress& progress) const {
   if (err != nullptr) err->clear();
   if (out_text != nullptr) out_text->clear();
   // The transport layer writes its reason unconditionally; callers that
@@ -522,6 +523,11 @@ bool SubtitleTranslator::translate(const std::string& subtitle_text,
     }
     for (size_t j = 0; j < lines.size(); ++j) {
       translated[first + j] = std::move(lines[j]);
+    }
+    if (progress) {
+      progress(last, texts.size(), chunk,
+               std::vector<std::string>(translated.begin() + static_cast<long>(first),
+                                        translated.begin() + static_cast<long>(last)));
     }
   }
 
