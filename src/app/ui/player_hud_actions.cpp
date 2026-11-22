@@ -312,6 +312,104 @@ bool PlayerHud::translateTextAndLoad(const std::string& title, const std::string
   return true;
 }
 
+void PlayerHud::openTranslatePanel(milliseconds now) {
+  const bool opening = st_.overlay != Overlay::Translate;
+  toggleOverlay(Overlay::Translate);
+  if (opening) startTranslateCurrent(now);
+}
+
+void PlayerHud::startTranslateCurrent(milliseconds now) {
+  if (translate_session_.running()) return;  // one translation at a time
+  if (!translate_ready_) {
+    st_.toast.show("Translation not configured", now);
+    return;
+  }
+  // The panel translates the track the Sub combo currently shows: the
+  // subtitle text comes out of the container (embedded or loaded
+  // sidecar), so the same session covers both.
+  const MediaInfo info = player_.mediaInfo();
+  if (info.selected_subtitle < 0) {
+    st_.toast.show("No subtitle track selected", now);
+    return;
+  }
+  const TrackInfo* track = nullptr;
+  for (const auto& t : info.tracks) {
+    if (t.type == TrackType::Subtitle && t.id == info.selected_subtitle) {
+      track = &t;
+      break;
+    }
+  }
+  if (track == nullptr) {
+    st_.toast.show("No subtitle track selected", now);
+    return;
+  }
+  std::string text;
+  if (!player_.exportSubtitleText(track->id, text) || text.empty()) {
+    st_.toast.show("Could not read the subtitle track", now);
+    return;
+  }
+  translate_title_ =
+      track->title.empty() ? std::to_string(track->id) : track->title;
+  // The scan keys sidecars by title and embedded tracks by id; capture
+  // which one this source is so the finished result suppresses the menu
+  // row the same way the menu flow does.
+  translate_source_embedded_ =
+      loaded_external_paths_.find(track->title) == loaded_external_paths_.end();
+  translate_source_id_ = track->id;
+  {
+    std::lock_guard<std::mutex> lock(translate_preview_mu_);
+    translate_preview_.clear();
+  }
+  // The hook lands on the worker thread; the preview mutex is the only
+  // bridge to the frame loop that draws it.
+  translate_session_.start(
+      translator_.config(), text, target_language_,
+      [this](size_t done, size_t total,
+             const std::vector<std::string>& originals,
+             const std::vector<std::string>& translated) {
+        std::lock_guard<std::mutex> lock(translate_preview_mu_);
+        for (size_t i = 0; i < originals.size() && i < translated.size(); ++i) {
+          translate_preview_.push_back({originals[i], translated[i]});
+        }
+      });
+}
+
+void PlayerHud::pollTranslate(milliseconds now) {
+  if (translate_session_.running()) return;
+  bool ok = false;
+  std::string out, err;
+  if (!translate_session_.takeResult(&ok, &out, &err)) return;  // nothing finished
+  if (!ok || out.empty()) {
+    st_.toast.show(err.empty() ? "Translation failed"
+                                : "Translation failed: " + err,
+                    now);
+    return;
+  }
+  // The translate-and-load tail, reached from the frame loop so the wire
+  // batches never block a frame.
+  SubtitleCandidate c;
+  std::string stem = translate_title_;
+  const size_t dot = stem.rfind('.');
+  if (dot != std::string::npos && dot != 0) stem = stem.substr(0, dot);
+  c.title = stem + " (" + target_language_ + ")";
+  c.language = target_language_;
+  c.format = SubtitleFormat::SubRip;
+  const std::string stored = storeExternalSubtitle({}, c, out);
+  TrackId id = -1;
+  if (stored.empty() || !player_.loadExternalSubtitle(stored, id) ||
+      !player_.selectTrack(TrackType::Subtitle, id)) {
+    st_.toast.show("Translation failed", now);
+    return;
+  }
+  loaded_external_paths_[externalTrackTitle(stored)] = stored;
+  if (translate_source_embedded_) {
+    translated_ids_.push_back(translate_source_id_);
+  } else {
+    translated_titles_.push_back(translate_title_);
+  }
+  st_.toast.show("Translated " + translate_title_, now);
+}
+
 std::string PlayerHud::externalTrackTitle(const std::string& path) {
   return std::filesystem::path(path).filename().string();
 }

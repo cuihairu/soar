@@ -38,6 +38,7 @@ void PlayerHud::drawOverlays() {
     case Overlay::Library: drawLibraryOverlay(); return;
     case Overlay::Cast: drawCastOverlay(); return;
     case Overlay::Settings: drawSettingsOverlay(); return;
+    case Overlay::Translate: drawTranslateOverlay(); return;
   }
 }
 
@@ -430,6 +431,90 @@ void PlayerHud::drawSubtitleOverlay() {
 
     ImGui::Separator();
     ImGui::TextDisabled("C: cycle  |  V: show/hide  |  [ / ]: offset  |  S: screenshot");
+  }
+  ImGui::End();
+  if (!open) st_.overlay = Overlay::None;
+}
+
+void PlayerHud::drawTranslateOverlay() {
+  bool open = true;
+  const ImGuiIO& io = ImGui::GetIO();
+  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                          ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(560, 480), ImGuiCond_Appearing);
+  if (ImGui::Begin("Translate", &open,
+                   ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+    const auto now = nowMs();
+
+    // Target language selector (prototype's English<->Chinese swap row).
+    // A fixed short list is a control surface, not a locale inventory —
+    // the API accepts any BCP-47-ish tag, so the list is a convenience.
+    static const char* kLanguages[] = {"English", "Chinese", "Japanese",
+                                       "Korean",  "French",  "German",
+                                       "Spanish"};
+    ImGui::Text("Target:");
+    ImGui::SameLine();
+    if (ImGui::BeginCombo("##tr_lang", target_language_.c_str())) {
+      for (const char* l : kLanguages) {
+        if (ImGui::Selectable(l, target_language_ == l)) target_language_ = l;
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (!translate_title_.empty()) {
+      ImGui::TextDisabled("%s", translate_title_.c_str());
+    }
+
+    // Endpoint card (prototype's endpoint + status pill).
+    ImGui::Separator();
+    const SubtitleTranslateConfig cfg = translator_.config();
+    ImGui::Text("Endpoint:");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", cfg.endpoint.empty() ? "(no endpoint)"
+                                                   : cfg.endpoint.c_str());
+    ImGui::SameLine();
+    ImGui::Text("%s", translate_ready_ ? "online" : "offline");
+    if (translate_ready_ && !cfg.model.empty()) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("%s", cfg.model.c_str());
+    }
+
+    // Progress (prototype's overall progress + bar).
+    ImGui::Separator();
+    const auto progress = translate_session_.progress();
+    char prog_label[80];
+    if (progress.second > 0) {
+      std::snprintf(prog_label, sizeof(prog_label), "%zu/%zu lines",
+                    progress.first, progress.second);
+    } else {
+      std::snprintf(prog_label, sizeof(prog_label), "idle");
+    }
+    ImGui::ProgressBar(
+        progress.second > 0 ? static_cast<float>(progress.first) / progress.second
+                            : 0.0f,
+        ImVec2(-1.0f, 0.0f), prog_label);
+
+    if (translate_session_.running()) {
+      ImGui::TextDisabled("%s", "Translating...");
+    } else if (ImGui::Button("Translate")) {
+      startTranslateCurrent(now);
+    }
+
+    // Live preview (prototype's clickable list, current batch shown).
+    ImGui::Separator();
+    if (ImGui::BeginChild("##tr_preview", ImVec2(0, 0), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_HorizontalScrollbar)) {
+      std::lock_guard<std::mutex> lock(translate_preview_mu_);
+      if (translate_preview_.empty()) {
+        ImGui::TextDisabled("%s", "Translated lines appear here.");
+      }
+      for (const auto& pair : translate_preview_) {
+        ImGui::TextWrapped("%s", pair.first.c_str());
+        ImGui::TextWrapped("  %s", pair.second.c_str());
+        ImGui::Separator();
+      }
+    }
+    ImGui::EndChild();
   }
   ImGui::End();
   if (!open) st_.overlay = Overlay::None;

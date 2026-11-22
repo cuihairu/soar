@@ -10,6 +10,7 @@
 #include "soar/core/metadata_scraper.h"
 #include "soar/core/player.h"
 #include "soar/core/subtitle_provider.h"
+#include "soar/core/subtitle_translate_session.h"
 #include "startup_report.h"
 #include "ui/dir_scan.h"
 #include "ui/library.h"
@@ -85,7 +86,7 @@ inline const char* trackTypeName(TrackType t) {
 
 // Which overlay page is open; at most one at a time (docs/ui-design.md §2).
 enum class Overlay { None, Info, Recent, Help, Subtitle, Playlist, DirPick, Library,
-                     Cast, Settings };
+                     Cast, Settings, Translate };
 
 // The settings page's nav tabs (proto settings.html): General, Playback and
 // Subtitles form the first group, Network and About their own (the .grp
@@ -764,6 +765,24 @@ class PlayerHud {
                             SubtitleFormat format, milliseconds now);
 
 
+  // The OSC "TR" button: opens the translation panel and, when it was
+  // closed, kicks off a translation of the current subtitle track if none
+  // is running (the panel then shows its live progress).
+  void openTranslatePanel(milliseconds now);
+
+
+  // The panel's translate action: starts a background translation of the
+  // current subtitle track. A no-op while one is running; toasts when no
+  // subtitle track is selected or the translator is unconfigured.
+  void startTranslateCurrent(milliseconds now);
+
+
+  // Once per frame: reaps a finished panel translation and loads the result
+  // as a subtitle track (the translate-and-load tail, now off the UI
+  // thread's critical path). The panel's progress resets here too.
+  void pollTranslate(milliseconds now);
+
+
   // The title a loaded external track carries in the track list: the
   // backend names it after the file it loaded (ffmpeg_backend's
   // loadExternalSubtitle). Keying loaded_external_paths_ the same way
@@ -1328,6 +1347,15 @@ class PlayerHud {
 
   void drawSubtitleOverlay();
 
+  // The translation panel (docs/public/prototypes/translate-panel.png):
+  // a right-side floating panel over the player — target-language picker,
+  // endpoint status, whole-track progress, and a live per-cue translation
+  // preview. Opened by the OSC "TR" button, which also kicks off a
+  // translation of the current subtitle track if none is running. The
+  // translation runs on a background session (the wire batches would
+  // otherwise freeze the window); this page only observes it.
+  void drawTranslateOverlay();
+
 
   // UI-local mirrors of volume/rate/mute: the Player facade exposes setters
   // only (no getters in v0.1), so the HUD tracks what it last set. Honest
@@ -1526,6 +1554,18 @@ class PlayerHud {
   std::vector<TrackId> translated_ids_;
   std::string target_language_ = "English";
   bool translate_ready_ = false;
+  // The panel's background translation (see drawTranslateOverlay): the
+  // session runs the wire batches off the UI thread, its progress hook
+  // accumulates the per-cue preview pairs, and the drawer reads them.
+  SubtitleTranslateSession translate_session_;
+  std::mutex translate_preview_mu_;
+  std::vector<std::pair<std::string, std::string>> translate_preview_;  // guarded by translate_preview_mu_
+  std::string translate_title_;
+  // The source track's own identity, captured at start so the finished
+  // result marks it translated the same way the menu rows do: by id for
+  // an embedded track (whose title may be empty), by title for a sidecar.
+  TrackId translate_source_id_ = -1;
+  bool translate_source_embedded_ = false;
   State st_;
   // The Appearance row's click sets these inside the page's own style
   // pushes, and drawSettingsOverlay applies them only after its pops (see

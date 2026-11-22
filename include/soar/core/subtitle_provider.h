@@ -226,6 +226,11 @@ class SubtitleTranslator {
   // settings from the environment into this).
   void configure(SubtitleTranslateConfig config);
 
+  // The configuration in effect. A panel reads it to report endpoint
+  // status; a background session copies it into its own requests. The
+  // translator itself never hands the key out beyond this read.
+  const SubtitleTranslateConfig& config() const { return config_; }
+
   // Translates `subtitle_text` (SubRip or WebVTT, auto-detected) into
   // `target_language`. Anything else — an ASS/SSA document, a TTML file,
   // text with no recognized marker — is rejected up front: it would parse

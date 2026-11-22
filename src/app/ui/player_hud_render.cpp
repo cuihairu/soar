@@ -366,6 +366,10 @@ void PlayerHud::drawHud(milliseconds now) {
     ImGui::SameLine();
     if (ImGui::Button("CC")) toggleSubtitleVisibility(now);
     ImGui::SameLine();
+    // The translation panel (prototype translate-panel.png's "译" control):
+    // opens the panel and starts the current track's translation.
+    if (ImGui::Button("TR")) openTranslatePanel(now);
+    ImGui::SameLine();
     if (ImGui::Button("Shot")) takeScreenshot(now);
   }
   ImGui::End();

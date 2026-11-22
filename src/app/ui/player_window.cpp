@@ -818,6 +818,10 @@ void PlayerHud::handlePendingTorrent(milliseconds now) {
 void PlayerHud::drawUi(milliseconds now, bool video_active) {
   handlePendingTorrent(now);
   handleCastTick(now);
+  // The panel's background translation reaps here so a finished batch set
+  // loads its track on the frame after it lands, whether or not the panel
+  // is still open.
+  pollTranslate(now);
   // The one-shot --open-dialog request: cleared before the call so a
   // modal stay inside the picker cannot re-summon it on the next frame.
   if (open_dialog_on_start_) {

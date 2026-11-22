@@ -890,12 +890,14 @@ if mode == "osc":
         # reading back the toast it raises): prev |< 126..155 (click
         # 140), >| 164..193 (178), Mute 202..245, 1x 318..373, Audio
         # 382..451, the Sub combo 460..529, the Sub page button
-        # 538..574 (556), A-B 585..617 (601), CC 630..655 (642), Shot
-        # 668..707 (687); the bar edge is ~847. Info/Fullscreen moved to
-        # the top bar when it landed (M1), so the three faces after Sub
-        # each took the slot of the button that left. The row reads the
-        # same with and without subtitle tracks, so the null and the real
-        # backends share these coordinates.
+        # 538..574 (556), A-B 585..617 (601), CC 630..655 (642), TR
+        # 661..699 (680), Shot 704..747 (725); the bar edge is ~847.
+        # Info/Fullscreen moved to the top bar when it landed (M1), so
+        # the three faces after Sub each took the slot of the button that
+        # left; the TR panel button (2026-11-22 pill-scan re-probe) then
+        # took CC's right neighbor and pushed Shot one button width right
+        # (687 -> 725). The row reads the same with and without subtitle
+        # tracks, so the null and the real backends share these coordinates.
         bclick(140, 495)   # |< prev: queue head boundary
         if not wait_ge("event: toast=Start of playlist", 1, 5.0):
             rc = 7
@@ -927,7 +929,7 @@ if mode == "osc":
         bclick(480, 254)
         if not wait_ge("event: state=2", 2, 5.0):
             rc = 7
-        bclick(687, 495)   # Shot: no frames on the null backend
+        bclick(725, 495)   # Shot: no frames on the null backend
         if not wait_ge("event: toast=Screenshot needs the FFmpeg backend", 1, 5.0):
             rc = 7
         # The rate combo (2026-11-10 probe, page coords): the popup flips
@@ -1217,6 +1219,54 @@ if mode == "substl":
     while time.monotonic() < deadline:
         # Same popup-wedge defense as subsdl: with a popup up, every
         # key — q included — is swallowed by the app.
+        if moved(200, 400):
+            holdclick(1)
+        time.sleep(0.7)
+        try:
+            focus()
+            key(qk)
+        except Exception:
+            sys.exit(0)
+        time.sleep(0.5)
+        if find_window() is None:
+            sys.exit(0)
+    sys.exit(4)
+
+if mode == "trpanel":
+    # The OSC "TR" button opens the translate panel, which auto-starts a
+    # background translation of the selected track: the session runs on
+    # its own thread, the frame loop reaps the finished result and loads
+    # the new external track. One 'c' press selects the first embedded
+    # sub (the backend defaults subtitles off), the TR pick runs the
+    # panel, the combo pick retargets the language (session idle by
+    # then), and the title-bar X closes the panel. Coordinates probed
+    # under SOAR_UI_BITMAP_FONT=1 (TR sits between CC and Shot; the
+    # panel is the 560x480 window centered at (200,30)).
+    time.sleep(2.2)
+    focus(); key(d.keysym_to_keycode(0x20))  # space: wake the HUD, pause
+    time.sleep(0.5)
+    key(d.keysym_to_keycode(0x63))           # c: cycle subtitles off -> #2
+    time.sleep(0.8)
+
+    def sclick(x, y):
+        moved(x, y); time.sleep(0.25)
+        holdclick(1); time.sleep(0.9)
+
+    sclick(680, 495)   # the TR button: open the panel + start translating
+    time.sleep(4.0)    # room for the chat round trip + session + load
+    sclick(680, 495)   # repeat guard (panel open: a bare preview click)
+    time.sleep(0.5)
+    sclick(453, 79)    # the panel's target-language combo (probed pill)
+    time.sleep(0.8)
+    sclick(452, 121)   # the Chinese row: retarget (session idle)
+    time.sleep(0.5)
+    sclick(744, 42)    # the panel's title-bar X: close it
+    time.sleep(0.5)
+    qk = d.keysym_to_keycode(0x71)
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        # Same popup-wedge defense as the other modes: with a popup up,
+        # every key — q included — is swallowed by the app.
         if moved(200, 400):
             holdclick(1)
         time.sleep(0.7)
@@ -6493,6 +6543,155 @@ TEST_CASE("windowed FFmpeg run translates a loaded subtitle track") {
       CHECK(line.find("into Klingon") != std::string::npos);
       CHECK(line.find("1. Hello from the catalog") != std::string::npos);
       CHECK(line.find("2. Second cue") != std::string::npos);
+    }
+    CHECK(found);
+  }
+  std::filesystem::remove_all(scratch, ec);
+#endif
+#endif
+#endif
+}
+
+TEST_CASE("windowed FFmpeg run translates the selected track through the panel") {
+#ifdef _WIN32
+  MESSAGE("the X11 window test is POSIX-only; skipping");
+  return;
+#else
+#ifndef SOAR_CLI_HAS_IMGUI
+  MESSAGE("app built without the ImGui overlay; skipping the panel-translate window test");
+  return;
+#else
+  if (std::getenv("SOAR_TEST_X11") == nullptr) {
+    MESSAGE("SOAR_TEST_X11 not set; skipping the panel-translate window test");
+    return;
+  }
+#ifndef SOAR_WITH_FFMPEG
+  MESSAGE("no FFmpeg backend; skipping the panel-translate window test");
+  return;
+#else
+  std::string media;
+  if (!envMediaPath("SOAR_TEST_SUBS_MEDIA", media)) {
+    MESSAGE("SOAR_TEST_SUBS_MEDIA not set; skipping the panel-translate window test");
+    return;
+  }
+  if (std::system("command -v Xvfb >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && "
+                  "python3 -c 'from Xlib.ext import xtest' >/dev/null 2>&1") != 0) {
+    MESSAGE("Xvfb or python3-xlib missing; skipping the panel-translate window test");
+    return;
+  }
+
+  // One fixture server: the chat endpoint behind the panel's background
+  // session. The container's embedded srt is exported by the panel itself
+  // (no download leg), so the selection trail must run
+  // off -> #2 (c cycle) -> #4 (panel session), and the chat fixture's
+  // requests.log records the export's wire shape end to end.
+  const std::string scratch = "/tmp/soar_trpanel_x11_" + std::to_string(::getpid());
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  REQUIRE(std::filesystem::create_directories(scratch, ec));
+  REQUIRE_FALSE(ec);
+  const std::string played = scratch + "/feature_film.mkv";
+  std::filesystem::copy_file(media, played,
+                             std::filesystem::copy_options::overwrite_existing, ec);
+  REQUIRE_FALSE(ec);
+  const auto chat = test_servers::startChatServer(scratch, "ok", "trpanel-chat-key");
+  REQUIRE(chat.pid > 0);
+
+  // Same private-display scheme as the other X11 cases; cases run serially.
+  const std::string suffix = std::to_string(85 + (::getpid() % 25));
+  const std::string display = ":" + suffix;
+  const std::string socket = "/tmp/.X11-unix/X" + suffix;
+
+  pid_t xvfb = ::fork();
+  REQUIRE(xvfb >= 0);
+  if (xvfb == 0) {
+    ::execlp("Xvfb", "Xvfb", display.c_str(), "-screen", "0", "1280x800x24",
+             "-ac", "-nolisten", "tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  bool server_up = false;
+  for (int i = 0; i < 50 && !server_up; ++i) {
+    struct stat st;
+    server_up = ::stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+    if (!server_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (!server_up) {
+    MESSAGE("Xvfb failed to start; skipping the panel-translate window test");
+    ::kill(xvfb, SIGTERM);
+    ::waitpid(xvfb, nullptr, 0);
+    return;
+  }
+
+  pid_t injector = ::fork();
+  REQUIRE(injector >= 0);
+  if (injector == 0) {
+    ::execlp("python3", "python3", "-c", kX11InjectorScript, display.c_str(),
+             "soar", "trpanel", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  const std::string state_home = "/tmp/soar_trpanel_xdg_" + std::to_string(::getpid());
+  ::mkdir(state_home.c_str(), 0755);  // EEXIST from a prior run is fine
+  const ScopedEnv xdg_env("XDG_STATE_HOME", state_home.c_str());
+  // The embedded bitmap font pins widget metrics so the injector's
+  // coordinates mean the same thing on every machine.
+  const ScopedEnv bitmap_font_env("SOAR_UI_BITMAP_FONT", "1");
+  const ScopedEnv display_env("DISPLAY", display.c_str());
+  const ScopedEnv audio_env("SDL_AUDIODRIVER", "dummy");
+  const ScopedEnv tr_endpoint_env("SOAR_TRANSLATE_ENDPOINT", chat.base_url.c_str());
+  const ScopedEnv tr_key_env("SOAR_TRANSLATE_API_KEY", "trpanel-chat-key");
+  const ScopedEnv tr_model_env("SOAR_TRANSLATE_MODEL", "trpanel-model");
+  const ScopedEnv tr_lang_env("SOAR_TRANSLATE_LANGUAGE", "Klingon");
+  const auto run = runCli({"--backend=ffmpeg", played});
+
+  std::printf("x11 panel-translate window test: cli exit=%d, output:\n%s\n",
+              run.exit_code, run.output.c_str());
+
+  ::waitpid(injector, nullptr, 0);
+  ::kill(xvfb, SIGTERM);
+  ::waitpid(xvfb, nullptr, 0);
+
+  if (run.output.find("SDL_CreateRenderer failed") != std::string::npos) {
+    MESSAGE("no accelerated renderer under this X server; skipping");
+    std::filesystem::remove_all(scratch, ec);
+    return;
+  }
+  REQUIRE(run.exit_code == 0);
+  CHECK(run.output.find("event: state=2") != std::string::npos);
+  CHECK(run.output.find("event: state=1") != std::string::npos);
+  // off -> the c cycle's first embedded sub (id 2) -> the panel session's
+  // finished result loading an external track (first external id 4: the
+  // subs fixture's nb_streams = 4). Ordered, so a session result cannot
+  // have been reaped by the wrong path or the trail would show no jump.
+  const std::size_t cycled_on = run.output.find("selected(video=0,audio=1,sub=2)");
+  REQUIRE(cycled_on != std::string::npos);
+  const std::size_t loaded_on =
+      run.output.find("selected(video=0,audio=1,sub=4)", cycled_on);
+  CHECK(loaded_on != std::string::npos);
+  if (loaded_on != std::string::npos) {
+    CHECK(run.output.find("selected(video=0,audio=1,sub=-1)", loaded_on) ==
+          std::string::npos);
+  }
+  // The chat server saw the panel session's export: the env-injected model
+  // and Bearer key, the target language from SOAR_TRANSLATE_LANGUAGE in
+  // the system prompt, and a numbered batch with one line per cue. The
+  // fixture's requests.log is the test's own recording of the traffic; the
+  // product never logs the key itself.
+  {
+    std::ifstream log(scratch + "/requests.log");
+    REQUIRE(log.good());
+    std::string line;
+    bool found = false;
+    while (std::getline(log, line)) {
+      if (line.find("trpanel-model") == std::string::npos) {
+        continue;
+      }
+      found = true;
+      CHECK(line.find("Bearer trpanel-chat-key") != std::string::npos);
+      CHECK(line.find("into Klingon") != std::string::npos);
+      CHECK(line.find("1. Hello") != std::string::npos);
     }
     CHECK(found);
   }
