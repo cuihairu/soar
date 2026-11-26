@@ -2516,6 +2516,51 @@ TEST_CASE("translate_request_shape_and_srt_round_trip") {
 #endif
 }
 
+TEST_CASE("translate_names_a_given_source_language_in_the_prompt") {
+#ifdef _WIN32
+  MESSAGE("POSIX-only test; skipping");
+  return;
+#else
+  if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+    MESSAGE("python3 not available; skipping translator tests");
+    return;
+  }
+  const TempDir root;
+  const RangeServer srv = startChatServer(root.path, "ok", "");
+  REQUIRE(srv.pid >= 0);
+
+  SubtitleTranslator tr;
+  SubtitleTranslateConfig cfg;
+  cfg.endpoint = srv.base_url + "/v1";
+  cfg.model = "test-model";
+  cfg.timeout = 5000ms;
+  tr.configure(cfg);
+
+  const std::string kIn =
+      "1\n00:00:01,000 --> 00:00:02,000\nHello there.\n\n"
+      "2\n00:00:03,500 --> 00:00:04,250\nSecond cue line\n\n";
+  // A named source lands in the system prompt between the numbered-line
+  // contract's two halves; the default (empty) keeps the auto-detect
+  // phrasing covered by the shape test above.
+  std::string out, err;
+  REQUIRE(tr.translate(kIn, "Japanese", &out, &err, {}, "English"));
+  CHECK(err.empty());
+
+  const std::vector<ChatRequest> reqs = readChatRequests(root);
+  REQUIRE(reqs.size() == 1);
+  CHECK(reqs[0].body.find("from English into Japanese") != std::string::npos);
+  CHECK(reqs[0].body.find("1. Hello there.") != std::string::npos);
+
+  // And the default call still reads as plain "into" (no source named).
+  std::string out2, err2;
+  REQUIRE(tr.translate(kIn, "Japanese", &out2, &err2));
+  const std::vector<ChatRequest> reqs2 = readChatRequests(root);
+  REQUIRE(reqs2.size() == 2);
+  CHECK(reqs2[1].body.find("from English into Japanese") == std::string::npos);
+  CHECK(reqs2[1].body.find("into Japanese") != std::string::npos);
+#endif
+}
+
 TEST_CASE("translate_vtt_round_trip_keeps_the_format") {
 #ifdef _WIN32
   MESSAGE("POSIX-only test; skipping");

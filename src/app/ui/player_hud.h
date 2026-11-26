@@ -1553,13 +1553,30 @@ class PlayerHud {
   std::vector<std::string> translated_titles_;
   std::vector<TrackId> translated_ids_;
   std::string target_language_ = "English";
+  // The panel's "from" selector. "Auto" keeps the engine's auto-detect
+  // phrasing; any other value names the source language in the system
+  // prompt (see SubtitleTranslator::translate).
+  std::string translate_source_language_ = "Auto";
   bool translate_ready_ = false;
   // The panel's background translation (see drawTranslateOverlay): the
   // session runs the wire batches off the UI thread, its progress hook
-  // accumulates the per-cue preview pairs, and the drawer reads them.
+  // accumulates the per-cue preview rows, and the drawer reads them.
+  // One preview row: the cue's original line, its translation, and the
+  // cue's start time — the prototype's click-to-jump target.
+  struct TranslatePreviewRow {
+    std::string original;
+    std::string translated;
+    milliseconds start{0};
+  };
   SubtitleTranslateSession translate_session_;
   std::mutex translate_preview_mu_;
-  std::vector<std::pair<std::string, std::string>> translate_preview_;  // guarded by translate_preview_mu_
+  std::vector<TranslatePreviewRow> translate_preview_;  // guarded by translate_preview_mu_
+  // Cue start times of the exported source text, in cue order; the
+  // progress hook slices them by the batch's cumulative count so each
+  // preview row can jump to its cue.
+  std::vector<milliseconds> translate_cue_starts_;
+  // When the current session started, for the panel's ETA estimate.
+  milliseconds translate_started_{0};
   std::string translate_title_;
   // The source track's own identity, captured at start so the finished
   // result marks it translated the same way the menu rows do: by id for

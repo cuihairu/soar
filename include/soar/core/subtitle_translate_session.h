@@ -36,10 +36,13 @@ class SubtitleTranslateSession {
 
   // Starts a translation of `subtitle_text` into `target_language` with
   // `config`. `progress`, when set, is called on the worker after each
-  // batch (see TranslateProgress). Returns false when a translation is
-  // already running (the caller keeps the current one).
+  // batch (see TranslateProgress). A non-empty `source_language` is named
+  // in the system prompt (the panel's "from" selector); empty keeps the
+  // auto-detect phrasing. Returns false when a translation is already
+  // running (the caller keeps the current one).
   bool start(SubtitleTranslateConfig config, std::string subtitle_text,
-             std::string target_language, TranslateProgress progress = {});
+             std::string target_language, TranslateProgress progress = {},
+             std::string source_language = {});
 
   // True while the worker is alive.
   bool running() const { return running_.load(std::memory_order_acquire); }

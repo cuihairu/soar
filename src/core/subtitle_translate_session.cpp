@@ -7,7 +7,8 @@ SubtitleTranslateSession::~SubtitleTranslateSession() { join(); }
 bool SubtitleTranslateSession::start(SubtitleTranslateConfig config,
                                      std::string subtitle_text,
                                      std::string target_language,
-                                     TranslateProgress progress) {
+                                     TranslateProgress progress,
+                                     std::string source_language) {
   if (running_.load(std::memory_order_acquire)) {
     return false;  // one translation at a time; the caller keeps this one
   }
@@ -31,7 +32,8 @@ bool SubtitleTranslateSession::start(SubtitleTranslateConfig config,
   running_.store(true, std::memory_order_release);
   thread_ = std::thread(
       [this, translator = std::move(translator), text = std::move(subtitle_text),
-       target = std::move(target_language), progress = std::move(progress)]() mutable {
+       target = std::move(target_language), progress = std::move(progress),
+       source = std::move(source_language)]() mutable {
         std::string out, err;
         const bool ok = translator.translate(
             text, target, &out, &err,
@@ -41,7 +43,8 @@ bool SubtitleTranslateSession::start(SubtitleTranslateConfig config,
               done_.store(done, std::memory_order_release);
               total_.store(total, std::memory_order_release);
               if (progress) progress(done, total, originals, translated);
-            });
+            },
+            source);
         {
           std::lock_guard<std::mutex> lock(result_mu_);
           finished_ = true;

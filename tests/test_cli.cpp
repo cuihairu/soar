@@ -1237,11 +1237,11 @@ if mode == "trpanel":
     # background translation of the selected track: the session runs on
     # its own thread, the frame loop reaps the finished result and loads
     # the new external track. One 'c' press selects the first embedded
-    # sub (the backend defaults subtitles off), the TR pick runs the
-    # panel, the combo pick retargets the language (session idle by
-    # then), and the title-bar X closes the panel. Coordinates probed
-    # under SOAR_UI_BITMAP_FONT=1 (TR sits between CC and Shot; the
-    # panel is the 560x480 window centered at (200,30)).
+    # sub (the backend defaults subtitles off). The docked panel then
+    # exercises: a preview row click (seek), both language combos (a
+    # second translation naming its source), and the title-bar X.
+    # Coordinates probed under SOAR_UI_BITMAP_FONT=1; the panel is the
+    # 560x480 window docked on the right edge, at canvas (384,30).
     time.sleep(2.2)
     focus(); key(d.keysym_to_keycode(0x20))  # space: wake the HUD, pause
     time.sleep(0.5)
@@ -1254,13 +1254,27 @@ if mode == "trpanel":
 
     sclick(680, 495)   # the TR button: open the panel + start translating
     time.sleep(4.0)    # room for the chat round trip + session + load
-    sclick(680, 495)   # repeat guard (panel open: a bare preview click)
+    sclick(500, 278)   # second preview cue: seek to 00:02
     time.sleep(0.5)
-    sclick(453, 79)    # the panel's target-language combo (probed pill)
+    sclick(500, 75)    # source-language combo
     time.sleep(0.8)
-    sclick(452, 121)   # the Chinese row: retarget (session idle)
+    sclick(500, 121)   # English row
     time.sleep(0.5)
-    sclick(744, 42)    # the panel's title-bar X: close it
+    sclick(764, 75)    # target-language combo
+    time.sleep(0.8)
+    sclick(764, 121)   # Chinese row
+    time.sleep(0.5)
+    # The finished session selected the generated external track; the
+    # panel can only export embedded cues, so cycle 4 -> off -> 2 before
+    # the second Translate click. An open combo swallows keys, so refocus.
+    focus(); time.sleep(0.3)
+    key(d.keysym_to_keycode(0x63))           # generated external -> off
+    time.sleep(0.8)
+    key(d.keysym_to_keycode(0x63))           # off -> embedded #2
+    time.sleep(0.8)
+    sclick(434, 189)   # Translate: second session, source English
+    time.sleep(4.0)
+    sclick(923, 47)    # the panel's title-bar X: close it
     time.sleep(0.5)
     qk = d.keysym_to_keycode(0x71)
     deadline = time.monotonic() + 60.0
@@ -6670,30 +6684,34 @@ TEST_CASE("windowed FFmpeg run translates the selected track through the panel")
   const std::size_t loaded_on =
       run.output.find("selected(video=0,audio=1,sub=4)", cycled_on);
   CHECK(loaded_on != std::string::npos);
-  if (loaded_on != std::string::npos) {
-    CHECK(run.output.find("selected(video=0,audio=1,sub=-1)", loaded_on) ==
-          std::string::npos);
-  }
-  // The chat server saw the panel session's export: the env-injected model
-  // and Bearer key, the target language from SOAR_TRANSLATE_LANGUAGE in
-  // the system prompt, and a numbered batch with one line per cue. The
-  // fixture's requests.log is the test's own recording of the traffic; the
-  // product never logs the key itself.
+  // Clicking the second preview row seeks to its cue start (00:02).
+  CHECK(run.output.find("event: toast=00:02") != std::string::npos);
+  // The chat server saw both panel sessions. The first uses the env target
+  // with no named source; the second's combo picks put "from English into
+  // Chinese" into the system prompt. Both carry the env-injected model and
+  // Bearer key, plus a numbered batch with one line per cue.
   {
     std::ifstream log(scratch + "/requests.log");
     REQUIRE(log.good());
     std::string line;
-    bool found = false;
+    bool first = false, second = false;
     while (std::getline(log, line)) {
       if (line.find("trpanel-model") == std::string::npos) {
         continue;
       }
-      found = true;
       CHECK(line.find("Bearer trpanel-chat-key") != std::string::npos);
-      CHECK(line.find("into Klingon") != std::string::npos);
       CHECK(line.find("1. Hello") != std::string::npos);
+      CHECK(line.find("2. World") != std::string::npos);
+      if (line.find("into Klingon") != std::string::npos &&
+          line.find("from English") == std::string::npos) {
+        first = true;
+      }
+      if (line.find("from English into Chinese") != std::string::npos) {
+        second = true;
+      }
     }
-    CHECK(found);
+    CHECK(first);
+    CHECK(second);
   }
   std::filesystem::remove_all(scratch, ec);
 #endif

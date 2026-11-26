@@ -426,7 +426,8 @@ bool SubtitleTranslator::translate(const std::string& subtitle_text,
                                    const std::string& target_language,
                                    std::string* out_text,
                                    std::string* err,
-                                   const TranslateProgress& progress) const {
+                                   const TranslateProgress& progress,
+                                   const std::string& source_language) const {
   if (err != nullptr) err->clear();
   if (out_text != nullptr) out_text->clear();
   // The transport layer writes its reason unconditionally; callers that
@@ -486,11 +487,19 @@ bool SubtitleTranslator::translate(const std::string& subtitle_text,
   }
 
   std::vector<std::string> translated(cues.size());
-  const std::string system =
+  // A named source language steers the model ("from English into ..."); the
+  // default stays the auto-detect phrasing every earlier caller used.
+  std::string system =
       "You translate subtitle cues. Translate each numbered line into " +
       target_language +
       ". Reply with exactly the same number of numbered lines, in the same "
       "order, translations only - no notes, no originals.";
+  if (!source_language.empty()) {
+    system = "You translate subtitle cues. Translate each numbered line from " +
+             source_language + " into " + target_language +
+             ". Reply with exactly the same number of numbered lines, in the "
+             "same order, translations only - no notes, no originals.";
+  }
   const size_t batch = config_.batch_cues < 1 ? 1 : config_.batch_cues;
   for (size_t first = 0; first < texts.size(); first += batch) {
     const size_t last = std::min<size_t>(texts.size(), first + batch);

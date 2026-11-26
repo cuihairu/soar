@@ -356,22 +356,47 @@ void PlayerHud::startTranslateCurrent(milliseconds now) {
   translate_source_embedded_ =
       loaded_external_paths_.find(track->title) == loaded_external_paths_.end();
   translate_source_id_ = track->id;
+  // Cue starts for the panel's click-to-jump rows: the engine sends one
+  // collapsed line per cue, in cue order, so a batch's rows map back by
+  // position. Formats the engine rejects leave the list empty (no jump).
+  translate_cue_starts_.clear();
+  {
+    const SubtitleFormat fmt = detectSubtitleFormat(text);
+    if (fmt == SubtitleFormat::SubRip || fmt == SubtitleFormat::WebVtt) {
+      for (const SubtitleCue& cue : parseSubtitleText(text, fmt)) {
+        translate_cue_starts_.push_back(cue.begin);
+      }
+    }
+  }
+  translate_started_ = now;
   {
     std::lock_guard<std::mutex> lock(translate_preview_mu_);
     translate_preview_.clear();
   }
   // The hook lands on the worker thread; the preview mutex is the only
   // bridge to the frame loop that draws it.
+  const std::string source_language =
+      translate_source_language_ == "Auto" ? std::string{}
+                                           : translate_source_language_;
   translate_session_.start(
       translator_.config(), text, target_language_,
       [this](size_t done, size_t total,
              const std::vector<std::string>& originals,
              const std::vector<std::string>& translated) {
         std::lock_guard<std::mutex> lock(translate_preview_mu_);
+        // `done` is cumulative, so this batch covers the counts before it.
+        const size_t base = done > originals.size() ? done - originals.size() : 0;
         for (size_t i = 0; i < originals.size() && i < translated.size(); ++i) {
-          translate_preview_.push_back({originals[i], translated[i]});
+          TranslatePreviewRow row;
+          row.original = originals[i];
+          row.translated = translated[i];
+          if (base + i < translate_cue_starts_.size()) {
+            row.start = translate_cue_starts_[base + i];
+          }
+          translate_preview_.push_back(std::move(row));
         }
-      });
+      },
+      source_language);
 }
 
 void PlayerHud::pollTranslate(milliseconds now) {

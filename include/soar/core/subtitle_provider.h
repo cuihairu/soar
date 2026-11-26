@@ -242,11 +242,15 @@ class SubtitleTranslator {
   // null). Cues keep their original numbering and timing; the text of
   // each cue is its translation. `progress`, when set, is called after
   // each translated batch (see TranslateProgress); the default empty
-  // callback keeps the call shape identical to a plain translate.
+  // callback keeps the call shape identical to a plain translate. A
+  // non-empty `source_language` (a panel's "from" selector) is named in
+  // the system prompt as the cue's language; empty means auto-detect,
+  // the wire shape every earlier caller used.
   bool translate(const std::string& subtitle_text,
                  const std::string& target_language,
                  std::string* out_text, std::string* err,
-                 const TranslateProgress& progress = {}) const;
+                 const TranslateProgress& progress = {},
+                 const std::string& source_language = {}) const;
 
  private:
   SubtitleTranslateConfig config_;

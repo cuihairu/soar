@@ -439,28 +439,47 @@ void PlayerHud::drawSubtitleOverlay() {
 void PlayerHud::drawTranslateOverlay() {
   bool open = true;
   const ImGuiIO& io = ImGui::GetIO();
-  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                          ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  // The prototype docks the panel on the video's right edge; the centered
+  // modal covered the OSC row underneath it.
+  ImGui::SetNextWindowPos(
+      ImVec2(io.DisplaySize.x - 560.0f - 16.0f, (io.DisplaySize.y - 480.0f) * 0.5f),
+      ImGuiCond_Appearing);
   ImGui::SetNextWindowSize(ImVec2(560, 480), ImGuiCond_Appearing);
   if (ImGui::Begin("Translate", &open,
                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
     const auto now = nowMs();
 
-    // Target language selector (prototype's English<->Chinese swap row).
+    // Source <-> target selectors (prototype's English<->Chinese swap row).
     // A fixed short list is a control surface, not a locale inventory —
     // the API accepts any BCP-47-ish tag, so the list is a convenience.
+    // "Auto" leaves the source unnamed (the engine's auto-detect phrasing).
     static const char* kLanguages[] = {"English", "Chinese", "Japanese",
                                        "Korean",  "French",  "German",
                                        "Spanish"};
-    ImGui::Text("Target:");
+    static const char* kSourceLanguages[] = {"Auto", "English", "Chinese",
+                                             "Japanese", "Korean", "French",
+                                             "German", "Spanish"};
+    ImGui::SetNextItemWidth(210.0f);
+    if (ImGui::BeginCombo("##tr_src", translate_source_language_.c_str())) {
+      for (const char* l : kSourceLanguages) {
+        if (ImGui::Selectable(l, translate_source_language_ == l)) {
+          translate_source_language_ = l;
+        }
+      }
+      ImGui::EndCombo();
+    }
     ImGui::SameLine();
+    if (ImGui::Button("<->") && translate_source_language_ != "Auto") {
+      std::swap(translate_source_language_, target_language_);
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(210.0f);
     if (ImGui::BeginCombo("##tr_lang", target_language_.c_str())) {
       for (const char* l : kLanguages) {
         if (ImGui::Selectable(l, target_language_ == l)) target_language_ = l;
       }
       ImGui::EndCombo();
     }
-    ImGui::SameLine();
     if (!translate_title_.empty()) {
       ImGui::TextDisabled("%s", translate_title_.c_str());
     }
@@ -479,7 +498,7 @@ void PlayerHud::drawTranslateOverlay() {
       ImGui::TextDisabled("%s", cfg.model.c_str());
     }
 
-    // Progress (prototype's overall progress + bar).
+    // Progress (prototype's overall progress + bar + estimate).
     ImGui::Separator();
     const auto progress = translate_session_.progress();
     char prog_label[80];
@@ -496,11 +515,29 @@ void PlayerHud::drawTranslateOverlay() {
 
     if (translate_session_.running()) {
       ImGui::TextDisabled("%s", "Translating...");
+      // Straight-line estimate off the finished share: the wire batches
+      // cost roughly the same round trip each, so elapsed/done scales.
+      if (progress.first > 0 && progress.second > progress.first) {
+        const milliseconds elapsed = now - translate_started_;
+        if (elapsed > milliseconds::zero()) {
+          const double per_line =
+              std::chrono::duration<double>(elapsed).count() /
+              static_cast<double>(progress.first);
+          const int eta_s = static_cast<int>(
+              per_line * static_cast<double>(progress.second - progress.first) +
+              0.5);
+          if (eta_s > 0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("eta ~%ds", eta_s);
+          }
+        }
+      }
     } else if (ImGui::Button("Translate")) {
       startTranslateCurrent(now);
     }
 
-    // Live preview (prototype's clickable list, current batch shown).
+    // Live preview (prototype's clickable list): each row carries its
+    // cue's start, and picking it seeks there.
     ImGui::Separator();
     if (ImGui::BeginChild("##tr_preview", ImVec2(0, 0), ImGuiChildFlags_None,
                           ImGuiWindowFlags_HorizontalScrollbar)) {
@@ -508,9 +545,15 @@ void PlayerHud::drawTranslateOverlay() {
       if (translate_preview_.empty()) {
         ImGui::TextDisabled("%s", "Translated lines appear here.");
       }
-      for (const auto& pair : translate_preview_) {
-        ImGui::TextWrapped("%s", pair.first.c_str());
-        ImGui::TextWrapped("  %s", pair.second.c_str());
+      for (size_t i = 0; i < translate_preview_.size(); ++i) {
+        const TranslatePreviewRow& row = translate_preview_[i];
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::Selectable(formatClock(row.start).c_str())) {
+          seekTo(row.start, now);
+        }
+        ImGui::PopID();
+        ImGui::TextWrapped("%s", row.original.c_str());
+        ImGui::TextWrapped("  %s", row.translated.c_str());
         ImGui::Separator();
       }
     }
