@@ -654,8 +654,8 @@ void PlayerHud::handleEvent(const SDL_Event& e, bool* quit) {
           openLibrary();  // media library (docs/mvp.md §3)
           return;
         case ShortcutAction::SearchLibrary:
-          // The search half of the browse split (docs/todo.md 原型对齐
-          // 批): open the overlay when needed, then put the caret in
+          // The search half of the browse split (docs/todo.md prototype-alignment
+          // batch): open the overlay when needed, then put the caret in
           // the box — the flag is consumed by the next frame's draw.
           if (st_.overlay != Overlay::Library) openLibrary();
           if (st_.overlay == Overlay::Library) {
@@ -1181,8 +1181,8 @@ int runPlayerWindow(soar::Player& player, const WindowUiConfig& cfg) {
   }
 #endif  // SOAR_WITH_IMGUI
 
-  // 退出前先停播放：后端的解码/音频线程必须先 join，SDL_Quit 在函数末尾，
-  // 晚于 SDL 音频设备的销毁（BUGS.md #4 同族顺序问题，tsan 可见）。
+  // Stop playback before exiting: the backend's decode/audio threads must be joined first; SDL_Quit is at the end of the function,
+  // after the SDL audio device is destroyed (same ordering issue as BUGS.md #4, visible under TSan).
   player.stop();
 
   if (texture) SDL_DestroyTexture(texture);

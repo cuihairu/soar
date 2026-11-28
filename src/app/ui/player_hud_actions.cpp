@@ -218,7 +218,7 @@ void PlayerHud::drawSidecarEntries(const MediaInfo& info, milliseconds now) {
   // The [translate] section: one row per loaded external track that has
   // not been translated yet, then one per embedded text track. Picking an
   // external row sends the track's file through SubtitleTranslator;
-  // picking an embedded row demuxes the stream out first ("内嵌轨先导出")
+  // picking an embedded row demuxes the stream out first ("export embedded tracks first")
   // and translates that. Both load the result as a further external track.
   if (!translatable.empty()) {
     ImGui::Separator();

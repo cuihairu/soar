@@ -65,7 +65,7 @@ void writeFile(const std::string& path, const std::string& content) {
 
 TEST_CASE("design tokens carry the redesign v2 radius system and font floor") {
   using namespace soar::app;
-  // docs/prototypes.md v2 ("字号地板 11px、面板 10 / 控件 7 / 徽标 pill"),
+  // docs/prototypes.md v2 ("11px font floor, panel 10 / control 7 / badge pill"),
   // the prototype's --r-panel / --r-ctl in prototypes/redesign/assets.
   CHECK_EQ(kPanelRounding, 10.0f);
   CHECK_EQ(kControlRounding, 7.0f);

@@ -6,7 +6,7 @@
 // directory. A 127.0.0.1-only HTTP server presents the chosen file of the
 // torrent with byte-range support, so the player just opens
 // "http://127.0.0.1:<port>/" — the IBackend layer and the FFmpeg backend
-// learn nothing about torrents ("核心抽象不动", docs/mvp.md §5).
+// learn nothing about torrents ("keep the core abstraction unchanged", docs/mvp.md §5).
 //
 // Reads ahead of the sequential download front turn into per-piece
 // deadlines (libtorrent streaming): the HTTP handler asks for exactly the

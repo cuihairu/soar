@@ -2,7 +2,7 @@
 // These tests exercise the core playback API state machine without any
 // multimedia dependencies, so they run on every platform and in every CI job.
 //
-// 行为参照：src/core/null_backend.cpp（NullBackend 的确定性状态机）。
+// Behavior reference: src/core/null_backend.cpp (NullBackend's deterministic state machine).
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>

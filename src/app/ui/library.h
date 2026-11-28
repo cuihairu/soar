@@ -80,14 +80,14 @@ class MetadataSource {
 // rule is unit-testable without a source behind it.
 std::string scrapeQueryForPath(const std::string& path);
 
-// Resume policy (docs/todo.md 媒体库批): a position is worth resuming when
+// Resume policy (docs/todo.md media-library batch): a position is worth resuming when
 // it is past the intro-scale noise (5 s — headless probes and credits
 // skips must not plant a resume), the duration is known, and the source is
 // not effectively finished (within 5 s of the end — "resume" must not mean
 // "replay the last five seconds"). Returns the position in ms, 0 = none.
 std::int64_t resumePositionMs(const LibraryEntry& e);
 
-// Library sidebar buckets (docs/todo.md 原型对齐批): the same record set
+// Library sidebar buckets (docs/todo.md prototype-alignment batch): the same record set
 // read as a state machine — what joined recently, what carries a resume
 // point, what was watched to the end. Pure predicates, so the window layer
 // stays a renderer and the bucket membership is unit-testable.
@@ -121,7 +121,7 @@ bool matchesCategory(const LibraryEntry& e, LibraryCategory c);
 // (the store's own order is path-only).
 bool compareRecent(const LibraryEntry& a, const LibraryEntry& b);
 
-// The search box's rule (docs/todo.md 原型对齐批): a case-folded substring
+// The search box's rule (docs/todo.md prototype-alignment batch): a case-folded substring
 // over the row's label source (the NFO title when a scan scraped one) and
 // the path, which is also the label's fallback — so a file name always
 // matches. The fold is ASCII-only on purpose: no locale in the predicate.

@@ -701,7 +701,7 @@ void PlayerHud::drawLibraryOverlay() {
                        ImGui::ColorConvertFloat4ToU32(theme::kNavBg));
       ImGui::Dummy(ImVec2(26.0f, 26.0f));
       ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 16.0f);
-      // .side .grp "媒体库" -> LIBRARY.
+      // .side .grp "Media library" -> LIBRARY.
       librarySideGrp("LIBRARY");
       // The four state buckets (library.html's first group). The count is
       // the live total over the same snapshot the grid renders.
@@ -717,7 +717,7 @@ void PlayerHud::drawLibraryOverlay() {
           st_.library_category = cat;
         }
       }
-      // .side .grp "类型" -> TYPE.
+      // .side .grp "Type" -> TYPE.
       librarySideGrp("TYPE");
       static const char* const kSrc[] = {"Local", "Network"};
       for (int i = 0; i < 2; ++i) {

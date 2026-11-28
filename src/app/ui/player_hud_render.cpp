@@ -366,7 +366,7 @@ void PlayerHud::drawHud(milliseconds now) {
     ImGui::SameLine();
     if (ImGui::Button("CC")) toggleSubtitleVisibility(now);
     ImGui::SameLine();
-    // The translation panel (prototype translate-panel.png's "译" control):
+    // The translation panel (prototype translate-panel.png's "Translate" control):
     // opens the panel and starts the current track's translation.
     if (ImGui::Button("TR")) openTranslatePanel(now);
     ImGui::SameLine();
@@ -849,7 +849,7 @@ void PlayerHud::drawTopBar() {
     const float cy = h * 0.5f;
     float x = 22.0f;  // .topbar padding-left
 
-    // .app-title: the 22px wing mark — a flat orange block (v2's "渐变清零"
+    // .app-title: the 22px wing mark — a flat orange block (v2's "no gradients"
     // rule; the dark draft's linear-gradient wing was ugly-list item #1).
     // The bitmap font has no wing glyph, so the face is drawn; the ink is a
     // small chevron suggesting the wing.

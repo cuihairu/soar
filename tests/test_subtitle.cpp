@@ -2400,7 +2400,7 @@ TEST_CASE("an unresolvable_temp_directory_fails_the_store_silently") {
 }
 
 // ---------------------------------------------------------------------------
-// SubtitleTranslator (docs/mvp.md §6 字幕文本翻译): the OpenAI-compatible
+// SubtitleTranslator (docs/mvp.md §6 subtitle text translation): the OpenAI-compatible
 // batch path, driven end-to-end against the local chat fixture server
 // (startChatServer, port base 27000). Every failure case asserts a reason
 // and an untouched output — the all-or-nothing contract.
@@ -3039,7 +3039,7 @@ TEST_CASE("translate_survives_json_escapes_in_both_directions") {
   tr.configure(cfg);
 
   const std::string kQuote = "Say \"hi\" \\ ok";
-  const std::string kCjk = "\xE5\xAD\x97\xE5\xB9\x95";  // 字幕
+  const std::string kCjk = "\xE5\xAD\x97\xE5\xB9\x95";  // CJK for "subtitle" (U+5B57 U+5E55)
   const std::string kEmoji = "hi \xF0\x9F\x98\x80";     // hi 😀
   const std::string kIn =
       "1\n00:00:01,000 --> 00:00:02,000\n" + kQuote + "\n\n"

@@ -157,7 +157,7 @@ public:
   virtual bool loadExternalSubtitle(const std::string& path, TrackId& out_id) = 0;
 
   // Demuxes an embedded subtitle stream out to plain SubRip text (docs/mvp.md
-  // §6, the embedded-track translate slice — "内嵌轨先导出"). id is a
+  // §6, the embedded-track translate slice — "export embedded tracks first"). id is a
   // container stream; the external tracks that loadExternalSubtitle creates
   // are rejected (their text already sits in a file). The source is reopened
   // independently — the playing decode path is never touched — so the call is

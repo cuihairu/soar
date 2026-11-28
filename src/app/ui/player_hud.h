@@ -576,7 +576,7 @@ class PlayerHud {
   ~PlayerHud();
 
 
-  // ---- App-drawn keyboard focus (V7b, docs/ui-design.md §5.2「焦点可见」).
+  // ---- App-drawn keyboard focus (V7b, docs/ui-design.md §5.2 "visible focus").
   // ImGui nav stays off — §3.2's rebindable shortcut map keeps every key —
   // so the ring is plain state moved by keys nobody else owns: Tab
   // (+Shift backward) on the playlist/library overlays (unbound in §3.2)
@@ -722,10 +722,10 @@ class PlayerHud {
   // one downloads, stores under the system temp and loads the stored file
   // through the same pipeline as a sidecar pick.
   // Loaded external tracks a "[translate]" row can work on (docs/mvp.md §6
-  // "字幕文本翻译", the window wiring): the window knows their source paths
+  // "subtitle text translation", the window wiring): the window knows their source paths
   // because it loaded them, each has not been translated this session, and
   // an endpoint is configured. Embedded text streams follow as the
-  // "内嵌轨先导出" slice: their row carries no path, and picking one demuxes
+  // "export embedded tracks first" slice: their row carries no path, and picking one demuxes
   // the stream out to plain SubRip first (exportSubtitleText). Bitmap and
   // unknown-codec streams get no row that can only fail. A subtitle track
   // whose title is not a loaded external path is embedded by construction —
@@ -749,7 +749,7 @@ class PlayerHud {
                         milliseconds now);
 
 
-  // The embedded-track variant (docs/mvp.md §6 "内嵌轨先导出"): demux the
+  // The embedded-track variant (docs/mvp.md §6 "export embedded tracks first"): demux the
   // stream out to plain SubRip first, then run the same translate-and-load
   // tail. The export pass reopens the source independently, so the playing
   // decode path is never touched; it is synchronous (quick for local and
@@ -826,7 +826,7 @@ class PlayerHud {
   void openDirPickerWatch();
 
 
-  // Same picker, file mode (todo.md 原型对齐批): the rows gain file
+  // Same picker, file mode (todo.md prototype-alignment batch): the rows gain file
   // checkboxes and the action button adds the checked set to the queue —
   // the picker for when a folder import is more than the user wanted.
   void openDirPickerFiles();
@@ -1393,7 +1393,7 @@ class PlayerHud {
     // serviced, cleared on the first frame that is not Ended.
     bool playlist_end_handled = false;
 
-    // Library browse bucket (docs/todo.md 原型对齐批): the sidebar keeps
+    // Library browse bucket (docs/todo.md prototype-alignment batch): the sidebar keeps
     // its selection across closing the overlay, so the list lands where
     // the user left off.
     LibraryCategory library_category = LibraryCategory::All;
@@ -1409,7 +1409,7 @@ class PlayerHud {
     // The one-shot caret request the / action leaves behind; the draw
     // consumes it on the frame the box is drawn.
     bool library_search_focus = false;
-    // Settings panel (proto redesign/settings.html「通用」): live toggles the
+    // Settings panel (proto redesign/settings.html "General"): live toggles the
     // Settings overlay edits. esc_exits_fullscreen gates the Escape action's
     // leave-fullscreen half; remember_last_media gates the resume-on-open jump.
     bool esc_exits_fullscreen = true;
@@ -1495,7 +1495,7 @@ class PlayerHud {
   // Picker mode: false imports the picked folder into the queue, true
   // watches it into the media library (the "Add folder..." entry).
   bool dirpick_for_library_ = false;
-  // Third mode (todo.md 原型对齐批): file picking. Media rows gain
+  // Third mode (todo.md prototype-alignment batch): file picking. Media rows gain
   // checkboxes and the action button queues the checked set — click
   // order kept, across directory changes too.
   bool dirpick_files_ = false;

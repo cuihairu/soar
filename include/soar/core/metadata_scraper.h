@@ -28,8 +28,8 @@ struct HttpMetadataConfig {
   std::chrono::milliseconds timeout{5000};
 };
 
-// Network metadata scrape (docs/mvp.md §3, the network half of "媒体库与
-// 刮削"). The offline half - the <name>.nfo sidecar next to the media file -
+// Network metadata scrape (docs/mvp.md §3, the network half of "media library and
+// scraping"). The offline half - the <name>.nfo sidecar next to the media file -
 // is the library's own reader; this class is what the library asks when a
 // file has no sidecar and an endpoint is configured.
 //

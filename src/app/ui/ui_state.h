@@ -111,7 +111,7 @@ class Toast {
   std::chrono::milliseconds shown_at_{-kDuration};
 };
 
-// App-drawn keyboard focus (V7b, docs/ui-design.md §5.2「焦点可见」): Dear
+// App-drawn keyboard focus (V7b, docs/ui-design.md §5.2 "visible focus"): Dear
 // ImGui nav stays off — §3.2's rebindable shortcut map must keep owning
 // every key — so the ring's focus is plain state this class owns. Tab
 // (+Shift for backward) cycles the rows of the open overlay; arrows do the
@@ -236,7 +236,7 @@ class RecentStore {
   std::vector<std::string> entries_;
 };
 
-// Playlist queue (docs/mvp.md §2: 追加/删除/下一首/上一首/循环/随机). Pure
+// Playlist queue (docs/mvp.md §2: append/remove/next/previous/loop/shuffle). Pure
 // index arithmetic over a vector of URIs — the window owns "open the picked
 // uri", this owns "which entry is next". No persistence in v0.2: a fresh
 // launch starts from the file that was opened (mpv/IINA do not persist

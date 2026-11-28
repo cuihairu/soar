@@ -1,5 +1,5 @@
 // Unit tests for the network metadata scraper (docs/mvp.md §3, the network
-// half of "媒体库与刮削"): the TMDB-shaped search client behind a
+// half of "media library and scraping"): the TMDB-shaped search client behind a
 // user-configured endpoint and key (src/core/metadata_scraper.*).
 //
 // Everything here is pure logic plus one temp directory. The wire cases need
@@ -284,7 +284,7 @@ TEST_CASE("metadata_scraper_searches_and_reads_the_first_hit") {
     HttpMetadataScraper s2(cfg2);
     ScrapedMetadata out2;
     REQUIRE(s2.scrape("Café 你好", &out2, nullptr));
-    // É = C3 A9, 你 = E4 BD A0, 好 = E5 A5 BD.
+    // É = C3 A9, U+4F60 = E4 BD A0, U+597D = E5 A5 BD.
     CHECK(join(readRequests(root2), 0, 0) ==
           "/search/movie?query=Caf%C3%A9%20%E4%BD%A0%E5%A5%BD");
     CHECK(out2.title == "Café 你好");
@@ -581,7 +581,7 @@ TEST_CASE("metadata_scraper_decodes_json_escapes_it_will_read") {
     s.configure(cfg);
     ScrapedMetadata out;
     REQUIRE(s.scrape("Escapes", &out, nullptr));
-    // \" \\ \/ \b \f \n \r \t, then 你 (a 3-byte code point) and É (the
+    // \" \\ \/ \b \f \n \r \t, then U+4F60 (a 3-byte code point) and É (the
     // uppercase-hex arm of \uXXXX).
     CHECK(out.title == "a\"b\\c/d\be\ff\ng\rh\ti你jÉ");
   }

@@ -7336,7 +7336,7 @@ TEST_CASE("windowed FFmpeg run walks the play queue end to end") {
   if (replay != std::string::npos) {
     CHECK(run.output.find(kT3, replay + kT1.size()) == std::string::npos);
   }
-  // The file-mode walkthrough (todo.md 原型对齐批): with the queue empty,
+  // The file-mode walkthrough (todo.md prototype-alignment batch): with the queue empty,
   // "Add 2 files" imports one.mkv + two.mkv and auto-plays the first — a
   // seventh media-info marker, the 1-track fixture again. The two-click
   // clear then wipes the queue ~1s into that replay, so its EOF finds an

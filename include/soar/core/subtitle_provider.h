@@ -23,7 +23,7 @@ struct SubtitleCandidate {
   SubtitleFormat format{SubtitleFormat::Unknown};
 };
 
-// Pluggable subtitle source (docs/mvp.md §6 "字幕下载": the interface lives
+// Pluggable subtitle source (docs/mvp.md §6 "subtitle download": the interface lives
 // in the core, the implementation can be swapped — the local sidecar today,
 // an OpenSubtitles-style HTTP client later — without the player noticing).
 //
@@ -79,7 +79,7 @@ struct HttpSubtitleConfig {
   std::chrono::milliseconds timeout{5000};
 };
 
-// External subtitle provider for remote services (docs/mvp.md §6 "字幕下载").
+// External subtitle provider for remote services (docs/mvp.md §6 "subtitle download").
 // A plain HTTP client over a small documented protocol, fully driven by
 // configuration: an unconfigured provider (empty endpoint) never touches
 // the network and answers no candidates, and the endpoint/key arrive from
@@ -180,7 +180,7 @@ using TranslateProgress =
                        const std::vector<std::string>& batch_translated)>;
 
 // Batch-translates SubRip/WebVTT subtitle text through a user-configured
-// OpenAI-compatible chat endpoint (docs/mvp.md §6 "字幕文本翻译", the
+// OpenAI-compatible chat endpoint (docs/mvp.md §6 "subtitle text translation", the
 // lightweight path: timed cues go out as numbered plain-text lines, the
 // replies come back as the same numbered lines in the target language, and
 // the result is a subtitle file in the same format as the input — one

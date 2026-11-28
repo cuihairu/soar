@@ -1,5 +1,5 @@
 // Audio extraction: decode a media source's audio track to a 16 kHz mono
-// 16-bit PCM WAV file. First slice of the §6 "语音实时翻译" feature — ASR
+// 16-bit PCM WAV file. First slice of the §6 "real-time speech translation" feature — ASR
 // (whisper-class) and the subtitle pipeline consume exactly this shape, so
 // the extractor owns the libavformat/libavcodec/libswresample plumbing and
 // keeps it out of the backend (the backend plays; this component pulls).

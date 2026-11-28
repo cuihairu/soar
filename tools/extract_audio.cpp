@@ -1,5 +1,5 @@
 // extract_audio -- Dev tool: decode a media source's audio track to a
-// 16 kHz mono WAV. Slice of the §6 "语音实时翻译" ASR path; not shipped.
+// 16 kHz mono WAV. Slice of the §6 "real-time speech translation" ASR path; not shipped.
 //
 // Usage: extract_audio <uri> <out.wav>
 

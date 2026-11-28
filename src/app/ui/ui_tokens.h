@@ -4,7 +4,7 @@
 // can pin their values without linking the window layer.
 //
 // Values are the redesign v2 contract (docs/prototypes.md 2026-10-06:
-// "字号地板 11px、圆角成文，面板 10 / 控件 7 / 徽标 pill / 图标钮圆形"),
+// "11px font floor, rounding rules: panel 10 / control 7 / badge pill / icon button circular"),
 // matched by the prototype's --r-panel / --r-ctl in
 // prototypes/redesign/assets/proto.css. The icon-button radius has no
 // consumer yet — the OSC's transport is still text buttons (the audit's V6),

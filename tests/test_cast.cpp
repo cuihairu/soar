@@ -137,7 +137,7 @@ TEST_CASE("search replies parse and announcements are refused") {
   CHECK_FALSE(cast::parseSearchResponse("not http at all\r\n\r\n", &r));
 }
 
-// The vendor forms of the ST echo (应答形态, the axis the real-device
+// The vendor forms of the ST echo (reply shape, the axis the real-device
 // matrix lists): some receivers answer a service-target search with the
 // uuid, the rootdevice wildcard, or the device type instead. All four are
 // usable replies — the device-description fetch sorts out whether the
@@ -1373,7 +1373,7 @@ class FakeRenderer {
     int go_deaf_after = 0;
     bool join_group = false;  // answer loopback M-SEARCH bursts
     // The vendor shape of the M-SEARCH answer (the forms the real-device
-    // matrix lists under 应答形态/MX 延迟): `ssdp_delay_ms` holds the
+    // matrix lists under Reply shape/MX delay): `ssdp_delay_ms` holds the
     // answer back after each burst (the spec lets a receiver wander up to
     // its MX seconds), `ssdp_lf` answers with bare LF line endings,
     // `ssdp_st_form` picks the search target echoed back (0 = the service
@@ -1760,7 +1760,7 @@ TEST_CASE("discovery hears a loopback renderer and reads its description") {
 }
 
 // One discovery window per vendor shape of the M-SEARCH answer (the
-// 应答形态/MX 延迟 axes of the real-device matrix): a late answer inside
+// reply-shape/MX-delay axes of the real-device matrix): a late answer inside
 // its MX, bare-LF line endings, the uuid / rootdevice / device-type search
 // targets some stacks echo back instead of the asked service target, and
 // the header lines some stacks omit. Each window is short because the
@@ -1803,7 +1803,7 @@ TEST_CASE("discovery reads the vendor shapes of an M-SEARCH answer") {
 // A receiver that answers from one address and advertises another: the
 // control point follows the LOCATION host, and a host that is merely
 // another local address (127.0.0.2 beside 127.0.0.1) must still resolve.
-// Proxies the cross-address form of the 组播路由/跨子网 matrix — the
+// Proxies the cross-address form of the multicast routing/cross-subnet matrix — the
 // routed-leg half (multicast TTL past a router) needs a real segment.
 TEST_CASE("discovery follows a description hosted off 127.0.0.1") {
   FakeRenderer::Config config;

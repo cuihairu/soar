@@ -157,7 +157,7 @@ void PlayerHud::settingsNavIcon(ImDrawList* dl, const ImVec2 c, SettingsTab tab,
 void PlayerHud::drawGradientMark(ImDrawList* dl, const ImVec2& p, float size, float r,
                       ImU32) {
   // The name is a leftover from the dark draft's gradient wing; v2's
-  // "渐变清零" made the mark a flat orange block, so the draw is flat —
+  // "no gradients" made the mark a flat orange block, so the draw is flat —
   // only the callers' shape parameter lives on.
   dl->AddRectFilled(p, ImVec2(p.x + size, p.y + size),
                     ImGui::ColorConvertFloat4ToU32(theme::kAccent), r);
@@ -578,7 +578,7 @@ void PlayerHud::drawSettingsOverlay() {
 
     switch (st_.settings_tab) {
       case SettingsTab::General: {
-        // sect h2 启动与界面 — the four prototype rows (theme stays on
+        // sect h2 Startup & interface — the four prototype rows (theme stays on
         // the y shortcut; the prototype page has no theme row either).
         settingsSect("STARTUP & INTERFACE");
         settingCard(
@@ -590,13 +590,13 @@ void PlayerHud::drawSettingsOverlay() {
             "In fullscreen, ESC returns to the window; otherwise ESC quits",
             34.0f, 20.0f,
             [&] { settingsSwitch("##g_esc_sw", &st_.esc_exits_fullscreen); });
-        // 外观 — the prototype's `?theme=light|dark` switch, in the app.
+        // Appearance — the prototype's `?theme=light|dark` switch, in the app.
         // v2 makes the light shell part of the baseline (v2.1 review), so
         // the choice needs a home beside the startup rows; `y` still works.
         settingCard("##g_theme", "Appearance",
                     "Shell theme; the video canvas stays dark in both", 110.0f,
                     22.0f, [&] { themeSegmented(); });
-        // 界面语言 — ASCII-only build: the shipped label set is English
+        // Interface language — ASCII-only build: the shipped label set is English
         // (the bitmap font has no CJK), so the select has one honest row.
         settingCard(
             "##g_lang", "Interface language",
@@ -667,13 +667,13 @@ void PlayerHud::drawSettingsOverlay() {
         break;
       }
       case SettingsTab::Subtitles: {
-        // The prototype's primary frame: a 2-column grid (渲染 / 时长对齐
-        // + 获取) with the endpoints section full-width below.
+        // The prototype's primary frame: a 2-column grid (Rendering / Timing
+        // + Fetch) with the endpoints section full-width below.
         ImGui::BeginChild("##s_grid", ImVec2(-1.0f, 316.0f),
                           ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
         const float col_w = (ImGui::GetContentRegionAvail().x - 14.0f) * 0.5f;
         ImGui::BeginChild("##s_cl", ImVec2(col_w, 0.0f), ImGuiChildFlags_None);
-        // sect h2 渲染
+        // sect h2 Rendering
         settingsSect("RENDERING");
         settingCard(
             "##s_show", "Show subtitles",
@@ -711,7 +711,7 @@ void PlayerHud::drawSettingsOverlay() {
         ImGui::EndChild();
         ImGui::SameLine(0.0f, 14.0f);
         ImGui::BeginChild("##s_cr", ImVec2(col_w, 0.0f), ImGuiChildFlags_None);
-        // sect h2 时长对齐
+        // sect h2 Timing
         settingsSect("TIMING");
         settingCard("##s_offset", "Global sync offset",
                     "+ leads / - lags", 96.0f, 24.0f, [&] {
@@ -730,7 +730,7 @@ void PlayerHud::drawSettingsOverlay() {
             "Plain text first", 120.0f, 26.0f,
             [&] { settingsSelectBox("##s_style_sel", "Plain text", 120.0f, true); });
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
-        // sect h2 获取
+        // sect h2 Fetch
         settingsSect("FETCH");
         settingCard("##s_dir", "Subtitle directory",
                     "Scans .srt/.ass/.vtt", 150.0f, 26.0f, [&] {
@@ -746,7 +746,7 @@ void PlayerHud::drawSettingsOverlay() {
             });
         ImGui::EndChild();
         ImGui::EndChild();
-        // sect h2 端点 — full width below the grid
+        // sect h2 Endpoints — full width below the grid
         ImGui::Dummy(ImVec2(0.0f, 8.0f));
         settingsSect("ENDPOINTS");
         endpointRow("##ep_download", "Download",
@@ -760,7 +760,7 @@ void PlayerHud::drawSettingsOverlay() {
         break;
       }
       case SettingsTab::Network: {
-        // sect h2 本地优先（默认态，无任何外部依赖）
+        // sect h2 Local first (the default has no external dependencies)
         settingsSect("LOCAL FIRST (THE DEFAULT HAS NO DEPENDENCIES)");
         settingCard("##n_trackers", "P2P / DHT trackers",
                     "Empty = local files and direct URLs only", 150.0f, 24.0f,
